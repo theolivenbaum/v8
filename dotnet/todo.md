@@ -229,6 +229,17 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [ ] modules (import/export, dynamic import, top-level await)
 - [ ] eval / new Function / with
 
+## Conformance progress (V8Sharp engine)
+
+| date | suite | pass | run | rate | notes |
+|---|---|---|---|---|---|
+| 2026-09-28 | test262 | 67759 | 94901 | 71.4% | first run; 79.1% without Temporal. Failing: async functions/generators/for-await, modules, dynamic import (interpreter, in progress); Promise/Iterator/Map/Set/Weak*/DisposableStack (collections port, in progress); Temporal (9210) |
+
+- [ ] Temporal: V8 15.6 implements it as a binding layer
+      (`src/objects/js-temporal-objects.cc`, `builtins-temporal.cc`) over the
+      Rust crate temporal_rs (`third_party/rust/temporal_capi`, not in this
+      checkout). Needs a C# implementation of the temporal_rs surface V8 uses.
+
 ## Phase 2: the fast tiers
 
 - [ ] TieringManager: interrupt budget, OSR triggers (port of tiering-manager.cc)
