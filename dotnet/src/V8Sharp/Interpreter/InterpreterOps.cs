@@ -17,7 +17,6 @@ namespace V8Sharp.Interpreter;
 
 public static class InterpreterOps
 {
-    const long kMinusZeroBits = unchecked((long)0x8000000000000000UL);
 
     /// <summary>Whether a double would be a Smi in V8 (31-bit, integral, not -0).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -25,9 +24,11 @@ public static class InterpreterOps
     {
         // cvttsd2si gives int.MinValue for NaN and out-of-range values, which
         // fails the range check; C#'s (int) cast saturates with extra compares.
+        // Comparing the bits of the round trip rejects fractions, NaN and -0
+        // in one compare (a double compare needs a parity branch for NaN and
+        // cannot tell -0 from 0).
         int i = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(d)) : (int)d;
-        return i == d && (uint)(i - JSValue.SmiMinValue) <= (uint)(JSValue.SmiMaxValue - JSValue.SmiMinValue) &&
-               (i != 0 || BitConverter.DoubleToInt64Bits(d) != kMinusZeroBits);
+        return BitConverter.DoubleToInt64Bits(i) == BitConverter.DoubleToInt64Bits(d) && IsSmiRange(i);
     }
 
     /// <summary>IsSmiDouble, with the Smi's value (V8's TaggedIsSmi then SmiUntag).</summary>
@@ -36,8 +37,7 @@ public static class InterpreterOps
     {
         int i = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(d)) : (int)d;
         value = i;
-        return i == d && (uint)(i - JSValue.SmiMinValue) <= (uint)(JSValue.SmiMaxValue - JSValue.SmiMinValue) &&
-               (i != 0 || BitConverter.DoubleToInt64Bits(d) != kMinusZeroBits);
+        return BitConverter.DoubleToInt64Bits(i) == BitConverter.DoubleToInt64Bits(d) && IsSmiRange(i);
     }
 
     /// <summary>Whether an int (the exact result of an operation on Smis) is in the Smi range.</summary>
