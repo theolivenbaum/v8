@@ -144,6 +144,9 @@ public struct LookupIterator
     readonly Configuration _configuration;
     StateKind _state;
     bool _hasProperty;
+
+    /// <summary>has_property_: whether the current state found a property (used by DCHECKs in V8).</summary>
+    internal readonly bool HasProperty => _hasProperty;
     InterceptorState _interceptorState;
     PropertyDetails _propertyDetails;
     readonly Isolate _isolate;

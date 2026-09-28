@@ -676,7 +676,7 @@ public sealed class JSProxy : JSReceiver
     }
 
     /// <summary>JSProxy::GetPropertyAttributes.</summary>
-    public static PropertyAttributes GetPropertyAttributes(ref LookupIterator it)
+    public static new PropertyAttributes GetPropertyAttributes(ref LookupIterator it)
     {
         var desc = new PropertyDescriptor();
         bool found = GetOwnPropertyDescriptor(it.Isolate, it.GetHolder<JSProxy>(), it.GetName(), ref desc);

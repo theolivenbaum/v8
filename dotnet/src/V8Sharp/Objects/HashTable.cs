@@ -43,6 +43,9 @@ public static class Hashing
     public static uint SmiHash32(uint key) => Hash32(key) & kSmiHashMask;
     public static uint SmiHash64(ulong key) => (uint)Hash64(key) & kSmiHashMask;
 
+    /// <summary>ComputeSeededHash (src/utils/utils.h).</summary>
+    public static uint ComputeSeededHash(uint key, ulong seed) => SmiHash64(key ^ seed);
+
     /// <summary>ComputeSeededHash with V8Sharp's fixed seed (0).</summary>
     public static uint ComputeSeededHash(uint key) => SmiHash64(key);
 
@@ -857,7 +860,7 @@ public sealed class ObjectHashTable : HashTableBase
 
     public static ObjectHashTable New(int atLeastSpaceFor) => new(ComputeCapacity(atLeastSpaceFor));
 
-    protected override uint HashForKey(in JSValue key) => ObjectOps.GetHash(key);
+    protected override uint HashForKey(in JSValue key) => ObjectOps.GetOrCreateHashRaw(key);
 
     public InternalIndex FindEntry(Isolate isolate, JSValue key, uint hash)
     {
@@ -875,13 +878,16 @@ public sealed class ObjectHashTable : HashTableBase
     /// <summary>ObjectHashTable::Lookup: the value, or the hole if absent.</summary>
     public JSValue Lookup(Isolate isolate, JSValue key)
     {
-        InternalIndex entry = FindEntry(isolate, key, ObjectOps.GetHash(key));
+        // If the object does not have an identity hash, it was never used as a key.
+        JSValue hash = ObjectOps.GetHash(key);
+        if (hash.IsUndefined) return JSValue.TheHole;
+        InternalIndex entry = FindEntry(isolate, key, (uint)hash.Number);
         return entry.IsNotFound ? JSValue.TheHole : _values[entry.AsInt];
     }
 
     public static ObjectHashTable Put(Isolate isolate, ObjectHashTable table, JSValue key, JSValue value)
     {
-        uint hash = ObjectOps.GetHash(key);
+        uint hash = ObjectOps.GetOrCreateHashRaw(key);
         InternalIndex entry = table.FindEntry(isolate, key, hash);
         if (entry.IsFound)
         {
@@ -894,7 +900,7 @@ public sealed class ObjectHashTable : HashTableBase
             for (int i = 0; i < table.Capacity; i++)
             {
                 if (!table.IsKey(i)) continue;
-                InternalIndex ins = grown.FindInsertionEntry(ObjectOps.GetHash(table._keys[i]));
+                InternalIndex ins = grown.FindInsertionEntry(ObjectOps.GetOrCreateHashRaw(table._keys[i]));
                 grown._keys[ins.AsInt] = table._keys[i];
                 grown._values[ins.AsInt] = table._values[i];
             }
@@ -910,7 +916,13 @@ public sealed class ObjectHashTable : HashTableBase
 
     public static ObjectHashTable Remove(Isolate isolate, ObjectHashTable table, JSValue key, out bool wasPresent)
     {
-        InternalIndex entry = table.FindEntry(isolate, key, ObjectOps.GetHash(key));
+        JSValue hash = ObjectOps.GetHash(key);
+        if (hash.IsUndefined)
+        {
+            wasPresent = false;
+            return table;
+        }
+        InternalIndex entry = table.FindEntry(isolate, key, (uint)hash.Number);
         wasPresent = entry.IsFound;
         if (!wasPresent) return table;
         table._keys[entry.AsInt] = JSValue.TheHole;

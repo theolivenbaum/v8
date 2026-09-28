@@ -967,7 +967,7 @@ public sealed class JSModuleNamespace(Map map) : JSObject(map)
     }
 
     /// <summary>JSModuleNamespace::GetPropertyAttributes.</summary>
-    public static PropertyAttributes GetPropertyAttributes(ref LookupIterator it)
+    public static new PropertyAttributes GetPropertyAttributes(ref LookupIterator it)
     {
         JSModuleNamespace obj = it.GetHolder<JSModuleNamespace>();
         var name = (JSString)it.GetName();

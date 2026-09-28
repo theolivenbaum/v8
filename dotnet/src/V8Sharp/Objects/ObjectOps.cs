@@ -1281,7 +1281,7 @@ public static class ObjectOps
     }
 
     /// <summary>Object::GetHash: the hash, or undefined for a receiver without an identity hash.</summary>
-    public static JSValue GetHashOrUndefined(in JSValue obj)
+    public static JSValue GetHash(in JSValue obj)
     {
         long hash = GetSimpleHash(obj);
         if (hash >= 0) return JSValue.FromNumber(hash);
@@ -1289,7 +1289,7 @@ public static class ObjectOps
     }
 
     /// <summary>Object::GetOrCreateHash, as a uint (hash tables key on it).</summary>
-    public static uint GetHash(in JSValue obj)
+    public static uint GetOrCreateHashRaw(in JSValue obj)
     {
         long hash = GetSimpleHash(obj);
         if (hash >= 0) return (uint)hash;
@@ -1297,7 +1297,7 @@ public static class ObjectOps
     }
 
     /// <summary>Object::GetOrCreateHash.</summary>
-    public static JSValue GetOrCreateHash(in JSValue obj, Isolate isolate) => JSValue.FromNumber(GetHash(obj));
+    public static JSValue GetOrCreateHash(in JSValue obj, Isolate isolate) => JSValue.FromNumber(GetOrCreateHashRaw(obj));
 
     // ---- Species ----------------------------------------------------------------------
 

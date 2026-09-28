@@ -288,10 +288,10 @@ public sealed class Symbol : Name
     public bool IsInPublicSymbolTable { get; set; }
     public bool IsInterestingSymbol { get; set; }
 
-    public bool IsAnyPrivate => PrivateSymbolKind != PrivateSymbolKind.Public;
-    public bool IsPrivateInternal => PrivateSymbolKind == PrivateSymbolKind.Internal;
-    public bool IsAnyPrivateName => PrivateSymbolKind >= PrivateSymbolKind.FieldName;
-    public bool IsPrivateBrand => PrivateSymbolKind == PrivateSymbolKind.Brand;
+    public new bool IsAnyPrivate => PrivateSymbolKind != PrivateSymbolKind.Public;
+    public new bool IsPrivateInternal => PrivateSymbolKind == PrivateSymbolKind.Internal;
+    public new bool IsAnyPrivateName => PrivateSymbolKind >= PrivateSymbolKind.FieldName;
+    public new bool IsPrivateBrand => PrivateSymbolKind == PrivateSymbolKind.Brand;
 
     // Kept for existing callers of the skeleton API.
     public bool IsPrivate => IsAnyPrivate;

@@ -83,7 +83,7 @@ public abstract class OrderedHashTable : HeapObject
             return InternalIndex.NotFound;
         }
 
-        JSValue hash = ObjectOps.GetHashOrUndefined(key);
+        JSValue hash = ObjectOps.GetHash(key);
         // If the object does not have an identity hash, it was never used as a key
         if (hash.IsUndefined) return InternalIndex.NotFound;
 
@@ -214,7 +214,7 @@ public abstract class OrderedHashTable : HeapObject
                 continue;
             }
 
-            int bucket = newTable.HashToBucket((int)ObjectOps.GetHashOrUndefined(key).Number);
+            int bucket = newTable.HashToBucket((int)ObjectOps.GetHash(key).Number);
             int chainEntry = newTable._buckets[bucket];
             newTable._buckets[bucket] = newEntry;
             Array.Copy(table._entries, oldEntry * entrySize, newTable._entries, newEntry * entrySize, entrySize);
@@ -319,7 +319,7 @@ public sealed class OrderedHashSet : OrderedHashTable
     /// <summary>OrderedHashSet::Add.</summary>
     public static OrderedHashSet Add(Isolate isolate, OrderedHashSet table, JSValue key)
     {
-        int hash = (int)ObjectOps.GetHash(key);
+        int hash = (int)ObjectOps.GetOrCreateHashRaw(key);
         if (table.ContainsKeyWithHash(hash, key)) return table;
 
         table = (OrderedHashSet)EnsureCapacityForAddingBase(isolate, table);
@@ -378,7 +378,7 @@ public sealed class OrderedHashMap : OrderedHashTable
     /// <summary>OrderedHashMap::Add: adds key/value unless the key is present.</summary>
     public static OrderedHashMap Add(Isolate isolate, OrderedHashMap table, JSValue key, JSValue value)
     {
-        int hash = (int)ObjectOps.GetHash(key);
+        int hash = (int)ObjectOps.GetOrCreateHashRaw(key);
         if (table.ContainsKeyWithHash(hash, key)) return table;
 
         table = (OrderedHashMap)EnsureCapacityForAddingBase(isolate, table);
@@ -412,7 +412,7 @@ public sealed class OrderedHashMap : OrderedHashTable
     /// <summary>OrderedHashMap::GetHash: the key's hash, or -1 if it has none (never used as a key).</summary>
     public static int GetHash(Isolate isolate, JSValue key)
     {
-        JSValue hash = ObjectOps.GetHashOrUndefined(key);
+        JSValue hash = ObjectOps.GetHash(key);
         return hash.IsUndefined ? -1 : (int)hash.Number;
     }
 }
