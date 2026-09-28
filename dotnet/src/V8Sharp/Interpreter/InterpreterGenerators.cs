@@ -74,7 +74,6 @@ public static class InterpreterGenerators
         return InterpreterExecution.Invoke(isolate, function, generator.Receiver, parameters, generator, isConstruct: false);
     }
 
-    /// <summary>GeneratorBuiltinsAssembler::InnerResume.</summary>
     /// <summary>Closes the generator when an exception leaves it (an exception filter, so it never catches).</summary>
     static bool CloseGenerator(JSGeneratorObject receiver)
     {
@@ -82,6 +81,7 @@ public static class InterpreterGenerators
         return false;
     }
 
+    /// <summary>GeneratorBuiltinsAssembler::InnerResume.</summary>
     public static JSValue InnerResume(Isolate isolate, JSGeneratorObject receiver, JSValue value,
         JSGeneratorObject.ResumeMode resumeMode)
     {

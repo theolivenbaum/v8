@@ -7,6 +7,7 @@ namespace V8Sharp
         partial void InitializeInterpreter()
         {
             Interpreter.InterpreterExecution.Install(this);
+            Interpreter.InterpreterAsync.InstallHooks();
             Codegen.Compiler.Install(this);
         }
     }
