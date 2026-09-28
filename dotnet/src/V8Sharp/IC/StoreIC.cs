@@ -55,7 +55,7 @@ public sealed class StoreIC : IC
     /// adding transition on the receiver itself.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    static bool TryStoreOwnField(JSObject obj, StoreHandler handler, JSValue value)
+    internal static bool TryStoreOwnField(JSObject obj, StoreHandler handler, JSValue value)
     {
         switch (handler.HandlerKind)
         {

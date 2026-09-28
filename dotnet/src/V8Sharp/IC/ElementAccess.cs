@@ -161,6 +161,52 @@ public static class ElementAccess
         return WriteElement(elements, kind, index, value);
     }
 
+    /// <summary>
+    /// The in-bounds case of TryStoreFastElement that needs no transition, no
+    /// growth and no prototype chain check: an element of a fast kind that the
+    /// value fits, stored over a non-hole value (so holey kinds need no
+    /// NoElements protector). False when the full path must decide.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryStoreInBounds(JSObject obj, double key, JSValue value)
+    {
+        int index = (int)key;
+        if (index != key || index < 0) return false;
+        FixedArrayBase elements = obj.Elements;
+        ElementsKind kind = obj.Map.ElementsKind;
+        int length = obj.InstanceType == InstanceType.JSArrayType ? (int)Unsafe.As<JSArray>(obj).Length._num : int.MaxValue;
+        if (index >= length) return false;
+        if (elements is FixedArray fixedArray)
+        {
+            JSValue[] data = fixedArray._data;
+            if ((uint)index >= (uint)data.Length || fixedArray.IsCowArray) return false;
+            if (ElementsKinds.IsSmiElementsKind(kind))
+            {
+                if (!value.IsSmi) return false;
+            }
+            else if (!ElementsKinds.IsObjectElementsKind(kind))
+            {
+                return false;
+            }
+            ref JSValue slot = ref data[index];
+            if (ReferenceEquals(slot._obj, Oddball.TheHole)) return false;
+            slot = value;
+            return true;
+        }
+        if (elements is FixedDoubleArray doubleArray)
+        {
+            double[] data = doubleArray._data;
+            if ((uint)index >= (uint)data.Length || !ElementsKinds.IsDoubleElementsKind(kind) ||
+                !ReferenceEquals(value._obj, NumberTag.Instance) || FixedDoubleArray.IsHoleBits(data[index]))
+            {
+                return false;
+            }
+            doubleArray.Set(index, value._num);
+            return true;
+        }
+        return false;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static bool IsHoleAt(FixedArrayBase elements, int index) => elements switch
     {

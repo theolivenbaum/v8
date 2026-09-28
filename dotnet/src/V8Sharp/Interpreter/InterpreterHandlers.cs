@@ -65,8 +65,9 @@ public static partial class InterpreterExecution
     [MethodImpl(MethodImplOptions.NoInlining)]
     static bool ToBooleanSlow(JSValue value) => ObjectOps.BooleanValue(value);
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool IsUndetectableReceiver(HeapObject o) => o is JSReceiver r && r.Map.IsUndetectable;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsUndetectableReceiver(HeapObject o) =>
+        o.InstanceType >= InstanceTypeChecks.FirstJSReceiver && Unsafe.As<JSReceiver>(o).Map.IsUndetectable;
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static bool TestTypeOf(JSValue value, TestTypeOfFlags.LiteralFlag literal) => InterpreterOps.TestTypeOf(value, literal);

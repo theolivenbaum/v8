@@ -83,9 +83,17 @@ public static class InterpreterOps
     {
         double result = lhs + rhs;
         if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
-        UpdateBinaryFeedback(ref feedback,
-            IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall
-            : AddNumberFeedback(isolate, lhs, rhs, result));
+        if (IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result))
+        {
+            UpdateBinaryFeedback(ref feedback, BOF.TypeIndex.SignedSmall);
+        }
+        else if (feedback != (byte)BOF.TypeIndex.AdditiveSafeInteger || !IsAdditiveSafeInteger(result) ||
+                 !IsAdditiveSafeInteger(lhs) || !IsAdditiveSafeInteger(rhs))
+        {
+            // (AdditiveSafeInteger feedback stays so while the operands and
+            // result are additive safe integers, whatever the flag says.)
+            UpdateBinaryFeedback(ref feedback, AddNumberFeedback(isolate, lhs, rhs, result));
+        }
         return JSValue.FromNumber(result);
     }
 

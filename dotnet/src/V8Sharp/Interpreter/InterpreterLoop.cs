@@ -173,7 +173,8 @@ public static partial class InterpreterExecution
                     pc += 1 + S;
                     continue;
                 case Bytecode.Mov:
-                    Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + S)) = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
+                    StoreRegister(ref Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + S)),
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)));
                     pc += 1 + 2 * S;
                     continue;
                 case Bytecode.Star0:
@@ -354,24 +355,66 @@ public static partial class InterpreterExecution
                     continue;
                 }
                 case Bytecode.GetKeyedProperty:
+                {
+                    // KeyedLoadIC.Load's monomorphic element hit: an in-bounds,
+                    // non-hole element of a fast elements kind.
+                    HeapObject? o = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1))._obj;
+                    FeedbackVector? fv = st.FeedbackVector;
+                    if (fv is not null && acc._obj == NumberTag.Instance && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
+                    {
+                        JSValue[] slots = fv.Slots;
+                        int slot = Unsigned<TS>(ref code, pc + 1 + S);
+                        int index = (int)acc._num;
+                        if (ReferenceEquals(slots[slot]._obj, Unsafe.As<JSReceiver>(o).Map) && slots[slot + 1]._obj is LoadHandler handler &&
+                            handler.FastElementsMode != 0 && index == acc._num && index >= 0)
+                        {
+                            // The map matched the handler's receiver map: {o} is a JSObject.
+                            FixedArrayBase elements = Unsafe.As<JSObject>(o).Elements;
+                            if (!handler.IsJSArray || index < (int)Unsafe.As<JSArray>(o).Length._num)
+                            {
+                                if (elements is FixedArray fixedArray)
+                                {
+                                    JSValue[] data = fixedArray._data;
+                                    if ((uint)index < (uint)data.Length && !ReferenceEquals(data[index]._obj, Oddball.TheHole))
+                                    {
+                                        acc = data[index];
+                                        pc += 1 + 2 * S;
+                                        continue;
+                                    }
+                                }
+                                else if (elements is FixedDoubleArray doubleArray)
+                                {
+                                    double[] data = doubleArray._data;
+                                    if ((uint)index < (uint)data.Length && !FixedDoubleArray.IsHoleBits(data[index]))
+                                    {
+                                        acc = JSValue.FromNumber(data[index]);
+                                        pc += 1 + 2 * S;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     acc = GetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 2 * S;
                     continue;
+                }
 
                 // ---- Property stores ------------------------------------------------------------------------
                 case Bytecode.SetNamedProperty:
                 {
-                    // The monomorphic store to a Tagged own field (StoreIC.StoreNamed).
+                    // The monomorphic hits of StoreIC.StoreNamed: a store to an own
+                    // field, or a transition that adds one.
                     HeapObject? o = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1))._obj;
                     FeedbackVector? fv = st.FeedbackVector;
-                    if (fv is not null && o is JSObject obj)
+                    if (fv is not null && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
                     {
                         JSValue[] slots = fv.Slots;
                         int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                        if (ReferenceEquals(slots[slot]._obj, obj.Map) && slots[slot + 1]._obj is StoreHandler handler &&
-                            handler.TaggedFieldIndex >= 0)
+                        // A field store handler is only recorded for a JSObject map.
+                        if (ReferenceEquals(slots[slot]._obj, Unsafe.As<JSReceiver>(o).Map) && slots[slot + 1]._obj is StoreHandler handler &&
+                            StoreIC.TryStoreOwnField(Unsafe.As<JSObject>(o), handler, acc))
                         {
-                            obj._fields[handler.TaggedFieldIndex] = acc;
                             pc += 1 + 3 * S;
                             continue;
                         }
@@ -385,9 +428,26 @@ public static partial class InterpreterExecution
                     pc += 1 + 3 * S;
                     continue;
                 case Bytecode.SetKeyedProperty:
+                {
+                    // KeyedStoreIC.Store's monomorphic in-bounds element store.
+                    HeapObject? o = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1))._obj;
+                    JSValue key = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + S));
+                    FeedbackVector? fv = st.FeedbackVector;
+                    if (fv is not null && key._obj == NumberTag.Instance && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
+                    {
+                        JSValue[] slots = fv.Slots;
+                        int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
+                        if (ReferenceEquals(slots[slot]._obj, Unsafe.As<JSReceiver>(o).Map) && slots[slot + 1]._obj is StoreHandler handler &&
+                            handler.IsSimpleElementStore && ElementAccess.TryStoreInBounds(Unsafe.As<JSObject>(o), key._num, acc))
+                        {
+                            pc += 1 + 3 * S;
+                            continue;
+                        }
+                    }
                     SetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 3 * S;
                     continue;
+                }
                 case Bytecode.StaInArrayLiteral:
                     StaInArrayLiteral<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 3 * S;
@@ -813,10 +873,9 @@ public static partial class InterpreterExecution
                         st.Done = true;
                         st.Accumulator = acc;
                     }
-                    else if (st.Isolate.InterpreterFrames[st.FrameIndex].InlineCall)
+                    else if (InterpreterInlineCalls.TryReturnInline(st.Isolate, ref st, acc))
                     {
-                        // Return to a caller running in this loop (InterpreterInlineCalls).
-                        st.Accumulator = InterpreterInlineCalls.Return(st.Isolate, ref st, acc);
+                        // Returned to a caller running in this loop (InterpreterInlineCalls).
                         goto reload;
                     }
                     return acc;

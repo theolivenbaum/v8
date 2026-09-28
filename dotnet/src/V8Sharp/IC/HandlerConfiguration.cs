@@ -88,6 +88,13 @@ public sealed class LoadHandler : HeapObject
     /// <summary>A kConstantFromPrototype handler that needs no lookup on the start object (the inline case for methods).</summary>
     public readonly bool IsPrototypeConstant;
 
+    /// <summary>
+    /// A kElement handler for a fast elements kind: 1 for Smi and object
+    /// elements (a FixedArray), 2 for double elements, else 0. The interpreter's
+    /// GetKeyedProperty loads in-bounds non-hole elements of these inline.
+    /// </summary>
+    public readonly byte FastElementsMode;
+
     LoadHandler(Kind kind, int fieldIndex = -1, JSReceiver? holder = null, JSValue data = default, Cell? validityCell = null,
         bool lookupOnLookupStartObject = false, bool allowOutOfBounds = false, bool isJSArray = false,
         bool allowHandlingHole = false, ElementsKind elementsKind = default) : base(InstanceType.CodeType)
@@ -104,6 +111,9 @@ public sealed class LoadHandler : HeapObject
         ElementsKind = elementsKind;
         OwnFieldIndex = kind == Kind.kField && holder is null ? fieldIndex : -1;
         IsPrototypeConstant = kind == Kind.kConstantFromPrototype && !lookupOnLookupStartObject;
+        FastElementsMode = kind == Kind.kElement && ElementsKinds.IsFastElementsKind(elementsKind)
+            ? ElementsKinds.IsDoubleElementsKind(elementsKind) ? (byte)2 : (byte)1
+            : (byte)0;
     }
 
     static readonly LoadHandler s_slow = new(Kind.kSlow);
@@ -252,10 +262,11 @@ public sealed class StoreHandler : HeapObject
     public readonly KeyedAccessStoreMode StoreMode;
 
     /// <summary>
-    /// The field index of a kField handler whose representation is Tagged (any
-    /// value fits), else -1: the case the interpreter's SetNamedProperty handles inline.
+    /// A kElement handler without an elements transition or a prototype chain
+    /// validity cell: the interpreter's SetKeyedProperty stores in-bounds
+    /// non-hole elements through it inline (ElementAccess.TryStoreInBounds).
     /// </summary>
-    public readonly int TaggedFieldIndex;
+    public readonly bool IsSimpleElementStore;
 
     StoreHandler(Kind kind, int fieldIndex = -1, Representation representation = default, Map? fieldTypeClass = null,
         Map? transitionMap = null, JSReceiver? holder = null, JSValue data = default, Cell? validityCell = null,
@@ -273,7 +284,7 @@ public sealed class StoreHandler : HeapObject
         ElementsKind = elementsKind;
         ElementsTransitionMap = elementsTransitionMap;
         StoreMode = storeMode;
-        TaggedFieldIndex = kind == Kind.kField && representation.IsTagged ? fieldIndex : -1;
+        IsSimpleElementStore = kind == Kind.kElement && elementsTransitionMap is null && validityCell is null;
     }
 
     static readonly StoreHandler s_slow = new(Kind.kSlow);

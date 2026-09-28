@@ -211,10 +211,33 @@ internal static class InterpreterInlineCalls
     /// registers and record and makes <paramref name="st"/> describe the caller
     /// at its return offset.
     /// </summary>
+    /// <summary>
+    /// The Return bytecode in a frame this loop entered inline: <see cref="Return"/>
+    /// with the result in st.Accumulator, true. False, with nothing done, for
+    /// the frame the loop was entered for.
+    /// </summary>
+    public static bool TryReturnInline(Isolate isolate, ref InterpreterState st, JSValue result)
+    {
+        InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
+        ref InterpreterFrameRecord frame = ref frames[st.FrameIndex];
+        if (!frame.InlineCall) return false;
+        if (frame.IsConstructor && !result.IsJSReceiver)
+        {
+            result = isolate.RegisterStack[frame.Fp + InterpreterRuntime.kReceiverOffset];
+        }
+        PopFrame(isolate, ref st, frames, ref frame);
+        st.Accumulator = result;
+        return true;
+    }
+
     public static void PopFrame(Isolate isolate, ref InterpreterState st)
     {
         InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
-        ref InterpreterFrameRecord record = ref frames[st.FrameIndex];
+        PopFrame(isolate, ref st, frames, ref frames[st.FrameIndex]);
+    }
+
+    static void PopFrame(Isolate isolate, ref InterpreterState st, InterpreterFrameRecord[] frames, ref InterpreterFrameRecord record)
+    {
         int start = record.RegisterStart;
         // Clears the record except Function and Bytecode (functions and their
         // bytecode are long-lived; keeping them lets the next call at this depth
@@ -231,12 +254,12 @@ internal static class InterpreterInlineCalls
         record.RegisterStart = 0;
         isolate.InterpreterFrameDepth = st.FrameIndex;
         isolate.ReleaseRegisters(start);
+        JSValue[] stack = isolate.RegisterStack;
 
         int callerIndex = st.FrameIndex - 1;
         ref InterpreterFrameRecord caller = ref frames[callerIndex];
         BytecodeArray bytecode = caller.Bytecode!;
         int fp = caller.Fp;
-        JSValue[] stack = isolate.RegisterStack;
         Context context = stack[fp + InterpreterRuntime.kContextOffset].UncheckedAs<Context>();
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
 
