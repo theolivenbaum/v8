@@ -327,6 +327,80 @@ public class CorpusTest(ITestOutputHelper output)
         output.WriteLine(summary);
     }
 
+    // For every lazily compiled top-level function of the mjsunit scripts:
+    // compiling it with the PreparseData produced by the script's parse must
+    // allocate the same variables as compiling it without (the
+    // PreParserScopeAnalysis check of preparser-unittest.cc over real code).
+    [Fact(Explicit = true)]
+    public void MjsunitPreparseDataConsistency() =>
+        PreparseDataConsistency(Path.Combine(RepoRoot(), "test", "mjsunit"), "mjsunit");
+
+    [Fact(Explicit = true)]
+    public void Test262PreparseDataConsistency()
+    {
+        string root = Test262Root();
+        Assert.SkipWhen(root == null, "test262 checkout not found");
+        PreparseDataConsistency(Path.Combine(root, "language"), "test262");
+    }
+
+    private void PreparseDataConsistency(string root, string name)
+    {
+        ParsingFlags flags = new() { allow_natives_syntax = true };
+        var details = new UnoptimizedCompileFlags.ScriptDetails(1, true, LanguageMode.Sloppy, false, false, false,
+                                                                false, false);
+        var failures = new StringBuilder();
+        int functions = 0, failed = 0;
+        foreach (string file in Directory.EnumerateFiles(root, "*.js", SearchOption.AllDirectories).Order())
+        {
+            string relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+            var script = new SourceScript(File.ReadAllText(file), 1);
+            ParseInfo toplevel = new(UnoptimizedCompileFlags.ForScriptCompile(flags, details), flags);
+            toplevel.set_scope_info_provider(Parser.TestScopeInfoProvider.Instance);
+            if (!ParsingEntry.ParseProgram(toplevel, script)) continue;
+            DeclarationScope.AllocateScopeInfos(toplevel, Parser.TestScopeInfoProvider.Instance);
+            foreach (FunctionLiteral literal in Parser.PreParserTest.CollectLiterals(toplevel.literal()))
+            {
+                if (literal.ShouldEagerCompile()) continue;
+                var function = new Parser.PreParserTest.LazyFunction(script, literal);
+                if (function.preparse_data == null) continue;
+                functions++;
+                try
+                {
+                    ParseInfo with_data = CompileLazily(function, flags, details, true);
+                    ParseInfo without_data = CompileLazily(function, flags, details, false);
+                    Assert.True(Parser.ScopeTestHelper.HasSkippedFunctionInside(with_data.literal().scope()));
+                    Parser.ScopeTestHelper.CompareScopes(without_data.literal().scope(), with_data.literal().scope(),
+                                                         false);
+                }
+                catch (Exception e)
+                {
+                    failed++;
+                    failures.Append(relative).Append(" @").Append(literal.start_position()).Append(": ")
+                        .AppendLine(e.Message.Split('\n')[0]);
+                }
+            }
+        }
+        string summary = $"{name} preparse data: {functions - failed}/{functions} lazy functions consistent";
+        File.WriteAllText(Path.Combine(ArtifactsDir(), name + "-preparse.txt"), summary + "\n" + failures);
+        output.WriteLine(summary);
+    }
+
+    private static ParseInfo CompileLazily(Parser.PreParserTest.LazyFunction function, ParsingFlags flags,
+                                           UnoptimizedCompileFlags.ScriptDetails details, bool use_data)
+    {
+        UnoptimizedCompileFlags compile_flags = UnoptimizedCompileFlags.ForFunctionCompile(
+            flags, UnoptimizedCompileFlags.DetailsOf(function.literal), details);
+        ParseInfo info = new(compile_flags, flags);
+        info.set_scope_info_provider(Parser.TestScopeInfoProvider.Instance);
+        if (use_data) info.set_consumed_preparse_data(ConsumedPreparseData.For(function.preparse_data));
+        if (!ParsingEntry.ParseFunction(info, function))
+        {
+            throw new InvalidOperationException("lazy compile failed: " +
+                                                info.pending_error_handler().FormatErrorMessageForTest());
+        }
+        return info;
+    }
+
     private static string OracleError(V8Sharp.Oracle.ReferenceV8 v8, string program)
     {
         string theirs = v8.Run(program).TrimEnd('\n');
