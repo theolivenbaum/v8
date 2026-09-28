@@ -220,3 +220,15 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
   questions from ICU; V8Sharp uses .NET's Unicode data plus the
   Other_ID_Start/Other_ID_Continue and Pattern_* lists. Checked over every
   code point against the oracle.
+- Parsing: regexp literal syntax is validated only when the engine injects
+  an `IRegExpSyntaxValidator` (`ParseInfo.set_regexp_syntax_validator`);
+  the engine must wire V8Sharp.RegExp in (390 test262 early-error tests).
+- Parsing: `VariableMap` iterates in insertion order (V8: hash order); only
+  visible in which duplicate name some messages mention, and debug printing.
+- Parsing: no UTF-8 / Windows-1252 / streaming character streams; one managed
+  `PreparseData` class for V8's zone and heap forms (release byte format);
+  flags passed per parse (`ParsingFlags`) instead of global.
+- Parsing: AstPrinter/ScopePrinter are always compiled (DEBUG-only in V8).
+- Parsing: decorators (`@`) not scanned; V8's status lists those tests as FAIL.
+- TODO(merge): Parsing's `NumberConversions` and string hashing should use
+  V8Sharp.Base (`Conversions`, `StringHasher`).
