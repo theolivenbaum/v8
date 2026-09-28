@@ -144,6 +144,15 @@ public enum InstanceType : ushort
     /// <summary>JS_SYNC_DISPOSABLE_STACK_TYPE.</summary>
     JSDisposableStackType,
     JSAsyncDisposableStackType,
+    // Temporal (V8_TEMPORAL_SUPPORT): JS_TEMPORAL_*_TYPE.
+    JSTemporalDurationType,
+    JSTemporalInstantType,
+    JSTemporalPlainDateType,
+    JSTemporalPlainDateTimeType,
+    JSTemporalPlainMonthDayType,
+    JSTemporalPlainTimeType,
+    JSTemporalPlainYearMonthType,
+    JSTemporalZonedDateTimeType,
     JSSharedArrayType,
     JSSharedStructType,
     JSAtomicsMutexType,
