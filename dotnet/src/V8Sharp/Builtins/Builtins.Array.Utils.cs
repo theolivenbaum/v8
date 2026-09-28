@@ -253,7 +253,17 @@ public struct GrowableFixedArray
     JSValue[]? _array;
     int _length;
 
+    /// <summary>A growable array starting from <paramref name="initial"/> as its (empty) storage.</summary>
+    public GrowableFixedArray(JSValue[] initial)
+    {
+        _array = initial;
+        _length = 0;
+    }
+
     public readonly int Length => _length;
+
+    /// <summary>The backing storage (may be longer than Length).</summary>
+    public readonly JSValue[] RawArray => _array ?? [];
 
     public void Push(JSValue value)
     {
