@@ -254,7 +254,7 @@ public abstract partial class JSReceiver
         if (!map.OnlyHasSimpleProperties()) return false;
 
         var from = (JSObject)sourceReceiver;
-        if (from.Elements != FixedArray.Empty && from.Elements.Length != 0) return false;
+        if (!ReferenceEquals(from.Elements, FixedArray.Empty)) return false;
 
         bool stable = true;
 
@@ -282,6 +282,10 @@ public abstract partial class JSReceiver
                         continue;
                     }
                 }
+                // CopyDataProperties: an excluded key is skipped before its value is
+                // read (a getter must not run). V8's runtime FastAssign checks after
+                // the load; the CSA builtin the bytecode calls checks first.
+                if (!useSet && excludedProperties.Length != 0 && HasExcludedProperty(excludedProperties, nextKey)) continue;
                 JSValue propValue;
                 // Directly decode from the descriptor array if |from| did not change
                 // shape.
