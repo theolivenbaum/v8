@@ -46,7 +46,47 @@ public class DifferentialTests
     }
 
     internal sealed record Mismatch(string File, string Pattern, string Flags, string Subject, string Oracle,
-        string Ours);
+        string Ours, string? KnownReason);
+
+    // Files whose expectations changed between the oracle (V8 14.7) and this
+    // tree: the port follows this tree's tests.
+    static readonly Dictionary<string, string> s_oracleOutdatedFiles = new()
+    {
+        ["regress/regress-regexp-lookbehind-sort-alternatives.js"] =
+            "fixed after V8 14.7: lookbehind alternatives are no longer sorted",
+    };
+
+    // Properties of strings whose sequences come from the emoji data files
+    // (Emoji 17 here, older in the oracle).
+    static readonly string[] s_emojiStringProperties =
+    [
+        "Basic_Emoji", "Emoji_Keycap_Sequence", "RGI_Emoji", "RGI_Emoji_Flag_Sequence",
+        "RGI_Emoji_Modifier_Sequence", "RGI_Emoji_Tag_Sequence", "RGI_Emoji_ZWJ_Sequence",
+    ];
+
+    // Explains a mismatch caused by the oracle being an older V8 (14.7, with
+    // an older Unicode version), or returns null.
+    static string? KnownReason(DifferentialRunner runner, string file, CorpusPattern p, string subject, string oracle)
+    {
+        if (s_oracleOutdatedFiles.TryGetValue(file, out string? reason)) return reason;
+        bool usesProperties = p.Source.Contains("\\p{", StringComparison.Ordinal) ||
+                              p.Source.Contains("\\P{", StringComparison.Ordinal);
+        if (!usesProperties) return null;
+        if (oracle.EndsWith(": Invalid property name", StringComparison.Ordinal) ||
+            oracle.EndsWith(": Invalid property name in character class", StringComparison.Ordinal))
+        {
+            return "Unicode 17 property value unknown to the oracle";
+        }
+        if (runner.HasCodePointUnassignedInOracle(subject)) return "Unicode 17 code point in the subject";
+        if (p.Flags.Contains('v'))
+        {
+            foreach (string property in s_emojiStringProperties)
+            {
+                if (p.Source.Contains("{" + property + "}", StringComparison.Ordinal)) return "Emoji 17 sequences";
+            }
+        }
+        return null;
+    }
 
     internal sealed class Stats
     {
@@ -124,7 +164,8 @@ public class DifferentialTests
                     }
                     else
                     {
-                        stats.Mismatches.Add(new Mismatch(relative, p.Source, p.Flags, subject, oracle, ours));
+                        stats.Mismatches.Add(new Mismatch(relative, p.Source, p.Flags, subject, oracle, ours,
+                            KnownReason(runner, relative, p, subject, oracle)));
                         // A pattern that disagrees on syntax disagrees on every subject.
                         if (oracle.StartsWith("E:", StringComparison.Ordinal) ||
                             ours.StartsWith("E:", StringComparison.Ordinal))
@@ -156,11 +197,18 @@ public class DifferentialTests
         Directory.CreateDirectory(dir);
         var sb = new StringBuilder();
         sb.Append($"files {stats.Files}, patterns {stats.Patterns}, triples {stats.Triples}, ");
-        sb.Append($"agree {stats.Agree}, mismatches {stats.Mismatches.Count}, oracle timeouts {stats.OracleTimeouts}\n");
+        int known = stats.Mismatches.Count(m => m.KnownReason is not null);
+        sb.Append($"agree {stats.Agree}, mismatches {stats.Mismatches.Count} ({known} explained by the oracle's ");
+        sb.Append($"older V8/Unicode version), oracle timeouts {stats.OracleTimeouts}\n");
         int compared = stats.Agree + stats.Mismatches.Count;
-        if (compared > 0) sb.Append($"agreement {100.0 * stats.Agree / compared:F3}%\n\n");
-        foreach (Mismatch m in stats.Mismatches)
+        if (compared > 0)
         {
+            sb.Append($"agreement {100.0 * stats.Agree / compared:F3}%, ");
+            sb.Append($"excluding explained mismatches {100.0 * (stats.Agree + known) / compared:F3}%\n\n");
+        }
+        foreach (Mismatch m in stats.Mismatches.OrderBy(m => m.KnownReason is not null))
+        {
+            if (m.KnownReason is not null) sb.Append($"[known: {m.KnownReason}] ");
             sb.Append($"{m.File}: /{Show(m.Pattern)}/{m.Flags} on \"{Show(m.Subject)}\"\n");
             sb.Append($"  oracle: {Show(m.Oracle)}\n");
             sb.Append($"  ours:   {Show(m.Ours)}\n");
@@ -178,12 +226,12 @@ public class DifferentialTests
         int compared = stats.Agree + stats.Mismatches.Count;
         Assert.True(compared > 0, name + ": nothing compared");
         var sb = new StringBuilder();
-        foreach (Mismatch m in stats.Mismatches.Take(20))
+        List<Mismatch> unexplained = stats.Mismatches.Where(m => m.KnownReason is null).ToList();
+        foreach (Mismatch m in unexplained.Take(20))
         {
             sb.Append($"{m.File}: /{Show(m.Pattern)}/{m.Flags} on \"{Show(m.Subject)}\": oracle {Show(m.Oracle)} ours {Show(m.Ours)}\n");
         }
-        Assert.True(stats.Mismatches.Count == 0,
-            $"{name}: {stats.Mismatches.Count} mismatches of {compared}\n{sb}");
+        Assert.True(unexplained.Count == 0, $"{name}: {unexplained.Count} unexplained mismatches of {compared}\n{sb}");
     }
 
     [Fact]

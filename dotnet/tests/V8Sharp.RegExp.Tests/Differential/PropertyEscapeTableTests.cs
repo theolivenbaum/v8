@@ -73,6 +73,17 @@ public class PropertyEscapeTableTests
         return list;
     }
 
+    // Properties whose values changed for already assigned code points in
+    // Unicode 17 (U+0295 became Ll, Extended_Pictographic dropped its reserved
+    // Emoji 0.0 entries, Script_Extensions updates).
+    static readonly HashSet<string> s_unicode17Changes =
+    [
+        "General_Category=LC", "General_Category=Ll", "General_Category=Lo", "Script_Extensions=Latn",
+        "Script_Extensions=Nand", "Script_Extensions=Newa", "Script_Extensions=Shrd", "Script_Extensions=Syrc",
+        "Script_Extensions=Telu", "Script_Extensions=Tfng", "Script_Extensions=Tirh", "Script_Extensions=Zinh",
+        "Cased", "CWCM", "CWT", "CWU", "Dia", "ExtPict", "Lower",
+    ];
+
     [Fact]
     public void AllPropertyEscapesMatchOracle()
     {
@@ -138,15 +149,16 @@ public class PropertyEscapeTableTests
             string line = $"{property}: {diffAssigned} differences on code points assigned in the oracle " +
                           $"(first U+{firstDiff:X4}, ours {ours[firstDiff]}), {diffNew} on new code points";
             report.Append(line).Append('\n');
-            failures.Add(line);
+            if (!s_unicode17Changes.Contains(property)) failures.Add(line);
         }
 
         string header = $"properties compared {compared}, exact {exact}, differing only on newly assigned " +
                         $"code points {versionOnly}, differing on previously assigned code points " +
-                        $"{failures.Count}, unknown to the oracle {unknownToOracle}\n\n";
+                        $"{failures.Count} unexplained, unknown to the oracle {unknownToOracle}\n\n";
         string dir = Path.Combine(DifferentialTests.RepoRoot(), "dotnet", "artifacts", "regexp-differential");
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, "property-escapes.txt"), header + report);
         Assert.True(compared > 300);
+        Assert.True(failures.Count == 0, string.Join("\n", failures));
     }
 }

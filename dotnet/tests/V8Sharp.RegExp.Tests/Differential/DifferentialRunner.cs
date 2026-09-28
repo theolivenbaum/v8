@@ -64,6 +64,15 @@ internal sealed class DifferentialRunner : IDisposable
         _run = _engine.Script.__run;
     }
 
+    dynamic? _hasUnassigned;
+
+    /// <summary>Whether <paramref name="s"/> has a code point the oracle's Unicode version does not assign.</summary>
+    public bool HasCodePointUnassignedInOracle(string s)
+    {
+        _hasUnassigned ??= _engine.Evaluate("(s) => /\\p{Cn}/u.test(s)");
+        return (bool)_hasUnassigned(s);
+    }
+
     /// <summary>Returns the oracle's rendering, or null if it timed out.</summary>
     public string? RunOracle(string pattern, string flags, string subject)
     {
@@ -92,7 +101,7 @@ internal sealed class DifferentialRunner : IDisposable
     {
         RegExpFlags? maybeFlags = RegExpFlagsExtensions.FromString(flagsString);
         // The 'l' flag needs --enable-experimental-regexp-engine in V8.
-        if (maybeFlags is null || (maybeFlags.Value & RegExpFlags.Linear) != 0)
+        if (maybeFlags is null || (maybeFlags.Value & RegExpFlags.Linear) != 0 || !RegExpEngine.VerifyFlags(maybeFlags.Value))
         {
             return "E:Invalid flags supplied to RegExp constructor '" + flagsString + "'";
         }

@@ -89,6 +89,9 @@ public static class RegExpEngine
     /// <summary>JSRegExp::RegistersForCaptureCount.</summary>
     public static int RegistersForCaptureCount(int count) => (count + 1) * 2;
 
+    /// <summary>RegExp::VerifyFlags: /u and /v are mutually exclusive.</summary>
+    public static bool VerifyFlags(RegExpFlags flags) => !(flags.IsUnicode() && flags.IsUnicodeSets());
+
     /// <summary>RegExp::VerifySyntax.</summary>
     public static bool VerifySyntax(string pattern, RegExpFlags flags, out RegExpError error, out int errorPos)
     {
