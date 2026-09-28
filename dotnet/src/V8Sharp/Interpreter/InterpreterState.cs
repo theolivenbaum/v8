@@ -44,7 +44,6 @@ public struct InterpreterState
 {
     public JSFunction Function;
     public BytecodeArray Bytecode;
-    public JSValue[] Constants;
     public FeedbackVector? FeedbackVector;
     public Context Context;
     public JSValue Accumulator;

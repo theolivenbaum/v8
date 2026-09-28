@@ -127,11 +127,12 @@ public static partial class InterpreterExecution
         Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset) =
             feedbackVector is null ? JSValue.Undefined : feedbackVector;
 
+        // The loop reads the constants through the bytecode (ConstantPoolValues).
+        if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
         var state = new InterpreterState
         {
             Function = function,
             Bytecode = bytecode,
-            Constants = bytecode.ConstantPoolValues ?? InterpreterRuntime.MaterializeConstantPool(isolate, bytecode),
             FeedbackVector = feedbackVector,
             Context = context,
             Accumulator = JSValue.Undefined,

@@ -139,7 +139,8 @@ internal static class InterpreterInlineCalls
         isolate.Context = context;
         Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset) = context;
         Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset) = function;
-        Unsafe.Add(ref fpRef, InterpreterRuntime.kArgcOffset) = JSValue.FromInt(argc);
+        // The argument count slot (fp - 4) is not read in V8Sharp: frames keep
+        // the count in their record, so it is not written (a reference store).
 
         // The trampoline fills the register file with undefined: the register
         // stack above its top is always clear (released slots are cleared).
@@ -171,7 +172,7 @@ internal static class InterpreterInlineCalls
 
         st.Function = function;
         st.Bytecode = bytecode;
-        st.Constants = bytecode.ConstantPoolValues ?? InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
+        if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
         st.FeedbackVector = feedbackVector;
         st.Context = context;
         st.Accumulator = JSValue.Undefined;
@@ -222,7 +223,6 @@ internal static class InterpreterInlineCalls
 
         st.Function = caller.Function;
         st.Bytecode = bytecode;
-        st.Constants = bytecode.ConstantPoolValues!;
         st.FeedbackVector = stack[fp + InterpreterRuntime.kFeedbackVectorOffset]._obj as FeedbackVector;
         st.Context = context;
         st.Pc = caller.ReturnPc;
