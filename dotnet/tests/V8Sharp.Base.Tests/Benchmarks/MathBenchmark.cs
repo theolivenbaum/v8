@@ -119,44 +119,30 @@ public class MathBenchmark(ITestOutputHelper output)
         string[] strings = new string[kInputs];
         for (int i = 0; i < xs.Length; i++) strings[i] = Conversions.DoubleToCString(xs[i]);
 
-        double best = double.MaxValue;
-        for (int round = 0; round < 7; round++)
-        {
-            long start = Stopwatch.GetTimestamp();
-            int length = 0;
-            for (int rep = 0; rep < 10; rep++) foreach (double x in xs) length += Conversions.DoubleToCString(x).Length;
-            best = Math.Min(best, Stopwatch.GetElapsedTime(start).TotalNanoseconds / (10.0 * xs.Length));
-            GC.KeepAlive(length);
-        }
-        double bestNet = double.MaxValue;
-        for (int round = 0; round < 7; round++)
-        {
-            long start = Stopwatch.GetTimestamp();
-            int length = 0;
-            for (int rep = 0; rep < 10; rep++) foreach (double x in xs) length += x.ToString("R", System.Globalization.CultureInfo.InvariantCulture).Length;
-            bestNet = Math.Min(bestNet, Stopwatch.GetElapsedTime(start).TotalNanoseconds / (10.0 * xs.Length));
-            GC.KeepAlive(length);
-        }
-        output.WriteLine($"DoubleToCString  {best,8:F1} ns   (double.ToString(\"R\") {bestNet,8:F1} ns)");
+        double[] indices = new double[kInputs];
+        for (int i = 0; i < indices.Length; i++) indices[i] = i;
 
-        best = double.MaxValue;
-        for (int round = 0; round < 7; round++)
+        // Digit generation alone: ShortestDecimal (current) against
+        // DoubleToAscii SHORTEST (Grisu3 + bignum, the previous path).
+        double shortest = Time(x =>
         {
-            long start = Stopwatch.GetTimestamp();
-            double sum = 0;
-            for (int rep = 0; rep < 10; rep++) foreach (string s in strings) sum += Conversions.StringToDouble(s, ConversionFlag.NoConversionFlag);
-            best = Math.Min(best, Stopwatch.GetElapsedTime(start).TotalNanoseconds / (10.0 * xs.Length));
-            GC.KeepAlive(sum);
-        }
-        bestNet = double.MaxValue;
-        for (int round = 0; round < 7; round++)
+            ShortestDecimal.ToDecimal(x, out ulong f, out int e);
+            return (double)f + e;
+        }, xs);
+        double grisu = Time(x =>
         {
-            long start = Stopwatch.GetTimestamp();
-            double sum = 0;
-            for (int rep = 0; rep < 10; rep++) foreach (string s in strings) sum += double.Parse(s, System.Globalization.CultureInfo.InvariantCulture);
-            bestNet = Math.Min(bestNet, Stopwatch.GetElapsedTime(start).TotalNanoseconds / (10.0 * xs.Length));
-            GC.KeepAlive(sum);
-        }
-        output.WriteLine($"StringToDouble   {best,8:F1} ns   (double.Parse {bestNet,8:F1} ns)");
+            Span<char> digits = stackalloc char[DoubleConversion.kBase10MaximalLength + 1];
+            DoubleConversion.DoubleToAscii(x, DtoaMode.DTOA_SHORTEST, 0, digits, out _, out int length, out int point);
+            return length + point;
+        }, xs);
+        double toString = Time(x => Conversions.DoubleToCString(x).Length, xs);
+        double netToString = Time(x => x.ToString("R", System.Globalization.CultureInfo.InvariantCulture).Length, xs);
+        output.WriteLine($"shortest digits  ours {shortest,8:F1} ns  previous (Grisu3) {grisu,8:F1} ns");
+        output.WriteLine($"DoubleToCString  ours {toString,8:F1} ns  double.ToString(\"R\") {netToString,8:F1} ns");
+
+        double parse = Time(i => Conversions.StringToDouble(strings[(int)i], ConversionFlag.NoConversionFlag), indices);
+        double previousParse = Time(i => Conversions.SlowParseDecimal(strings[(int)i], 0), indices);
+        double netParse = Time(i => double.Parse(strings[(int)i], System.Globalization.CultureInfo.InvariantCulture), indices);
+        output.WriteLine($"StringToDouble   ours {parse,8:F1} ns  previous (Strtod) {previousParse,8:F1} ns  double.Parse {netParse,8:F1} ns");
     }
 }

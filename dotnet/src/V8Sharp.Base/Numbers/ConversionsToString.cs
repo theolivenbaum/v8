@@ -2,6 +2,7 @@
 // (DoubleToStringView, IntToStringView, DoubleToFixed/Exponential/Precision/
 // RadixStringView) and IsSpecialIndex.
 
+using System.Runtime.CompilerServices;
 using V8Sharp.Base.Strings;
 
 namespace V8Sharp.Base.Numbers;
@@ -65,11 +66,8 @@ public static partial class Conversions
     /// slice of the buffer.
     /// </summary>
     /// <remarks>
-    /// V8 computes the shortest digits with dragonbox (to_decimal). V8Sharp
-    /// uses the port of base::DoubleToAscii in SHORTEST mode (Grisu3 with the
-    /// bignum fallback), which yields the same digits: both pick the shortest
-    /// representation in the rounding interval (boundaries included for even
-    /// significands), and the closest one with ties to even.
+    /// V8 computes the shortest digits with dragonbox (to_decimal); V8Sharp
+    /// with ShortestDecimal (Schubfach, which yields the same digits).
     /// </remarks>
     public static ReadOnlySpan<char> DoubleToStringView(double v, Span<char> buffer)
     {
@@ -84,11 +82,14 @@ public static partial class Conversions
             return IntToStringView(FastD2I(v), buffer);
         }
 
-        Span<char> decimalRep = stackalloc char[DoubleConversion.kBase10MaximalLength + 1];
-        DoubleConversion.DoubleToAscii(v, DtoaMode.DTOA_SHORTEST, 0, decimalRep, out int sign, out int length, out int decimalPoint);
         SimpleStringBuilder builder = new(buffer);
-        if (sign != 0) builder.AddCharacter('-');
+        ShortestDecimal.ToDecimal(v, out ulong significand, out int decimalExponent);
+        if (v < 0) builder.AddCharacter('-');
+
+        Span<char> decimalRep = stackalloc char[DoubleConversion.kBase10MaximalLength];
+        int length = SignificandToChars(significand, decimalRep);
         ReadOnlySpan<char> rep = decimalRep[..length];
+        int decimalPoint = length + decimalExponent;
 
         if (length <= decimalPoint && decimalPoint <= 21)
         {
@@ -126,6 +127,177 @@ public static partial class Conversions
             builder.AddExponent(exponent);
         }
         return builder.Finalize();
+    }
+
+    // SignificandToChars and its helpers are heavily inspired by
+    // dragonbox::to_chars.
+
+    // The digit pairs 00 .. 99.
+    static ReadOnlySpan<byte> kRadix100Table =>
+    [
+        (byte)'0', (byte)'0', (byte)'0', (byte)'1', (byte)'0', (byte)'2', (byte)'0', (byte)'3', (byte)'0', (byte)'4',
+        (byte)'0', (byte)'5', (byte)'0', (byte)'6', (byte)'0', (byte)'7', (byte)'0', (byte)'8', (byte)'0', (byte)'9',
+        (byte)'1', (byte)'0', (byte)'1', (byte)'1', (byte)'1', (byte)'2', (byte)'1', (byte)'3', (byte)'1', (byte)'4',
+        (byte)'1', (byte)'5', (byte)'1', (byte)'6', (byte)'1', (byte)'7', (byte)'1', (byte)'8', (byte)'1', (byte)'9',
+        (byte)'2', (byte)'0', (byte)'2', (byte)'1', (byte)'2', (byte)'2', (byte)'2', (byte)'3', (byte)'2', (byte)'4',
+        (byte)'2', (byte)'5', (byte)'2', (byte)'6', (byte)'2', (byte)'7', (byte)'2', (byte)'8', (byte)'2', (byte)'9',
+        (byte)'3', (byte)'0', (byte)'3', (byte)'1', (byte)'3', (byte)'2', (byte)'3', (byte)'3', (byte)'3', (byte)'4',
+        (byte)'3', (byte)'5', (byte)'3', (byte)'6', (byte)'3', (byte)'7', (byte)'3', (byte)'8', (byte)'3', (byte)'9',
+        (byte)'4', (byte)'0', (byte)'4', (byte)'1', (byte)'4', (byte)'2', (byte)'4', (byte)'3', (byte)'4', (byte)'4',
+        (byte)'4', (byte)'5', (byte)'4', (byte)'6', (byte)'4', (byte)'7', (byte)'4', (byte)'8', (byte)'4', (byte)'9',
+        (byte)'5', (byte)'0', (byte)'5', (byte)'1', (byte)'5', (byte)'2', (byte)'5', (byte)'3', (byte)'5', (byte)'4',
+        (byte)'5', (byte)'5', (byte)'5', (byte)'6', (byte)'5', (byte)'7', (byte)'5', (byte)'8', (byte)'5', (byte)'9',
+        (byte)'6', (byte)'0', (byte)'6', (byte)'1', (byte)'6', (byte)'2', (byte)'6', (byte)'3', (byte)'6', (byte)'4',
+        (byte)'6', (byte)'5', (byte)'6', (byte)'6', (byte)'6', (byte)'7', (byte)'6', (byte)'8', (byte)'6', (byte)'9',
+        (byte)'7', (byte)'0', (byte)'7', (byte)'1', (byte)'7', (byte)'2', (byte)'7', (byte)'3', (byte)'7', (byte)'4',
+        (byte)'7', (byte)'5', (byte)'7', (byte)'6', (byte)'7', (byte)'7', (byte)'7', (byte)'8', (byte)'7', (byte)'9',
+        (byte)'8', (byte)'0', (byte)'8', (byte)'1', (byte)'8', (byte)'2', (byte)'8', (byte)'3', (byte)'8', (byte)'4',
+        (byte)'8', (byte)'5', (byte)'8', (byte)'6', (byte)'8', (byte)'7', (byte)'8', (byte)'8', (byte)'8', (byte)'9',
+        (byte)'9', (byte)'0', (byte)'9', (byte)'1', (byte)'9', (byte)'2', (byte)'9', (byte)'3', (byte)'9', (byte)'4',
+        (byte)'9', (byte)'5', (byte)'9', (byte)'6', (byte)'9', (byte)'7', (byte)'9', (byte)'8', (byte)'9', (byte)'9',
+    ];
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static void Convert2Digits(uint n, Span<char> buffer)
+    {
+        Debug.Assert(n < 100);
+        ReadOnlySpan<byte> table = kRadix100Table;
+        buffer[0] = (char)table[(int)(2 * n)];
+        buffer[1] = (char)table[(int)(2 * n + 1)];
+    }
+
+    // Returns count of digits written. (V8 reads the leading pair from
+    // kRadix100HeadTable, which is the same table without the leading zero.)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static int ConvertHeadDigits(uint n, Span<char> buffer)
+    {
+        Debug.Assert(n < 100);
+        if (n >= 10)
+        {
+            Convert2Digits(n, buffer);
+            return 2;
+        }
+        buffer[0] = (char)('0' + n);
+        return 1;
+    }
+
+    static void Convert8Digits(uint n, Span<char> buffer)
+    {
+        const ulong kUint32Mask = uint.MaxValue;
+        // 281474978 = ceil(2^48 / 1'000'000) + 1
+        ulong prod = n * 281474978UL;
+        prod >>= 16;
+        prod += 1;
+        Convert2Digits((uint)(prod >> 32), buffer);
+        prod = (prod & kUint32Mask) * 100;
+        Convert2Digits((uint)(prod >> 32), buffer[2..]);
+        prod = (prod & kUint32Mask) * 100;
+        Convert2Digits((uint)(prod >> 32), buffer[4..]);
+        prod = (prod & kUint32Mask) * 100;
+        Convert2Digits((uint)(prod >> 32), buffer[6..]);
+    }
+
+    // Returns count of digits written.
+    static int ConvertUpTo9Digits(uint n, Span<char> buffer)
+    {
+        const ulong kUint32Mask = uint.MaxValue;
+
+        if (n >= 100_000_000)
+        {
+            // 9 digits.
+            // 1441151882 = ceil(2^57 / 100'000'000) + 1
+            ulong prod = n * 1441151882UL;
+            prod >>= 25;
+
+            uint headDigit = (uint)(prod >> 32);
+            Debug.Assert(headDigit < 10);
+            buffer[0] = (char)('0' + headDigit);
+
+            // Print remaining 8 digits.
+            prod = (prod & kUint32Mask) * 100;
+            Convert2Digits((uint)(prod >> 32), buffer[1..]);
+            prod = (prod & kUint32Mask) * 100;
+            Convert2Digits((uint)(prod >> 32), buffer[3..]);
+            prod = (prod & kUint32Mask) * 100;
+            Convert2Digits((uint)(prod >> 32), buffer[5..]);
+            prod = (prod & kUint32Mask) * 100;
+            Convert2Digits((uint)(prod >> 32), buffer[7..]);
+
+            return 9;
+        }
+        if (n >= 1_000_000)
+        {
+            // 7 or 8 digits.
+            // 281474978 = ceil(2^48 / 1'000'000) + 1
+            ulong prod = n * 281474978UL;
+            prod >>= 16;
+
+            int headDigitCount = ConvertHeadDigits((uint)(prod >> 32), buffer);
+            buffer = buffer[headDigitCount..];
+
+            // Print remaining 6 digits.
+            prod = (prod & kUint32Mask) * 100;
+            Convert2Digits((uint)(prod >> 32), buffer);
+            prod = (prod & kUint32Mask) * 100;
+            Convert2Digits((uint)(prod >> 32), buffer[2..]);
+            prod = (prod & kUint32Mask) * 100;
+            Convert2Digits((uint)(prod >> 32), buffer[4..]);
+
+            return 6 + headDigitCount;
+        }
+        if (n >= 10_000)
+        {
+            // 5 or 6 digits.
+            // 429497 = ceil(2^32 / 10'000)
+            ulong prod = n * 429497UL;
+
+            int headDigitCount = ConvertHeadDigits((uint)(prod >> 32), buffer);
+            buffer = buffer[headDigitCount..];
+
+            // Print remaining 4 digits.
+            prod = (prod & kUint32Mask) * 100;
+            Convert2Digits((uint)(prod >> 32), buffer);
+            prod = (prod & kUint32Mask) * 100;
+            Convert2Digits((uint)(prod >> 32), buffer[2..]);
+
+            return 4 + headDigitCount;
+        }
+        if (n >= 100)
+        {
+            // 3 or 4 digits.
+            // 42949673 = ceil(2^32 / 10'000)
+            ulong prod = n * 42949673UL;
+
+            int headDigitCount = ConvertHeadDigits((uint)(prod >> 32), buffer);
+            buffer = buffer[headDigitCount..];
+
+            // Print remaining 2 digits.
+            prod = (prod & kUint32Mask) * 100;
+            Convert2Digits((uint)(prod >> 32), buffer);
+
+            return 2 + headDigitCount;
+        }
+        // 1 or 2 digits.
+        return ConvertHeadDigits(n, buffer);
+    }
+
+    // Returns count of digits written.
+    internal static int SignificandToChars(ulong n, Span<char> buffer)
+    {
+        Debug.Assert(n < 99999999999999999);  // Only supports up to 17 digits
+
+        if (n >= 100_000_000)
+        {
+            // If we have at least 9 digits, split into 2 blocks. The second one always
+            // has exactly 8 digits.
+            uint firstBlock = (uint)(n / 100_000_000);
+            uint secondBlock = (uint)(n % 100_000_000);
+
+            int firstBlockDigits = ConvertUpTo9Digits(firstBlock, buffer);
+            Convert8Digits(secondBlock, buffer[firstBlockDigits..]);
+            return firstBlockDigits + 8;
+        }
+        return ConvertUpTo9Digits((uint)n, buffer);
     }
 
     /// <summary>Number::toString(10) as a string.</summary>

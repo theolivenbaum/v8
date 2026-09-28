@@ -270,11 +270,122 @@ public static partial class Conversions
     /// general | no_infnan | allow_leading_plus): an optional sign, digits with
     /// an optional '.', at least one digit, and an optional exponent that is
     /// only consumed when it has digits. Returns the index after the number,
-    /// or <paramref name="start"/> if nothing was parsed. The value is correctly
-    /// rounded, like fast_float's; V8Sharp computes it with the port of
-    /// base::Strtod instead of fast_float's Eisel-Lemire path.
+    /// or <paramref name="start"/> if nothing was parsed. The value is
+    /// correctly rounded: FastFloat (Clinger, Eisel-Lemire) for up to 19
+    /// significant digits, and for more when the truncated digits cannot
+    /// change the result; otherwise base::Strtod over all the digits.
     /// </summary>
     static int ParseDecimal(ReadOnlySpan<char> str, int start, out double value)
+    {
+        value = 0;
+        int end = str.Length;
+        int p = start;
+        bool negative = false;
+        if (str[p] == '-' || str[p] == '+')
+        {
+            negative = str[p] == '-';
+            ++p;
+            if (p == end) return start;
+        }
+        char c = str[p];
+        if ((uint)(c - '0') > 9 && c != '.') return start;
+
+        // The first 19 significant digits, and how many there are in all.
+        const int kMaxDigits = 19;
+        ulong w = 0;
+        int significant = 0;
+        int fractionDigits = 0;
+        int anyDigits = 0;
+        while (p < end && (uint)(str[p] - '0') <= 9)
+        {
+            uint d = (uint)(str[p] - '0');
+            if (significant != 0 || d != 0)
+            {
+                if (significant < kMaxDigits) w = w * 10 + d;
+                significant++;
+            }
+            anyDigits++;
+            p++;
+        }
+        if (p < end && str[p] == '.')
+        {
+            p++;
+            while (p < end && (uint)(str[p] - '0') <= 9)
+            {
+                uint d = (uint)(str[p] - '0');
+                if (significant != 0 || d != 0)
+                {
+                    if (significant < kMaxDigits) w = w * 10 + d;
+                    significant++;
+                }
+                fractionDigits++;
+                anyDigits++;
+                p++;
+            }
+        }
+        if (anyDigits == 0) return start;
+
+        long exponent = 0;
+        if (p < end && (str[p] == 'e' || str[p] == 'E'))
+        {
+            int location = p;
+            p++;
+            bool negExp = false;
+            if (p < end && (str[p] == '-' || str[p] == '+'))
+            {
+                negExp = str[p] == '-';
+                p++;
+            }
+            if (p >= end || (uint)(str[p] - '0') > 9)
+            {
+                p = location;
+            }
+            else
+            {
+                while (p < end && (uint)(str[p] - '0') <= 9)
+                {
+                    if (exponent < 0x10000000) exponent = exponent * 10 + (str[p] - '0');
+                    p++;
+                }
+                if (negExp) exponent = -exponent;
+            }
+        }
+
+        if (significant == 0)
+        {
+            value = negative ? -0.0 : 0.0;
+            return p;
+        }
+        long q = exponent - fractionDigits;
+        double result;
+        if (significant <= kMaxDigits)
+        {
+            if (!FastFloat.TryCompute(q, w, out result)) result = SlowParseDecimal(str, start);
+        }
+        else
+        {
+            // The value lies in [w, w + 1) * 10^q': if both ends round alike,
+            // that is the result.
+            q += significant - kMaxDigits;
+            if (!FastFloat.TryCompute(q, w, out result) ||
+                !FastFloat.TryCompute(q, w + 1, out double upper) || upper != result)
+            {
+                result = SlowParseDecimal(str, start);
+            }
+        }
+        value = negative ? -result : result;
+        return p;
+    }
+
+    // The magnitude of the decimal literal at start (already validated by
+    // ParseDecimal) through base::Strtod over all significant digits.
+    internal static double SlowParseDecimal(ReadOnlySpan<char> str, int start)
+    {
+        SlowParseDecimal(str, start, out double value);
+        return Math.Abs(value);
+    }
+
+    static int SlowParseDecimal(ReadOnlySpan<char> str, int start, out double value)
     {
         value = 0;
         int end = str.Length;

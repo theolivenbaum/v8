@@ -51,10 +51,15 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       (+ bits, hashing, ieee754, random-number-generator unittests).
       Not in Base: `src/numbers/math-random` (native-context state; belongs
       to the engine together with the `Math.random` builtin).
-- [ ] Performance: the correctly rounded Math functions (ieee754) take
-      0.25-0.7 us per call on their double-double fast path, 20-40x the
-      platform libm; a table-driven kernel like llvm-libc's would close most
-      of that.
+- [x] Performance of the number and Math primitives (explicit benchmark:
+      `dotnet test -c Release tests/V8Sharp.Base.Tests --filter
+      "FullyQualifiedName~Benchmark" -- xUnit.Explicit=only`). Table-driven
+      kernels put the correctly rounded Math functions at 15-45 ns, 1.3-4x
+      the platform libm (were 300-700 ns); shortest digits 37 ns (Grisu3
+      83 ns); StringToDouble 39 ns (Strtod path 93 ns, double.Parse 95 ns).
+- [ ] Math: trigonometric arguments beyond 1.6e6 still take the
+      double-double / BigInteger reduction (0.3-3 us); a Payne-Hanek table
+      reduction would bring them to the kernel.
 
 ### V8Sharp.Parsing
 - [ ] tokens, keywords, scanner, character streams, literal buffer
@@ -161,14 +166,27 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
   and Unicode/Emoji 17 (new scripts Beria_Erfe, Sidetic, Tai_Yo, Tolong_Siki,
   U+0295 now Ll, Extended_Pictographic changes); those mismatches are
   classified as known in the test.
-- Number to string: V8 finds the shortest digits with dragonbox
-  (third_party/dragonbox, not checked out); `DoubleToCString` uses the port
-  of `DoubleToAscii(SHORTEST)` (Grisu3 with the bignum fallback), which
-  yields the same digits. Checked against the oracle.
-- String to number: V8 parses decimal literals with fast_float
-  (third_party/fast_float, not checked out); `StringToDouble` parses the same
-  grammar itself and converts with the port of `base::Strtod` (correctly
-  rounded, as fast_float is). Checked against the oracle.
+- Third-party sources: dragonbox, fast_float and llvm-libc are not in this
+  checkout (third_party/ holds only their BUILD.gn/README.v8), and fetching
+  them was not permitted in the porting session. The three items below are
+  therefore implementations of the same published algorithms rather than
+  transcriptions; each is held bit for bit to an exact reference in the
+  tests. Revisit them once the sources can be read.
+- Number to string: V8 finds the shortest digits with dragonbox's
+  `to_decimal`; `ShortestDecimal` implements Schubfach, the algorithm
+  dragonbox derives from, which returns the same digits (shortest, closest,
+  ties to even, trailing zeros removed). Subnormals with a significand below
+  1000 take `DoubleToAscii(SHORTEST)`. `SignificandToChars` and the rest of
+  `DoubleToStringView` are ported from conversions.cc. Checked against
+  `DoubleToAscii` on 1.4 million doubles and against the oracle.
+- String to number: V8 parses decimal literals with fast_float; `FastFloat`
+  implements its Clinger fast path and the Eisel-Lemire algorithm (up to 19
+  digits, and more when the truncation cannot matter), and falls back to
+  the port of `base::Strtod` where fast_float uses its big-integer
+  comparison and in the rare cases the implementation cannot bound (within
+  two units of a rounding boundary, subnormal or near-overflow results).
+  All paths are correctly rounded; checked against `Strtod` on 420000
+  strings including exact midpoints, and against the oracle.
 - `ConversionFlag` is a `[Flags]` enum with separate hex, octal, binary,
   implicit-octal and trailing-junk bits (the API V8Sharp's callers asked
   for); V8's has three values, `NO_CONVERSION_FLAG`,
@@ -177,12 +195,15 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
   handling that V8 now only offers through `ImplicitOctalStringToDouble`.
 - Math functions: `base::ieee754` takes acos, asin, atan, atan2, cos, sin,
   tan, exp, expm1, log, log1p, log2, log10, cbrt and `legacy::pow` from
-  llvm-libc, whose sources are not in this checkout. llvm-libc's double
-  functions are correctly rounded, so V8Sharp computes the correctly rounded
-  result its own way (double-double with Ziv's rounding test, BigInteger
-  fallback; `Ieee754.CorrectlyRounded.cs`). The results match; checked
-  against 130-digit references. The oracle (14.7) still used fdlibm and
-  differs by up to one ulp.
+  llvm-libc. llvm-libc's double functions are correctly rounded, so V8Sharp
+  computes the correctly rounded result with its own table-driven kernels in
+  llvm-libc's style (`Ieee754.Kernels.cs`: table reduction, short
+  polynomial, Ziv's rounding test), falling back to a double-double and then
+  a BigInteger evaluation (`Ieee754.FastPath.cs`,
+  `Ieee754.CorrectlyRounded.cs`) when the rounding is undecided. The results
+  match: the kernels agree with the BigInteger reference on 12 million
+  arguments, which agrees with 130-digit references. The oracle (14.7)
+  still used fdlibm and differs by up to one ulp.
 - `tanh` and `math::pow` (with `--use-std-math-pow`, the default) are the
   platform's `tanh`/`pow` in V8 too; V8Sharp calls `Math.Tanh`/`Math.Pow`,
   which are the same C library functions.
