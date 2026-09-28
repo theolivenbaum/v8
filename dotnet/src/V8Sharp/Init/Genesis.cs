@@ -8,7 +8,7 @@
 // (Genesis.InitializeGlobal.cs), InitializeIteratorFunctions,
 // InitializeCallSiteBuiltins and InstallABunchOfRandomThings.
 // Not ported yet (see todo.md): Intl, Temporal, ArrayBuffer, SharedArrayBuffer,
-// Atomics, TypedArrays, DataView, DisposableStack, shared structs, extras
+// Atomics, TypedArrays, DataView, shared structs, extras
 // bindings, extensions and API global templates.
 namespace V8Sharp.Init;
 
@@ -64,6 +64,9 @@ sealed partial class Genesis
 
         _nativeContext.MicrotaskQueue = microtaskQueue ?? isolate.DefaultMicrotaskQueue;
 
+        // Install experimental natives.
+        InitializeExperimentalGlobal();
+
         // Store String.prototype's map again in case it has been changed by
         // experimental natives.
         JSFunction stringFunction = _nativeContext.StringFunction;
@@ -80,6 +83,23 @@ sealed partial class Genesis
     }
 
     NativeContext nativeContext => _nativeContext;
+
+    /// <summary>
+    /// Genesis::InitializeExperimentalGlobal: the feature installers from
+    /// more mature to less mature (shipped, staged, ...), then
+    /// regexp_linear_flag, sharedarraybuffer and queueMicrotask. Features
+    /// whose installer is not ported are omitted from the list.
+    /// </summary>
+    void InitializeExperimentalGlobal()
+    {
+        // FOREACH_SHIPPED_FEATURE_FLAG
+        InitializeGlobal_js_iterator_join();
+        InitializeGlobal_js_iterator_sequencing();
+        InitializeGlobal_js_joint_iteration();
+        InitializeGlobal_js_iterator_includes();
+
+        InitializeGlobal_queueMicrotask();
+    }
 
     // -----------------------------------------------------------------------
 
