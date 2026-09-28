@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Benchmarks the port against the real V8 (oracle) on the same workloads:
+       Octane and test/js-perf-test. Each measurement runs in its own process
+       because V8 flags (jit modes) are process-global. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>V8Sharp.Bench</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/V8Sharp/V8Sharp.csproj" />
+    <ProjectReference Include="../../src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ClearScript.V8" />
+  </ItemGroup>
+
+</Project>
