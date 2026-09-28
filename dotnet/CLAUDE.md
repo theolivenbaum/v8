@@ -26,8 +26,8 @@ Read `dotnet/todo.md` for live status and the work queue, and
    The authority, in order: this tree's tests and golden files, then the
    oracle (real V8 via ClearScript), then the ECMAScript spec.
 4. **Where C# deviates from V8 on purpose, say so in a comment at the
-   deviation** (what V8 does, what we do, why) and record it under "Known
-   deviations" in `dotnet/todo.md`. Replacing V8's GC, handles, snapshot and
+   deviation** (what V8 does, what we do, why) and record it in
+   `dotnet/deviations.md` under the component's heading. Replacing V8's GC, handles, snapshot and
    machine-code backends is by design (architecture.md section 2) and needs no
    per-site comment.
 5. **Safe C#.** `AllowUnsafeBlocks` is off. A project that needs `unsafe`
@@ -69,7 +69,8 @@ Read `dotnet/todo.md` for live status and the work queue, and
 CLAUDE.md                        imports dotnet/CLAUDE.md
 dotnet/
   CLAUDE.md                      this file
-  todo.md                        status, work queue, known deviations
+  todo.md                        status and work queue
+  deviations.md                  every intentional difference from V8, and why
   UPSTREAM.md                    the V8 revision being ported
   docs/architecture.md           the design: values, objects, frames, tiers
   V8Sharp.slnx
@@ -126,8 +127,8 @@ dotnet run -c Release --project tools/V8Sharp.TestRunner -- test262 --engine ora
 4. Run the area's tests; then the relevant mjsunit/test262 directories through
    the TestRunner; then compare against the oracle for anything the tests do
    not pin down.
-5. Update `dotnet/todo.md`: tick the component, list what is missing, record
-   deviations.
+5. Update `dotnet/todo.md` (tick the component, list what is missing) and
+   `dotnet/deviations.md` (every deviation).
 
 ## Conventions
 

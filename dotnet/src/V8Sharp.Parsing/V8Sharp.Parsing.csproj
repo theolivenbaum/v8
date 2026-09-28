@@ -8,4 +8,8 @@
     <ProjectReference Include="../../src/V8Sharp.Base/V8Sharp.Base.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="V8Sharp.Parsing.Tests" />
+  </ItemGroup>
+
 </Project>

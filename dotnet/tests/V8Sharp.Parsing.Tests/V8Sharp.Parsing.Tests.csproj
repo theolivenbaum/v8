@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/V8Sharp.Parsing/V8Sharp.Parsing.csproj" />
+    <ProjectReference Include="../../src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />
   </ItemGroup>
 
   <ItemGroup>

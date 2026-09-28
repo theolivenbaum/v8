@@ -9,6 +9,15 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/V8Sharp.Base/V8Sharp.Base.csproj" />
+    <!-- Differential tests against the real V8. -->
+    <ProjectReference Include="../../src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The Gay's-dtoa tables of test/unittests are read straight from the V8 tree. -->
+    <EmbeddedResource Include="../../../test/unittests/gay-fixed.cc" LogicalName="gay-fixed.cc" />
+    <EmbeddedResource Include="../../../test/unittests/gay-precision.cc" LogicalName="gay-precision.cc" />
+    <EmbeddedResource Include="../../../test/unittests/gay-shortest.cc" LogicalName="gay-shortest.cc" />
   </ItemGroup>
 
   <ItemGroup>

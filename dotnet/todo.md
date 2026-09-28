@@ -14,9 +14,14 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [x] Oracle: real V8 14.7 in-process via ClearScript, with V8 flags by P/Invoke
       (`V8Sharp.Oracle.ReferenceV8`)
 - [x] test262 checkout at V8's pinned commit (`test/test262/data`, git-ignored)
-- [ ] TestRunner: `.status` files, `// Flags:`, mjsunit harness, test262
-      frontmatter and includes, in-process isolates with watchdog, both engines
-- [ ] Baseline results of the oracle on mjsunit / test262 (expected-pass lists)
+- [x] TestRunner (`tools/V8Sharp.TestRunner`, see its README): `.status` files,
+      `// Flags:`, mjsunit harness, test262 frontmatter and includes, message,
+      webkit; worker processes per flag set with watchdog and crash isolation;
+      the d8 shell over an engine interface; oracle engine; v8sharp stub
+- [x] Baseline results of the oracle on mjsunit / test262 / message / webkit
+      (`tools/V8Sharp.TestRunner/expectations/*.oracle.txt`)
+- [ ] v8sharp engine behind the runner (`Engines/V8SharpEngine.cs`) and its
+      expectation files; grow `tests/V8Sharp.Conformance.Tests/curated/v8sharp.txt`
 - [ ] d8sharp shell: `print`, `load`, `read`, `quit`, `version`, `-e`, `--flags`,
       `%` natives, `d8.*` test helpers used by mjsunit
 - [x] Golden bytecode test harness (`bytecode_expectations/*.golden`): parser,
@@ -25,15 +30,36 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 ## Phase 1: the unoptimized pipeline
 
 ### V8Sharp.Base
-- [ ] `src/base/numbers`: diy-fp, cached-powers, fast-dtoa, fixed-dtoa,
-      bignum, bignum-dtoa, dtoa, strtod (+ unittests)
-- [ ] `src/numbers/conversions`: StringToDouble/Int/BigInt, DoubleToCString,
-      DoubleToFixed/Exponential/Precision/Radix, DoubleToInt32 ... (+ unittests)
-- [ ] `src/bigint`: digit arithmetic, mul (schoolbook/karatsuba/toom/fft),
-      div (schoolbook/burnikel/barrett), tostring, fromstring, bitwise (+ unittests)
-- [ ] `src/strings/unicode*` (unibrow case mapping, utf8/utf16),
-      `char-predicates` (ID_Start/ID_Continue via .NET Unicode data)
-- [ ] hashing (`src/strings/string-hasher`, `src/base/hashing`), `bits`, `ieee754`
+- [x] `src/base/numbers`: diy-fp, cached-powers, fast-dtoa, fixed-dtoa,
+      bignum, bignum-dtoa, dtoa, strtod (+ base/*-dtoa, bignum, double,
+      numbers/diy-fp, strtod unittests and the gay-* tables)
+- [x] `src/numbers/conversions`: StringToDouble/Int/BigInt, DoubleToCString,
+      DoubleToFixed/Exponential/Precision/Radix, DoubleToInt32 ... (+
+      conversions-unittest; differential tests against the oracle)
+- [x] `src/bigint`: digit arithmetic, mul (schoolbook/karatsuba/toom/fft),
+      div (schoolbook/burnikel/barrett), tostring, fromstring, bitwise (+
+      bigint-shell tests, System.Numerics and oracle differential tests).
+      Missing: numbers/bigint-unittest `CompareToDouble`, which tests the
+      engine's `BigInt::CompareToDouble` (src/objects/bigint.cc).
+- [x] `src/strings/unicode*` (unibrow case mapping, utf8/utf16, utf8-decoder),
+      `char-predicates` (ID_Start/ID_Continue via .NET Unicode data) (+
+      unicode and char-predicates unittests, full-range oracle comparison).
+      Missing: `Wtf8Decoder` / `StrictUtf8Decoder` (Wasm only).
+- [x] hashing: `src/strings/string-hasher`, hash seed and rapidhash,
+      `src/base/hashing`, `src/base/bits`, `src/base/ieee754` and
+      `src/numbers/ieee754` (`math::pow`), `src/base/utils/random-number-generator`
+      (+ bits, hashing, ieee754, random-number-generator unittests).
+      Not in Base: `src/numbers/math-random` (native-context state; belongs
+      to the engine together with the `Math.random` builtin).
+- [x] Performance of the number and Math primitives (explicit benchmark:
+      `dotnet test -c Release tests/V8Sharp.Base.Tests --filter
+      "FullyQualifiedName~Benchmark" -- xUnit.Explicit=only`). Table-driven
+      kernels put the correctly rounded Math functions at 15-45 ns, 1.3-4x
+      the platform libm (were 300-700 ns); shortest digits 37 ns (Grisu3
+      83 ns); StringToDouble 39 ns (Strtod path 93 ns, double.Parse 95 ns).
+- [ ] Math: trigonometric arguments beyond 1.6e6 still take the
+      double-double / BigInteger reduction (0.3-3 us); a Payne-Hanek table
+      reduction would bring them to the kernel.
 
 ### V8Sharp.Parsing
 - [ ] tokens, keywords, scanner, character streams, literal buffer
@@ -101,40 +127,15 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays
 - [ ] Benchmarks: test/js-perf-test, JetStream-like, against the oracle
 
-## Known deviations
+## Merge cleanups
 
-(Every intentional behaviour difference from V8, with the reason.)
-
-- Oracle version: V8 14.7 with ICU vs. this tree 15.6 without ICU. Tests whose
-  expectations differ for that reason are listed in the runner's
-  `oracle-deviations` file.
-- No Smi/HeapNumber distinction in `JSValue`; `IsSmi` is computed from the
-  value (architecture.md section 3).
-- `Register` default value is r0, not V8's invalid register; use
-  `Register.InvalidValue()`.
-- Bytecode verifier (sandbox) not ported; `Disassemble` prints offsets, not
-  addresses.
 - TODO(merge) from the Ignition port: `InterpreterCommon.cs` duplicates Token,
   LanguageMode and other shared enums; `RuntimeFunctionId` and
   `NativeContextFields` move to the runtime/objects code; the constant pool is
   `object[]` until heap constants exist.
-- RegExp: V8 uses ICU for case closure (/ui, /vi), Unicode property escapes
-  and \p{...} of strings. V8Sharp.RegExp emulates the needed ICU calls
-  (UnicodeSet closeOver with simple case folding, property lookups by exact
-  alias, empty sets rejected like ICU) over tables generated from UCD 17.0
-  and emoji 17.0 (`Unicode/UnicodeTables.g.cs`), instead of "no ICU".
-- RegExp: a subject counts as one-byte when all its code units are <= 0xFF
-  (V8 decides by string representation); callers that know the
-  representation pass it to `CompiledRegExp.Exec`. Results are identical;
-  only which bytecode runs differs.
-- RegExp: no interrupt/stack-guard polling in the bytecode interpreter or the
-  NFA interpreter (no isolate), so they never return RETRY; the backtrack
-  stack is limited to V8's 64 MB (EXCEPTION on overflow).
-- RegExp: `AddNonBmpSurrogatePairs` emits its grouped alternatives in
-  insertion order where V8 iterates a ZoneUnorderedMap; the alternatives match
-  disjoint code points, so only code order differs.
-- RegExp differential tests: the oracle (V8 14.7) predates the lookbehind
-  alternative-sorting fix (regress-regexp-lookbehind-sort-alternatives.js)
-  and Unicode/Emoji 17 (new scripts Beria_Erfe, Sidetic, Tai_Yo, Tolong_Siki,
-  U+0295 now Ll, Extended_Pictographic changes); those mismatches are
-  classified as known in the test.
+- TODO(merge): Parsing's `NumberConversions` and string hashing should use
+  V8Sharp.Base (`Conversions`, `StringHasher`).
+
+## Deviations
+
+Recorded in `deviations.md`.
