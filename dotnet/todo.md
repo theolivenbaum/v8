@@ -452,6 +452,11 @@ interpreter, compiler, ICs, modules or d8sharp rather than the builtins
 
 ## Phase 2: the fast tiers
 
+Order (decided 2026-09-28): the interpreter is finished first — correctness
+(test262/mjsunit) and interpreter performance (target: within 2x of V8
+--jitless) — before any further work on the IL tiers. The baseline tier is
+merged but off by default until then; the optimizing tier has not started.
+
 - [x] TieringManager: interrupt budget, OnInterruptTick, feedback allocation
       and the Sparkplug tier-up, InterruptBudgetFor with V8's flag defaults,
       NotifyICChanged; no optimizing tier, so use_optimizer() is false
@@ -460,7 +465,7 @@ interpreter, compiler, ICs, modules or d8sharp rather than the builtins
 - [~] Baseline compiler: bytecode -> IL (Sparkplug analogue), src/V8Sharp/Baseline/
       (architecture.md 9.1): every bytecode compiles; entry at function start,
       exception handlers and loop headers (OSR from Ignition at JumpLoop);
-      batch compilation, --sparkplug (default on), --always-sparkplug,
+      batch compilation, --sparkplug (V8's default on; off in V8Sharp for now), --always-sparkplug,
       --sparkplug-filter, %CompileBaseline, %ActiveTierIsSparkplug,
       %BaselineOsr, %GetOptimizationStatus baseline bits; Smi fast paths for
       arithmetic, a baseline-to-baseline call path (BaselineCalls). Tests:
