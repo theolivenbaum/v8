@@ -525,7 +525,12 @@ namespace V8Sharp
         /// <summary>TaskRunner::PostNonNestableTask on the isolate's foreground task runner (any thread).</summary>
         public void PostNonNestableTask(Action<Isolate> task)
         {
-            lock (_foregroundTasks) _foregroundTasks.Enqueue(task);
+            lock (_foregroundTasks)
+            {
+                _foregroundTasks.Enqueue(task);
+                // Wake a message loop waiting for a delayed task.
+                Monitor.PulseAll(_foregroundTasks);
+            }
             ForegroundTaskPosted?.Invoke(this);
         }
 
@@ -534,8 +539,16 @@ namespace V8Sharp
         /// <summary>TaskRunner::PostNonNestableDelayedTask: runs <paramref name="task"/> after <paramref name="delaySeconds"/>.</summary>
         public void PostNonNestableDelayedTask(Action<Isolate> task, double delaySeconds)
         {
-            long due = Environment.TickCount64 + (long)Math.Ceiling(Math.Min(delaySeconds * 1000, long.MaxValue / 4));
-            lock (_foregroundTasks) _delayedTasks.Add((due, task));
+            // Stopwatch time, not the millisecond Environment.TickCount64: a
+            // coarse clock can run the task before a precise clock (the
+            // embedder's monotonic time) has seen the delay elapse.
+            long due = System.Diagnostics.Stopwatch.GetTimestamp() +
+                (long)Math.Ceiling(Math.Min(delaySeconds, 1e9) * System.Diagnostics.Stopwatch.Frequency);
+            lock (_foregroundTasks)
+            {
+                _delayedTasks.Add((due, task));
+                Monitor.PulseAll(_foregroundTasks);
+            }
             ForegroundTaskPosted?.Invoke(this);
         }
 
@@ -551,25 +564,30 @@ namespace V8Sharp
         /// <summary>
         /// Moves the delayed tasks that are due to the task queue. When nothing
         /// else is pending, waits for the earliest one first (d8's message loop
-        /// waits for delayed tasks the same way).
+        /// waits for delayed tasks the same way), at most <paramref name="maxWaitMs"/>;
+        /// a task posted meanwhile (from another thread) ends the wait.
         /// </summary>
-        void MoveDueDelayedTasks()
+        void MoveDueDelayedTasks(long maxWaitMs)
         {
-            long wait;
             lock (_foregroundTasks)
             {
                 if (_delayedTasks.Count == 0) return;
-                long earliest = long.MaxValue;
-                foreach (var (due, _) in _delayedTasks) earliest = Math.Min(earliest, due);
-                wait = _foregroundTasks.Count == 0 ? earliest - Environment.TickCount64 : 0;
-            }
-            if (wait > 0) Thread.Sleep((int)Math.Min(wait, int.MaxValue));
-            lock (_foregroundTasks)
-            {
-                long now = Environment.TickCount64;
+                long frequency = System.Diagnostics.Stopwatch.Frequency;
+                long start = System.Diagnostics.Stopwatch.GetTimestamp();
+                long waitUntil = maxWaitMs >= long.MaxValue / frequency ? long.MaxValue : start + maxWaitMs * frequency / 1000;
+                while (_foregroundTasks.Count == 0)
+                {
+                    long earliest = long.MaxValue;
+                    foreach (var (due, _) in _delayedTasks) earliest = Math.Min(earliest, due);
+                    long wait = Math.Min(earliest, waitUntil) - System.Diagnostics.Stopwatch.GetTimestamp();
+                    if (wait <= 0) break;
+                    double waitMs = Math.Ceiling(wait * 1000.0 / frequency);
+                    Monitor.Wait(_foregroundTasks, (int)Math.Min(waitMs, int.MaxValue));
+                }
+                long current = System.Diagnostics.Stopwatch.GetTimestamp();
                 for (int i = 0; i < _delayedTasks.Count; i++)
                 {
-                    if (_delayedTasks[i].DueTicks > now) continue;
+                    if (_delayedTasks[i].DueTicks > current) continue;
                     _foregroundTasks.Enqueue(_delayedTasks[i].Task);
                     _delayedTasks.RemoveAt(i--);
                 }
@@ -581,9 +599,15 @@ namespace V8Sharp
         /// the ones they post), each followed by a microtask checkpoint as the
         /// HTML event loop does. Returns whether any task ran.
         /// </summary>
-        public bool RunPendingTasks()
+        public bool RunPendingTasks() => RunPendingTasks(long.MaxValue / 4);
+
+        /// <summary>
+        /// <see cref="RunPendingTasks()"/> that waits at most <paramref name="maxWaitMs"/>
+        /// for a delayed task, for embedders with a message loop of their own.
+        /// </summary>
+        public bool RunPendingTasks(long maxWaitMs)
         {
-            MoveDueDelayedTasks();
+            MoveDueDelayedTasks(maxWaitMs);
             int n;
             lock (_foregroundTasks) n = _foregroundTasks.Count;
             if (n == 0) return false;
@@ -598,6 +622,22 @@ namespace V8Sharp
                 DefaultMicrotaskQueue.PerformCheckpoint(this);
             }
             return true;
+        }
+
+        /// <summary>
+        /// The process-wide part of Isolate::Deinit an embedder must run when it
+        /// is done with an isolate: removes its Atomics.waitAsync waiters from the
+        /// futex wait list (FutexEmulation::IsolateDeinit) and cancels its
+        /// foreground tasks (CancelableTaskManager::CancelAndWait).
+        /// </summary>
+        public void Deinit()
+        {
+            FutexEmulation.IsolateDeinit(this);
+            lock (_foregroundTasks)
+            {
+                _foregroundTasks.Clear();
+                _delayedTasks.Clear();
+            }
         }
     }
 }

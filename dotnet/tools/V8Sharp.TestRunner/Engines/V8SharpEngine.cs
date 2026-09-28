@@ -116,7 +116,10 @@ sealed class V8SharpJsIsolate : IJsIsolate
         {
             try
             {
-                return Isolate.RunPendingTasks();
+                // Wait for a delayed task in short slices so the shell's own task
+                // queue (setTimeout, Worker messages) keeps running; pending
+                // delayed tasks keep the shell's message loop alive.
+                return Isolate.RunPendingTasks(10) || Isolate.HasPendingTasks;
             }
             catch (TerminationException)
             {
@@ -141,9 +144,7 @@ sealed class V8SharpJsIsolate : IJsIsolate
         Host.OnPromiseRejection(realm, kind, new V8SharpHandle(promise), V8SharpRealm.ToHost(value));
     }
 
-    public void Dispose()
-    {
-    }
+    public void Dispose() => Isolate.Deinit();
 }
 
 sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRealm
