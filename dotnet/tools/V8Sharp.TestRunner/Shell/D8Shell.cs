@@ -175,6 +175,7 @@ public sealed class D8Shell : IJsHost
     {
         var realm = CurrentRealm;
         _sources[name] = source;
+        if (isModule) _modules.Add(name);
         var c = isModule ? realm.Realm.RunModule(source, name) : realm.Realm.RunScript(source, name);
         _realmCurrent = _realmSwitch;
         return c;
@@ -512,15 +513,52 @@ public sealed class D8Shell : IJsHost
 
     // --- modules: d8's path-based resolution (NormalizePath / DirName) ---
 
+    const string DataUrlPrefix = "data:text/javascript,";
+
+    /// <summary>NormalizeModuleSpecifier + Shell::FetchModuleSource: data URLs
+    /// carry their source; anything else must resolve (against the referrer's
+    /// directory, or the working directory for a relative script name) to a
+    /// local absolute path.</summary>
     public ModuleSource LoadModule(string specifier, string referrer, string? type)
     {
-        string dir = Path.IsPathRooted(referrer) ? Path.GetDirectoryName(referrer)! : _workingDirectory;
-        string path = NormalizePath(specifier, dir);
-        if (!File.Exists(path)) throw new JsHostError("Error", $"d8: Reading module from {path} failed");
-        string source = ReadText(path);
-        _sources[path] = source;
-        return new ModuleSource(path, source, IsJson: type == "json");
+        string resolved;
+        if (specifier.StartsWith(DataUrlPrefix, StringComparison.Ordinal) ||
+            specifier.StartsWith("http://", StringComparison.Ordinal) || specifier.StartsWith("https://", StringComparison.Ordinal))
+        {
+            resolved = specifier;
+        }
+        else
+        {
+            // DirName(NormalizeModuleSpecifier(referrer, cwd)): a relative script
+            // name is taken from the working directory; a data: or http(s): referrer
+            // resolves against the working directory.
+            string dir = _workingDirectory;
+            if (referrer.Length > 0 && !referrer.StartsWith(DataUrlPrefix, StringComparison.Ordinal) &&
+                !referrer.StartsWith("http://", StringComparison.Ordinal) && !referrer.StartsWith("https://", StringComparison.Ordinal))
+            {
+                string abs = NormalizePath(referrer, _workingDirectory);
+                dir = abs[..abs.LastIndexOf('/')];
+            }
+            resolved = NormalizePath(specifier, dir);
+        }
+        string importedBy = referrer.Length > 0 && _modules.Contains(referrer) ? "\n    imported by " + referrer : "";
+        if (resolved.StartsWith(DataUrlPrefix, StringComparison.Ordinal))
+        {
+            _modules.Add(resolved);
+            return new ModuleSource(resolved, resolved[DataUrlPrefix.Length..], IsJson: type == "json");
+        }
+        if (!resolved.StartsWith('/'))
+        {
+            throw new JsHostError("Error", $"d8: Reading module from {resolved} is not supported.{importedBy}");
+        }
+        if (!File.Exists(resolved)) throw new JsHostError("Error", $"d8: Error reading module from {resolved}{importedBy}");
+        string source = ReadText(resolved);
+        _sources[resolved] = source;
+        _modules.Add(resolved);
+        return new ModuleSource(resolved, source, IsJson: type == "json");
     }
+
+    readonly HashSet<string> _modules = new(StringComparer.Ordinal);
 
     static string NormalizePath(string path, string dir)
     {

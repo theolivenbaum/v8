@@ -1,0 +1,4 @@
+# Tests V8Sharp must pass, gated in CI by ConformanceGates.V8SharpPasses.
+# One test per line as <suite>/<name>[@strict], e.g. mjsunit/array-sort or
+# test262/built-ins/Array/prototype/map/create-species@strict.
+# Add a test here once the engine passes it; never remove one that regresses.

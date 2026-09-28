@@ -234,6 +234,8 @@ public sealed class Executor(string engine, string v8Root, int jobs, TimeSpan ti
             catch
             {
             }
+            // A killed worker cannot remove its native-output capture file.
+            try { File.Delete(NativeStdout.PathFor(_process.Id)); } catch { }
             _process.Dispose();
         }
     }

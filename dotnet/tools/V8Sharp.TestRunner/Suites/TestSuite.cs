@@ -296,6 +296,11 @@ public sealed class Test262Suite(SuiteContext context) : TestSuite("test262", co
         suiteFlags.Add("--no-arguments");
 
         bool isAsync = fm.HasFlag("async");
+        // harness-agent.js implements $262.agent on d8's Worker (a second isolate
+        // on another thread sharing SharedArrayBuffers), which the shell lacks.
+        string? skip = name.StartsWith("built-ins/Atomics/", StringComparison.Ordinal) && source.Contains("$262.agent", StringComparison.Ordinal)
+            ? "needs $262.agent (d8 Worker), which the test host does not provide"
+            : null;
         // VariantsGenerator: noStrict runs sloppy, onlyStrict runs strict, the rest both.
         var modes = fm.HasFlag("noStrict") ? new[] { false } : fm.HasFlag("onlyStrict") ? [true] : [false, true];
         foreach (bool strict in modes)
@@ -313,6 +318,7 @@ public sealed class Test262Suite(SuiteContext context) : TestSuite("test262", co
                 Flags = flags,
                 StatusOutcomes = outcomes,
                 OutProc = new Test262OutputProcessor(OutcomeSets.Pass, fm.NegativeType, negative: false, isAsync),
+                SkipReason = skip,
             };
         }
     }

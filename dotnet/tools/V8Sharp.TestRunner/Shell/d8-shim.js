@@ -100,6 +100,46 @@
 
   set(global, 'Worker', unsupported('Worker'));
 
+  // D8Console (src/d8/d8-console.cc), the console delegate behind V8's own
+  // console object: the methods d8 implements print; the rest stay no-ops.
+  const console = global.console;
+  if (console !== null && typeof console === 'object') {
+    const timers = new Map();
+    const origin = host('performanceNow');
+    const label = (args) => args.length === 0 ? 'default' : `${args[0]}`;
+    const ms = (t) => (host('performanceNow') - t).toFixed(6);
+    const out = (prefix, args) => host('print', prefix === null ? join(args) : prefix + ': ' + join(args));
+    set(console, 'log', fn('log', (...a) => { out(null, a); }));
+    set(console, 'error', fn('error', (...a) => { host('printErr', 'console.error: ' + join(a)); }));
+    set(console, 'warn', fn('warn', (...a) => { out('console.warn', a); }));
+    set(console, 'info', fn('info', (...a) => { out('console.info', a); }));
+    set(console, 'debug', fn('debug', (...a) => { out('console.debug', a); }));
+    set(console, 'assert', fn('assert', (...a) => {
+      if (a.length > 0 && a[0]) return;
+      out('console.assert', a);
+      throw new Error('console.assert failed');
+    }));
+    set(console, 'time', fn('time', (...a) => {
+      const l = label(a);
+      if (timers.has(l)) host('print', `console.time: Timer '${l}' already exists`);
+      else timers.set(l, host('performanceNow'));
+    }));
+    set(console, 'timeLog', fn('timeLog', (...a) => {
+      const l = label(a);
+      if (!timers.has(l)) host('print', `console.timeLog: Timer '${l}' does not exist`);
+      else host('print', `console.timeLog: ${l}, ${ms(timers.get(l))}`);
+    }));
+    set(console, 'timeEnd', fn('timeEnd', (...a) => {
+      const l = label(a);
+      if (!timers.has(l)) { host('print', `console.timeEnd: Timer '${l}' does not exist`); return; }
+      host('print', `console.timeEnd: ${l}, ${ms(timers.get(l))}`);
+      timers.delete(l);
+    }));
+    set(console, 'timeStamp', fn('timeStamp', (...a) => {
+      host('print', `console.timeStamp: ${label(a)}, ${ms(origin)}`);
+    }));
+  }
+
   const d8 = {};
   const file = {};
   set(file, 'read', fn('read', readFile));

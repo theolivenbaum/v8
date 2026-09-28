@@ -212,7 +212,7 @@ public sealed class Runner(RunnerOptions options)
             string outcome = t.OutProc.GetOutcome(output);
             bool isUnexpected = !t.ExpectedOutcomes.Contains(outcome);
             var report = reportsBySuite[t.Suite];
-            bool isKnown = isUnexpected && report.Expectations!.Failing.ContainsKey(t.Id);
+            bool isKnown = isUnexpected && report.Expectations!.IsKnownFailure(t.Id);
             lock (progressLock)
             {
                 report.Results.Add(new TestResult(t, outcome, output, isUnexpected, isKnown));
@@ -255,6 +255,18 @@ public sealed class Runner(RunnerOptions options)
             foreach (var id in report.Expectations!.Failing.Keys)
             {
                 if (ranIds.Contains(id) && !failing.ContainsKey(id)) report.NewlyPassing.Add(id);
+            }
+            // A glob none of whose tests fail any more is reported as a whole.
+            foreach (var (glob, _, regex) in report.Expectations.Patterns)
+            {
+                bool any = false, anyFailing = false;
+                foreach (var id in ranIds)
+                {
+                    if (!regex.IsMatch(id)) continue;
+                    any = true;
+                    if (failing.ContainsKey(id)) { anyFailing = true; break; }
+                }
+                if (any && !anyFailing) report.NewlyPassing.Add(glob);
             }
             if (options.UpdateExpectations) report.Expectations.Update(ranIds, failing);
         }

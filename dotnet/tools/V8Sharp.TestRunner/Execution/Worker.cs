@@ -70,7 +70,9 @@ public static class Worker
     {
         var protocol = NativeStdout.RedirectToFile(out var nativeOut);
         var engine = EngineFactory.Create(engineName);
-        engine.SetFlags(flags);
+        // V8 reports bad flags ("Error: unrecognized flag") on stderr; keep that
+        // with every result of this worker, where d8 would have printed it.
+        string startup = nativeOut?.CaptureStderr(() => engine.SetFlags(flags)) ?? Run(() => engine.SetFlags(flags));
         var input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
         string? line;
         while ((line = input.ReadLine()) is not null)
@@ -82,7 +84,7 @@ public static class Worker
             {
                 var r = RunOne(engine, req.Args, workingDirectory, TimeSpan.FromSeconds(req.TimeoutSeconds));
                 string native = nativeOut?.ReadNew() ?? "";
-                resp = new WorkerResponse(req.Id, r.ExitCode, r.Stdout + native, r.Stderr, r.TimedOut, r.Duration.TotalMilliseconds);
+                resp = new WorkerResponse(req.Id, r.ExitCode, r.Stdout + native, startup + r.Stderr, r.TimedOut, r.Duration.TotalMilliseconds);
             }
             catch (TimeoutException)
             {
@@ -95,6 +97,12 @@ public static class Worker
             Write(protocol, resp);
         }
         return 0;
+    }
+
+    static string Run(Action a)
+    {
+        a();
+        return "";
     }
 
     static void Write(Stream protocol, WorkerResponse resp)
@@ -132,7 +140,7 @@ sealed class NativeStdout
         if (!OperatingSystem.IsLinux()) return Console.OpenStandardOutput();
         int saved = Libc.dup(1);
         if (saved < 0) return Console.OpenStandardOutput();
-        string path = Path.Combine(Path.GetTempPath(), $"v8sharp-worker-{Environment.ProcessId}.out");
+        string path = PathFor(Environment.ProcessId);
         int fd = Libc.open(path, 0x2 | 0x40 | 0x200 /* O_RDWR|O_CREAT|O_TRUNC */, 0x180 /* 0600 */);
         if (fd < 0 || Libc.dup2(fd, 1) < 0) return Console.OpenStandardOutput();
         Libc.close(fd);
@@ -140,6 +148,32 @@ sealed class NativeStdout
         AppDomain.CurrentDomain.ProcessExit += (_, _) => { try { File.Delete(path); } catch { } };
         return new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(saved, ownsHandle: true), FileAccess.Write, 1);
     }
+
+    /// <summary>Runs <paramref name="action"/> with file descriptor 2 also
+    /// pointing at the capture file and returns what native code wrote.</summary>
+    public string CaptureStderr(Action action)
+    {
+        ReadNew();
+        int saved = Libc.dup(2);
+        if (saved < 0 || Libc.dup2(1, 2) < 0)
+        {
+            action();
+            return "";
+        }
+        try
+        {
+            action();
+        }
+        finally
+        {
+            Libc.fflush(IntPtr.Zero);
+            Libc.dup2(saved, 2);
+            Libc.close(saved);
+        }
+        return ReadNew();
+    }
+
+    public static string PathFor(int processId) => Path.Combine(Path.GetTempPath(), $"v8sharp-worker-{processId}.out");
 
     public string ReadNew()
     {

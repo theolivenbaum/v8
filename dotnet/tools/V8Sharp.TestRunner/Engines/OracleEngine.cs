@@ -23,6 +23,12 @@ public sealed class OracleEngine : IJsEngine
 
     public void SetFlags(IReadOnlyList<string> flags)
     {
+        // Tests with --log/--prof flags would leave "isolate-<address>-<pid>-+"
+        // files in the working directory (the V8 root): V8 prefixes the
+        // per-isolate name to the log file ClearScript's V8 defaults to. Log to
+        // a temporary file instead; a test that sets these flags still wins.
+        ReferenceV8.SetFlags("--no-logfile-per-isolate");
+        ReferenceV8.SetFlags("--logfile=+");
         foreach (var f in flags)
         {
             // d8's --no-can-block is Isolate::SetAllowAtomicsWait(false).
@@ -46,6 +52,9 @@ sealed class OracleIsolate : IJsIsolate
     internal OracleEngine Engine { get; }
     internal volatile bool Terminating;
     IntPtr _nativeIsolate;
+
+    /// <summary>Document URI to the name the shell gave it.</summary>
+    internal Dictionary<string, string> ShellNames { get; } = new(StringComparer.Ordinal);
 
     public IJsRealm MainRealm { get; }
 
@@ -145,6 +154,7 @@ sealed class OracleRealm : IJsRealm
               // cycles that such tests then recurse through forever.)
               Object.freeze(EngineInternal);
               const errors = { Error, TypeError, RangeError, SyntaxError, ReferenceError, EvalError, URIError };
+              const ReflectApply = Reflect.apply;
               function rethrow() {
                 if (take('isValue')) { const v = take('value'); take('clear'); throw v; }
                 const type = take('type'), message = take('message');
@@ -160,6 +170,7 @@ sealed class OracleRealm : IJsRealm
                   } }[name];
                 },
                 function nativeCall(op) { return native(op); },
+                function callWithReceiver(f, r, ...args) { return ReflectApply(f, r, args); },
               ];
             })
             """);
@@ -170,7 +181,13 @@ sealed class OracleRealm : IJsRealm
             ThrowSentinel);
         _makeFunction = (ScriptObject)pair.GetProperty(0);
         _nativeCall = (ScriptObject)pair.GetProperty(1);
+        _callWithReceiver = (ScriptObject)pair.GetProperty(2);
     }
+
+    readonly ScriptObject _callWithReceiver;
+
+    /// <summary>Main-module sources the shell already read, by name.</summary>
+    readonly Dictionary<string, string> _preloaded = new(StringComparer.Ordinal);
 
     public object GlobalObject => (ScriptObject)Engine.Script;
 
@@ -289,7 +306,25 @@ sealed class OracleRealm : IJsRealm
 
     public Completion RunModule(string source, string name)
     {
-        var c = Execute(() => Engine.Evaluate(DocumentFor(name, ModuleCategoryOrScript(true)), source), isModule: true);
+        // A module evaluated from source is a different ClearScript document
+        // from the same file loaded by an import, so a module importing itself
+        // would be instantiated twice (a module graph that cycles back to the
+        // main module). So the main module is loaded through the loader, from a
+        // one-line importer, unless it may use top-level await: quit() from a
+        // pending top-level await under the importer hits a CHECK in
+        // ClearScript's V8.
+        Completion c;
+        if (name.StartsWith('/') && !source.Contains("await", StringComparison.Ordinal))
+        {
+            _preloaded[name] = source;
+            c = Execute(() => Engine.Evaluate(
+                new DocumentInfo("v8sharp-main.mjs") { Category = ModuleCategory.Standard, Flags = DocumentFlags.None },
+                "import " + ReferenceV8.JsQuote(name) + ";"), isModule: true);
+        }
+        else
+        {
+            c = Execute(() => Engine.Evaluate(DocumentFor(name, ModuleCategoryOrScript(true)), source), isModule: true);
+        }
         if (c.Kind != CompletionKind.Normal || c.Value is not ScriptObject promise) return c;
         // A module's evaluation returns a promise (top-level await); d8 reports
         // its rejection as an uncaught exception.
@@ -310,16 +345,56 @@ sealed class OracleRealm : IJsRealm
 
     static DocumentCategory ModuleCategoryOrScript(bool module) => module ? ModuleCategory.Standard : DocumentCategory.Script;
 
-    static DocumentInfo DocumentFor(string name, DocumentCategory category)
+    /// <summary>
+    /// ClearScript keeps only the file name of a plain document name, so a
+    /// script file becomes a file: URI (stack traces then show its absolute
+    /// path) and a data: module specifier a data: URI. The shell's own name
+    /// for each document is remembered, to hand module referrers back to it
+    /// in its terms (d8 resolves imports from a relative script name against
+    /// the working directory).
+    /// </summary>
+    DocumentInfo DocumentFor(string name, DocumentCategory category)
     {
-        // Absolute paths become file: URIs so ClearScript keeps the whole path
-        // (it keeps only the file name of a plain name) and module imports
-        // resolve relative to them.
-        if (Path.IsPathRooted(name))
+        DocumentInfo info;
+        string? full = name.StartsWith("data:", StringComparison.Ordinal) ? null
+            : Path.IsPathRooted(name) ? name
+            : name.Contains('/') && File.Exists(Path.GetFullPath(name)) ? Path.GetFullPath(name)
+            : null;
+        if (name.StartsWith("data:", StringComparison.Ordinal) && Uri.TryCreate(name, UriKind.Absolute, out var dataUri))
         {
-            return new DocumentInfo(new Uri(name)) { Category = category, Flags = DocumentFlags.None };
+            info = new DocumentInfo(dataUri);
+            _isolate.ShellNames[dataUri.AbsoluteUri] = name;
         }
-        return new DocumentInfo(name) { Category = category, Flags = DocumentFlags.None };
+        else if (full is not null)
+        {
+            var uri = new Uri(full);
+            info = new DocumentInfo(uri);
+            _isolate.ShellNames[uri.AbsoluteUri] = name;
+        }
+        else
+        {
+            info = new DocumentInfo(name);
+        }
+        info.Category = category;
+        info.Flags = DocumentFlags.None;
+        if (category == ModuleCategory.Standard)
+        {
+            // Shell::HostInitializeImportMetaObject: import.meta.url is the module's specifier.
+            info.ContextCallback = _ => new Dictionary<string, object> { ["url"] = name };
+        }
+        return info;
+    }
+
+    /// <summary>The shell's name for a document ClearScript reports.</summary>
+    string ShellName(DocumentInfo? info)
+    {
+        if (info is null) return "";
+        if (info.Value.Uri is { } uri)
+        {
+            if (_isolate.ShellNames.TryGetValue(uri.AbsoluteUri, out var n)) return n;
+            return uri.IsFile ? uri.LocalPath : uri.OriginalString;
+        }
+        return info.Value.Name;
     }
 
     public Completion Call(object function, object? receiver, params object?[] args)
@@ -331,11 +406,11 @@ sealed class OracleRealm : IJsRealm
         {
             return Execute(() => f.InvokeAsFunction(scriptArgs), false);
         }
-        var call = (ScriptObject)Engine.Evaluate(new DocumentInfo("v8sharp-call.js") { Flags = DocumentFlags.None },
-            "(function (f, r, a) { return Reflect.apply(f, r, a); })");
-        var array = (ScriptObject)Engine.Evaluate(new DocumentInfo("v8sharp-array.js") { Flags = DocumentFlags.None }, "[]");
-        for (int i = 0; i < scriptArgs.Length; i++) array.SetProperty(i, scriptArgs[i]);
-        return Execute(() => call.InvokeAsFunction(f, ToScript(receiver), array), false);
+        var all = new object?[scriptArgs.Length + 2];
+        all[0] = f;
+        all[1] = ToScript(receiver);
+        scriptArgs.CopyTo(all, 2);
+        return Execute(() => _callWithReceiver.InvokeAsFunction(all), false);
     }
 
     public Completion GetProperty(object target, string name)
@@ -369,15 +444,24 @@ sealed class OracleRealm : IJsRealm
     /// "<c>message\n    at [fn (]name:line:col[)] -> source line\n    at ...</c>":
     /// the first frame is v8::Message's location (the error's creation point or
     /// the throw site), with the source line after "<c> -> </c>".</summary>
-    static JsExceptionInfo ParseException(ScriptEngineException e)
+    JsExceptionInfo ParseException(ScriptEngineException e)
     {
         object? exception = ToHost(e.ScriptExceptionAsObject);
         string details = e.ErrorDetails ?? "";
+        if (Environment.GetEnvironmentVariable("V8SHARP_DEBUG_ERRORS") is not null) Console.Error.WriteLine("[ErrorDetails] " + details);
+        // The message text (e.g. an error whose toString includes its stack)
+        // precedes ClearScript's frames; the location frame is the one with
+        // the source line after " -> ".
+        var lines = new List<string>();
         foreach (var raw in details.Split('\n'))
         {
-            string line = raw.TrimEnd('\r');
-            int at = line.IndexOf("    at ", StringComparison.Ordinal);
-            if (at != 0) continue;
+            string l = raw.TrimEnd('\r');
+            if (l.StartsWith("    at ", StringComparison.Ordinal)) lines.Add(l);
+        }
+        int marked = lines.FindIndex(l => l.Contains(" -> ", StringComparison.Ordinal));
+        if (marked > 0) lines.RemoveRange(0, marked);
+        foreach (var line in lines)
+        {
             string frame = line[7..];
             string? sourceLine = null;
             int arrow = frame.IndexOf(" -> ", StringComparison.Ordinal);
@@ -392,12 +476,32 @@ sealed class OracleRealm : IJsRealm
             int c2 = loc.LastIndexOf(':');
             int c1 = c2 > 0 ? loc.LastIndexOf(':', c2 - 1) : -1;
             if (c1 <= 0 || !int.TryParse(loc[(c1 + 1)..c2], out int ln) || !int.TryParse(loc[(c2 + 1)..], out int col)) break;
+            // The shell's own name for the script (d8 prints names as given).
             string name = loc[..c1];
+            if (_isolate.ShellNames.TryGetValue(new Uri(name, UriKind.RelativeOrAbsolute) is { IsAbsoluteUri: true } u ? u.AbsoluteUri : name, out var shellName))
+            {
+                name = shellName;
+            }
             // ExecutionStarted is false for a compile (parse) error.
             bool isSyntax = !e.ExecutionStarted || (exception is ScriptObject so && IsCompileError(so, details));
             int start = col - 1;
             int end = start + 1;
-            if (isSyntax && sourceLine is not null) end = start + TokenLength(sourceLine, start);
+            if (isSyntax && sourceLine is not null)
+            {
+                end = start + TokenLength(sourceLine, start);
+            }
+            else if (sourceLine is not null && start > 0)
+            {
+                // ClearScript reports where an Error was created; d8's message
+                // location is the throw statement when the error is thrown where
+                // it is created ("throw new Error(...)").
+                int t = start < sourceLine.Length ? sourceLine.LastIndexOf("throw", start, StringComparison.Ordinal) : -1;
+                if (t >= 0 && t + 5 <= start && sourceLine[(t + 5)..start].Trim().Length == 0)
+                {
+                    start = t;
+                    end = t + 1;
+                }
+            }
             return new JsExceptionInfo(exception, name, ln, start, end, sourceLine, isSyntax);
         }
         return new JsExceptionInfo(exception);
@@ -439,7 +543,7 @@ sealed class OracleRealm : IJsRealm
         if (c is '"' or '\'' or '`')
         {
             i++;
-            while (i < line.Length && line[i] != c) { if (line[i] == '\\') i++; i++; }
+            while (i < line.Length && line[i] != c) i += line[i] == '\\' ? 2 : 1;
             return Math.Min(line.Length, i + 1) - start;
         }
         string[] puncts = [">>>=", "...", "===", "!==", "**=", "<<=", ">>=", ">>>", "&&=", "||=", "??=",
@@ -475,14 +579,17 @@ sealed class OracleRealm : IJsRealm
         public override Task<Document> LoadDocumentAsync(DocumentSettings settings, DocumentInfo? sourceInfo, string specifier,
             DocumentCategory category, DocumentContextCallback contextCallback)
         {
-            string referrer = sourceInfo?.Uri is { IsFile: true } u ? u.LocalPath : sourceInfo?.Name ?? "";
+            string referrer = realm.ShellName(sourceInfo);
             try
             {
-                var m = realm._isolate.Host.LoadModule(specifier, referrer, specifier.EndsWith(".json", StringComparison.Ordinal) ? "json" : null);
+                // ClearScript does not pass import attributes; JSON modules are recognised by extension.
+                var m = referrer == "v8sharp-main.mjs" && realm._preloaded.TryGetValue(specifier, out var main)
+                    ? new ModuleSource(specifier, main)
+                    : realm._isolate.Host.LoadModule(specifier, referrer, specifier.EndsWith(".json", StringComparison.Ordinal) ? "json" : null);
                 if (!_cache.TryGetValue(m.Name, out var doc))
                 {
-                    var cat = m.IsJson ? DocumentCategory.Json : category;
-                    doc = new StringDocument(new DocumentInfo(new Uri(m.Name)) { Category = cat, Flags = DocumentFlags.None }, m.Source);
+                    var info = realm.DocumentFor(m.Name, m.IsJson ? DocumentCategory.Json : category);
+                    doc = new StringDocument(info, m.Source);
                     _cache[m.Name] = doc;
                 }
                 return Task.FromResult(doc);
