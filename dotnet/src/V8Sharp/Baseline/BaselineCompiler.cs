@@ -134,13 +134,13 @@ public sealed class BaselineCompiler
         Bytecode bytecode = _iterator.CurrentBytecode();
         if (bytecode == Bytecode.JumpLoop)
         {
-            int target = _iterator.GetJumpTargetOffset();
+            int target = JumpTargetOffset();
             EnsureLabel(target);
             _entryOffsets.Add(target);
         }
         else if (Bytecodes.IsJump(bytecode))
         {
-            EnsureLabel(_iterator.GetJumpTargetOffset());
+            EnsureLabel(JumpTargetOffset());
         }
         else if (Bytecodes.IsSwitch(bytecode))
         {
@@ -260,6 +260,29 @@ public sealed class BaselineCompiler
 
     void CallBuiltin(string name) => _masm.Call(s_builtins[name]);
 
+    JSValue[] ConstantPoolValues => _bytecode.ConstantPoolValues ?? InterpreterRuntime.MaterializeConstantPool(_isolate, _bytecode);
+
+    /// <summary>
+    /// The absolute target of the current jump (BytecodeArrayIterator::GetJumpTargetOffset,
+    /// reading a constant pool operand as a number: the engine's constant pools hold
+    /// materialized values).
+    /// </summary>
+    int JumpTargetOffset()
+    {
+        Bytecode bytecode = _iterator.CurrentBytecode();
+        int relative;
+        if (Bytecodes.IsJumpImmediate(bytecode))
+        {
+            relative = Uint(0);
+            if (bytecode == Bytecode.JumpLoop) relative = -relative;
+        }
+        else
+        {
+            relative = (int)ConstantPoolValues[ConstantPoolIndex(0)].Number;
+        }
+        return _iterator.GetAbsoluteOffset(relative);
+    }
+
     /// <summary>
     /// The (case value, absolute target) pairs of the current switch's jump
     /// table, skipping the holes (JumpTableTargetOffsets::UpdateAndAdvanceToValid).
@@ -279,7 +302,7 @@ public sealed class BaselineCompiler
             tableSize = Uint(1);
             caseValueBase = Int(2);
         }
-        JSValue[] constants = _bytecode.ConstantPoolValues ?? InterpreterRuntime.MaterializeConstantPool(_isolate, _bytecode);
+        JSValue[] constants = ConstantPoolValues;
         var result = new List<(int, int)>(tableSize);
         for (int i = 0; i < tableSize; i++)
         {
@@ -1164,7 +1187,7 @@ public sealed class BaselineCompiler
                 break;
             case Bytecode.Jump:
             case Bytecode.JumpConstant:
-                _masm.Jump(_labels[_iterator.GetJumpTargetOffset()]);
+                _masm.Jump(_labels[JumpTargetOffset()]);
                 break;
             case Bytecode.JumpIfNullConstant:
             case Bytecode.JumpIfNull:
@@ -1212,7 +1235,7 @@ public sealed class BaselineCompiler
                 RegRef(RegisterOperand(1));
                 RegRef(RegisterOperand(2));
                 CallBuiltin("IsIdentical");
-                _masm.JumpIfTrue(_labels[_iterator.GetJumpTargetOffset()]);
+                _masm.JumpIfTrue(_labels[JumpTargetOffset()]);
                 break;
             case Bytecode.SwitchOnSmiNoFeedback:
                 VisitSwitchOnSmiNoFeedback();
@@ -1322,7 +1345,7 @@ public sealed class BaselineCompiler
                 State();
                 Ctx();
                 Reg(RegisterOperand(0));
-                RegIndex(RegisterOperand(1));
+                I(RegisterOperand(1).Index);
                 I(RegisterCount(2));
                 I(Uint(3));
                 I(Cursor);
@@ -1333,7 +1356,7 @@ public sealed class BaselineCompiler
                 Isolate();
                 State();
                 Reg(RegisterOperand(0));
-                RegIndex(RegisterOperand(1));
+                I(RegisterOperand(1).Index);
                 I(RegisterCount(2));
                 CallBuiltin("ResumeGenerator");
                 SetAcc();
@@ -1423,7 +1446,7 @@ public sealed class BaselineCompiler
     {
         _masm.LoadAccumulatorAddress();
         CallBuiltin(predicate);
-        Label target = _labels[_iterator.GetJumpTargetOffset()];
+        Label target = _labels[JumpTargetOffset()];
         if (jumpIfTrue) _masm.JumpIfTrue(target);
         else _masm.JumpIfFalse(target);
     }
@@ -1434,8 +1457,8 @@ public sealed class BaselineCompiler
     /// </summary>
     void VisitJumpLoop()
     {
-        int target = _iterator.GetJumpTargetOffset();
-        int weight = -_iterator.GetRelativeJumpTargetOffset() + _iterator.CurrentBytecodeSizeWithoutPrefix();
+        int target = JumpTargetOffset();
+        int weight = Uint(0) + _iterator.CurrentBytecodeSizeWithoutPrefix();
         // JumpLoop clobbers the accumulator.
         _masm.LoadAccumulatorAddress();
         _il.Emit(OpCodes.Initobj, typeof(JSValue));

@@ -200,24 +200,69 @@ public static class BaselineBuiltins
     }
 
     // ---- Binary operations ----------------------------------------------------------------------------------
+    //
+    // The Smi fast paths: when the embedded feedback already says SignedSmall and
+    // the operands and result are Smis, the feedback would not change, so only
+    // the result is computed. Everything else takes the interpreter's path,
+    // which computes and records the feedback (Generate_*WithFeedback).
+
+    const byte kSignedSmall = (byte)BinaryOperationFeedback.TypeIndex.SignedSmall;
+
+    /// <summary>Whether <paramref name="d"/> is a Smi (31-bit, integral, not -0), and its value.</summary>
+    [MethodImpl(Inline)]
+    static bool IsSmi(double d, out int value)
+    {
+        value = double.ConvertToIntegerNative<int>(d);
+        return value == d && (uint)(value - JSValue.SmiMinValue) <= (uint)(JSValue.SmiMaxValue - JSValue.SmiMinValue) &&
+               (value != 0 || !double.IsNegative(d));
+    }
 
     [MethodImpl(Inline)]
-    public static JSValue Add(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
-        lhs.IsNumber && rhs.IsNumber
-            ? InterpreterOps.AddNumbers(isolate, lhs._num, rhs._num, ref feedback)
-            : InterpreterOps.AddSlow(isolate, lhs, rhs, ref feedback);
+    static bool IsSmiInt(long value) => value >= JSValue.SmiMinValue && value <= JSValue.SmiMaxValue;
 
     [MethodImpl(Inline)]
-    public static JSValue Subtract(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
-        lhs.IsNumber && rhs.IsNumber
-            ? InterpreterOps.SubtractNumbers(lhs._num, rhs._num, ref feedback)
-            : InterpreterOps.BinarySlow(isolate, Operation.Subtract, lhs, rhs, ref feedback);
+    public static JSValue Add(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
+    {
+        if (lhs.IsNumber && rhs.IsNumber)
+        {
+            if (feedback == kSignedSmall && IsSmi(lhs._num, out int l) && IsSmi(rhs._num, out int r) && IsSmiInt((long)l + r))
+            {
+                return JSValue.FromInt(l + r);
+            }
+            return InterpreterOps.AddNumbers(isolate, lhs._num, rhs._num, ref feedback);
+        }
+        return InterpreterOps.AddSlow(isolate, lhs, rhs, ref feedback);
+    }
 
     [MethodImpl(Inline)]
-    public static JSValue Multiply(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
-        lhs.IsNumber && rhs.IsNumber
-            ? InterpreterOps.MultiplyNumbers(lhs._num, rhs._num, ref feedback)
-            : InterpreterOps.BinarySlow(isolate, Operation.Multiply, lhs, rhs, ref feedback);
+    public static JSValue Subtract(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
+    {
+        if (lhs.IsNumber && rhs.IsNumber)
+        {
+            if (feedback == kSignedSmall && IsSmi(lhs._num, out int l) && IsSmi(rhs._num, out int r) && IsSmiInt((long)l - r))
+            {
+                return JSValue.FromInt(l - r);
+            }
+            return InterpreterOps.SubtractNumbers(lhs._num, rhs._num, ref feedback);
+        }
+        return InterpreterOps.BinarySlow(isolate, Operation.Subtract, lhs, rhs, ref feedback);
+    }
+
+    [MethodImpl(Inline)]
+    public static JSValue Multiply(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
+    {
+        if (lhs.IsNumber && rhs.IsNumber)
+        {
+            if (feedback == kSignedSmall && IsSmi(lhs._num, out int l) && IsSmi(rhs._num, out int r))
+            {
+                long product = (long)l * r;
+                // A zero product of a negative operand is -0, not a Smi.
+                if (IsSmiInt(product) && (product != 0 || (l | r) >= 0)) return JSValue.FromInt((int)product);
+            }
+            return InterpreterOps.MultiplyNumbers(lhs._num, rhs._num, ref feedback);
+        }
+        return InterpreterOps.BinarySlow(isolate, Operation.Multiply, lhs, rhs, ref feedback);
+    }
 
     public static JSValue Divide(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
         InterpreterOps.Binary(isolate, Operation.Divide, lhs, rhs, ref feedback);
@@ -228,23 +273,68 @@ public static class BaselineBuiltins
     public static JSValue Exponentiate(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
         InterpreterOps.Binary(isolate, Operation.Exponentiate, lhs, rhs, ref feedback);
 
-    public static JSValue BitwiseOr(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
-        InterpreterOps.Bitwise(isolate, Operation.BitwiseOr, lhs, rhs, ref feedback);
+    [MethodImpl(Inline)]
+    public static JSValue BitwiseOr(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
+    {
+        if (lhs.IsNumber && rhs.IsNumber && feedback == kSignedSmall && IsSmi(lhs._num, out int l) && IsSmi(rhs._num, out int r))
+        {
+            // The bitwise combination of two Smis is a Smi.
+            return JSValue.FromInt(l | r);
+        }
+        return InterpreterOps.Bitwise(isolate, Operation.BitwiseOr, lhs, rhs, ref feedback);
+    }
 
-    public static JSValue BitwiseXor(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
-        InterpreterOps.Bitwise(isolate, Operation.BitwiseXor, lhs, rhs, ref feedback);
+    [MethodImpl(Inline)]
+    public static JSValue BitwiseXor(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
+    {
+        if (lhs.IsNumber && rhs.IsNumber && feedback == kSignedSmall && IsSmi(lhs._num, out int l) && IsSmi(rhs._num, out int r))
+        {
+            return JSValue.FromInt(l ^ r);
+        }
+        return InterpreterOps.Bitwise(isolate, Operation.BitwiseXor, lhs, rhs, ref feedback);
+    }
 
-    public static JSValue BitwiseAnd(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
-        InterpreterOps.Bitwise(isolate, Operation.BitwiseAnd, lhs, rhs, ref feedback);
+    [MethodImpl(Inline)]
+    public static JSValue BitwiseAnd(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
+    {
+        if (lhs.IsNumber && rhs.IsNumber && feedback == kSignedSmall && IsSmi(lhs._num, out int l) && IsSmi(rhs._num, out int r))
+        {
+            return JSValue.FromInt(l & r);
+        }
+        return InterpreterOps.Bitwise(isolate, Operation.BitwiseAnd, lhs, rhs, ref feedback);
+    }
 
-    public static JSValue ShiftLeft(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
-        InterpreterOps.Bitwise(isolate, Operation.ShiftLeft, lhs, rhs, ref feedback);
+    [MethodImpl(Inline)]
+    public static JSValue ShiftLeft(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
+    {
+        if (lhs.IsNumber && rhs.IsNumber && feedback == kSignedSmall && IsSmi(lhs._num, out int l) && IsSmi(rhs._num, out int r))
+        {
+            int result = l << (r & 0x1F);
+            if (IsSmiInt(result)) return JSValue.FromInt(result);
+        }
+        return InterpreterOps.Bitwise(isolate, Operation.ShiftLeft, lhs, rhs, ref feedback);
+    }
 
-    public static JSValue ShiftRight(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
-        InterpreterOps.Bitwise(isolate, Operation.ShiftRight, lhs, rhs, ref feedback);
+    [MethodImpl(Inline)]
+    public static JSValue ShiftRight(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
+    {
+        if (lhs.IsNumber && rhs.IsNumber && feedback == kSignedSmall && IsSmi(lhs._num, out int l) && IsSmi(rhs._num, out int r))
+        {
+            return JSValue.FromInt(l >> (r & 0x1F));
+        }
+        return InterpreterOps.Bitwise(isolate, Operation.ShiftRight, lhs, rhs, ref feedback);
+    }
 
-    public static JSValue ShiftRightLogical(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
-        InterpreterOps.Bitwise(isolate, Operation.ShiftRightLogical, lhs, rhs, ref feedback);
+    [MethodImpl(Inline)]
+    public static JSValue ShiftRightLogical(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
+    {
+        if (lhs.IsNumber && rhs.IsNumber && feedback == kSignedSmall && IsSmi(lhs._num, out int l) && IsSmi(rhs._num, out int r))
+        {
+            uint result = (uint)l >> (r & 0x1F);
+            if (result <= JSValue.SmiMaxValue) return JSValue.FromInt((int)result);
+        }
+        return InterpreterOps.Bitwise(isolate, Operation.ShiftRightLogical, lhs, rhs, ref feedback);
+    }
 
     public static JSValue AddStringConstantInternalize(Isolate isolate, FeedbackVector? fv, int slot, int variant, JSValue lhs,
         JSValue rhs) =>
@@ -252,8 +342,25 @@ public static class BaselineBuiltins
 
     // ---- Unary operations -----------------------------------------------------------------------------------
 
-    public static JSValue Increment(Isolate isolate, JSValue value, ref byte feedback) => InterpreterOps.Increment(isolate, value, ref feedback);
-    public static JSValue Decrement(Isolate isolate, JSValue value, ref byte feedback) => InterpreterOps.Decrement(isolate, value, ref feedback);
+    [MethodImpl(Inline)]
+    public static JSValue Increment(Isolate isolate, JSValue value, ref byte feedback)
+    {
+        if (value.IsNumber && feedback == kSignedSmall && IsSmi(value._num, out int v) && v != JSValue.SmiMaxValue)
+        {
+            return JSValue.FromInt(v + 1);
+        }
+        return InterpreterOps.Increment(isolate, value, ref feedback);
+    }
+
+    [MethodImpl(Inline)]
+    public static JSValue Decrement(Isolate isolate, JSValue value, ref byte feedback)
+    {
+        if (value.IsNumber && feedback == kSignedSmall && IsSmi(value._num, out int v) && v != JSValue.SmiMinValue)
+        {
+            return JSValue.FromInt(v - 1);
+        }
+        return InterpreterOps.Decrement(isolate, value, ref feedback);
+    }
     public static JSValue Negate(Isolate isolate, JSValue value, ref byte feedback) => InterpreterOps.Negate(isolate, value, ref feedback);
     public static JSValue BitwiseNot(Isolate isolate, JSValue value, ref byte feedback) => InterpreterOps.BitwiseNot(isolate, value, ref feedback);
     [MethodImpl(Inline)] public static JSValue ToBooleanLogicalNot(JSValue value) => JSValue.FromBoolean(!InterpreterOps.ToBoolean(value));

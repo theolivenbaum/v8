@@ -31,6 +31,15 @@ public static partial class Program
         ["maglev"] = "--no-turbofan",                   // up to Maglev
     };
 
+    /// <summary>V8Sharp's modes: its V8 flags for each tier configuration.</summary>
+    static readonly Dictionary<string, string> V8SharpModes = new()
+    {
+        [""] = "",                                      // as configured by default: Ignition + baseline IL
+        ["jitless"] = "--jitless",                      // the interpreter only
+        ["sparkplug"] = "",                             // Ignition + baseline IL (the default)
+        ["always-sparkplug"] = "--always-sparkplug",    // baseline IL from the first call
+    };
+
     public static int Main(string[] args)
     {
         if (args.Length == 0) return Usage();
@@ -58,7 +67,8 @@ public static partial class Program
               V8Sharp.Bench compare [--suites s1,s2] [--engines e1,e2] [--runs N] [--timeout sec]
               V8Sharp.Bench run --engine <engine> --suite <suite>
               V8Sharp.Bench list
-            engines: v8:jit, v8:jitless, v8:sparkplug, v8:maglev, v8sharp
+            engines: v8:jit, v8:jitless, v8:sparkplug, v8:maglev, v8sharp, v8sharp:jitless, v8sharp:sparkplug,
+                     v8sharp:always-sparkplug (V8SHARP_BENCH_FLAGS adds V8 flags to v8sharp runs)
             suites:  octane (all), octane:<name>, perf:<js-perf-test dir>
             Octane is fetched by tools/V8Sharp.Bench/fetch-octane.sh into dotnet/artifacts/octane.
             """);
@@ -99,7 +109,14 @@ public static partial class Program
             if (!V8Modes.TryGetValue(mode, out var flags)) throw new ArgumentException("unknown v8 mode " + mode);
             return new OracleHost(flags, workDir);
         }
-        if (engine == "v8sharp") return new V8SharpHost(workDir);
+        if (engine == "v8sharp" || engine.StartsWith("v8sharp:", StringComparison.Ordinal))
+        {
+            string mode = engine == "v8sharp" ? "" : engine[8..];
+            if (!V8SharpModes.TryGetValue(mode, out var flags)) throw new ArgumentException("unknown v8sharp mode " + mode);
+            string? extra = Environment.GetEnvironmentVariable("V8SHARP_BENCH_FLAGS");
+            if (!string.IsNullOrEmpty(extra)) flags = (flags + " " + extra).Trim();
+            return new V8SharpHost(flags, workDir);
+        }
         throw new ArgumentException("unknown engine " + engine);
     }
 
