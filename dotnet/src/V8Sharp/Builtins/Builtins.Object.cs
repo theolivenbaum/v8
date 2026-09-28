@@ -327,14 +327,16 @@ public static class BuiltinsObject
         JSReceiver holder;
         NativeContext nativeContext = isolate.NativeContext;
 
-        switch (heapObject)
+        // This is arranged to check the likely cases first.
+        if (receiver.IsNumber)
+        {
+            defaultTag = ReadOnlyRoots.number_to_string;
+            holder = PrimitivePrototype(nativeContext.NumberFunction);
+        }
+        else switch (heapObject)
         {
             case null:
                 return ReadOnlyRoots.undefined_to_string;
-            case NumberTag:
-                defaultTag = ReadOnlyRoots.number_to_string;
-                holder = PrimitivePrototype(nativeContext.NumberFunction);
-                break;
             case JSString:
                 defaultTag = ReadOnlyRoots.string_to_string;
                 holder = PrimitivePrototype(nativeContext.StringFunction);
