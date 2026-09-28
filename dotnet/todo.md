@@ -429,6 +429,11 @@ interpreter, compiler, ICs, modules or d8sharp rather than the builtins
 
 ## Phase 2: the fast tiers
 
+Order (decided 2026-09-28): the interpreter is finished first — correctness
+(test262/mjsunit) and interpreter performance (target: within 2x of V8
+--jitless) — before any further work on the IL tiers. The baseline tier is
+merged but off by default until then; the optimizing tier has not started.
+
 - [ ] TieringManager: interrupt budget, OSR triggers (port of tiering-manager.cc)
 - [ ] Baseline compiler: bytecode -> IL (Sparkplug analogue)
 - [ ] Optimizing compiler: SSA graph from bytecode + feedback, speculative
