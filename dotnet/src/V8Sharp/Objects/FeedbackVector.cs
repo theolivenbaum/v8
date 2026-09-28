@@ -284,6 +284,9 @@ public sealed class FeedbackVector : HeapObject
 
     public static int GetIndex(FeedbackSlot slot) => slot.ToInt();
 
+    /// <summary>FeedbackVector::ToSlot.</summary>
+    public static FeedbackSlot ToSlot(int index) => new(index);
+
     public FeedbackSlotKind GetKind(FeedbackSlot slot) => Metadata.GetKind(slot);
     public FeedbackSlotKind GetKind(int slot) => Metadata.GetKind(slot);
 
