@@ -196,8 +196,11 @@ public sealed class D8Shell : IJsHost
     bool FinishExecuting()
     {
         bool success = true;
-        while (_tasks.Count > 0 && !Stopped)
+        while (!Stopped)
         {
+            // Engine-posted foreground tasks run before the next d8 task.
+            if (_isolate!.PumpMessageLoop()) continue;
+            if (_tasks.Count == 0) break;
             var (realm, callback) = _tasks.Dequeue();
             var c = realm.Realm.Call(callback, JsUndefined.Value);
             if (c.Kind == CompletionKind.Throw)

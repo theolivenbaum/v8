@@ -106,6 +106,9 @@ sealed class OracleIsolate : IJsIsolate
 
     public void CollectGarbage() => _runtime.CollectGarbage(true);
 
+    // ClearScript pumps V8's foreground tasks itself.
+    public bool PumpMessageLoop() => false;
+
     public void Dispose()
     {
         foreach (var r in _realms) r.Dispose();

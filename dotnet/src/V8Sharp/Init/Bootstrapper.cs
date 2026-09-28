@@ -46,8 +46,12 @@ public static class Bootstrapper
         try
         {
             var genesis = new Genesis(isolate, microtaskQueue);
-            // Bootstrapper::InstallExtensions (no extensions are ported).
-            using (isolate.EnterContext(genesis.Result)) Genesis.InstallSpecialObjects(isolate, genesis.Result);
+            // Bootstrapper::InstallExtensions (of the extensions only gc is ported).
+            using (isolate.EnterContext(genesis.Result))
+            {
+                Genesis.InstallSpecialObjects(isolate, genesis.Result);
+                GCExtension.InstallIfExposed(isolate, genesis.Result);
+            }
             return genesis.Result;
         }
         finally
