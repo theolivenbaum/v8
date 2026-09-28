@@ -25,7 +25,10 @@ public abstract class IterationBuiltinsTest : CoreBuiltinsTest
     protected JSValue Iter(params JSValue[] values)
     {
         JSObject iterable = Iterable(values);
-        return Execution.Call(i_isolate, Get(iterable, ReadOnlyRoots.iterator_symbol), iterable, []);
+        JSValue iterator = Execution.Call(i_isolate, Get(iterable, ReadOnlyRoots.iterator_symbol), iterable, []);
+        // Inherit from %Iterator.prototype% so that the helpers are reachable.
+        JSObject.SetPrototype(i_isolate, iterator.As<JSReceiver>(), NC.InitialIteratorPrototype, false, ShouldThrow.ThrowOnError);
+        return iterator;
     }
 
 }

@@ -127,8 +127,13 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       (FunctionTemplateInfo, HandleApiCallOrConstruct), ArrayBuffer/
       SharedArrayBuffer/Atomics, typed arrays, DataView
       (Init/Genesis.TypedArrays.cs, incl. the js_immutable_arraybuffer and
-      sharedarraybuffer flag sections). Missing: Intl, Temporal,
-      DisposableStack, shared structs, extras, extensions,
+      sharedarraybuffer flag sections), DisposableStack/AsyncDisposableStack
+      and Iterator.prototype[Symbol.dispose]/%AsyncIteratorPrototype%
+      [Symbol.asyncDispose] (Init/Genesis.DisposableStack.cs),
+      InitializeExperimentalGlobal (Iterator.concat/zip/zipKeyed,
+      Iterator.prototype.join/includes, queueMicrotask behind
+      --enable-queue-microtask; Init/Genesis.{Iterator,Promise}.cs).
+      Missing: Intl, Temporal, shared structs, extras, extensions,
       the TemplateLiteral map (interpreter port)
 - [x] interpreter: bytecodes, operands, array builder/writer, register
       optimizer, constant array builder, handler tables, control-flow builders,
@@ -167,8 +172,36 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       compiler port must register. The proxy trap stubs (ProxyGetProperty ...)
       and CallProxy/ConstructProxy are not registered: callers use JSProxy.
       Still to do: Number (except parseInt/parseFloat), Math,
-      JSON, Date, Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry,
-      Promise, generators/iterators, BigInt, Iterator helpers, DisposableStack
+      JSON, Date, BigInt, generators
+- [~] Map, Set, WeakMap, WeakSet, WeakRef, FinalizationRegistry, Promise,
+      Iterator, DisposableStack builtins and the microtask queue
+      (Builtins/Builtins.{Collections,Set,WeakRefs,Promise*,Iterator*,
+      DisposableStack}.cs, Objects/{JSCollection,JSPromise,JSWeakRefs,
+      JSIteratorHelpers,JSDisposableStack}.cs, Execution/MicrotaskQueue.cs).
+      Every builtin of builtins-collections-gen.cc, collections.tq,
+      map-groupby.tq, set-*.tq, builtins-weak-refs.cc, weak-ref.tq,
+      finalization-registry.tq, promise-*.tq (all, any, allSettled, race,
+      finally, try, withResolvers, jobs, resolving functions, hooks,
+      rejection tracking), iterator.tq, iterator-helpers.tq (incl.
+      concat/zip/zipKeyed/join/includes), iterator-from.tq,
+      builtins-async-iterator-gen.cc (%AsyncFromSyncIteratorPrototype%),
+      async-disposable-stack.tq, builtins-disposable-stack.cc and
+      GlobalQueueMicrotask is registered. The interpreter-facing APIs:
+      PromiseBuiltins.{NewJSPromise, ResolvePromise, RejectPromise,
+      PerformPromiseThen(Impl), NewPromiseCapability, PromiseResolve,
+      EnqueueMicrotask, AsyncAwaitNonThenableFastPath}, the generator
+      resume hooks (ResumeGeneratorTrampoline, AsyncGeneratorResumeNext,
+      AsyncGeneratorResolve), IteratorBuiltins.{GetIterator, IteratorStep,
+      IteratorStepValue, IteratorClose, CreateIterResultObject,
+      IterableToList...}, AsyncFromSyncIteratorBuiltins.
+      CreateAsyncFromSyncIterator, Isolate.{CollectGarbage, RunPendingTasks}.
+      49 xUnit tests (tests/V8Sharp.Tests/Builtins/{Promise,Collections,
+      Iterator,WeakRefs,DisposableStack}BuiltinsTest.cs), expectations from
+      the oracle. Missing: the test262/mjsunit runs (wait for the
+      interpreter), the async function/generator await paths (interpreter),
+      the `IteratorHelpers` forwarding shim in Builtins.Iterator.cs (remove
+      once no caller uses it), d8's gc() wiring to Isolate.CollectGarbage
+      and d8's task loop to Isolate.RunPendingTasks
 - [~] Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
       builtins and the array iterators (Builtins/Builtins.{Array,ArrayBuffer,
       TypedArray,DataView,Atomics}*.cs; Objects/JSArrayBuffer.cs,
