@@ -1930,6 +1930,36 @@ public sealed class BytecodeArrayBuilder
 
     public BytecodeRegisterAllocator RegisterAllocator() => _registerAllocator;
 
+    // ---- AST overloads (the bytecode generator's entry points) --------------
+
+    public void SetStatementPosition(Statement stmt, bool isBreakable = true) =>
+        SetStatementPosition(stmt.position(), isBreakable);
+
+    public void SetExpressionPosition(Expression expr) => SetExpressionPosition(expr.position());
+
+    public void SetExpressionAsStatementPosition(Expression expr, bool isBreakable = true) =>
+        SetStatementPosition(expr.position(), isBreakable);
+
+    static ContextSlotVariable SlotOf(Variable variable) =>
+        new(variable.index(), variable.maybe_assigned(), variable.scope()!.has_context_cells());
+
+    /// <summary>LoadContextSlot(Register, Variable*, int).</summary>
+    public BytecodeArrayBuilder LoadContextSlot(Register context, Variable variable, int depth) =>
+        LoadContextSlot(context, SlotOf(variable), depth);
+
+    /// <summary>StoreContextSlot(Register, Variable*, int).</summary>
+    public BytecodeArrayBuilder StoreContextSlot(Register context, Variable variable, int depth) =>
+        StoreContextSlot(context, SlotOf(variable), depth);
+
+    /// <summary>CreateFunctionContext(const Scope*, int).</summary>
+    public BytecodeArrayBuilder CreateFunctionContext(Scope scope, int slots) =>
+        CreateFunctionContext(scope, slots, scope.has_context_cells());
+
+    public BytecodeArrayBuilder LoadLiteral(AstRawString rawString) => LoadLiteralRawString(rawString);
+    public BytecodeArrayBuilder LoadLiteral(AstConsString consString) => LoadLiteralConsString(consString);
+    public BytecodeArrayBuilder LoadLiteral(Scope scope) => LoadLiteralScope(scope);
+    public BytecodeArrayBuilder LoadLiteral(AstBigInt bigint) => LoadLiteralBigInt(bigint);
+
     public static string ToString(ToBooleanMode mode) => mode switch
     {
         ToBooleanMode.AlreadyBoolean => "AlreadyBoolean",
