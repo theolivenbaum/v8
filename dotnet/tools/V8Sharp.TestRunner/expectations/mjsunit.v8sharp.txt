@@ -107,7 +107,6 @@ measure-memory-multiple-realms  # FAIL
 mutable-int32-slot  # FAIL
 opt-proto-seq/**  # FAIL: %CompileBaseline needs Sparkplug, which is off by default for now
 private_fields/test_private_fields  # FAIL
-queue-microtask-cross-realm-callback-report-exception  # FAIL
 regress-1065094  # FAIL
 regress-382896285  # FAIL
 regress-417251443  # FAIL
@@ -164,7 +163,6 @@ regress/regress-526362971  # FAIL
 regress/regress-542823  # FAIL
 regress/regress-544223867  # FAIL
 regress/regress-546370262  # FAIL
-regress/regress-558186672  # FAIL
 regress/regress-562529689  # FAIL
 regress/regress-564625827  # FAIL
 regress/regress-786784  # FAIL

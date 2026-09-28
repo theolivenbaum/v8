@@ -5,7 +5,6 @@
 fail/array-binding-pattern-await1  # FAIL
 fail/console  # FAIL
 fail/d8-trace-config-invalid  # FAIL
-fail/d8-trace-config-missing  # FAIL
 fail/destructuring-decl-no-init-array  # FAIL
 fail/destructuring-decl-no-init-array2  # FAIL
 fail/destructuring-decl-no-init-obj  # FAIL
@@ -18,11 +17,7 @@ fail/for-in-loop-initializers-strict  # FAIL
 fail/for-of-let-loop-initializers  # FAIL
 fail/for-of-loop-initializers-sloppy  # FAIL
 fail/for-of-loop-initializers-strict  # FAIL
-fail/iterator-non-callable  # FAIL
-fail/iterator-non-callable-2  # FAIL
 fail/iterator-zip-return-error  # FAIL
-fail/json-data-url-1  # FAIL
-fail/json-data-url-2  # FAIL
 fail/missing-command-line-file  # FAIL
 fail/modules-cycle3  # FAIL
 fail/modules-cycle4  # FAIL
@@ -54,9 +49,7 @@ fail/redeclaration2  # FAIL
 fail/redeclaration3  # FAIL
 fail/redeclaration4  # FAIL
 fail/redeclaration5  # FAIL
-fail/regress-533055861  # FAIL
 fail/regress-crbug-417373146  # FAIL
-fail/replacement-marker-as-argument  # FAIL
 fail/rest-param-class-setter-strict  # FAIL
 fail/rest-param-object-setter-sloppy  # FAIL
 fail/rest-param-object-setter-strict  # FAIL
