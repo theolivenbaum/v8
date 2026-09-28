@@ -516,15 +516,59 @@ namespace V8Sharp
         /// <summary>Raised when a task is posted, so an embedder can schedule <see cref="RunPendingTasks"/>.</summary>
         public event Action<Isolate>? ForegroundTaskPosted;
 
-        /// <summary>TaskRunner::PostNonNestableTask on the isolate's foreground task runner.</summary>
+        /// <summary>TaskRunner::PostNonNestableTask on the isolate's foreground task runner (any thread).</summary>
         public void PostNonNestableTask(Action<Isolate> task)
         {
-            _foregroundTasks.Enqueue(task);
+            lock (_foregroundTasks) _foregroundTasks.Enqueue(task);
             ForegroundTaskPosted?.Invoke(this);
         }
 
-        /// <summary>Whether foreground tasks are pending.</summary>
-        public bool HasPendingTasks => _foregroundTasks.Count != 0;
+        readonly List<(long DueTicks, Action<Isolate> Task)> _delayedTasks = [];
+
+        /// <summary>TaskRunner::PostNonNestableDelayedTask: runs <paramref name="task"/> after <paramref name="delaySeconds"/>.</summary>
+        public void PostNonNestableDelayedTask(Action<Isolate> task, double delaySeconds)
+        {
+            long due = Environment.TickCount64 + (long)Math.Ceiling(Math.Min(delaySeconds * 1000, long.MaxValue / 4));
+            lock (_foregroundTasks) _delayedTasks.Add((due, task));
+            ForegroundTaskPosted?.Invoke(this);
+        }
+
+        /// <summary>Whether foreground tasks (immediate or delayed) are pending.</summary>
+        public bool HasPendingTasks
+        {
+            get
+            {
+                lock (_foregroundTasks) return _foregroundTasks.Count != 0 || _delayedTasks.Count != 0;
+            }
+        }
+
+        /// <summary>
+        /// Moves the delayed tasks that are due to the task queue. When nothing
+        /// else is pending, waits for the earliest one first (d8's message loop
+        /// waits for delayed tasks the same way).
+        /// </summary>
+        void MoveDueDelayedTasks()
+        {
+            long wait;
+            lock (_foregroundTasks)
+            {
+                if (_delayedTasks.Count == 0) return;
+                long earliest = long.MaxValue;
+                foreach (var (due, _) in _delayedTasks) earliest = Math.Min(earliest, due);
+                wait = _foregroundTasks.Count == 0 ? earliest - Environment.TickCount64 : 0;
+            }
+            if (wait > 0) Thread.Sleep((int)Math.Min(wait, int.MaxValue));
+            lock (_foregroundTasks)
+            {
+                long now = Environment.TickCount64;
+                for (int i = 0; i < _delayedTasks.Count; i++)
+                {
+                    if (_delayedTasks[i].DueTicks > now) continue;
+                    _foregroundTasks.Enqueue(_delayedTasks[i].Task);
+                    _delayedTasks.RemoveAt(i--);
+                }
+            }
+        }
 
         /// <summary>
         /// v8::platform::PumpMessageLoop: runs the pending foreground tasks (not
@@ -533,10 +577,17 @@ namespace V8Sharp
         /// </summary>
         public bool RunPendingTasks()
         {
-            int n = _foregroundTasks.Count;
+            MoveDueDelayedTasks();
+            int n;
+            lock (_foregroundTasks) n = _foregroundTasks.Count;
             if (n == 0) return false;
-            for (int i = 0; i < n && _foregroundTasks.TryDequeue(out Action<Isolate>? task); i++)
+            for (int i = 0; i < n; i++)
             {
+                Action<Isolate>? task;
+                lock (_foregroundTasks)
+                {
+                    if (!_foregroundTasks.TryDequeue(out task)) break;
+                }
                 task(this);
                 DefaultMicrotaskQueue.PerformCheckpoint(this);
             }

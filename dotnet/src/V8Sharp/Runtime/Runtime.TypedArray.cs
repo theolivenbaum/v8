@@ -63,6 +63,42 @@ public static class RuntimeTypedArray
     }
 }
 
+/// <summary>src/runtime/runtime-futex.cc.</summary>
+public static class RuntimeFutex
+{
+    static BackingStore Location(JSTypedArray sta, JSValue indexArg, out long addr)
+    {
+        ulong index = (ulong)indexArg.Number;
+        if (sta.WasDetached || !sta.Buffer.IsShared || index >= sta.GetLength() || sta.Type != ExternalArrayType.kExternalInt32Array)
+        {
+            throw new InvalidOperationException("CHECK failed: %AtomicsNum*ForTesting argument");
+        }
+        addr = (long)((index << 2) + sta.ByteOffset);
+        return sta.Buffer.GetBackingStore()!;
+    }
+
+    /// <summary>Runtime_AtomicsNumWaitersForTesting.</summary>
+    public static JSValue AtomicsNumWaitersForTesting(JSTypedArray sta, JSValue index)
+    {
+        BackingStore store = Location(sta, index, out long addr);
+        return JSValue.FromInt(FutexEmulation.NumWaitersForTesting(store, addr, asyncOnly: false));
+    }
+
+    /// <summary>Runtime_AtomicsNumUnresolvedAsyncPromisesForTesting.</summary>
+    public static JSValue AtomicsNumUnresolvedAsyncPromisesForTesting(JSTypedArray sta, JSValue index)
+    {
+        BackingStore store = Location(sta, index, out long addr);
+        return JSValue.FromInt(FutexEmulation.NumUnresolvedAsyncPromisesForTesting(store, addr));
+    }
+
+    /// <summary>Runtime_SetAllowAtomicsWait.</summary>
+    public static JSValue SetAllowAtomicsWait(Isolate isolate, JSValue set)
+    {
+        isolate.AllowAtomicsWait = set.IsTrue;
+        return JSValue.Undefined;
+    }
+}
+
 public static partial class RuntimeTable
 {
     static void RegisterTypedArray()
@@ -77,6 +113,11 @@ public static partial class RuntimeTable
         Register(FunctionId.TypedArraySet,
             static (i, a) => RuntimeTypedArray.TypedArrayCopyElements(i, a[0].As<JSTypedArray>(), a[1], a[2].Number, a[3].Number));
         Register(FunctionId.TypedArraySortFast, static (i, a) => RuntimeTypedArray.TypedArraySortFast(a[0].As<JSTypedArray>()));
+        Register(FunctionId.AtomicsNumWaitersForTesting,
+            static (i, a) => RuntimeFutex.AtomicsNumWaitersForTesting(a[0].As<JSTypedArray>(), a[1]));
+        Register(FunctionId.AtomicsNumUnresolvedAsyncPromisesForTesting,
+            static (i, a) => RuntimeFutex.AtomicsNumUnresolvedAsyncPromisesForTesting(a[0].As<JSTypedArray>(), a[1]));
+        Register(FunctionId.SetAllowAtomicsWait, static (i, a) => RuntimeFutex.SetAllowAtomicsWait(i, a[0]));
         Register(FunctionId.ArrayBufferMaxByteLength, static (i, a) => RuntimeTypedArray.ArrayBufferMaxByteLength());
         Register(FunctionId.HasFixedInt8Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.INT8_ELEMENTS));
         Register(FunctionId.HasFixedUint8Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.UINT8_ELEMENTS));
