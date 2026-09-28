@@ -232,14 +232,30 @@ for now, to be revisited when the reason goes away.
 ## Interpreter execution, ICs, runtime, compiler and modules
 
 - Dispatch: one C# loop specialized per operand scale
-  (`InterpreterExecution.Loop<TS>`) instead of generated handlers; the rare
-  bytecodes sit in `LoopCold<TS>` so the JIT's inlining budget goes to the
-  frequent ones. Wide/ExtraWide run one bytecode in the scaled loop.
+  (`InterpreterExecution.Loop<TS>`) instead of generated handlers. The loop
+  keeps only the handlers whose fast path is a few instructions (and the
+  monomorphic IC hits: own field and prototype constant loads, field stores
+  and field-adding transitions, fast element loads and stores, global
+  PropertyCell loads); the others are NoInlining methods in
+  InterpreterHandlers.cs, and the rare bytecodes sit in `LoopCold<TS>`, so
+  that RyuJIT keeps the accumulator, offset, bytecode and frame pointer in
+  registers (it stops promoting structs and inlining in a method with too
+  many locals). The loop is AggressiveOptimization (it would otherwise run
+  as OSR code). Wide/ExtraWide run one bytecode in the scaled loop, except
+  LdaSmi, which the single-scale loop decodes itself.
+- The bytecode offset is stored in the frame record only by the handlers
+  that call out (`SavePc`, V8's SaveBytecodeOffset), not before every
+  bytecode.
 - Frames: the register file, receiver, arguments and fixed slots live on the
   isolate's `RegisterStack` (a `JSValue[]`) in V8's layout, not on the machine
   stack; each frame also has an `InterpreterFrameRecord` the stack walker
   reads. The argument count slot (fp - 4) is not written by inline calls
-  (nothing reads it).
+  (nothing reads it). The register stack is sized to `--stack-size` and it
+  and the frame records are allocated on the pinned object heap: on the
+  large object heap every gen-0 collection took time proportional to their
+  size. A popped inline frame's record keeps its Function and Bytecode (every
+  push sets both), so a call of the same function at the same depth skips
+  those reference stores; they stay reachable until the record is reused.
 - Calls: a call or `new` from bytecode to an ordinary compiled bytecode
   function runs in the caller's dispatch loop (`InterpreterInlineCalls`)
   without a .NET frame; generators, async functions, class and derived
