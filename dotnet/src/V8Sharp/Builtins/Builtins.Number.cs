@@ -1,10 +1,9 @@
 // Port of src/builtins/builtins-number.cc (toExponential, toFixed,
 // toLocaleString without ICU, toPrecision), the Number builtins of
 // src/builtins/number.tq (toString(radix), isFinite, isInteger, isNaN,
-// isSafeInteger, valueOf, parseFloat, parseInt), NumberConstructor from
-// src/builtins/constructor.tq, and the runtime functions they call
-// (Runtime_StringParseInt, Runtime_StringParseFloat,
-// Runtime_DoubleToStringWithRadix).
+// isSafeInteger, valueOf), NumberConstructor from src/builtins/constructor.tq
+// and Runtime_DoubleToStringWithRadix. parseInt/parseFloat (shared with the
+// global object) are in Builtins.Global.cs.
 using System.Runtime.CompilerServices;
 using V8Sharp.Base.Numbers;
 
@@ -25,8 +24,6 @@ public static partial class BuiltinRegistry
         Register(Builtin.NumberIsInteger, BuiltinsNumber.NumberIsInteger);
         Register(Builtin.NumberIsNaN, BuiltinsNumber.NumberIsNaN);
         Register(Builtin.NumberIsSafeInteger, BuiltinsNumber.NumberIsSafeInteger);
-        Register(Builtin.NumberParseFloat, BuiltinsNumber.NumberParseFloat);
-        Register(Builtin.NumberParseInt, BuiltinsNumber.NumberParseInt);
     }
 }
 
@@ -325,83 +322,4 @@ public static class BuiltinsNumber
     /// <summary>NumberPrototypeValueOf (https://tc39.es/ecma262/#sec-number.prototype.valueof).</summary>
     public static JSValue NumberPrototypeValueOf(Isolate isolate, in BuiltinArguments args) =>
         JSValue.FromNumber(ThisNumberValue(isolate, args.Receiver, "Number.prototype.valueOf"));
-
-    /// <summary>NumberParseFloat (https://tc39.es/ecma262/#sec-number.parsefloat).</summary>
-    public static JSValue NumberParseFloat(Isolate isolate, in BuiltinArguments args)
-    {
-        JSValue value = args.AtOrUndefined(1);
-        if (value.IsNumber)
-        {
-            // The input is already a Number. Take care of -0.
-            // The sense of comparison is important for the NaN case.
-            return value.Number == 0 ? JSValue.Zero : value;
-        }
-        JSString s = value.HeapObjectOrNull as JSString ?? ObjectOps.ToString(isolate, value);
-        return JSValue.FromNumber(ParseFloat(s));
-    }
-
-    /// <summary>The String label of NumberParseFloat plus Runtime_StringParseFloat.</summary>
-    public static double ParseFloat(JSString s)
-    {
-        // Check if the string is a cached array index.
-        uint hash = s.RawHashField;
-        if (Name.IsIntegerIndex(hash) && Name.ContainsCachedArrayIndex(hash))
-        {
-            return (hash >> Name.ArrayIndexValueShift) & Name.kArrayIndexValueMask;
-        }
-        // Fall back to the runtime to convert string to a number.
-        return Conversions.StringToDouble(s.FlatSpan(), ConversionFlag.AllowTrailingJunk, double.NaN);
-    }
-
-    /// <summary>NumberParseInt (https://tc39.es/ecma262/#sec-number.parseint).</summary>
-    public static JSValue NumberParseInt(Isolate isolate, in BuiltinArguments args) =>
-        ParseInt(isolate, args.AtOrUndefined(1), args.AtOrUndefined(2));
-
-    /// <summary>number.tq ParseInt.</summary>
-    public static JSValue ParseInt(Isolate isolate, JSValue input, JSValue radix)
-    {
-        // Check if radix should be 10 (i.e. undefined, 0 or 10).
-        if (radix.IsUndefined || (radix.IsSmi && radix.Number is 10 or 0))
-        {
-            if (input.IsSmi) return input;
-            if (input.IsNumber)
-            {
-                // Check if the input value is in Signed32 range.
-                double asFloat64 = input.Number;
-                int asInt32 = Conversions.DoubleToInt32(asFloat64);
-                // The sense of comparison is important for the NaN case.
-                if (asFloat64 == asInt32) return JSValue.FromInt(asInt32);
-
-                // Check if the absolute value of input is in the [1,1<<31[ range. Call
-                // the runtime for the range [0,1[ because the result could be -0.
-                const double kMaxAbsValue = 2147483648.0;
-                double absInput = Math.Abs(asFloat64);
-                if (absInput < kMaxAbsValue && absInput >= 1.0) return JSValue.FromInt(asInt32);
-            }
-            else if (input.HeapObjectOrNull is JSString s)
-            {
-                // Check if the string is a cached array index.
-                uint hash = s.RawHashField;
-                if (Name.IsIntegerIndex(hash) && Name.ContainsCachedArrayIndex(hash))
-                {
-                    return JSValue.FromNumber((hash >> Name.ArrayIndexValueShift) & Name.kArrayIndexValueMask);
-                }
-            }
-        }
-        return StringParseInt(isolate, input, radix);
-    }
-
-    /// <summary>Runtime_StringParseInt.</summary>
-    public static JSValue StringParseInt(Isolate isolate, JSValue @string, JSValue radix)
-    {
-        // Convert {string} to a String first, and flatten it.
-        JSString subject = ObjectOps.ToString(isolate, @string);
-
-        // Convert {radix} to Int32.
-        if (!radix.IsNumber) radix = ObjectOps.ToNumber(isolate, radix);
-        int radix32 = Conversions.DoubleToInt32(radix.Number);
-        if (radix32 != 0 && (radix32 < 2 || radix32 > 36)) return JSValue.NaN;
-
-        return JSValue.FromNumber(Conversions.StringToInt(subject.FlatSpan(), radix32));
-    }
 }
