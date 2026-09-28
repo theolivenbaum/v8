@@ -560,4 +560,76 @@ public static class RuntimeScopes
 
     /// <summary>Runtime_ThrowConstAssignError.</summary>
     public static JSValue ThrowConstAssignError(Isolate isolate) => isolate.ThrowTypeError(MessageTemplate.ConstAssign);
+
+    // ---- using / await using ------------------------------------------------------------
+
+    /// <summary>Runtime_InitializeDisposableStack.</summary>
+    public static JSValue InitializeDisposableStack(Isolate isolate)
+    {
+        JSDisposableStackBase disposableStack = JSDisposableStackBase.NewJSDisposableStackBase(isolate);
+        JSDisposableStackBase.InitializeJSDisposableStackBase(isolate, disposableStack);
+        return disposableStack;
+    }
+
+    /// <summary>AddToDisposableStack.</summary>
+    static void AddToDisposableStack(Isolate isolate, JSDisposableStackBase stack, JSValue value, DisposeMethodCallType type,
+        DisposeMethodHint hint)
+    {
+        JSValue method = JSDisposableStackBase.CheckValueAndGetDisposeMethod(isolate, value, hint);
+        // Return the DisposableResource Record { [[ResourceValue]]: V, [[Hint]]:
+        // hint, [[DisposeMethod]]: method }.
+        JSDisposableStackBase.Add(isolate, stack, value, method, type, hint);
+    }
+
+    /// <summary>Runtime_AddDisposableValue.</summary>
+    public static JSValue AddDisposableValue(Isolate isolate, JSDisposableStackBase stack, JSValue value)
+    {
+        // a. If V is either null or undefined and hint is sync-dispose, return
+        // unused.
+        if (!value.IsNullOrUndefined)
+        {
+            AddToDisposableStack(isolate, stack, value, DisposeMethodCallType.kValueIsReceiver, DisposeMethodHint.kSyncDispose);
+        }
+        return value;
+    }
+
+    /// <summary>Runtime_AddAsyncDisposableValue.</summary>
+    public static JSValue AddAsyncDisposableValue(Isolate isolate, JSDisposableStackBase stack, JSValue value)
+    {
+        // CreateDisposableResource
+        // 1. If method is not present, then
+        //   a. If V is either null or undefined, then
+        //     i. Set V to undefined.
+        //     ii. Set method to undefined.
+        AddToDisposableStack(isolate, stack, value.IsNullOrUndefined ? JSValue.Undefined : value,
+            DisposeMethodCallType.kValueIsReceiver, DisposeMethodHint.kAsyncDispose);
+        return value;
+    }
+
+    /// <summary>Runtime_DisposeDisposableStack.</summary>
+    public static JSValue DisposeDisposableStack(Isolate isolate, JSDisposableStackBase disposableStack,
+        double continuationToken, JSValue continuationError, JSValue continuationMessage, double hasAwaitUsing)
+    {
+        // If state is not kDisposed, then the disposing of the resources has
+        // not started yet. So, if the continuation token is kRethrow we need
+        // to set error and error message on the disposable stack.
+        if (disposableStack.State != DisposableStackState.kDisposed &&
+            continuationToken == (int)TryFinallyContinuationToken.RethrowToken)
+        {
+            disposableStack.Error = continuationError;
+            disposableStack.ErrorMessage = continuationMessage.HeapObjectOrNull as JSMessageObject;
+        }
+        disposableStack.State = DisposableStackState.kDisposed;
+        return JSDisposableStackBase.DisposeResources(isolate, disposableStack, (DisposableStackResourcesType)(int)hasAwaitUsing);
+    }
+
+    /// <summary>Runtime_HandleExceptionsInDisposeDisposableStack.</summary>
+    public static JSValue HandleExceptionsInDisposeDisposableStack(Isolate isolate, JSDisposableStackBase disposableStack,
+        JSValue exception, JSValue message)
+    {
+        // Termination is not a JavaScript value in V8Sharp, so every exception
+        // that reaches here is catchable by JavaScript.
+        JSDisposableStackBase.HandleErrorInDisposal(isolate, disposableStack, exception, message.HeapObjectOrNull as JSMessageObject);
+        return disposableStack;
+    }
 }

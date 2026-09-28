@@ -189,6 +189,17 @@ public static partial class RuntimeTable
 
     static void RegisterInternal()
     {
+        // runtime-scopes.cc: using / await using declarations.
+        Register(FunctionId.InitializeDisposableStack, static (i, a) => RuntimeScopes.InitializeDisposableStack(i));
+        Register(FunctionId.AddDisposableValue,
+            static (i, a) => RuntimeScopes.AddDisposableValue(i, a[0].As<JSDisposableStackBase>(), a[1]));
+        Register(FunctionId.AddAsyncDisposableValue,
+            static (i, a) => RuntimeScopes.AddAsyncDisposableValue(i, a[0].As<JSDisposableStackBase>(), a[1]));
+        Register(FunctionId.DisposeDisposableStack,
+            static (i, a) => RuntimeScopes.DisposeDisposableStack(i, a[0].As<JSDisposableStackBase>(), a[1].Number, a[2], a[3],
+                a[4].Number));
+        Register(FunctionId.HandleExceptionsInDisposeDisposableStack,
+            static (i, a) => RuntimeScopes.HandleExceptionsInDisposeDisposableStack(i, a[0].As<JSDisposableStackBase>(), a[1], a[2]));
         Register(FunctionId.NewTypeError, static (i, a) => RuntimeInternal.NewTypeError(i, a));
         Register(FunctionId.NewReferenceError, static (i, a) => RuntimeInternal.NewReferenceError(i, a));
         Register(FunctionId.NewError, static (i, a) => RuntimeInternal.NewPlainError(i, a));
@@ -363,6 +374,8 @@ public static partial class RuntimeTable
         Register(FunctionId.CreateJSGeneratorObject,
             static (i, a) => Interpreter.InterpreterGenerators.CreateJSGeneratorObject(i, a[0].As<JSFunction>(), a[1]));
         Register(FunctionId.GeneratorGetFunction, static (i, a) => a[0].As<JSGeneratorObject>().Function);
+        Register(FunctionId.CreateAsyncFromSyncIterator,
+            static (i, a) => Builtins.AsyncFromSyncIteratorBuiltins.CreateAsyncFromSyncIterator(i, a[0]));
     }
 
     /// <summary>runtime-regexp.cc, runtime-strings.cc and the regexp entries of runtime-test.cc.
