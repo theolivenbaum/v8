@@ -177,4 +177,13 @@ public class FunctionBuiltinsTest : CoreBuiltinsTest
         Assert.Equal("EvalError: Code generation from strings disallowed for this context", Throws(() => Call("eval", Str("1"))));
         Assert.Same(o, Call("eval", o).Object);
     }
+
+    [Fact]
+    public void FunctionPrototypeIsCallable()
+    {
+        Assert.True(Execution.Call(i_isolate, G("Function.prototype"), JSValue.Undefined, [Num(1)]).IsUndefined);
+        Assert.Equal("", S(Get(G("Function.prototype"), "name")));
+        Assert.Equal("0", S(Get(G("Function.prototype"), "length")));
+        Assert.Equal("function () { [native code] }", S(CallOn("Function.prototype.toString", G("Function.prototype"))));
+    }
 }

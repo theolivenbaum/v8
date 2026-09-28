@@ -7,7 +7,8 @@
 // (builtins-x64.cc Generate_FunctionPrototypeApply/Call) with
 // CallWithArrayLike/ConstructWithArrayLike (builtins-call-gen.cc
 // CallOrConstructWithArrayLike) and Runtime_ThrowTargetNonFunction
-// (runtime-internal.cc).
+// (runtime-internal.cc). Also the trivial builtins of builtins-internal.cc
+// behind %FunctionPrototype% and the poison-pill/unsupported throwers.
 using System.Buffers;
 using V8Sharp.Parsing;
 
@@ -31,6 +32,11 @@ public static partial class BuiltinRegistry
         Register(Builtin.FunctionPrototypeLegacyArgumentsSetter, BuiltinsFunction.FunctionPrototypeLegacyArgumentsSetter);
         Register(Builtin.FunctionPrototypeLegacyCallerGetter, BuiltinsFunction.FunctionPrototypeLegacyCallerGetter);
         Register(Builtin.FunctionPrototypeLegacyCallerSetter, BuiltinsFunction.FunctionPrototypeLegacyCallerSetter);
+        Register(Builtin.EmptyFunction, BuiltinsFunction.EmptyFunction);
+        Register(Builtin.EmptyFunction1, BuiltinsFunction.EmptyFunction);
+        Register(Builtin.IllegalInvocationThrower, BuiltinsFunction.IllegalInvocationThrower);
+        Register(Builtin.UnsupportedThrower, BuiltinsFunction.UnsupportedThrower);
+        Register(Builtin.StrictPoisonPillThrower, BuiltinsFunction.StrictPoisonPillThrower);
     }
 }
 
@@ -492,4 +498,21 @@ public static class BuiltinsFunction
         isolate.CountUsage("kFunctionPrototypeCaller");
         return JSValue.Undefined;
     }
+
+    // ---------------------------------------------------------------------
+    // builtins-internal.cc
+
+    /// <summary>EmptyFunction / EmptyFunction1: %FunctionPrototype% and other no-op functions.</summary>
+    public static JSValue EmptyFunction(Isolate isolate, in BuiltinArguments args) => JSValue.Undefined;
+
+    public static JSValue IllegalInvocationThrower(Isolate isolate, in BuiltinArguments args) =>
+        isolate.ThrowTypeError(MessageTemplate.IllegalInvocation);
+
+    /// <summary>UnsupportedThrower: the CallSite constructor and other unsupported entry points.</summary>
+    public static JSValue UnsupportedThrower(Isolate isolate, in BuiltinArguments args) =>
+        isolate.Throw(isolate.Factory.NewError(MessageTemplate.Unsupported));
+
+    /// <summary>StrictPoisonPillThrower: %ThrowTypeError%.</summary>
+    public static JSValue StrictPoisonPillThrower(Isolate isolate, in BuiltinArguments args) =>
+        isolate.ThrowTypeError(MessageTemplate.StrictPoisonPill);
 }
