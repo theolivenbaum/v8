@@ -169,6 +169,78 @@ public abstract class HashTableBase : FixedArrayBase
         }
     }
 
+    /// <summary>Swaps the per-entry payload (values, details) of two entries; keys are swapped by the caller.</summary>
+    protected virtual void SwapPayload(int i, int j) { }
+
+    void Swap(int i, int j)
+    {
+        (_keys[i], _keys[j]) = (_keys[j], _keys[i]);
+        SwapPayload(i, j);
+    }
+
+    int EntryForProbe(in JSValue key, int probe, int expected)
+    {
+        uint hash = HashForKey(key);
+        int capacity = Capacity;
+        int entry = FirstProbe(hash, capacity);
+        for (int i = 1; i < probe; i++)
+        {
+            if (entry == expected) return expected;
+            entry = NextProbe(entry, i, capacity);
+        }
+        return entry;
+    }
+
+    /// <summary>
+    /// HashTable::Rehash (in place): moves every key to the first free position
+    /// of its probe sequence and wipes deleted entries.
+    /// </summary>
+    public void Rehash()
+    {
+        int capacity = Capacity;
+        bool done = false;
+        for (int probe = 1; !done; probe++)
+        {
+            // All elements at entries given by one of the first _probe_ probes
+            // are placed correctly. Other elements might need to be moved.
+            done = true;
+            for (int current = 0; current < capacity; /* see below */)
+            {
+                if (!IsKey(current))
+                {
+                    ++current;
+                    continue;
+                }
+                int target = EntryForProbe(_keys[current], probe, current);
+                if (current == target)
+                {
+                    ++current;
+                    continue;
+                }
+                if (!IsKey(target) || EntryForProbe(_keys[target], probe, target) != target)
+                {
+                    // Put the current element into the correct position.
+                    Swap(current, target);
+                    // The other element will be processed on the next iteration,
+                    // so don't advance |current|.
+                }
+                else
+                {
+                    // The place for the current element is occupied. Leave the element
+                    // for the next probe.
+                    done = false;
+                    ++current;
+                }
+            }
+        }
+        // Wipe deleted entries.
+        for (int current = 0; current < capacity; current++)
+        {
+            if (_keys[current].IsTheHole) _keys[current] = JSValue.Undefined;
+        }
+        SetNumberOfDeletedElements(0);
+    }
+
     protected static int CheckedNewCapacity(int atLeastSpaceFor)
     {
         const int kMaxAtLeastSpaceFor = kMaxCapacity * 2 / 3;
@@ -180,6 +252,12 @@ public abstract class HashTableBase : FixedArrayBase
 /// <summary>V8's NameDictionary: the property dictionary of dictionary-mode objects.</summary>
 public sealed class NameDictionary : HashTableBase
 {
+    protected override void SwapPayload(int i, int j)
+    {
+        (_values[i], _values[j]) = (_values[j], _values[i]);
+        (_details[i], _details[j]) = (_details[j], _details[i]);
+    }
+
     public const int kInitialCapacity = 2;
 
     readonly JSValue[] _values;
@@ -616,6 +694,12 @@ public sealed class GlobalDictionary : HashTableBase
 /// </summary>
 public sealed class NumberDictionary : HashTableBase
 {
+    protected override void SwapPayload(int i, int j)
+    {
+        (_values[i], _values[j]) = (_values[j], _values[i]);
+        (_details[i], _details[j]) = (_details[j], _details[i]);
+    }
+
     public const int kRequiresSlowElementsMask = 1;
     public const int kRequiresSlowElementsTagSize = 1;
     public const uint kRequiresSlowElementsLimit = (1u << 29) - 1;
@@ -854,6 +938,24 @@ public sealed class NumberDictionary : HashTableBase
 /// </summary>
 public sealed class ObjectHashTable : HashTableBase
 {
+    protected override void SwapPayload(int i, int j) => (_values[i], _values[j]) = (_values[j], _values[i]);
+
+    /// <summary>ObjectHashTable::FindEntry(isolate, key): not found if the key has no hash yet.</summary>
+    public InternalIndex FindEntry(Isolate isolate, JSValue key)
+    {
+        JSValue hash = ObjectOps.GetHash(key);
+        // If the object does not have an identity hash, it was never used as a key.
+        if (hash.IsUndefined) return InternalIndex.NotFound;
+        return FindEntry(isolate, key, (uint)hash.Number);
+    }
+
+    /// <summary>Stores a key and value directly into an entry (tests fill tables by hand).</summary>
+    internal void SetEntry(InternalIndex entry, JSValue key, JSValue value)
+    {
+        _keys[entry.AsInt] = key;
+        _values[entry.AsInt] = value;
+    }
+
     readonly JSValue[] _values;
 
     ObjectHashTable(int capacity) : base(InstanceType.FixedArrayType, capacity) => _values = new JSValue[capacity];
@@ -932,4 +1034,59 @@ public sealed class ObjectHashTable : HashTableBase
     }
 
     public JSValue ValueAt(InternalIndex entry) => _values[entry.AsInt];
+}
+
+/// <summary>V8's ObjectHashSet: an ObjectHashTable without values.</summary>
+public sealed class ObjectHashSet : HashTableBase
+{
+    ObjectHashSet(int capacity) : base(InstanceType.FixedArrayType, capacity) { }
+
+    public static ObjectHashSet New(int atLeastSpaceFor) => new(ComputeCapacity(atLeastSpaceFor));
+
+    protected override uint HashForKey(in JSValue key) => ObjectOps.GetOrCreateHashRaw(key);
+
+    InternalIndex FindEntry(JSValue key, uint hash)
+    {
+        int capacity = Capacity;
+        int count = 1;
+        for (int entry = FirstProbe(hash, capacity); ; entry = NextProbe(entry, count++, capacity))
+        {
+            JSValue element = _keys[entry];
+            if (element.IsUndefined) return InternalIndex.NotFound;
+            if (element.IsTheHole) continue;
+            if (ObjectOps.SameValue(key, element)) return new InternalIndex(entry);
+        }
+    }
+
+    /// <summary>ObjectHashSet::Has.</summary>
+    public bool Has(Isolate isolate, JSValue key)
+    {
+        JSValue hash = ObjectOps.GetHash(key);
+        // If the object does not have an identity hash, it was never used as a key.
+        if (hash.IsUndefined) return false;
+        return FindEntry(key, (uint)hash.Number).IsFound;
+    }
+
+    /// <summary>ObjectHashSet::Add.</summary>
+    public static ObjectHashSet Add(Isolate isolate, ObjectHashSet set, JSValue key)
+    {
+        uint hash = ObjectOps.GetOrCreateHashRaw(key);
+        if (set.FindEntry(key, hash).IsFound) return set;
+        if (!set.HasSufficientCapacityToAdd(1))
+        {
+            var grown = New(set.NumberOfElements + 1);
+            for (int i = 0; i < set.Capacity; i++)
+            {
+                if (!set.IsKey(i)) continue;
+                InternalIndex ins = grown.FindInsertionEntry(ObjectOps.GetOrCreateHashRaw(set._keys[i]));
+                grown._keys[ins.AsInt] = set._keys[i];
+            }
+            grown.SetNumberOfElements(set.NumberOfElements);
+            set = grown;
+        }
+        InternalIndex e = set.FindInsertionEntry(hash);
+        set._keys[e.AsInt] = key;
+        set.ElementAdded();
+        return set;
+    }
 }
