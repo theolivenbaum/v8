@@ -118,9 +118,9 @@ public sealed class ClassBoilerplate() : HeapObject(InstanceType.ClassBoilerplat
             StartPosition = expr.start_position(),
             EndPosition = expr.end_position(),
             StaticIsDictionary = staticComputed > 0 ||
-                                 staticCount + kMinimumClassPropertiesCount > DescriptorArray.kMaxNumberOfDescriptors,
+                                 staticCount + kMinimumClassPropertiesCount > Map.kMaxNumberOfDescriptors,
             InstanceIsDictionary = instanceComputed > 0 ||
-                                   instanceCount + kMinimumPrototypePropertiesCount > DescriptorArray.kMaxNumberOfDescriptors,
+                                   instanceCount + kMinimumPrototypePropertiesCount > Map.kMaxNumberOfDescriptors,
         };
     }
 

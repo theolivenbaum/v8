@@ -694,7 +694,10 @@ public sealed partial class Factory(Isolate isolate)
     /// <summary>Factory::NewScriptContext.</summary>
     public Context NewScriptContext(NativeContext outer, ScopeInfo scopeInfo)
     {
-        var context = new Context(ContextKind.ScriptContext, scopeInfo.ContextLength(), outer);
+        // A script scope always has its extension slot (Scope::HasContextExtensionSlot),
+        // so the context has at least the extended header even without locals.
+        int length = Math.Max(scopeInfo.ContextLength(), scopeInfo.ContextHeaderLength());
+        var context = new Context(ContextKind.ScriptContext, length, outer);
         context.ScopeInfo = scopeInfo;
         context.Previous = outer;
         return context;

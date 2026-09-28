@@ -23,10 +23,10 @@ public static class RuntimeClasses
         if (name.Length == 0)
         {
             return isolate.Throw(ErrorUtils.MakeGenericError(isolate, realmTypeErrorFunction,
-                MessageTemplate.AnonymousConstructorNonCallable, []));
+                MessageTemplate.AnonymousConstructorNonCallable, [], FrameSkipMode.SKIP_NONE));
         }
         return isolate.Throw(ErrorUtils.MakeGenericError(isolate, realmTypeErrorFunction,
-            MessageTemplate.ConstructorNonCallable, [name]));
+            MessageTemplate.ConstructorNonCallable, [name], FrameSkipMode.SKIP_NONE));
     }
 
     /// <summary>Runtime_ThrowStaticPrototypeError.</summary>

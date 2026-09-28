@@ -6,6 +6,8 @@
 // feedback (identical map or an object literal map, with side-step
 // transitions); V8Sharp always takes CloneObjectSlowPath and records the
 // slot as megamorphic, which is what V8 does for every unsupported source.
+using V8Sharp.Interpreter;
+
 namespace V8Sharp.IC;
 
 public static class CloneObjectIC
@@ -49,7 +51,7 @@ public static class CloneObjectIC
 
         if (source.IsNullOrUndefined) return newObject;
 
-        JSReceiver.SetOrCopyDataProperties(isolate, newObject, source, PropertiesEnumerationMode.PropertyAdditionOrder,
+        JSReceiver.SetOrCopyDataProperties(isolate, newObject, source, JSReceiver.PropertiesEnumerationMode.PropertyAdditionOrder,
             default, false);
         return newObject;
     }

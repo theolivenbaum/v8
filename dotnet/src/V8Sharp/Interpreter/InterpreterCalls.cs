@@ -188,7 +188,7 @@ public static class InterpreterCalls
             if (!shared.IsCompiled && !shared.HasBuiltinId)
             {
                 // CompileLazy, then call through the bytecode path.
-                Compiling.CompileLazyOrThrow(isolate, function);
+                Codegen.Compiler.CompileLazyOrThrow(isolate, function);
                 if (shared.IsClassConstructor) return RuntimeClasses.ThrowConstructorNonCallableError(isolate, function);
                 if (!shared.Native && shared.LanguageMode == V8Sharp.Common.LanguageMode.Sloppy && !receiver.IsJSReceiver)
                 {
@@ -344,7 +344,7 @@ public static class InterpreterCalls
             }
             if (!shared.IsCompiled && !shared.HasBuiltinId)
             {
-                Compiling.CompileLazyOrThrow(isolate, function);
+                Codegen.Compiler.CompileLazyOrThrow(isolate, function);
                 return ConstructInterpreted(isolate, function, newTarget, 0, 0, args, useSpan: true);
             }
         }

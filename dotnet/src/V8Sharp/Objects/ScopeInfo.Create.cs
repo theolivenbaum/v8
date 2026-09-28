@@ -187,7 +187,7 @@ public sealed partial class ScopeInfo : IScopeInfo
         // If present, add the function variable name and its index.
         if (functionNameInfo != VariableAllocationInfo.NONE)
         {
-            Variable? var = scope.AsDeclarationScopeOrNull()?.function_var();
+            Variable? var = scope.is_declaration_scope() ? scope.AsDeclarationScope().function_var() : null;
             int varIndex = -1;
             JSValue name = JSValue.Zero;
             if (var is not null)

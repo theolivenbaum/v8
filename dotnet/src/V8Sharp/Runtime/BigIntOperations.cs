@@ -5,8 +5,8 @@
 // interpreter's arithmetic and the BigInt runtime functions.
 //
 // TODO(merge): the digit arithmetic goes through BigInt's System.Numerics
-// bridge (BigIntOps.cs). V8Sharp.Base.BigInts has the ported digit algorithms;
-// switch to them together with the rest of BigIntOps. Results and errors are
+// bridge (BigInt.cs). V8Sharp.Base.BigInts has the ported digit algorithms;
+// switch to them together with the rest of BigInt. Results and errors are
 // V8's (kMaxLengthBits limits, RangeError/TypeError messages).
 using System.Numerics;
 using V8Sharp.Common;
@@ -167,7 +167,7 @@ public static class BigIntOperations
     /// <summary>Whether the BigInt fits in a signed 64-bit integer (BigInt64 feedback).</summary>
     public static bool FitsInInt64(BigInt x)
     {
-        BigIntOps.AsInt64(x, out bool lossless);
+        BigInt.AsInt64(x, out bool lossless);
         return lossless;
     }
 

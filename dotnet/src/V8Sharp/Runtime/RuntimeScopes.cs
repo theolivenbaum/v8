@@ -51,7 +51,7 @@ public static class RuntimeScopes
         {
             Index = Context.kNotFound,
             Attributes = PropertyAttributes.ABSENT,
-            InitFlag = InitializationFlag.CreatedInitialized,
+            InitFlag = InitializationFlag.kCreatedInitialized,
             Mode = VariableMode.Var,
         };
 
@@ -143,7 +143,7 @@ public static class RuntimeScopes
                     {
                         result.Index = functionIndex;
                         result.Attributes = PropertyAttributes.READ_ONLY;
-                        result.InitFlag = InitializationFlag.CreatedInitialized;
+                        result.InitFlag = InitializationFlag.kCreatedInitialized;
                         result.Mode = VariableMode.Const;
                         result.IsSloppyFunctionName = scopeInfo.LanguageMode == LanguageMode.Sloppy;
                         return context;
@@ -153,7 +153,7 @@ public static class RuntimeScopes
                 // Lookup variable in module imports and exports.
                 if (context.IsModuleContext)
                 {
-                    int cellIndex = scopeInfo.ModuleIndex(name, out VariableMode mode, out InitializationFlag flag, out _);
+                    int cellIndex = scopeInfo.ModuleIndex(name, out VariableMode mode, out InitializationFlag flag, out _, out _);
                     if (cellIndex != 0)
                     {
                         result.Index = cellIndex;
@@ -214,7 +214,7 @@ public static class RuntimeScopes
             // receiver is the global object; see ECMA-262, 3rd., 10.1.6 and 10.2.3.
             receiver = JSValue.Undefined;
             // Check for uninitialized bindings.
-            if (r.InitFlag == InitializationFlag.NeedsInitialization && holderContext.IsElementTdzHole(r.Index))
+            if (r.InitFlag == InitializationFlag.kNeedsInitialization && holderContext.IsElementTdzHole(r.Index))
             {
                 return isolate.ThrowReferenceError(MessageTemplate.NotDefined, name);
             }
@@ -279,7 +279,7 @@ public static class RuntimeScopes
         if (r.Index != Context.kNotFound)
         {
             var holderContext = (Context)holder!;
-            if (r.InitFlag == InitializationFlag.NeedsInitialization && holderContext.IsElementTdzHole(r.Index))
+            if (r.InitFlag == InitializationFlag.kNeedsInitialization && holderContext.IsElementTdzHole(r.Index))
             {
                 return isolate.ThrowReferenceError(MessageTemplate.NotDefined, name);
             }
@@ -535,10 +535,10 @@ public static class RuntimeScopes
         }
         else
         {
-            return isolate.ThrowEvalError(MessageTemplate.VarNotAllowedInEvalScope, name);
+            return isolate.Throw(isolate.Factory.NewEvalError(MessageTemplate.VarNotAllowedInEvalScope, name));
         }
 
-        JSObject.SetOwnPropertyIgnoreAttributes(obj, name, value, PropertyAttributes.NONE);
+        JSObject.SetOwnPropertyIgnoreAttributes(isolate, obj, name, value, PropertyAttributes.NONE);
         return JSValue.Undefined;
     }
 

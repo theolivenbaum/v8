@@ -181,7 +181,7 @@ public static class RuntimeObject
         JSValue setter, JSValue attrs)
     {
         var receiver = obj.As<JSObject>();
-        JSObject.DefineOwnAccessorIgnoreAttributes(receiver, name.As<Name>(), getter, setter,
+        JSObject.DefineOwnAccessorIgnoreAttributes(isolate, receiver, name.As<Name>(), getter, setter,
             (PropertyAttributes)(int)attrs.Number);
         return JSValue.Undefined;
     }
@@ -197,7 +197,7 @@ public static class RuntimeObject
         {
             JSFunction.SetName(isolate, fn, key, isGetter ? ReadOnlyRoots.get_string : ReadOnlyRoots.set_string);
         }
-        JSObject.DefineOwnAccessorIgnoreAttributes(receiver, key, isGetter ? function : JSValue.Null,
+        JSObject.DefineOwnAccessorIgnoreAttributes(isolate, receiver, key, isGetter ? function : JSValue.Null,
             isGetter ? JSValue.Null : function, (PropertyAttributes)(int)attrs.Number);
         return JSValue.Undefined;
     }
@@ -254,7 +254,7 @@ public static class RuntimeObject
     {
         if (source.IsNullOrUndefined) return JSValue.Undefined;
         JSReceiver.SetOrCopyDataProperties(isolate, target.As<JSReceiver>(), source,
-            PropertiesEnumerationMode.PropertyAdditionOrder, default, useSet);
+            JSReceiver.PropertiesEnumerationMode.PropertyAdditionOrder, default, useSet);
         return JSValue.Undefined;
     }
 
@@ -283,7 +283,7 @@ public static class RuntimeObject
         }
 
         JSObject target = isolate.Factory.NewJSObject(isolate.NativeContext.ObjectFunction);
-        JSReceiver.SetOrCopyDataProperties(isolate, target, source, PropertiesEnumerationMode.PropertyAdditionOrder,
+        JSReceiver.SetOrCopyDataProperties(isolate, target, source, JSReceiver.PropertiesEnumerationMode.PropertyAdditionOrder,
             excludedProperties, false);
         return target;
     }

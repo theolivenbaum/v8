@@ -187,11 +187,9 @@ public static partial class RuntimeTable
     {
         Register(FunctionId.NewTypeError, static (i, a) => RuntimeInternal.NewTypeError(i, a));
         Register(FunctionId.NewReferenceError, static (i, a) => RuntimeInternal.NewReferenceError(i, a));
-        Register(FunctionId.NewSyntaxError, static (i, a) => RuntimeInternal.NewSyntaxError(i, a));
         Register(FunctionId.NewError, static (i, a) => RuntimeInternal.NewPlainError(i, a));
         Register(FunctionId.ThrowTypeError, static (i, a) => RuntimeInternal.ThrowTypeError(i, a));
         Register(FunctionId.ThrowRangeError, static (i, a) => RuntimeInternal.ThrowRangeError(i, a));
-        Register(FunctionId.ThrowSyntaxError, static (i, a) => RuntimeInternal.ThrowSyntaxError(i, a));
         Register(FunctionId.ThrowReferenceError, static (i, a) => RuntimeInternal.ThrowReferenceError(i, a[0]));
         Register(FunctionId.ThrowIteratorResultNotAnObject, static (i, a) => RuntimeInternal.ThrowIteratorResultNotAnObject(i, a[0]));
         Register(FunctionId.ThrowThrowMethodMissing, static (i, a) => RuntimeInternal.ThrowThrowMethodMissing(i));
@@ -254,7 +252,6 @@ public static partial class RuntimeTable
         Register(FunctionId.AssertEscapeAnalysisElided, RuntimeTest.ReturnUndefined);
         Register(FunctionId.HeapObjectVerify, RuntimeTest.ReturnTrue);
         Register(FunctionId.IsBeingInterpreted, RuntimeTest.ReturnTrue);
-        Register(FunctionId.IsTurboFanFunction, RuntimeTest.ReturnFalse);
         Register(FunctionId.IsTurbofanEnabled, RuntimeTest.ReturnFalse);
         Register(FunctionId.IsConcurrentRecompilationSupported, RuntimeTest.ReturnFalse);
         Register(FunctionId.IsDictPropertyConstTrackingEnabled, RuntimeTest.ReturnFalse);

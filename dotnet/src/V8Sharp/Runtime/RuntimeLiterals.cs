@@ -115,8 +115,10 @@ public static class RuntimeLiterals
             else
             {
                 NameDictionary dict = obj.PropertyDictionary;
-                foreach (InternalIndex i in dict.IterateEntries())
+                for (int k = 0; k < dict.Capacity; k++)
                 {
+                    if (!dict.IsKey(k)) continue;
+                    var i = new InternalIndex(k);
                     if (dict.ValueAt(i).HeapObjectOrNull is JSObject value) current = VisitForSites(isolate, value, current);
                 }
             }
@@ -132,8 +134,10 @@ public static class RuntimeLiterals
         }
         else if (obj.Elements is NumberDictionary elementDictionary)
         {
-            foreach (InternalIndex i in elementDictionary.IterateEntries())
+            for (int k = 0; k < elementDictionary.Capacity; k++)
             {
+                if (!elementDictionary.IsKey(k)) continue;
+                var i = new InternalIndex(k);
                 if (elementDictionary.ValueAt(i).HeapObjectOrNull is JSObject value) current = VisitForSites(isolate, value, current);
             }
         }
@@ -185,8 +189,10 @@ public static class RuntimeLiterals
             else
             {
                 NameDictionary dict = copy.PropertyDictionary;
-                foreach (InternalIndex i in dict.IterateEntries())
+                for (int k = 0; k < dict.Capacity; k++)
                 {
+                    if (!dict.IsKey(k)) continue;
+                    var i = new InternalIndex(k);
                     if (dict.ValueAt(i).HeapObjectOrNull is JSObject value) dict.ValueAtPut(i, DeepCopy(isolate, value));
                 }
             }
@@ -208,8 +214,10 @@ public static class RuntimeLiterals
         }
         else if (copy.Elements is NumberDictionary elementDictionary)
         {
-            foreach (InternalIndex i in elementDictionary.IterateEntries())
+            for (int k = 0; k < elementDictionary.Capacity; k++)
             {
+                if (!elementDictionary.IsKey(k)) continue;
+                var i = new InternalIndex(k);
                 if (elementDictionary.ValueAt(i).HeapObjectOrNull is JSObject value)
                 {
                     elementDictionary.ValueAtPut(i, DeepCopy(isolate, value));

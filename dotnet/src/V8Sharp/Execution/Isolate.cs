@@ -100,6 +100,7 @@ public sealed partial class Isolate
         StackGuard = new StackGuard(this);
         DefaultMicrotaskQueue = new MicrotaskQueue(this);
         RegisterStack = new JSValue[kRegisterStackSize];
+        InitializeInterpreter();
     }
 
     /// <summary>Creates an isolate and its initial native context (V8's Isolate::New + Context::New).</summary>
