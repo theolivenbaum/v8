@@ -30,6 +30,20 @@ public static class InterpreterOps
                (i != 0 || BitConverter.DoubleToInt64Bits(d) != kMinusZeroBits);
     }
 
+    /// <summary>IsSmiDouble, with the Smi's value (V8's TaggedIsSmi then SmiUntag).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryGetSmi(double d, out int value)
+    {
+        int i = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(d)) : (int)d;
+        value = i;
+        return i == d && (uint)(i - JSValue.SmiMinValue) <= (uint)(JSValue.SmiMaxValue - JSValue.SmiMinValue) &&
+               (i != 0 || BitConverter.DoubleToInt64Bits(d) != kMinusZeroBits);
+    }
+
+    /// <summary>Whether an int (the exact result of an operation on Smis) is in the Smi range.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsSmiRange(int i) => (uint)(i - JSValue.SmiMinValue) <= (uint)(JSValue.SmiMaxValue - JSValue.SmiMinValue);
+
     // ---- Embedded feedback ------------------------------------------------------------
 
     /// <summary>
@@ -107,7 +121,9 @@ public static class InterpreterOps
     {
         double result = lhs + rhs;
         if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
-        if (IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result))
+        // The sum of two Smis is exact (and never -0): a Smi when in range,
+        // as the TrySmiAdd overflow check of Generate_AddWithFeedback.
+        if (TryGetSmi(lhs, out int l) && TryGetSmi(rhs, out int r) && IsSmiRange(l + r))
         {
             UpdateBinaryFeedback(ref feedback, BOF.TypeIndex.SignedSmall);
         }
@@ -154,8 +170,9 @@ public static class InterpreterOps
     {
         double result = lhs - rhs;
         if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
+        // A difference of Smis is exact and never -0 (TrySmiSub).
         UpdateBinaryFeedback(ref feedback,
-            IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
+            TryGetSmi(lhs, out int l) && TryGetSmi(rhs, out int r) && IsSmiRange(l - r) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
         return JSValue.FromNumber(result);
     }
 
@@ -439,7 +456,7 @@ public static class InterpreterOps
         double result = d + 1;
         if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
         UpdateBinaryFeedback(ref feedback,
-            IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
+            TryGetSmi(d, out int i) && i != JSValue.SmiMaxValue ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
         return JSValue.FromNumber(result);
     }
 
@@ -454,7 +471,7 @@ public static class InterpreterOps
         double result = d - 1;
         if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
         UpdateBinaryFeedback(ref feedback,
-            IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
+            TryGetSmi(d, out int i) && i != JSValue.SmiMinValue ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
         return JSValue.FromNumber(result);
     }
 
@@ -582,13 +599,19 @@ public static class InterpreterOps
 
     /// <summary>The feedback of a comparison of two numbers (SignedSmall or Number).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void UpdateCompareFeedbackForNumbers(ref byte feedback, double l, double r) =>
+    public static void UpdateCompareFeedbackForNumbers(ref byte feedback, double l, double r)
+    {
+        // Feedback that two numbers cannot widen (Number, NumberOrBoolean,
+        // NumberOrOddball, Any) skips classifying the operands.
+        byte current = feedback;
+        if ((uint)(current - (byte)COF.TypeIndex.Number) <= 2 || current == (byte)COF.TypeIndex.Any) return;
         UpdateCompareFeedback(ref feedback, IsSmiDouble(l) && IsSmiDouble(r) ? COF.TypeIndex.SignedSmall : COF.TypeIndex.Number);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static JSValue CompareNumbers(Operation op, double l, double r, ref byte feedback)
     {
-        UpdateCompareFeedback(ref feedback, IsSmiDouble(l) && IsSmiDouble(r) ? COF.TypeIndex.SignedSmall : COF.TypeIndex.Number);
+        UpdateCompareFeedbackForNumbers(ref feedback, l, r);
         bool result = op switch
         {
             Operation.LessThan => l < r,
