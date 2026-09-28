@@ -25,9 +25,11 @@
 //                      capture_name_map (duplicate names appear once per group).
 //
 // Like V8, irregexp code is compiled lazily on the first Exec, using that
-// subject as the sample for the Boyer-Moore frequency heuristics. V8 compiles
-// separately for one-byte and two-byte subjects; this port always compiles for
-// two-byte (UTF-16) subjects, which is observably equivalent.
+// subject as the sample for the Boyer-Moore frequency heuristics, and
+// separately for one-byte and two-byte subjects. V8 decides by the string's
+// representation; strings here are always UTF-16, so a subject counts as
+// one-byte when all its code units are at most 0xFF (the caller may pass the
+// representation it knows instead).
 
 using V8Sharp.RegExp.Experimental;
 
@@ -457,7 +459,8 @@ public static class RegExpEngine
 public sealed class CompiledRegExp
 {
     readonly string? _atomPattern;
-    byte[]? _bytecode;
+    // Indexed by is_one_byte, as IrRegExpData's latin1/uc16 bytecode slots.
+    readonly byte[]?[] _bytecode = new byte[]?[2];
     int _maxRegisterCount;
     Instruction[]? _experimentalBytecode;
     uint _backtrackLimit;
@@ -492,8 +495,15 @@ public sealed class CompiledRegExp
     public RegExpError CompileError { get; private set; }
     /// <summary>The atom pattern (for Kind == Atom).</summary>
     public string? AtomPattern => _atomPattern;
-    /// <summary>The irregexp bytecode, once compiled.</summary>
-    public byte[]? Bytecode => _bytecode;
+    /// <summary>The irregexp bytecode for two-byte subjects, once compiled.</summary>
+    public byte[]? Bytecode => _bytecode[0];
+
+    /// <summary>The irregexp bytecode for the given subject width, once compiled.</summary>
+    public byte[]? GetBytecode(bool isOneByte) => _bytecode[isOneByte ? 1 : 0];
+
+    /// <summary>String::IsOneByteRepresentationUnderneath, by content.</summary>
+    public static bool IsOneByteSubject(ReadOnlySpan<char> subject) =>
+        subject.IndexOfAnyExceptInRange('\0', '\u00ff') < 0;
     /// <summary>The number of registers (captures and internal) the bytecode uses.</summary>
     public int MaxRegisterCount => _maxRegisterCount;
 
@@ -501,11 +511,14 @@ public sealed class CompiledRegExp
     /// RegExpImpl::EnsureCompiledIrregexp / CompileIrregexpFromSource (bytecode
     /// target). Returns false and sets CompileError if compilation fails.
     /// </summary>
-    public bool EnsureCompiled(ReadOnlySpan<char> sampleSubject)
+    public bool EnsureCompiled(ReadOnlySpan<char> sampleSubject) =>
+        EnsureCompiled(sampleSubject, IsOneByteSubject(sampleSubject));
+
+    public bool EnsureCompiled(ReadOnlySpan<char> sampleSubject, bool isOneByte)
     {
         if (Kind == RegExpKind.Atom) return true;
         if (Kind == RegExpKind.Experimental) return EnsureExperimentalCompiled();
-        if (_bytecode is not null) return true;
+        if (_bytecode[isOneByte ? 1 : 0] is not null) return true;
         if (CompileError != RegExpError.None) return false;
 
         // Since we can't abort gracefully during compilation, check for sufficient
@@ -528,14 +541,14 @@ public sealed class CompiledRegExp
         CanBeZeroLength = compileData.Tree!.MinMatch == 0;
         compileData.CompilationTarget = CompilationTarget.kBytecode;
         if (!RegExpEngine.CompileIrregexp(compileData, Flags, sampleSubject, Source.Length, _backtrackLimit,
-                IsLinearExecutable))
+                IsLinearExecutable, isOneByte))
         {
             Debug.Assert(compileData.Error != RegExpError.None);
             CompileError = compileData.Error;
             return false;
         }
         if (compileData.RegisterCount > _maxRegisterCount) _maxRegisterCount = compileData.RegisterCount;
-        _bytecode = compileData.Code;
+        _bytecode[isOneByte ? 1 : 0] = compileData.Code;
         return true;
     }
 
@@ -568,7 +581,12 @@ public sealed class CompiledRegExp
     /// RegExp::Exec: runs the regexp on <paramref name="subject"/> from
     /// <paramref name="index"/>. See the file comment for the result protocol.
     /// </summary>
-    public int Exec(ReadOnlySpan<char> subject, int index, Span<int> registers)
+    public int Exec(ReadOnlySpan<char> subject, int index, Span<int> registers) =>
+        Exec(subject, index, registers, Kind == RegExpKind.Irregexp && IsOneByteSubject(subject));
+
+    /// <summary>Exec with the subject representation given by the caller
+    /// (<paramref name="isOneByte"/> requires all code units &lt;= 0xFF).</summary>
+    public int Exec(ReadOnlySpan<char> subject, int index, Span<int> registers, bool isOneByte)
     {
         if ((uint)index > (uint)subject.Length) throw new ArgumentOutOfRangeException(nameof(index));
         switch (Kind)
@@ -579,22 +597,22 @@ public sealed class CompiledRegExp
             case RegExpKind.Experimental:
                 return ExperimentalExec(subject, index, registers);
             default:
-                return IrregexpExec(subject, index, registers);
+                return IrregexpExec(subject, index, registers, isOneByte);
         }
     }
 
     int RoundedRegisterCount(int length) => length - length % RegistersPerMatch;
 
     // RegExpImpl::IrregexpExec.
-    int IrregexpExec(ReadOnlySpan<char> subject, int previousIndex, Span<int> registers)
+    int IrregexpExec(ReadOnlySpan<char> subject, int previousIndex, Span<int> registers, bool isOneByte)
     {
-        if (!EnsureCompiled(subject)) return RegExpResult.RE_EXCEPTION;
+        if (!EnsureCompiled(subject, isOneByte)) return RegExpResult.RE_EXCEPTION;
         int outputRegisterCount = RegistersPerMatch;
         if (registers.Length < outputRegisterCount) throw new ArgumentException("register span too small");
         Span<int> output = registers.Slice(0, RoundedRegisterCount(registers.Length));
 
-        int res = IrregexpInterpreter.Match(_bytecode!, subject, output, outputRegisterCount, _maxRegisterCount,
-            previousIndex, _backtrackLimit, Flags.IsEitherUnicode());
+        int res = IrregexpInterpreter.Match(_bytecode[isOneByte ? 1 : 0]!, subject, output, outputRegisterCount,
+            _maxRegisterCount, previousIndex, _backtrackLimit, Flags.IsEitherUnicode(), isOneByte);
 
         if (res >= RegExpResult.RE_SUCCESS) return res;
         if (res == RegExpResult.RE_FALLBACK_TO_EXPERIMENTAL)

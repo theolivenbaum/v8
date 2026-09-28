@@ -1,9 +1,9 @@
 // Port of src/regexp/regexp-interpreter.h and src/regexp/regexp-interpreter.cc.
 //
-// A simple interpreter for the Irregexp byte code. The subject is always
-// UTF-16 (V8's two-byte path); the one-byte-only bytecodes (Load4CurrentChars,
-// SkipUntilOneOfMasked*) are never generated for two-byte subjects and are
-// rejected here.
+// A simple interpreter for the Irregexp byte code. The subject is a UTF-16
+// span; V8's RawMatch<uint8_t> (one-byte subjects, run with one-byte
+// bytecode) is RawMatch<OneByte> here and requires every code unit to be at
+// most 0xFF.
 //
 // V8's interrupt handling at backtracks (stack guard, GC relocation of the
 // subject) has no equivalent: the subject is a managed span that cannot move.
@@ -40,12 +40,31 @@ public static class IrregexpInterpreter
     /// size exceeded").
     /// </summary>
     public static int MatchInternal(byte[] code, ReadOnlySpan<char> subject, Span<int> outputRegisters,
-        int totalRegisterCount, int startPosition, uint backtrackLimit)
+        int totalRegisterCount, int startPosition, uint backtrackLimit, bool isOneByte = false)
     {
         uint previousChar = '\n';
         if (startPosition != 0) previousChar = subject[startPosition - 1];
-        return RawMatch(code, subject, outputRegisters, totalRegisterCount, startPosition, previousChar,
-            backtrackLimit);
+        return isOneByte
+            ? RawMatch<OneByte>(code, subject, outputRegisters, totalRegisterCount, startPosition, previousChar,
+                backtrackLimit)
+            : RawMatch<TwoByte>(code, subject, outputRegisters, totalRegisterCount, startPosition, previousChar,
+                backtrackLimit);
+    }
+
+    // The Char template parameter of V8's RawMatch.
+    interface ICharWidth
+    {
+        static abstract bool IsOneByte { get; }
+    }
+
+    struct OneByte : ICharWidth
+    {
+        public static bool IsOneByte => true;
+    }
+
+    struct TwoByte : ICharWidth
+    {
+        public static bool IsOneByte => false;
     }
 
     /// <summary>
@@ -54,7 +73,8 @@ public static class IrregexpInterpreter
     /// filled in. Returns the number of matches, or a negative result code.
     /// </summary>
     public static int Match(byte[] code, ReadOnlySpan<char> subject, Span<int> outputRegisters,
-        int registersPerMatch, int totalRegisterCount, int startPosition, uint backtrackLimit, bool isAnyUnicode)
+        int registersPerMatch, int totalRegisterCount, int startPosition, uint backtrackLimit, bool isAnyUnicode,
+        bool isOneByte = false)
     {
         int numberOfMatchesInOutputRegisters = outputRegisters.Length / registersPerMatch;
         int numMatches = 0;
@@ -63,7 +83,7 @@ public static class IrregexpInterpreter
         {
             Span<int> current = outputRegisters.Slice(offset, registersPerMatch);
             int currentResult = MatchInternal(code, subject, current, totalRegisterCount, startPosition,
-                backtrackLimit);
+                backtrackLimit, isOneByte);
             if (currentResult == SUCCESS)
             {
                 // Fall through.
@@ -117,37 +137,52 @@ public static class IrregexpInterpreter
     static bool IndexIsInBounds(int index, int length) => (uint)index < (uint)length;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    static uint Load2Characters(ReadOnlySpan<char> s, int index) => s[index] | ((uint)s[index + 1] << 16);
+    static uint Load2Characters<TWidth>(ReadOnlySpan<char> s, int index) where TWidth : struct, ICharWidth =>
+        s[index] | ((uint)s[index + 1] << (TWidth.IsOneByte ? 8 : 16));
 
-    static bool CheckSpecialClassRanges(uint currentChar, StandardCharacterSet characterSet)
+    // Only valid for one-byte subjects.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static uint Load4Characters(ReadOnlySpan<char> s, int index) =>
+        s[index] | ((uint)s[index + 1] << 8) | ((uint)s[index + 2] << 16) | ((uint)s[index + 3] << 24);
+
+    static bool CheckSpecialClassRanges<TWidth>(uint currentChar, StandardCharacterSet characterSet)
+        where TWidth : struct, ICharWidth
     {
-        // Two-byte subject (is_one_byte == false).
+        bool isOneByte = TWidth.IsOneByte;
         switch (characterSet)
         {
             case StandardCharacterSet.kWhitespace:
-                // Only generated for one-byte subjects.
-                throw new InvalidOperationException("UNREACHABLE");
+                Debug.Assert(isOneByte);
+                return currentChar == ' ' || currentChar - '\t' <= '\r' - '\t' || currentChar == 0xA0;
             case StandardCharacterSet.kNotWhitespace:
                 throw new InvalidOperationException("UNREACHABLE");
             case StandardCharacterSet.kWord:
-                if (currentChar > 'z') return false;
+                if (!isOneByte && currentChar > 'z') return false;
                 return RegExpMacroAssembler.WordCharacterMap[(int)currentChar] != 0;
             case StandardCharacterSet.kNotWord:
-                if (currentChar > 'z') return true;
+                if (!isOneByte && currentChar > 'z') return true;
                 return RegExpMacroAssembler.WordCharacterMap[(int)currentChar] == 0;
             case StandardCharacterSet.kDigit:
                 return currentChar - '0' <= 9;
             case StandardCharacterSet.kNotDigit:
                 return currentChar - '0' > 9;
             case StandardCharacterSet.kLineTerminator:
-                return currentChar == '\n' || currentChar == '\r' || currentChar == 0x2028 || currentChar == 0x2029;
+                if (currentChar == '\n' || currentChar == '\r') return true;
+                return !isOneByte && (currentChar == 0x2028 || currentChar == 0x2029);
             case StandardCharacterSet.kNotLineTerminator:
-                return currentChar != '\n' && currentChar != '\r' && currentChar != 0x2028 && currentChar != 0x2029;
+            {
+                bool isOneByteMatch = currentChar != '\n' && currentChar != '\r';
+                if (isOneByte) return isOneByteMatch;
+                return isOneByteMatch && currentChar != 0x2028 && currentChar != 0x2029;
+            }
             case StandardCharacterSet.kEverything:
                 return true;
         }
         throw new InvalidOperationException("UNREACHABLE");
     }
+
+    static int Operand(byte[] code, int pc, Bytecode bc, string name) =>
+        Bytecodes.ReadOperand(code, pc + Bytecodes.Info(bc).Offset(name), Bytecodes.Info(bc).Type(name));
 
     static bool BackRefMatchesNoCase(int from, int current, int len, ReadOnlySpan<char> subject, bool unicode)
     {
@@ -212,8 +247,8 @@ public static class IrregexpInterpreter
         public readonly void Release() => ArrayPool<int>.Shared.Return(_data);
     }
 
-    static int RawMatch(byte[] code, ReadOnlySpan<char> subject, Span<int> outputRegisters,
-        int totalRegisterCount, int current, uint currentChar, uint backtrackLimit)
+    static int RawMatch<TWidth>(byte[] code, ReadOnlySpan<char> subject, Span<int> outputRegisters,
+        int totalRegisterCount, int current, uint currentChar, uint backtrackLimit) where TWidth : struct, ICharWidth
     {
         int outputRegisterCount = outputRegisters.Length;
         if (outputRegisterCount < 2 || totalRegisterCount < outputRegisterCount ||
@@ -360,20 +395,146 @@ public static class IrregexpInterpreter
                         }
                         else
                         {
-                            currentChar = Load2Characters(subject, current + I16(code, pc + 2));
+                            currentChar = Load2Characters<TWidth>(subject, current + I16(code, pc + 2));
                             pc += 12;
                         }
                         break;
                     case Bytecode.kLoad2CurrentCharsUnchecked:
-                        currentChar = Load2Characters(subject, current + I16(code, pc + 2));
+                        currentChar = Load2Characters<TWidth>(subject, current + I16(code, pc + 2));
                         pc += 4;
                         break;
                     case Bytecode.kLoad4CurrentChars:
+                        Debug.Assert(TWidth.IsOneByte);
+                        if (!IndexIsInBounds(current + I32(code, pc + 4), subjectLength))
+                        {
+                            pc = I32(code, pc + 8);
+                        }
+                        else
+                        {
+                            currentChar = Load4Characters(subject, current + I16(code, pc + 2));
+                            pc += 12;
+                        }
+                        break;
                     case Bytecode.kLoad4CurrentCharsUnchecked:
+                        Debug.Assert(TWidth.IsOneByte);
+                        currentChar = Load4Characters(subject, current + I16(code, pc + 2));
+                        pc += 4;
+                        break;
                     case Bytecode.kSkipUntilOneOfMasked:
-                    case Bytecode.kSkipUntilOneOfMasked3:
+                    {
                         // We should only get here in 1-byte mode.
-                        throw new InvalidOperationException("UNREACHABLE: one-byte bytecode on a two-byte subject");
+                        Debug.Assert(TWidth.IsOneByte);
+                        const Bytecode bc = Bytecode.kSkipUntilOneOfMasked;
+                        int cpOffset = Operand(code, pc, bc, "cp_offset");
+                        int advanceBy = Operand(code, pc, bc, "advance_by");
+                        uint bothChars = (uint)Operand(code, pc, bc, "both_chars");
+                        uint bothMask = (uint)Operand(code, pc, bc, "both_mask");
+                        int maxOffset = Operand(code, pc, bc, "max_offset");
+                        uint chars1 = (uint)Operand(code, pc, bc, "chars1");
+                        uint mask1 = (uint)Operand(code, pc, bc, "mask1");
+                        uint chars2 = (uint)Operand(code, pc, bc, "chars2");
+                        uint mask2 = (uint)Operand(code, pc, bc, "mask2");
+                        int next = Operand(code, pc, bc, "on_failure");
+                        while (IndexIsInBounds(current + maxOffset, subjectLength))
+                        {
+                            currentChar = Load4Characters(subject, current + cpOffset);
+                            if (bothChars == (currentChar & bothMask))
+                            {
+                                if (chars1 == (currentChar & mask1))
+                                {
+                                    next = Operand(code, pc, bc, "on_match1");
+                                    break;
+                                }
+                                if (chars2 == (currentChar & mask2))
+                                {
+                                    next = Operand(code, pc, bc, "on_match2");
+                                    break;
+                                }
+                            }
+                            current += advanceBy;
+                        }
+                        pc = next;
+                        break;
+                    }
+                    case Bytecode.kSkipUntilOneOfMasked3:
+                    {
+                        // We should only get here in 1-byte mode.
+                        Debug.Assert(TWidth.IsOneByte);
+                        const Bytecode bc = Bytecode.kSkipUntilOneOfMasked3;
+                        int bc0CpOffset = Operand(code, pc, bc, "bc0_cp_offset");
+                        int bc0AdvanceBy = Operand(code, pc, bc, "bc0_advance_by");
+                        int bc0Table = pc + Bytecodes.Info(bc).Offset("bc0_table");
+                        int bc1BoundsCheckOffset = Operand(code, pc, bc, "bc1_bounds_check_offset");
+                        int bc1CpOffset = Operand(code, pc, bc, "bc1_cp_offset");
+                        uint bc2Characters = (uint)Operand(code, pc, bc, "bc2_characters");
+                        uint bc2Mask = (uint)Operand(code, pc, bc, "bc2_mask");
+                        int bc3By = Operand(code, pc, bc, "bc3_by");
+                        int bc4BoundsCheckOffset = Operand(code, pc, bc, "bc4_bounds_check_offset");
+                        int bc4CpOffset = Operand(code, pc, bc, "bc4_cp_offset");
+                        uint bc5Characters = (uint)Operand(code, pc, bc, "bc5_characters");
+                        uint bc5Mask = (uint)Operand(code, pc, bc, "bc5_mask");
+                        uint bc6Characters = (uint)Operand(code, pc, bc, "bc6_characters");
+                        uint bc6Mask = (uint)Operand(code, pc, bc, "bc6_mask");
+                        uint bc7Characters = (uint)Operand(code, pc, bc, "bc7_characters");
+                        uint bc7Mask = (uint)Operand(code, pc, bc, "bc7_mask");
+                        int next;
+                        while (true)
+                        {
+                            // bc0: kSkipUntilBitInTable
+                            while (IndexIsInBounds(current + bc0CpOffset, subjectLength))
+                            {
+                                currentChar = subject[current + bc0CpOffset];
+                                if (CheckBitInTable(currentChar, code, bc0Table)) break;
+                                current += bc0AdvanceBy;
+                            }
+
+                            // bc1: kLoad4CurrentChars
+                            if (!IndexIsInBounds(current + bc1BoundsCheckOffset, subjectLength))
+                            {
+                                next = Operand(code, pc, bc, "bc1_on_failure");
+                                break;
+                            }
+
+                            currentChar = Load4Characters(subject, current + bc1CpOffset);
+
+                            // bc2: AndCheck4Chars
+                            if (bc2Characters == (currentChar & bc2Mask))
+                            {
+                                // bc4: Load4CurrentChars
+                                if (!IndexIsInBounds(current + bc4BoundsCheckOffset, subjectLength))
+                                {
+                                    // bc3: AdvanceCpAndGoto
+                                    current += bc3By;
+                                    continue;
+                                }
+                                currentChar = Load4Characters(subject, current + bc4CpOffset);
+
+                                // bc5: AndCheck4Chars
+                                if (bc5Characters == (currentChar & bc5Mask))
+                                {
+                                    next = Operand(code, pc, bc, "bc5_on_equal");
+                                    break;
+                                }
+                                // bc6: AndCheck4Chars
+                                if (bc6Characters == (currentChar & bc6Mask))
+                                {
+                                    next = Operand(code, pc, bc, "bc6_on_equal");
+                                    break;
+                                }
+                                // bc7: AndCheckNot4Chars
+                                if (bc7Characters == (currentChar & bc7Mask))
+                                {
+                                    next = Operand(code, pc, bc, "fallthrough_jump_target");
+                                    break;
+                                }
+                            }
+
+                            // bc3: AdvanceCpAndGoto
+                            current += bc3By;
+                        }
+                        pc = next;
+                        break;
+                    }
                     case Bytecode.kCheck4Chars:
                         pc = U32(code, pc + 4) == currentChar ? I32(code, pc + 8) : pc + 12;
                         break;
@@ -538,7 +699,7 @@ public static class IrregexpInterpreter
                         break;
                     }
                     case Bytecode.kCheckSpecialClassRanges:
-                        pc = CheckSpecialClassRanges(currentChar, (StandardCharacterSet)code[pc + 1])
+                        pc = CheckSpecialClassRanges<TWidth>(currentChar, (StandardCharacterSet)code[pc + 1])
                             ? pc + 8
                             : I32(code, pc + 4);
                         break;
