@@ -2208,16 +2208,13 @@ internal sealed class TypedElementsAccessor(ElementsKind kind) : ElementsAccesso
         switch (_baseKind)
         {
             case ElementsKind.UINT8_CLAMPED_ELEMENTS:
-                // Handle NaNs and less than zero values which clamp to zero.
-                if (!(value > 0)) return 0;
-                if (value > 0xFF) return 0xFF;
-                return (byte)Math.Round(value, MidpointRounding.ToEven);  // lrint: round half to even.
+                return TypedArrayScalars.ClampDouble(value);
             case ElementsKind.FLOAT32_ELEMENTS:
                 return BitConverter.SingleToUInt32Bits(DoubleToFloat32(value));
             case ElementsKind.FLOAT64_ELEMENTS:
                 return BitConverter.DoubleToUInt64Bits(value);
             case ElementsKind.FLOAT16_ELEMENTS:
-                return BitConverter.HalfToUInt16Bits((Half)value);
+                return TypedArrayScalars.DoubleToFloat16(value);
             default:
                 return unchecked((ulong)(long)Conversions.DoubleToInt32(value));
         }
@@ -2270,7 +2267,7 @@ internal sealed class TypedElementsAccessor(ElementsKind kind) : ElementsAccesso
         ElementsKind.INT32_ELEMENTS => JSValue.FromInt((int)raw),
         ElementsKind.FLOAT32_ELEMENTS => JSValue.FromNumber(BitConverter.UInt32BitsToSingle((uint)raw)),
         ElementsKind.FLOAT64_ELEMENTS => JSValue.FromNumber(BitConverter.UInt64BitsToDouble(raw)),
-        ElementsKind.FLOAT16_ELEMENTS => JSValue.FromNumber((double)BitConverter.UInt16BitsToHalf((ushort)raw)),
+        ElementsKind.FLOAT16_ELEMENTS => JSValue.FromNumber(TypedArrayScalars.Float16ToDouble((ushort)raw)),
         ElementsKind.BIGINT64_ELEMENTS => BigInt.FromInt64(isolate, (long)raw),
         ElementsKind.BIGUINT64_ELEMENTS => BigInt.FromUint64(isolate, raw),
         _ => throw new InvalidOperationException("unreachable"),
@@ -2287,7 +2284,7 @@ internal sealed class TypedElementsAccessor(ElementsKind kind) : ElementsAccesso
         ElementsKind.INT32_ELEMENTS => (int)raw,
         ElementsKind.FLOAT32_ELEMENTS => BitConverter.UInt32BitsToSingle((uint)raw),
         ElementsKind.FLOAT64_ELEMENTS => BitConverter.UInt64BitsToDouble(raw),
-        ElementsKind.FLOAT16_ELEMENTS => (double)BitConverter.UInt16BitsToHalf((ushort)raw),
+        ElementsKind.FLOAT16_ELEMENTS => TypedArrayScalars.Float16ToDouble((ushort)raw),
         _ => throw new InvalidOperationException("unreachable"),
     };
 
