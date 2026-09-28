@@ -205,7 +205,7 @@ internal static class InterpreterInlineCalls
         // above its top is undefined except below RegisterStackDirtyEnd, where
         // frames returned from inline left their values (PopFrame).
         int dirtyEnd = isolate.RegisterStackDirtyEnd;
-        if (fp < dirtyEnd) MemoryMarshal.CreateSpan(ref fpRef, (end < dirtyEnd ? end : dirtyEnd) - fp).Clear();
+        if (fp < dirtyEnd) ClearSlots(ref fpRef, (end < dirtyEnd ? end : dirtyEnd) - fp);
         Debug.Assert(MemoryMarshal.CreateSpan(ref fpRef, registerCount).IndexOfAnyExcept(default(JSValue)) < 0);
 
         // Reference stores cost a GC write barrier each. The parameters and
@@ -268,6 +268,23 @@ internal static class InterpreterInlineCalls
         st.Fp = fp;
         st.FrameIndex = depth;
         st.Argc = argc;
+    }
+
+    /// <summary>
+    /// Sets <paramref name="count"/> slots to undefined: a loop for the usual
+    /// small register files (Span.Clear is a call into SpanHelpers).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static void ClearSlots(ref JSValue start, int count)
+    {
+        if (count <= 16)
+        {
+            for (int i = 0; i < count; i++) Unsafe.Add(ref start, i) = default;
+        }
+        else
+        {
+            MemoryMarshal.CreateSpan(ref start, count).Clear();
+        }
     }
 
     /// <summary>
