@@ -334,3 +334,64 @@ Bootstrapper
   registered by the global functions' area.
 - `Isolate.CountUsage` is a no-op (no use counters).
 
+## Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
+
+- Backing stores are managed `byte[]` arrays (`BackingStore`). A growable
+  SharedArrayBuffer allocates its maximum length up front (the array cannot
+  move while other threads read it); a resizable ArrayBuffer allocates its
+  current length and reallocates when resized past it. Allocations above
+  `Array.MaxLength` fail with "Array buffer allocation failed", although
+  `kMaxByteLength` is V8's 32GB - 1 (the sandbox build's limit).
+- Typed arrays are always off-heap (no on-heap JSTypedArray elements below
+  `typed_array_max_size_in_heap`), and the data pointer is recomputed from the
+  buffer and byte offset on each access. Array buffers do not keep a list of
+  their views: a view checks `buffer.WasDetached` instead of being marked.
+- The typed array constructors keep JS_FUNCTION_TYPE maps (V8 gives them
+  JS_*_TYPED_ARRAY_CONSTRUCTOR_TYPE); nothing observable depends on it.
+- `v8_enable_undefined_double` is not modelled: double elements never hold
+  undefined, so holey double arrays read holes as undefined as without the
+  flag. Only elements kinds (%DebugPrint) can tell.
+- V8's CSA/Torque fast loops over fast JSArrays (forEach/map/filter/every/
+  some/reduce/find*, splice/slice/copyWithin/reverse/lastIndexOf/flat/
+  toSpliced/with/toReversed) are not ported one to one; their results are
+  unobservable, so the generic continuations run with a fast element probe
+  (`TryGetFastElement`), and slice/splice/copyWithin/reverse/includes/indexOf
+  keep a direct fast path over the backing store.
+- The join Buffer is one growable array of entries instead of a linked list of
+  FixedArray chunks; the result string is built flat.
+- Array.prototype.toLocaleString and %TypedArray%.prototype.toLocaleString
+  follow the !V8_INTL_SUPPORT build: element toLocaleString methods are called
+  without the locales and options arguments. The oracle is an ICU build.
+- Array.prototype.sort is the PowerSort of this tree (third_party/v8/builtins/
+  array-sort.tq). The oracle's V8 14.7 still runs TimSort (no
+  kMaxInlineSortLength shortcut, different run merging), so user comparefn
+  call orders differ from the oracle's; they match the tree's algorithm.
+- Float16 conversions use a port of V8's DoubleToFloat16 bit manipulation
+  (`TypedArrayScalars.DoubleToFloat16`), not `System.Half`, so double rounding
+  through float cannot occur; Float16 to double uses `System.Half`, which is
+  exact.
+- NaN: `JSValue.NaN` (the value of the NaN globals) has the sign bit set
+  (C#'s `double.NaN`), while V8's NaN constant is 0x7FF8000000000000; storing
+  the constant into a Float64Array or with DataView.setFloat64 writes
+  different bytes. Computed NaNs (0/0) have the same bits in both.
+- `%TypedArray%.prototype.map`/`set`/Atomics report write failures with
+  kTypedArrayValidateErrorOperation unless --js-immutable-arraybuffer is on
+  (`JSTypedArray.ValidateErrorMessage`): the generated message table has the
+  flag-dependent text of kTypedArrayValidateWriteErrorOperation only for the
+  flag-on case.
+- Uint8Array base64: fromBase64 follows the proposal's FromBase64 (V8's
+  simdutf fast path agrees for complete input). setFromBase64 into a buffer
+  that fills up models simdutf::base64_to_binary_safe: it keeps parsing chunk
+  by chunk past the point where the proposal stops (`TailDecode`), so later
+  bad characters and invalid final chunks are still reported. simdutf's
+  trailing-garbage lookahead (test262 trailing-garbage, skipped in
+  test262.status) is not modelled. simdutf is not in the checkout; the model
+  is fitted to the oracle.
+- Atomics: element operations use `Interlocked`/`Volatile` on the managed
+  array (8- and 16-bit read-modify-write as compare-exchange loops). The
+  isolate always allows Atomics.wait (V8's default; there is no
+  allow_atomics_wait setting). FutexEmulation keeps synchronous waiters only:
+  Atomics.waitAsync returns its synchronous results ("not-equal", immediate
+  "timed-out") and throws NotImplementedException where it would suspend.
+- Array.fromAsync is not registered (needs async functions and promises).
+

@@ -200,7 +200,8 @@ public class ArrayBuiltinsTest : ArrayTestBase
             Throws(() => Invoke(New("Array", N(1 << 20)), "join", S(new string('x', 1024)))));
         JSObject localized = Obj();
         Set(localized, "toLocaleString", Fn((_, args) => S("L" + args.Length)));
-        Assert.Equal("L2,,L2", Str(Invoke(Arr(localized, JSValue.Null, localized), "toLocaleString")));
+        // The !V8_INTL_SUPPORT build calls toLocaleString without arguments.
+        Assert.Equal("L0,,L0", Str(Invoke(Arr(localized, JSValue.Null, localized), "toLocaleString", S("de"))));
     }
 
     [Fact]

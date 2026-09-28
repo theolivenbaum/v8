@@ -124,8 +124,10 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Promise, RegExp, Errors, JSON, Math, Map/Set/WeakMap/WeakSet/WeakRef/
       FinalizationRegistry, BigInt, Iterator and helpers, Proxy, Reflect,
       bound/wrapped functions, arguments maps, API functions
-      (FunctionTemplateInfo, HandleApiCallOrConstruct). Missing: Intl, Temporal,
-      ArrayBuffer/SharedArrayBuffer/Atomics, typed arrays, DataView,
+      (FunctionTemplateInfo, HandleApiCallOrConstruct), ArrayBuffer/
+      SharedArrayBuffer/Atomics, typed arrays, DataView
+      (Init/Genesis.TypedArrays.cs, incl. the js_immutable_arraybuffer and
+      sharedarraybuffer flag sections). Missing: Intl, Temporal,
       DisposableStack, shared structs, extras, extensions,
       the TemplateLiteral map (interpreter port)
 - [x] interpreter: bytecodes, operands, array builder/writer, register
@@ -164,10 +166,28 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler), which the
       compiler port must register. The proxy trap stubs (ProxyGetProperty ...)
       and CallProxy/ConstructProxy are not registered: callers use JSProxy.
-      Still to do: Array, Number (except parseInt/parseFloat), Math,
+      Still to do: Number (except parseInt/parseFloat), Math,
       JSON, Date, Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry,
-      Promise, generators/iterators, ArrayBuffer/TypedArray/DataView/Atomics,
-      BigInt, Iterator helpers, DisposableStack
+      Promise, generators/iterators, BigInt, Iterator helpers, DisposableStack
+- [~] Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
+      builtins and the array iterators (Builtins/Builtins.{Array,ArrayBuffer,
+      TypedArray,DataView,Atomics}*.cs; Objects/JSArrayBuffer.cs,
+      JSTypedArray.cs, Elements.Typed.cs; Heap/Factory.TypedArrays.cs). Every
+      builtin Genesis installs for these areas is registered except
+      Array.fromAsync (needs async functions and promises). Array.prototype.sort
+      is the PowerSort of third_party/v8/builtins/array-sort.tq (the oracle's
+      V8 14.7 still sorts with TimSort, so comparison traces are checked
+      against the tree's algorithm, not the oracle); typed array sort, join
+      with the cycle stack, base64/hex (with V8's simdutf truncation
+      behaviour), resizable/growable buffers, transfer/detach, Float16.
+      Atomics.wait blocks on a process-wide FutexEmulation; Atomics.waitAsync
+      returns the synchronous results but throws NotImplementedException when
+      it would suspend. 69 xUnit tests (tests/V8Sharp.Tests/Builtins/{Array,
+      TypedArray,DataView}*.cs), expectations from the oracle. Missing: the
+      test262/mjsunit runs of built-ins/{Array,TypedArray*,ArrayBuffer,
+      DataView,Atomics}/** (wait for the interpreter), Array.fromAsync,
+      Atomics.waitAsync suspension, runtime functions (%ArrayBufferDetach,
+      %TypedArrayGetLength, ...) for mjsunit
 - [~] String and RegExp builtins (Builtins/Builtins.String*.cs,
       Builtins.RegExp*.cs, Runtime/Runtime.Regexp.cs, Runtime.Strings.cs,
       Objects/JSRegExp*.cs, Strings/StringSearch.cs): every String,

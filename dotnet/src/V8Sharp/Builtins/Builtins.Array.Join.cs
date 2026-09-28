@@ -157,13 +157,19 @@ public static partial class BuiltinsArray
 
     static void ThrowInvalidStringLength(Isolate isolate) => isolate.Throw(isolate.Factory.NewInvalidStringLengthError());
 
-    /// <summary>ConvertToLocaleString (V8_INTL_SUPPORT: locales and options are passed).</summary>
+    /// <summary>
+    /// ConvertToLocaleString. V8Sharp is the !V8_INTL_SUPPORT build, so, as the
+    /// ECMA-262 (not ECMA-402) algorithm says, locales and options are not
+    /// passed. (The oracle is built with ICU and passes them.)
+    /// </summary>
     static JSString ConvertToLocaleString(Isolate isolate, JSValue element, JSValue locales, JSValue options)
     {
         if (element.IsNullOrUndefined) return ReadOnlyRoots.empty_string;
         JSValue prop = ObjectOps.GetProperty(isolate, element, ArrayBuiltinsUtils.NewString(isolate, "toLocaleString"));
         if (!ObjectOps.IsCallable(prop)) ArrayBuiltinsUtils.ThrowCalledNonCallable(isolate, prop);
-        JSValue result = Execution.Call(isolate, prop, element, [locales, options]);
+        _ = locales;
+        _ = options;
+        JSValue result = Execution.Call(isolate, prop, element, []);
         return ObjectOps.ToString(isolate, result);
     }
 
