@@ -204,13 +204,41 @@ public sealed class ConsString : JSString
     }
 
     public override int Length => _length;
-    public override bool IsFlat => _flat is not null;
+    // ConsString::IsFlat: second()->length() == 0.
+    public override bool IsFlat => _flat is not null || _second is null || _second.Length == 0;
     public JSString First => _first;
     public JSString? Second => _second;
+
+    /// <summary>ConsString::set_first. Does not update the length, as in V8.</summary>
+    public void SetFirst(JSString first)
+    {
+        _first = first;
+        _flat = null;
+    }
+
+    /// <summary>ConsString::set_second. Does not update the length, as in V8.</summary>
+    public void SetSecond(JSString second)
+    {
+        _second = second;
+        _flat = null;
+    }
 
     public override string Flatten()
     {
         if (_flat is not null) return _flat;
+        // String::SlowFlatten: cons strings with an empty first part and a
+        // sequential second part are canonicalized without copying.
+        if (_first.Length == 0 && _second is SeqString seq)
+        {
+            _first = seq;
+            _second = null;
+            return _flat = seq.Value;
+        }
+        if ((_second is null || _second.Length == 0) && _first is SeqString firstSeq)
+        {
+            _second = null;
+            return _flat = firstSeq.Value;
+        }
         // Iterative in-order walk so deep left- or right-leaning ropes do not
         // overflow the native stack.
         string flat = string.Create(_length, this, static (span, root) =>

@@ -33,6 +33,20 @@ public abstract partial class JSString
         return Flatten()[index];
     }
 
+    /// <summary>
+    /// String::Flatten: flattens a ConsString in place and returns its flat first
+    /// child; any other string is returned unchanged.
+    /// </summary>
+    public static JSString Flatten(Isolate isolate, JSString str)
+    {
+        if (str is ConsString cons)
+        {
+            cons.Flatten();
+            return cons.First;
+        }
+        return str;
+    }
+
     /// <summary>The characters of the flattened string.</summary>
     public ReadOnlySpan<char> FlatSpan()
     {

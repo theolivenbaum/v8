@@ -14,7 +14,7 @@ public partial class FieldTypeTrackingTest : TestWithContext
 {
     // TODO(ishell): fix this once TransitionToAccessorProperty is able to always
     // keep map in fast mode.
-    const bool IS_ACCESSOR_FIELD_SUPPORTED = false;
+    static readonly bool IS_ACCESSOR_FIELD_SUPPORTED = false;
 
     // Number of properties used in the tests.
     const int kPropCount = 7;

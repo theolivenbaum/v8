@@ -151,6 +151,8 @@ public sealed partial class Factory(Isolate isolate)
     /// <summary>Factory::NewProperSubString: single chars from the table, short ones copied, long ones sliced.</summary>
     public JSString NewProperSubString(JSString str, int begin, int end)
     {
+        str = JSString.Flatten(_isolate, str);
+
         int length = end - begin;
         if (length <= 0) return ReadOnlyRoots.empty_string;
         if (length == 1) return LookupSingleCharacterStringFromCode(str.Get(begin));
@@ -174,10 +176,6 @@ public sealed partial class Factory(Isolate isolate)
         {
             parent = sliced.Parent;
             offset += sliced.Offset;
-        }
-        else if (!str.IsFlat)
-        {
-            str.Flatten();
         }
         return new SlicedString(parent, offset, length);
     }
