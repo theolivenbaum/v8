@@ -259,6 +259,22 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
         return JSValue.Undefined;
     });
 
+    public Completion Compile(string source, string name, bool isModule) => Execute(() =>
+    {
+        if (isModule)
+        {
+            // Shell::ExecuteModule with options.compile_only: fetch the tree only.
+            Module module = _moduleLoader.FetchModuleTree(null, name, ModuleType.kJavaScript, new ModuleSourceText(name, source));
+            _moduleLoader.Origin = _moduleLoader.GetModuleSpecifier(module);
+        }
+        else
+        {
+            _moduleLoader.Origin = name;
+            Compiler.CompileScript(Isolate, Isolate.Factory.NewStringFromUtf16(source), Isolate.Factory.NewStringFromUtf16(name));
+        }
+        return JSValue.Undefined;
+    });
+
     /// <summary>Module resolution and reading through the embedding shell (IJsHost.LoadModule).</summary>
     sealed class HostModuleSourceProvider(IJsHost host) : IModuleSourceProvider
     {

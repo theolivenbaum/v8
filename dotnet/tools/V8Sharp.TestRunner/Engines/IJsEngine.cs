@@ -129,6 +129,13 @@ public interface IJsRealm : IDisposable
     /// A rejected top-level-await promise is reported as a throw.</summary>
     Completion RunModule(string source, string name);
 
+    /// <summary>
+    /// d8's --compile-only: compiles the script, or fetches and compiles the
+    /// module graph, without running anything.
+    /// </summary>
+    Completion Compile(string source, string name, bool isModule) =>
+        new(CompletionKind.Throw, Exception: new JsExceptionInfo("--compile-only is not supported by this engine"));
+
     /// <summary>Calls <paramref name="function"/> with <paramref name="receiver"/>
     /// and <paramref name="args"/>, then performs a microtask checkpoint.</summary>
     Completion Call(object function, object? receiver, params object?[] args);

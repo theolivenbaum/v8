@@ -388,7 +388,8 @@ public sealed partial class D8Shell : IJsHost
         var realm = CurrentRealm;
         _sources[name] = source;
         if (isModule) _modules.Add(name);
-        var c = isModule ? realm.Realm.RunModule(source, name) : realm.Realm.RunScript(source, name);
+        var c = _options.CompileOnly ? realm.Realm.Compile(source, name, isModule)
+            : isModule ? realm.Realm.RunModule(source, name) : realm.Realm.RunScript(source, name);
         _realmCurrent = _realmSwitch;
         return c;
     }
