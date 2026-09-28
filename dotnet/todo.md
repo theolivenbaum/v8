@@ -291,6 +291,9 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 |---|---|---|---|---|---|
 | 2026-09-28 | test262 | 67759 | 94901 | 71.4% | first run; 79.1% without Temporal. Failing: async functions/generators/for-await, modules, dynamic import (interpreter, in progress); Promise/Iterator/Map/Set/Weak*/DisposableStack (collections port, in progress); Temporal (9210) |
 | 2026-09-28 | mjsunit | 6412 | 7597 | 84.4% | first run; clusters: regress (337), harmony (199, mostly async), maglev/compiler/turbolev (168, optimization-status asserts until the tiers exist), d8 (45) |
+| 2026-09-28 | test262 built-ins+annexB+staging (no Temporal) | 39189 | 39268 | 99.8% | builtins conformance pass, after merging the interpreter branch (was 98.1%, 760 unexpected). Left: modules, `accessor`, two realm cases (see "Interpreter failures seen by the builtins conformance pass") |
+| 2026-09-28 | test262 | 82412 | 85669 | 96.2% | Temporal marked SKIP in test262.v8sharp.txt (11448 skipped with the status file's); expectations regenerated |
+| 2026-09-28 | mjsunit | 6953 | 7597 | 91.5% | builtins conformance pass (6926 in the full run, +27 on rerunning its failures after access checks landed); expectations file mjsunit.v8sharp.txt generated |
 
 Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 
@@ -308,6 +311,53 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
       (`src/objects/js-temporal-objects.cc`, `builtins-temporal.cc`) over the
       Rust crate temporal_rs (`third_party/rust/temporal_capi`, not in this
       checkout). Needs a C# implementation of the temporal_rs surface V8 uses.
+
+### Interpreter failures seen by the builtins conformance pass
+
+Failures in test262 built-ins/annexB/staging and mjsunit whose cause is in the
+interpreter, compiler, ICs, modules or d8sharp rather than the builtins
+(2026-09-28, after merging the interpreter branch). Test ids, then the cause.
+
+- test262 `flags: [module]` tests and module-only features:
+  built-ins/Proxy/preventExtensions/trap-is-undefined-target-is-proxy,
+  built-ins/ShadowRealm/prototype/importValue/* (8; need module loading and
+  HostImportModuleDynamically for the ShadowRealm), staging/sm/module/*,
+  staging/explicit-resource-management/await-using-in-top-level-module,
+  staging/source-phase-imports/*, staging/top-level-await/tla-hang-entry,
+  built-ins/AbstractModuleSource/* (%AbstractModuleSource% needs source-phase
+  imports): ES modules are not supported by the runner's v8sharp engine yet.
+- staging/decorators/{private,public}-auto-accessor: the parser does not
+  accept `accessor` class elements.
+- built-ins/Function/internals/Construct/derived-return-val-realm: the
+  TypeError for a derived constructor returning a non-object must come from
+  the callee's realm (it comes from the caller's).
+- staging/sm/global/adding-global-var-nonextensible-error: a `var` declared
+  by eval on a non-extensible global must throw TypeError
+  (DeclareEvalVar/DeclareGlobals path).
+- mjsunit/disallow-codegen-from-strings: direct eval ignores
+  --disallow-code-generation-from-strings.
+- mjsunit/stack-traces-custom (and CallSite.getMethodName users): the
+  inferred name `o.h1` is lost after compilation, so frames print
+  `Object.h1`; sloppy-mode receivers of top-level calls are not converted
+  (getMethodName returns null).
+- mjsunit/call-intrinsic-fuzzing, natives-builtins,
+  regress/regress-crbug-754177: the parser rejects %-calls with the wrong
+  arity where V8 (with fuzzing flags) is lenient.
+- mjsunit/json-stringify-recursive, messages, array-tostring-stack-overflow
+  and regress tests that expect a RangeError from deep recursion or
+  --stack-size: stack overflow handling of the interpreter.
+- Allocation-site elements-kind feedback (elements-kind,
+  filter-element-kinds, opt/osr-elements-kind,
+  regress/regress-trap-allocation-memento,
+  array-prototype-map-elements-kinds): no AllocationSite/AllocationMemento
+  tracking in literal creation (deviation).
+- d8 host features the runner/d8sharp lack: Worker, d8.dom, FastCAPI,
+  console.* specifics, os.*, async_hooks, writeFile, performance.mark,
+  per-realm microtask queues, `print` as a C++ API function
+  (stack-trace-cpp-function-template-*), multi-mapped mock allocator
+  (regress/regress-crbug-1041232).
+- ArrayBuffers of 2^31 bytes or more fail to allocate (byte[] backing
+  store; deviation), e.g. array-buffer-limit style tests.
 
 ## Phase 2: the fast tiers
 
