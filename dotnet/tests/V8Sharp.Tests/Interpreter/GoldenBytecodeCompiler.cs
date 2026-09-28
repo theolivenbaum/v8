@@ -9,6 +9,7 @@
 // refers to by evaluating the few forms the golden snippets use.
 using V8Sharp.Ast;
 using V8Sharp.Common;
+using static V8Sharp.Common.Globals;
 using V8Sharp.Interpreter;
 using V8Sharp.Parsing;
 
@@ -71,18 +72,44 @@ public sealed class GoldenBytecodeCompiler : IBytecodeExpectationsCompiler
     {
         public required ParseInfo ParseInfo { get; init; }
         public required Dictionary<FunctionLiteral, BytecodeArray> Functions { get; init; }
+        public required DefaultBytecodeGeneratorHeap Heap { get; init; }
+        public required BytecodeExpectationsHeaderOptions Options { get; init; }
     }
 
     public static CompiledScript CompileScript(string source, BytecodeExpectationsHeaderOptions options)
     {
-        (ParsingFlags parsing_flags, BytecodeGeneratorFlags generator_flags) = FlagsFor(options);
+        (ParsingFlags parsing_flags, _) = FlagsFor(options);
         UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForScriptCompile(
             parsing_flags,
             new UnoptimizedCompileFlags.ScriptDetails(1, true, LanguageMode.Sloppy, false, options.module, false,
                                                       false, false));
+        return Compile(source, flags, null, options);
+    }
+
+    /// <summary>Compiler::GetFunctionFromEval: compiles |source| as a direct
+    /// eval in the context whose ScopeInfo is |outer_scope_info|.</summary>
+    public static CompiledScript CompileEval(string source, LanguageMode language_mode, IScopeInfo outer_scope_info,
+                                             BytecodeExpectationsHeaderOptions options)
+    {
+        (ParsingFlags parsing_flags, _) = FlagsFor(options);
+        // V8 compiles eval code with v8_flags.lazy_eval (inner functions are
+        // compiled when first called); compiling them eagerly gives the same
+        // bytecode for the golden snippets.
+        UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForToplevelCompile(
+            parsing_flags, 2, true, language_mode, REPLMode.No, ScriptType.Classic, false);
+        flags.set_is_eval(true);
+        flags.set_parse_restriction(ParseRestriction.NO_PARSE_RESTRICTION);
+        return Compile(source, flags, outer_scope_info, options);
+    }
+
+    static CompiledScript Compile(string source, UnoptimizedCompileFlags flags, IScopeInfo? outer_scope_info,
+                                  BytecodeExpectationsHeaderOptions options)
+    {
+        (ParsingFlags parsing_flags, BytecodeGeneratorFlags generator_flags) = FlagsFor(options);
         var info = new ParseInfo(flags, parsing_flags);
+        info.set_scope_info_provider(GoldenScopeInfoProvider.Instance);
         var script = new SourceScript(source, 1);
-        if (!ParsingEntry.ParseProgram(info, script))
+        if (!ParsingEntry.ParseProgram(info, script, outer_scope_info))
         {
             throw new InvalidOperationException("parse failed: " +
                                                 info.pending_error_handler().ToString());
@@ -91,11 +118,11 @@ public sealed class GoldenBytecodeCompiler : IBytecodeExpectationsCompiler
         var functions = new Dictionary<FunctionLiteral, BytecodeArray>(ReferenceEqualityComparer.Instance);
         var heap = new DefaultBytecodeGeneratorHeap();
         if (!UnoptimizedCompiler.Compile(info, heap, f => functions[f.Literal] = f.BytecodeArray,
-                                         flags: generator_flags))
+                                         GoldenScopeInfoProvider.Instance, generator_flags))
         {
             throw new InvalidOperationException("bytecode generation failed");
         }
-        return new CompiledScript { ParseInfo = info, Functions = functions };
+        return new CompiledScript { ParseInfo = info, Functions = functions, Heap = heap, Options = options };
     }
 
     public BytecodeArray Compile(string sourceCode, BytecodeExpectationsHeaderOptions options, string functionName)

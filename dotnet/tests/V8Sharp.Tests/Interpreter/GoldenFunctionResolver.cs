@@ -67,8 +67,33 @@ public sealed class GoldenFunctionResolver
                 AstNode? value = Evaluate(a.value(), null);
                 if (value is not null) result = value;
             }
+            if (node is Call call && ResolveInEval(call, name) is { } in_eval)
+            {
+                result = in_eval;
+            }
         }
         return AsFunction(result);
+    }
+
+    // A direct eval of a string literal: compiles the eval code in the scope of
+    // the call (as Runtime_ResolvePossiblyDirectEval would when the script
+    // runs) and resolves |name| in it.
+    FunctionLiteral? ResolveInEval(Call call, string name)
+    {
+        if (!call.is_possibly_eval() || call.arguments().Count == 0) return null;
+        if (call.expression() is not VariableProxy callee || callee.raw_name().Value != "eval") return null;
+        if (!call.arguments()[0].IsStringLiteral()) return null;
+        string source = call.arguments()[0].AsLiteral()!.AsRawString().Value;
+        if (!_compiled.Heap.EvalScopeInfos.TryGetValue((int)call.eval_scope_info_index(), out Scope? scope))
+        {
+            return null;
+        }
+        GoldenBytecodeCompiler.CompiledScript eval = GoldenBytecodeCompiler.CompileEval(
+            source, scope.language_mode(), scope.scope_info()!, _compiled.Options);
+        var resolver = new GoldenFunctionResolver(eval, _options);
+        FunctionLiteral? result = resolver.ResolveGlobal(name);
+        foreach (KeyValuePair<FunctionLiteral, BytecodeArray> f in eval.Functions) _functions[f.Key] = f.Value;
+        return result;
     }
 
     /// <summary>The function the script's completion value is (print callee).</summary>
@@ -124,9 +149,16 @@ public sealed class GoldenFunctionResolver
     AstNode? ResolveVariable(Variable var)
     {
         AstNode? result = null;
+        // A dynamic variable (e.g. a function declared by sloppy eval code) is
+        // matched by name.
+        bool by_name = var.location() == VariableLocation.LOOKUP;
         foreach (AstNode node in _nodes)
         {
-            if (node is FunctionDeclaration fd && fd.var() == var) result = fd.fun();
+            if (node is FunctionDeclaration fd &&
+                (fd.var() == var || (by_name && fd.var()!.raw_name().Value == var.raw_name().Value)))
+            {
+                result = fd.fun();
+            }
             if (node is Assignment a && a.target() is VariableProxy p && p.is_resolved() && p.var() == var)
             {
                 AstNode? value = Evaluate(a.value(), null);
@@ -152,6 +184,13 @@ public sealed class GoldenFunctionResolver
             AstNode? constructor = Evaluate(call_new.expression(), current);
             if (name == "constructor") return constructor;
             return InstanceMember(constructor, name);
+        }
+
+        // C.prototype.m
+        if (prop.obj() is Property proto && proto.key().IsPropertyName() &&
+            proto.key().AsLiteral()!.AsRawPropertyName().Value == "prototype")
+        {
+            return InstanceMember(Evaluate(proto.obj(), current), name);
         }
 
         AstNode? receiver = Evaluate(prop.obj(), current);
