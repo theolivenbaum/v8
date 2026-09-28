@@ -31,6 +31,7 @@ public static partial class RuntimeTable
         RegisterTest();
         RegisterPromiseCollectionsAndWeakRefs();
         RegisterIntrinsics();
+        RegisterTypedArray();
 
         // %_Foo uses Foo's entry when it is not an interpreter intrinsic.
         ReadOnlySpan<RuntimeFunction> all = Runtime.AllFunctions;

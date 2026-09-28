@@ -346,7 +346,7 @@ public static partial class BuiltinsTypedArray
                 if (!TypedArrayElementsOps.TryGetLengthAndValidate(a, TypedArrayAccessMode.kWrite, out ulong aLength) ||
                     k >= aLength)
                 {
-                    return isolate.ThrowTypeError(MessageTemplate.TypedArrayValidateWriteErrorOperation,
+                    return isolate.ThrowTypeError(JSTypedArray.ValidateErrorMessage(isolate, TypedArrayAccessMode.kWrite),
                         ArrayBuiltinsUtils.NewString(isolate, name));
                 }
                 TypedArrayElementsOps.StoreNumeric(a, k, numValue);
@@ -1068,7 +1068,7 @@ public static partial class BuiltinsTypedArray
     }
 
     /// <summary>Runtime_TypedArraySortFast: numeric ascending order, -0 before +0, NaN last.</summary>
-    static JSTypedArray TypedArraySortFast(JSTypedArray array)
+    internal static JSTypedArray TypedArraySortFast(JSTypedArray array)
     {
         Debug.Assert(!array.WasDetached && !array.IsOutOfBounds);
         // After reading the byte length, avoid reading the bytelength or length

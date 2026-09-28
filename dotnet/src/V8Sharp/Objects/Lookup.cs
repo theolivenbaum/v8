@@ -1194,7 +1194,8 @@ public struct LookupIterator
                 {
                     if (Protectors.IsRegExpSpeciesLookupChainIntact(isolate)) Protectors.InvalidateRegExpSpeciesLookupChain(isolate);
                 }
-                else if (IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.TYPED_ARRAY_PROTOTYPE_INDEX]))
+                else if (receiver.Map.InstanceType == InstanceType.JSTypedArrayPrototypeType ||
+                         IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.TYPED_ARRAY_PROTOTYPE_INDEX]))
                 {
                     if (Protectors.IsTypedArraySpeciesLookupChainIntact(isolate)) Protectors.InvalidateTypedArraySpeciesLookupChain(isolate);
                 }
@@ -1245,7 +1246,8 @@ public struct LookupIterator
             {
                 if (Protectors.IsRegExpSpeciesLookupChainIntact(isolate)) Protectors.InvalidateRegExpSpeciesLookupChain(isolate);
             }
-            else if (nc is not null && IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.TYPED_ARRAY_FUN_INDEX]))
+            else if (isolate.IsTypedArrayConstructor(receiver) ||
+                     (nc is not null && IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.TYPED_ARRAY_FUN_INDEX])))
             {
                 if (Protectors.IsTypedArraySpeciesLookupChainIntact(isolate)) Protectors.InvalidateTypedArraySpeciesLookupChain(isolate);
             }

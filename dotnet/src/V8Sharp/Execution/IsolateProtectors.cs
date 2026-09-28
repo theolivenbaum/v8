@@ -50,7 +50,7 @@ public sealed partial class Isolate
         return nativeContext is not null && ReferenceEquals(nativeContext.Slots[(int)index].HeapObjectOrNull, obj);
     }
 
-    bool IsTypedArrayConstructor(JSObject obj) =>
+    internal bool IsTypedArrayConstructor(JSObject obj) =>
         IsInCreationContext(obj, Context.Field.UINT8_ARRAY_FUN_INDEX) ||
         IsInCreationContext(obj, Context.Field.INT8_ARRAY_FUN_INDEX) ||
         IsInCreationContext(obj, Context.Field.UINT16_ARRAY_FUN_INDEX) ||

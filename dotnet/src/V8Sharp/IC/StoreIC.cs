@@ -567,7 +567,10 @@ public sealed class StoreIC : IC
                     if (!lookup.HolderIsReceiverOrHiddenPrototype()) return StoreHandler.StoreSlow(_isolate);
                     if (ReferenceEquals(receiver, holder))
                     {
-                        return StoreHandler.StoreNativeDataProperty(_isolate, holder, info, null);
+                        // An own accessor: the handler applies to every receiver with this
+                        // map, so it must not remember this holder (StoreIC dispatch uses
+                        // the receiver when Holder is null).
+                        return StoreHandler.StoreNativeDataProperty(_isolate, null, info, null);
                     }
                     return StoreHandler.StoreNativeDataProperty(_isolate, holder, info,
                         Map.GetOrCreatePrototypeChainValidityCell(LookupStartObjectMap, _isolate));
