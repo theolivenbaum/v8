@@ -25,15 +25,31 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 ## Phase 1: the unoptimized pipeline
 
 ### V8Sharp.Base
-- [ ] `src/base/numbers`: diy-fp, cached-powers, fast-dtoa, fixed-dtoa,
-      bignum, bignum-dtoa, dtoa, strtod (+ unittests)
-- [ ] `src/numbers/conversions`: StringToDouble/Int/BigInt, DoubleToCString,
-      DoubleToFixed/Exponential/Precision/Radix, DoubleToInt32 ... (+ unittests)
-- [ ] `src/bigint`: digit arithmetic, mul (schoolbook/karatsuba/toom/fft),
-      div (schoolbook/burnikel/barrett), tostring, fromstring, bitwise (+ unittests)
-- [ ] `src/strings/unicode*` (unibrow case mapping, utf8/utf16),
-      `char-predicates` (ID_Start/ID_Continue via .NET Unicode data)
-- [ ] hashing (`src/strings/string-hasher`, `src/base/hashing`), `bits`, `ieee754`
+- [x] `src/base/numbers`: diy-fp, cached-powers, fast-dtoa, fixed-dtoa,
+      bignum, bignum-dtoa, dtoa, strtod (+ base/*-dtoa, bignum, double,
+      numbers/diy-fp, strtod unittests and the gay-* tables)
+- [x] `src/numbers/conversions`: StringToDouble/Int/BigInt, DoubleToCString,
+      DoubleToFixed/Exponential/Precision/Radix, DoubleToInt32 ... (+
+      conversions-unittest; differential tests against the oracle)
+- [x] `src/bigint`: digit arithmetic, mul (schoolbook/karatsuba/toom/fft),
+      div (schoolbook/burnikel/barrett), tostring, fromstring, bitwise (+
+      bigint-shell tests, System.Numerics and oracle differential tests).
+      Missing: numbers/bigint-unittest `CompareToDouble`, which tests the
+      engine's `BigInt::CompareToDouble` (src/objects/bigint.cc).
+- [x] `src/strings/unicode*` (unibrow case mapping, utf8/utf16, utf8-decoder),
+      `char-predicates` (ID_Start/ID_Continue via .NET Unicode data) (+
+      unicode and char-predicates unittests, full-range oracle comparison).
+      Missing: `Wtf8Decoder` / `StrictUtf8Decoder` (Wasm only).
+- [x] hashing: `src/strings/string-hasher`, hash seed and rapidhash,
+      `src/base/hashing`, `src/base/bits`, `src/base/ieee754` and
+      `src/numbers/ieee754` (`math::pow`), `src/base/utils/random-number-generator`
+      (+ bits, hashing, ieee754, random-number-generator unittests).
+      Not in Base: `src/numbers/math-random` (native-context state; belongs
+      to the engine together with the `Math.random` builtin).
+- [ ] Performance: the correctly rounded Math functions (ieee754) take
+      0.25-0.7 us per call on their double-double fast path, 20-40x the
+      platform libm; a table-driven kernel like llvm-libc's would close most
+      of that.
 
 ### V8Sharp.Parsing
 - [ ] tokens, keywords, scanner, character streams, literal buffer
@@ -138,3 +154,41 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
   and Unicode/Emoji 17 (new scripts Beria_Erfe, Sidetic, Tai_Yo, Tolong_Siki,
   U+0295 now Ll, Extended_Pictographic changes); those mismatches are
   classified as known in the test.
+- Number to string: V8 finds the shortest digits with dragonbox
+  (third_party/dragonbox, not checked out); `DoubleToCString` uses the port
+  of `DoubleToAscii(SHORTEST)` (Grisu3 with the bignum fallback), which
+  yields the same digits. Checked against the oracle.
+- String to number: V8 parses decimal literals with fast_float
+  (third_party/fast_float, not checked out); `StringToDouble` parses the same
+  grammar itself and converts with the port of `base::Strtod` (correctly
+  rounded, as fast_float is). Checked against the oracle.
+- `ConversionFlag` is a `[Flags]` enum with separate hex, octal, binary,
+  implicit-octal and trailing-junk bits (the API V8Sharp's callers asked
+  for); V8's has three values, `NO_CONVERSION_FLAG`,
+  `ALLOW_NON_DECIMAL_PREFIX` (= `AllowHex | AllowOctal | AllowBinary` here)
+  and `ALLOW_TRAILING_JUNK`. `AllowImplicitOctal` keeps the legacy "0777"
+  handling that V8 now only offers through `ImplicitOctalStringToDouble`.
+- Math functions: `base::ieee754` takes acos, asin, atan, atan2, cos, sin,
+  tan, exp, expm1, log, log1p, log2, log10, cbrt and `legacy::pow` from
+  llvm-libc, whose sources are not in this checkout. llvm-libc's double
+  functions are correctly rounded, so V8Sharp computes the correctly rounded
+  result its own way (double-double with Ziv's rounding test, BigInteger
+  fallback; `Ieee754.CorrectlyRounded.cs`). The results match; checked
+  against 130-digit references. The oracle (14.7) still used fdlibm and
+  differs by up to one ulp.
+- `tanh` and `math::pow` (with `--use-std-math-pow`, the default) are the
+  platform's `tanh`/`pow` in V8 too; V8Sharp calls `Math.Tanh`/`Math.Pow`,
+  which are the same C library functions.
+- `acosh`/`atanh` return a signaling NaN in V8 for out-of-range arguments;
+  V8Sharp returns the ordinary NaN (JavaScript cannot tell them apart).
+- V8's fatal `CHECK`s in Base (e.g. `RandomNumberGenerator::NextSample`,
+  BigInt size limits) throw exceptions instead of aborting the process.
+- `RandomNumberGenerator()` without an entropy source seeds from
+  `System.Security.Cryptography.RandomNumberGenerator` rather than reading
+  /dev/urandom directly (the same OS source).
+- String hashing: `V8_ENABLE_SEEDED_ARRAY_INDEX_HASH` (off by default in
+  V8) is not ported.
+- `CharPredicates`: V8 answers non-Latin-1 identifier and white-space
+  questions from ICU; V8Sharp uses .NET's Unicode data plus the
+  Other_ID_Start/Other_ID_Continue and Pattern_* lists. Checked over every
+  code point against the oracle.
