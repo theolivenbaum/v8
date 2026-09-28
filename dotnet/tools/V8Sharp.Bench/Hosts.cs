@@ -1,5 +1,9 @@
 using Microsoft.ClearScript;
 using Microsoft.ClearScript.V8;
+using V8Sharp.Builtins;
+using V8Sharp.Codegen;
+using V8Sharp.Common;
+using V8Sharp.Objects;
 using V8Sharp.Oracle;
 
 namespace V8Sharp.Bench;
@@ -47,12 +51,114 @@ sealed class OracleHost : IBenchHost
 }
 
 /// <summary>
-/// V8Sharp. Wired up once the engine runs scripts (see dotnet/todo.md); until
-/// then a measurement reports an error instead of a score.
+/// V8Sharp, in --jitless terms (the interpreter only). The d8 surface is
+/// installed from API functions, as d8 does; scripts run on a thread with
+/// d8's deep stack.
 /// </summary>
-sealed class V8SharpHost(string workDir) : IBenchHost
+sealed class V8SharpHost : IBenchHost
 {
-    public void LoadFile(string path) => throw new NotSupportedException($"V8Sharp cannot run scripts yet ({workDir})");
-    public void Execute(string source, string name) => throw new NotSupportedException("V8Sharp cannot run scripts yet");
+    readonly Isolate _isolate;
+    readonly string _workDir;
+
+    public V8SharpHost(string workDir)
+    {
+        _workDir = workDir;
+        Directory.SetCurrentDirectory(workDir);
+        _isolate = Isolate.New();
+        using (_isolate.Enter())
+        {
+            NativeContext context = _isolate.NativeContext;
+            JSGlobalObject global = context.GlobalObject;
+            Install(context, global, "print", Print);
+            Install(context, global, "printErr", Print);
+            Install(context, global, "load", Load);
+            Install(context, global, "read", Read);
+            Install(context, global, "quit", static (Isolate i, in BuiltinArguments a) => JSValue.Undefined);
+            JSObject d8 = _isolate.Factory.NewJSObject(context.ObjectFunction);
+            JSObject file = _isolate.Factory.NewJSObject(context.ObjectFunction);
+            Install(context, file, "execute", Load);
+            Install(context, file, "read", Read);
+            JSObject.SetOwnPropertyIgnoreAttributes(_isolate, d8, _isolate.Factory.InternalizeString("file"), file,
+                PropertyAttributes.DONT_ENUM);
+            JSObject.SetOwnPropertyIgnoreAttributes(_isolate, global, _isolate.Factory.InternalizeString("d8"), d8,
+                PropertyAttributes.DONT_ENUM);
+        }
+    }
+
+    void Install(NativeContext context, JSObject target, string name, BuiltinFunction callback)
+    {
+        var data = new FunctionTemplateInfo(callback);
+        SharedFunctionInfo info = _isolate.Factory.NewSharedFunctionInfo(_isolate.Factory.InternalizeString(name), data,
+            Builtin.HandleApiCallOrConstruct, 0, false);
+        info.BuiltinId = Builtin.HandleApiCallOrConstruct;
+        info.LanguageMode = LanguageMode.Strict;
+        info.Native = true;
+        info.UpdateFunctionMapIndex();
+        JSFunction function = _isolate.Factory.NewFunction(info, context, context.StrictFunctionWithoutPrototypeMap);
+        JSObject.SetOwnPropertyIgnoreAttributes(_isolate, target, _isolate.Factory.InternalizeString(name), function,
+            PropertyAttributes.DONT_ENUM);
+    }
+
+    static JSValue Print(Isolate isolate, in BuiltinArguments args)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < args.ArgcWithoutReceiver; i++)
+        {
+            if (i > 0) sb.Append(' ');
+            sb.Append(ObjectOps.ToString(isolate, args.Arguments[i]).ToString());
+        }
+        Console.WriteLine(sb.ToString());
+        return JSValue.Undefined;
+    }
+
+    JSValue Load(Isolate isolate, in BuiltinArguments args)
+    {
+        string path = ObjectOps.ToString(isolate, args.AtOrUndefined(1)).ToString();
+        Run(File.ReadAllText(Path.Combine(_workDir, path)), path);
+        return JSValue.Undefined;
+    }
+
+    JSValue Read(Isolate isolate, in BuiltinArguments args)
+    {
+        string path = ObjectOps.ToString(isolate, args.AtOrUndefined(1)).ToString();
+        return isolate.Factory.NewStringFromUtf16(File.ReadAllText(Path.Combine(_workDir, path)));
+    }
+
+    void Run(string source, string name)
+    {
+        JSFunction function = Compiler.CompileScript(_isolate, _isolate.Factory.NewStringFromUtf16(source),
+            _isolate.Factory.NewStringFromUtf16(name));
+        Compiler.RunScript(_isolate, function);
+    }
+
+    void RunOnLargeStack(string source, string name)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            using (_isolate.Enter())
+            {
+                try
+                {
+                    Run(source, name);
+                    Execution.PerformMicrotaskCheckpoint(_isolate);
+                }
+                catch (JavaScriptException e)
+                {
+                    failure = new InvalidOperationException(name + ": uncaught " + ObjectOps.ToString(_isolate, e.Value));
+                }
+                catch (Exception e)
+                {
+                    failure = e;
+                }
+            }
+        }, 256 * 1024 * 1024);
+        thread.Start();
+        thread.Join();
+        if (failure is not null) throw failure;
+    }
+
+    public void LoadFile(string path) => RunOnLargeStack(File.ReadAllText(path), Path.GetFileName(path));
+    public void Execute(string source, string name) => RunOnLargeStack(source, name);
     public void Dispose() { }
 }

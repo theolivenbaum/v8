@@ -25,7 +25,11 @@ public static class InterpreterCalls
 
     /// <summary>CollectCallFeedback (ic-callable.tq), without the Function.prototype.apply receiver case.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CollectCallFeedback(Isolate isolate, FeedbackVector? fv, int slot, JSValue target)
+    public static void CollectCallFeedback(Isolate isolate, FeedbackVector? fv, int slot, JSValue target) =>
+        CollectCallFeedback(isolate, fv, slot, target, JSValue.Undefined);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void CollectCallFeedback(Isolate isolate, FeedbackVector? fv, int slot, JSValue target, JSValue receiver)
     {
         if (fv is null) return;
         JSValue[] slots = fv.Slots;
@@ -34,17 +38,52 @@ public static class InterpreterCalls
         count = JSValue.FromNumber(count._num + kCallCountIncrement);
         // IsMonomorphic.
         if (ReferenceEquals(slots[slot]._obj, target._obj)) return;
-        CollectCallFeedbackSlow(isolate, fv, slot, target);
+        CollectCallFeedbackSlow(isolate, fv, slot, target, receiver);
+    }
+
+    static bool IsPrototypeApplyFunction(Isolate isolate, JSValue target) =>
+        isolate.Context is { } context && ReferenceEquals(target.HeapObjectOrNull, context.NativeContext.FunctionPrototypeApply);
+
+    static bool FeedbackValueIsReceiver(FeedbackVector fv, int slot) =>
+        ((((int)fv.Slots[slot + 1].Number) >> FeedbackNexus.kCallFeedbackContentShift) & 1) ==
+        (int)CallFeedbackContent.kReceiver;
+
+    static void SetCallFeedbackContent(FeedbackVector fv, int slot, CallFeedbackContent content)
+    {
+        ref JSValue extra = ref fv.Slots[slot + 1];
+        int value = (int)extra.Number;
+        value = (value & ~(1 << FeedbackNexus.kCallFeedbackContentShift)) | ((int)content << FeedbackNexus.kCallFeedbackContentShift);
+        extra = JSValue.FromInt(value);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void CollectCallFeedbackSlow(Isolate isolate, FeedbackVector fv, int slot, JSValue target)
+    static void CollectCallFeedbackSlow(Isolate isolate, FeedbackVector fv, int slot, JSValue target, JSValue receiver)
     {
         ref JSValue feedback = ref fv.Slots[slot];
         HeapObject? feedbackObject = feedback.HeapObjectOrNull;
         if (ReferenceEquals(feedbackObject, ReadOnlyRoots.megamorphic_symbol)) return;
-        if (ReferenceEquals(feedbackObject, ReadOnlyRoots.uninitialized_symbol) || FeedbackVector.IsCleared(feedback))
+        bool uninitialized = ReferenceEquals(feedbackObject, ReadOnlyRoots.uninitialized_symbol);
+        if (uninitialized || FeedbackVector.IsCleared(feedback))
         {
+            // If cleared, we have a new chance to become monomorphic.
+            if (!uninitialized) SetCallFeedbackContent(fv, slot, CallFeedbackContent.kTarget);
+            JSValue recordedFunction = target;
+            if (IsPrototypeApplyFunction(isolate, target))
+            {
+                recordedFunction = receiver;
+                SetCallFeedbackContent(fv, slot, CallFeedbackContent.kReceiver);
+            }
+            TryInitializeAsMonomorphic(isolate, fv, slot, recordedFunction);
+            return;
+        }
+        if (FeedbackValueIsReceiver(fv, slot) && IsPrototypeApplyFunction(isolate, target))
+        {
+            // If the Receiver is recorded and the target is
+            // Function.prototype.apply, check whether we can stay monomorphic based
+            // on the receiver.
+            if (ReferenceEquals(feedbackObject, receiver.HeapObjectOrNull)) return;
+            // If not, reinitialize the feedback with target.
+            SetCallFeedbackContent(fv, slot, CallFeedbackContent.kTarget);
             TryInitializeAsMonomorphic(isolate, fv, slot, target);
             return;
         }
@@ -311,6 +350,9 @@ public static class InterpreterCalls
     /// JSConstructStubGeneric for a bytecode function: allocates the receiver
     /// for base constructors, runs the bytecode, and picks the result.
     /// </summary>
+    /// <summary>The stack slots of V8's construct stub frame, measured against --jitless V8.</summary>
+    const int kConstructStubFrameSlots = 16;
+
     static JSValue ConstructInterpreted(Isolate isolate, JSFunction function, JSValue newTarget, int argsStart, int argc,
         ReadOnlySpan<JSValue> spanArgs, bool useSpan = false)
     {
@@ -335,9 +377,15 @@ public static class InterpreterCalls
             implicitReceiver = JSValue.TheHole;
         }
 
+        // The construct stub's frame (JSConstructStubGeneric: its fixed slots and
+        // the copied arguments) takes stack space in V8; reserving the same on the
+        // register stack keeps the recursion depth at which `new` overflows close
+        // to V8's.
+        int stubStart = isolate.AllocateRegisters(kConstructStubFrameSlots);
         JSValue result = useSpan
             ? InterpreterExecution.Invoke(isolate, function, implicitReceiver, spanArgs, newTarget, true)
             : InterpreterExecution.InvokeFromRegisters(isolate, function, implicitReceiver, argsStart, argc, newTarget, true);
+        isolate.RegisterStackTop = stubStart;
 
         // If the result is an object (in the ECMA sense), we should get rid
         // of the receiver and use the result; see ECMA-262 section 13.2.2-7

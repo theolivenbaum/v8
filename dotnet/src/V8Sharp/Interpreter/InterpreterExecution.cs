@@ -51,7 +51,7 @@ public static partial class InterpreterExecution
         int start = isolate.RegisterStackTop;
         int fp = start + paramSlots + InterpreterRuntime.kFixedSlotsAboveParams;
         int end = fp + bytecode.RegisterCount;
-        if ((uint)end > (uint)stack.Length) isolate.StackOverflow();
+        if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
         isolate.RegisterStackTop = end;
 
         // Push the arguments in V8's order (the last argument deepest).
@@ -80,7 +80,7 @@ public static partial class InterpreterExecution
         int start = isolate.RegisterStackTop;
         int fp = start + paramSlots + InterpreterRuntime.kFixedSlotsAboveParams;
         int end = fp + bytecode.RegisterCount;
-        if ((uint)end > (uint)stack.Length) isolate.StackOverflow();
+        if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
         isolate.RegisterStackTop = end;
 
         ref JSValue stack0 = ref MemoryMarshal.GetArrayDataReference(stack);
@@ -178,11 +178,23 @@ public static partial class InterpreterExecution
             {
                 return Loop<SingleScale>(isolate, ref state);
             }
-            catch (JavaScriptException e)
+            // The filter only looks for a handler: an exception this frame does
+            // not handle keeps propagating without a catch-and-rethrow, which
+            // would run every outer frame's handler nested on the .NET stack.
+            catch (JavaScriptException e) when (HasHandler(isolate, ref state))
             {
-                if (!TryDispatchToHandler(isolate, ref state, e.Value, e.MessageObject)) throw;
+                TryDispatchToHandler(isolate, ref state, e.Value, e.MessageObject);
             }
         }
+    }
+
+    /// <summary>Whether this frame's handler table covers the current bytecode offset.</summary>
+    static bool HasHandler(Isolate isolate, ref InterpreterState state)
+    {
+        byte[] handlerTableBytes = state.Bytecode.HandlerTable;
+        if (handlerTableBytes.Length == 0) return false;
+        int pc = isolate.InterpreterFrames[state.FrameIndex].Pc;
+        return new HandlerTable(handlerTableBytes).LookupHandlerIndexForRange(pc) >= 0;
     }
 
     /// <summary>
@@ -216,8 +228,10 @@ public static partial class InterpreterExecution
         state.Accumulator = exception;
         state.Pc = handlerOffset;
         isolate.PendingMessage = message is null ? JSValue.TheHole : message;
-        // Frames above this one are gone (their finally blocks popped them).
+        // Frames above this one are gone (their finally blocks popped them), and
+        // so is any stack space reserved above this frame's register file.
         isolate.InterpreterFrameDepth = state.FrameIndex + 1;
+        isolate.RegisterStackTop = state.Fp + state.Bytecode.RegisterCount;
         return true;
     }
 

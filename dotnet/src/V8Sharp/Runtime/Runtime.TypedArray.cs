@@ -1,38 +1,12 @@
-// Port of src/runtime/runtime-typedarray.cc and the typed-array queries of
-// runtime-test.cc (%HasFixed<Type>Elements): the runtime functions the
-// typed-array builtins and the test suites (test262's detachArrayBuffer.js,
-// mjsunit) call.
+// Port of src/runtime/runtime-typedarray.cc (the functions RegisterTest does
+// not cover: copy, set, sort, buffer, growable length), runtime-futex.cc and
+// the typed-array queries of runtime-test.cc (%HasFixed<Type>Elements).
 using V8Sharp.Builtins;
 
 namespace V8Sharp.Runtime;
 
 public static class RuntimeTypedArray
 {
-    /// <summary>Runtime_ArrayBufferDetach (also exposed to fuzzers: any arguments).</summary>
-    public static JSValue ArrayBufferDetach(Isolate isolate, ReadOnlySpan<JSValue> args)
-    {
-        if (args.Length < 1 || args[0].HeapObjectOrNull is not JSArrayBuffer arrayBuffer)
-        {
-            isolate.ThrowTypeError(MessageTemplate.NotTypedArray);
-            return default;
-        }
-        JSArrayBuffer.Detach(isolate, arrayBuffer, forceForWasmMemory: false, hasKey: args.Length > 1,
-            maybeKey: args.Length > 1 ? args[1] : JSValue.Undefined);
-        return JSValue.Undefined;
-    }
-
-    /// <summary>Runtime_ArrayBufferSetDetachKey.</summary>
-    public static JSValue ArrayBufferSetDetachKey(Isolate isolate, JSValue argument, JSValue key)
-    {
-        if (argument.HeapObjectOrNull is not JSArrayBuffer arrayBuffer)
-        {
-            isolate.ThrowTypeError(MessageTemplate.NotTypedArray);
-            return default;
-        }
-        JSArrayBuffer.SetDetachKey(arrayBuffer, key, isolate);
-        return JSValue.Undefined;
-    }
-
     /// <summary>Runtime_TypedArrayCopyElements / Runtime_TypedArraySet.</summary>
     public static JSValue TypedArrayCopyElements(Isolate isolate, JSTypedArray target, JSValue source, double length, double offset)
     {
@@ -49,9 +23,6 @@ public static class RuntimeTypedArray
 
     /// <summary>Runtime_TypedArraySortFast.</summary>
     public static JSValue TypedArraySortFast(JSTypedArray array) => BuiltinsTypedArray.TypedArraySortFast(array);
-
-    /// <summary>Runtime_ArrayBufferMaxByteLength: the allocator's maximum allocation size.</summary>
-    public static JSValue ArrayBufferMaxByteLength() => JSValue.FromNumber(Array.MaxLength);
 
     /// <summary>Runtime_HasFixed&lt;Type&gt;Elements.</summary>
     public static JSValue HasFixedElements(JSValue obj, ElementsKind kind)
@@ -103,8 +74,6 @@ public static partial class RuntimeTable
 {
     static void RegisterTypedArray()
     {
-        Register(FunctionId.ArrayBufferDetach, static (i, a) => RuntimeTypedArray.ArrayBufferDetach(i, a));
-        Register(FunctionId.ArrayBufferSetDetachKey, static (i, a) => RuntimeTypedArray.ArrayBufferSetDetachKey(i, a[0], a[1]));
         Register(FunctionId.GrowableSharedArrayBufferByteLength,
             static (i, a) => RuntimeTypedArray.GrowableSharedArrayBufferByteLength(a[0].As<JSArrayBuffer>()));
         Register(FunctionId.TypedArrayCopyElements,
@@ -118,7 +87,6 @@ public static partial class RuntimeTable
         Register(FunctionId.AtomicsNumUnresolvedAsyncPromisesForTesting,
             static (i, a) => RuntimeFutex.AtomicsNumUnresolvedAsyncPromisesForTesting(a[0].As<JSTypedArray>(), a[1]));
         Register(FunctionId.SetAllowAtomicsWait, static (i, a) => RuntimeFutex.SetAllowAtomicsWait(i, a[0]));
-        Register(FunctionId.ArrayBufferMaxByteLength, static (i, a) => RuntimeTypedArray.ArrayBufferMaxByteLength());
         Register(FunctionId.HasFixedInt8Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.INT8_ELEMENTS));
         Register(FunctionId.HasFixedUint8Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.UINT8_ELEMENTS));
         Register(FunctionId.HasFixedInt16Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.INT16_ELEMENTS));

@@ -516,7 +516,7 @@ public static partial class InterpreterExecution
                     ref byte feedback = ref Unsafe.Add(ref code, pc + 1 + S);
                     if (lhs.IsNumber && acc.IsNumber)
                     {
-                        acc = InterpreterOps.AddNumbers(lhs.Number, acc.Number, ref feedback);
+                        acc = InterpreterOps.AddNumbers(isolate, lhs.Number, acc.Number, ref feedback);
                     }
                     else
                     {
@@ -618,7 +618,7 @@ public static partial class InterpreterExecution
                     int imm = Signed<TS>(ref code, pc + 1);
                     if (acc.IsNumber)
                     {
-                        acc = InterpreterOps.AddNumbers(acc.Number, imm, ref feedback);
+                        acc = InterpreterOps.AddNumbers(isolate, acc.Number, imm, ref feedback);
                     }
                     else
                     {
@@ -758,7 +758,7 @@ public static partial class InterpreterExecution
                     int count = Unsigned<TS>(ref code, pc + 1 + 2 * S);
                     int slot = Unsigned<TS>(ref code, pc + 1 + 3 * S);
                     JSValue receiver = Unsafe.Add(ref fpSlot, first);
-                    InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
+                    InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
                     acc = InterpreterCalls.Call(isolate, callee, receiver, fp + first + 1, count - 1,
                         (Bytecode)Unsafe.Add(ref code, pc) == Bytecode.CallProperty
                             ? ConvertReceiverMode.NotNullOrUndefined
@@ -771,7 +771,7 @@ public static partial class InterpreterExecution
                     JSValue callee = Reg(ref regBase, Signed<TS>(ref code, pc + 1));
                     JSValue receiver = Reg(ref regBase, Signed<TS>(ref code, pc + 1 + S));
                     int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
+                    InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
                     acc = InterpreterCalls.Call(isolate, callee, receiver, 0, 0, ConvertReceiverMode.NotNullOrUndefined);
                     pc += 1 + 3 * S;
                     continue;
@@ -783,7 +783,7 @@ public static partial class InterpreterExecution
                     JSValue receiver = Reg(ref regBase, receiverOperand);
                     int argOperand = Signed<TS>(ref code, pc + 1 + 2 * S);
                     int slot = Unsigned<TS>(ref code, pc + 1 + 3 * S);
-                    InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
+                    InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
                     acc = InterpreterCalls.Call(isolate, callee, receiver, fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
                         ConvertReceiverMode.NotNullOrUndefined);
                     pc += 1 + 4 * S;
@@ -796,7 +796,7 @@ public static partial class InterpreterExecution
                     int arg0 = Signed<TS>(ref code, pc + 1 + 2 * S);
                     int arg1 = Signed<TS>(ref code, pc + 1 + 3 * S);
                     int slot = Unsigned<TS>(ref code, pc + 1 + 4 * S);
-                    InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
+                    InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
                     acc = InterpreterCalls.Call2(isolate, callee, receiver, Reg(ref regBase, arg0), Reg(ref regBase, arg1),
                         fp + InterpreterRuntime.kRegisterOperandBase - arg0, arg1 == arg0 - 1,
                         ConvertReceiverMode.NotNullOrUndefined);

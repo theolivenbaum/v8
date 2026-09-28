@@ -122,6 +122,7 @@ public sealed partial class Isolate
         StackGuard = new StackGuard(this);
         DefaultMicrotaskQueue = new MicrotaskQueue(this);
         RegisterStack = new JSValue[kRegisterStackSize];
+        RegisterStackLimit = (int)Math.Min(kRegisterStackSize, Math.Max(1L, (long)Flags.stack_size) * 1024 / 8);
         InitializeInterpreter();
     }
 
@@ -179,13 +180,22 @@ public sealed partial class Isolate
     /// <summary>The first free slot of <see cref="RegisterStack"/>.</summary>
     public int RegisterStackTop;
 
+    /// <summary>
+    /// The register stack's limit in slots, V8's stack limit (--stack-size, in KB)
+    /// counted in 8-byte stack slots: the interpreter frames' parameters, fixed
+    /// slots and registers live here as they do on V8's machine stack, so
+    /// recursion overflows at about V8's depth. The .NET stack check stays as
+    /// the backstop for native recursion.
+    /// </summary>
+    public int RegisterStackLimit;
+
     /// <summary>Reserves <paramref name="count"/> register slots; throws V8's stack overflow RangeError when full.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public int AllocateRegisters(int count)
     {
         int start = RegisterStackTop;
         int end = start + count;
-        if ((uint)end > (uint)RegisterStack.Length) StackOverflow();
+        if ((uint)end > (uint)RegisterStackLimit) StackOverflow();
         RegisterStackTop = end;
         return start;
     }

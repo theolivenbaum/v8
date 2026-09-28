@@ -135,6 +135,13 @@ public sealed class Shell
         {
             return false;
         }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException or InvalidOperationException)
+        {
+            // An engine gap (an unported builtin or runtime function): report it
+            // like an uncaught exception instead of crashing the shell.
+            Console.Out.Write("V8Sharp internal error: " + e.GetType().Name + ": " + e.Message + "\n\n");
+            return false;
+        }
     }
 
     JSValue RunScript(string source, string name)

@@ -62,6 +62,7 @@ public enum InstanceType : ushort
     PromiseReactionType,
     PromiseCapabilityType,
     MicrotaskType,
+    AsyncGeneratorRequestType,
     SourceTextModuleType,
     SyntheticModuleType,
     ModuleRequestType,

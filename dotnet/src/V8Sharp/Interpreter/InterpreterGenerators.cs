@@ -74,6 +74,13 @@ public static class InterpreterGenerators
         return InterpreterExecution.Invoke(isolate, function, generator.Receiver, parameters, generator, isConstruct: false);
     }
 
+    /// <summary>Closes the generator when an exception leaves it (an exception filter, so it never catches).</summary>
+    static bool CloseGenerator(JSGeneratorObject receiver)
+    {
+        receiver.ContinuationValue = JSGeneratorObject.kGeneratorClosed;
+        return false;
+    }
+
     /// <summary>GeneratorBuiltinsAssembler::InnerResume.</summary>
     public static JSValue InnerResume(Isolate isolate, JSGeneratorObject receiver, JSValue value,
         JSGeneratorObject.ResumeMode resumeMode)
@@ -110,10 +117,9 @@ public static class InterpreterGenerators
         {
             result = ResumeGeneratorTrampoline(isolate, value, receiver);
         }
-        catch (JavaScriptException)
+        catch (JavaScriptException) when (CloseGenerator(receiver))
         {
-            receiver.ContinuationValue = JSGeneratorObject.kGeneratorClosed;
-            throw;
+            throw; // Unreachable: the filter never catches.
         }
 
         // If the generator is not suspended (i.e., its state is 'executing'),

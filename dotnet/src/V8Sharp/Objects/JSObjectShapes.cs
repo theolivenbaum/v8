@@ -160,6 +160,9 @@ public class JSGeneratorObject(Map map) : JSObject(map)
 public sealed class JSAsyncFunctionObject(Map map) : JSGeneratorObject(map)
 {
     public JSPromise Promise = null!;
+    /// <summary>The await closures, allocated on the first await and reused (undefined until then).</summary>
+    public JSValue AwaitResolveClosure;
+    public JSValue AwaitRejectClosure;
 }
 
 /// <summary>V8's JSAsyncGeneratorObject.</summary>

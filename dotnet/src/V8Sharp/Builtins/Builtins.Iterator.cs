@@ -278,8 +278,6 @@ public static partial class IteratorBuiltins
 
     /// <summary>
     /// FastIterableToList: null (V8's slow label) unless a fast path applies.
-    /// The string fast path (StringToList) is not taken; the generic path
-    /// produces the same list.
     /// </summary>
     public static JSArray? FastIterableToList(Isolate isolate, JSValue maybeIterable)
     {
@@ -288,6 +286,11 @@ public static partial class IteratorBuiltins
             case JSArray array when IsFastJSArrayWithNoCustomIteration(isolate, array):
                 // Fast path for fast JSArray.
                 return CloneFastJSArrayFillingHoles(isolate, array);
+            // Check StringPrimitiveWithNoCustomIteration case (the string length
+            // is a conservative approximation of the number of code points).
+            case JSString s when Protectors.IsStringIteratorLookupChainIntact(isolate) &&
+                                 (uint)s.Length <= JSArray.kMaxFastArrayLength:
+                return BuiltinsString.StringToList(isolate, s);
             case JSObject obj:
                 // Check IterableWithOriginalKeyOrValueMapIterator case.
                 if (CollectionsBuiltins.IsIterableWithOriginalKeyOrValueMapIterator(isolate, obj))

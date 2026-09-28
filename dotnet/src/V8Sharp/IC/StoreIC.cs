@@ -370,7 +370,7 @@ public sealed class StoreIC : IC
                 UpdateLookupStartObjectMap(obj);
                 if (_lookupStartObjectMap is not null) SetCache(name, StoreHandler.StoreSlow(_isolate));
             }
-            return _isolate.ThrowTypeError(MessageTemplate.NonObjectPropertyStoreWithProperty, name, obj);
+            return _isolate.ThrowTypeError(MessageTemplate.NonObjectPropertyStoreWithProperty, obj, name);
         }
 
         JSObject.MakePrototypesFast(obj, WhereToStart.StartAtPrototype, _isolate);
@@ -567,9 +567,8 @@ public sealed class StoreIC : IC
                     if (!lookup.HolderIsReceiverOrHiddenPrototype()) return StoreHandler.StoreSlow(_isolate);
                     if (ReferenceEquals(receiver, holder))
                     {
-                        // An own accessor: the handler applies to every receiver with this
-                        // map, so it must not remember this holder (StoreIC dispatch uses
-                        // the receiver when Holder is null).
+                        // The receiver is the holder: the handler is shared by every
+                        // receiver with this map, so it must not capture this one.
                         return StoreHandler.StoreNativeDataProperty(_isolate, null, info, null);
                     }
                     return StoreHandler.StoreNativeDataProperty(_isolate, holder, info,
@@ -707,7 +706,7 @@ public static class StoreGlobalIC
                 Context scriptContext = scriptContexts.Get(lookupResult.ContextIndex);
                 if (Globals.IsImmutableLexicalVariableMode(lookupResult.Mode))
                 {
-                    _isolate.ThrowTypeError(MessageTemplate.ConstAssign, global, name);
+                    _isolate.ThrowTypeError(MessageTemplate.ConstAssign, name, global);
                     return;
                 }
 

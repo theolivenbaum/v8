@@ -278,6 +278,19 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 | date | suite | pass | run | rate | notes |
 |---|---|---|---|---|---|
 | 2026-09-28 | test262 | 67759 | 94901 | 71.4% | first run; 79.1% without Temporal. Failing: async functions/generators/for-await, modules, dynamic import (interpreter, in progress); Promise/Iterator/Map/Set/Weak*/DisposableStack (collections port, in progress); Temporal (9210) |
+| 2026-09-28 | mjsunit | 6412 | 7597 | 84.4% | first run; clusters: regress (337), harmony (199, mostly async), maglev/compiler/turbolev (168, optimization-status asserts until the tiers exist), d8 (45) |
+
+Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
+
+| benchmark | V8Sharp | V8 --jitless | V8 jit |
+|---|---|---|---|
+| Richards | 224 | 1351 | 35500 |
+| DeltaBlue | 212 | 1425 | 61457 |
+| Crypto | 171 | 1150 | 31208 |
+| RayTrace | 504 | 2801 | 58903 |
+| EarleyBoyer | 791 | 4711 | 36484 |
+| RegExp | 780 | 1759 | 4595 |
+| NavierStokes | 632 | 1441 | 27465 |
 
 - [ ] Temporal: V8 15.6 implements it as a binding layer
       (`src/objects/js-temporal-objects.cc`, `builtins-temporal.cc`) over the
