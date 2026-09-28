@@ -116,8 +116,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [~] Isolate, Factory, roots, StringTable, MessageTemplate, error creation,
       stack traces (CallSiteInfo, Error.captureStackTrace, prepareStackTrace).
       Done: Isolate, Factory, roots, StringTable, error creation, CallSiteInfo,
-      protectors. Missing: the Error builtins (captureStackTrace,
-      prepareStackTrace callers) belong to the builtins port
+      protectors, the Error builtins (Builtins.Error.cs)
 - [x] conversions and operators (Object::ToNumber, ToPrimitive, Equals,
       StrictEquals, Compare, arithmetic helpers)
 - [~] bootstrapper/Genesis: native context, intrinsics in V8's install order.
@@ -153,11 +152,22 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [ ] feedback vectors and ICs (load/store/keyed/global/call/binary op/compare)
 - [ ] interpreter dispatch loop, generators, async functions
 - [ ] runtime functions (`%` intrinsics used by bytecode and by mjsunit)
-- [ ] builtins: Object, Function, Array, String, Number, Boolean, Symbol,
-      Math, JSON, Error, RegExp, Date, Map/Set/WeakMap/WeakSet/WeakRef/
-      FinalizationRegistry, Promise, generators/iterators, Proxy/Reflect,
-      ArrayBuffer/TypedArray/DataView/Atomics, BigInt, globalThis functions,
-      Iterator helpers, DisposableStack
+- [~] builtins: Object, Function, Reflect, Proxy, global functions (URI
+      coding, escape/unescape, isNaN/isFinite, parseInt/parseFloat, eval),
+      Error (+ AggregateError, SuppressedError, captureStackTrace, isError,
+      CallSite methods), Boolean, Symbol: ported (Builtins/Builtins.{Object,
+      Function,Reflect,Proxy,Global,Error,Boolean,Symbol}*.cs; tests in
+      tests/V8Sharp.Tests/Builtins, URI/parse functions and the intrinsics'
+      shapes checked against the oracle). Waiting for the interpreter: the
+      mjsunit/test262 runs of built-ins/{Object,Function,Reflect,Proxy,Error,
+      Boolean,Symbol,...}; `new Function` and indirect eval call
+      Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler), which the
+      compiler port must register. The proxy trap stubs (ProxyGetProperty ...)
+      and CallProxy/ConstructProxy are not registered: callers use JSProxy.
+      Still to do: Array, Number (except parseInt/parseFloat), Math,
+      JSON, Date, Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry,
+      Promise, generators/iterators, ArrayBuffer/TypedArray/DataView/Atomics,
+      BigInt, Iterator helpers, DisposableStack
 - [~] String and RegExp builtins (Builtins/Builtins.String*.cs,
       Builtins.RegExp*.cs, Runtime/Runtime.Regexp.cs, Runtime.Strings.cs,
       Objects/JSRegExp*.cs, Strings/StringSearch.cs): every String,

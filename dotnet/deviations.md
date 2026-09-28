@@ -287,3 +287,50 @@ Bootstrapper
 - localeCompare, normalize, toLocaleUpperCase/LowerCase follow V8's
   !V8_INTL_SUPPORT paths (code-unit order, form validation only, unibrow
   case mapping of code units). The oracle has ICU; its results differ there.
+
+## Builtins: Object, Function, Reflect, Proxy, global, Error, Boolean, Symbol
+
+- Object.assign: the CSA fast path that clones the source's layout into a
+  fresh empty target through the object_assign side-step transition is not
+  ported; JSReceiver::SetOrCopyDataProperties with its FastAssign descriptor
+  walk (V8's runtime fast path) handles every source.
+- Object.values/entries: V8's CSA FastGetOwnValuesOrEntries and the runtime
+  fast path are one path here (JSReceiver::GetOwnValuesOrEntries with
+  try_fast_path for fast-mode JSObjects).
+- Object.fromEntries: the fast path checks every [key, value] pair of the
+  fast array before creating properties; V8 creates them as it goes and on a
+  bail-out restarts on the slow path with a fresh object. The result is the
+  same (the pairs are read without side effects).
+- Object.groupBy: the groups are a Dictionary keyed by the internalized
+  property key plus an insertion-ordered list (V8: an OrderedHashMap of
+  ArrayLists); the fast array path reads elements with GetElement instead of
+  the FastJSArrayForRead witness.
+- The iteration helpers these builtins need (GetIterator, IteratorStep,
+  IteratorCloseOnException, IterableToListWithSymbolLookup) are a local
+  `IteratorHelpers` class until the iterator builtins are ported.
+- CreateDynamicFunction and GlobalEval: no embedder callbacks
+  (ModifyCodeGenerationFromStrings, IsCodeLike), and Builtins::
+  AllowDynamicFunction is always true (one embedder, no differing security
+  tokens). Compilation goes through `Isolate.DynamicFunctionCompiler`
+  (Compiler::GetFunctionFromString / GetFunctionFromValidatedString).
+  Map::AsLanguageMode builds the strict derived function map each time
+  instead of caching it as a strict_function_transition_symbol transition.
+- Function.prototype.apply / Reflect.apply / Reflect.construct: the fast
+  elements of an arguments object or fast JSArray are copied into a pooled
+  buffer (V8 pushes them on the machine stack).
+- The proxy trap builtins (ProxyGetProperty, ProxySetProperty, ...,
+  CallProxy, ConstructProxy) are not registered: every caller reaches the
+  trap logic through JSProxy. The proxy_revoke_shared_fun root is created on
+  first use per isolate.
+- Uri (src/strings/uri.cc): one UTF-16 buffer instead of V8's one-byte and
+  two-byte buffers; the strings produced are the same.
+- CallSite methods: no ShadowRealm boundary checks (ShadowRealm is not
+  ported). getScriptHash computes the SHA-256 on each call (V8 caches it on
+  the script) and never returns "" for opaque origins (not modelled).
+  getThis returns undefined for a receiver that is still the hole.
+- Error.isError has no API-wrapper (DOMException) case.
+- The global parseInt/parseFloat are Number.parseInt/parseFloat (one
+  function, as in V8); their builtins (NumberParseInt, NumberParseFloat) are
+  registered by the global functions' area.
+- `Isolate.CountUsage` is a no-op (no use counters).
+
