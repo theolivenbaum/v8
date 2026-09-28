@@ -247,6 +247,11 @@ Stand-ins in the engine that go away when the component they wait for merges
   system's Module.
 
 
+- Engine-wide: replace `double.NaN` (0xFFF8..., sign bit set) with
+  `JSValue.QuietNaN` (V8's 0x7FF8...) wherever a NaN constant can reach a
+  Float64Array/DataView store (ToNumber of non-numeric strings, Math results,
+  Date invalid time value). `JSValue.NaN` is already fixed.
+
 ## Deviations
 
 Recorded in `deviations.md`.

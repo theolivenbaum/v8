@@ -38,7 +38,13 @@ public readonly struct JSValue : IEquatable<JSValue>
     public static readonly JSValue True = new(Oddball.True);
     public static readonly JSValue False = new(Oddball.False);
     public static readonly JSValue TheHole = new(Oddball.TheHole);
-    public static readonly JSValue NaN = new(double.NaN);
+    /// <summary>
+    /// V8's canonical quiet NaN, std::numeric_limits&lt;double&gt;::quiet_NaN()
+    /// (0x7FF8000000000000). .NET's double.NaN is 0xFFF8000000000000 (sign bit
+    /// set); the bits are observable through Float64Array and DataView.
+    /// </summary>
+    public static readonly double QuietNaN = BitConverter.Int64BitsToDouble(0x7FF8000000000000);
+    public static readonly JSValue NaN = new(QuietNaN);
     public static readonly JSValue Zero = new(0.0);
     public static readonly JSValue MinusZero = new(-0.0);
 
