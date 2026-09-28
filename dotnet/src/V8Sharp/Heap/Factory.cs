@@ -274,7 +274,7 @@ public sealed partial class Factory(Isolate isolate)
     /// <summary>Factory::NewJSObjectFromMap.</summary>
     public JSObject NewJSObjectFromMap(Map map, AllocationSite? allocationSite = null)
     {
-        JSObject obj = JSObject.AllocateForMap(map);
+        JSObject obj = map.HasInObjectSlots ? JSObject.NewWithInObjectSlots(map) : JSObject.AllocateForMap(map);
         if (map.IsInobjectSlackTrackingInProgress())
         {
             map.FindRootMap().InobjectSlackTrackingStep(_isolate);

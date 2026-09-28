@@ -151,17 +151,27 @@ internal static class InterpreterInlineCalls
         }
         InterpreterCalls.CollectConstructFeedback(isolate, st.FeedbackVector, slot, constructor, newTarget);
 
-        // Allocate the new receiver object in the constructor's context.
-        Context? saved = isolate.Context;
-        isolate.Context = function.Context;
         JSValue implicitReceiver;
-        try
+        if (ReferenceEquals(newTargetReceiver, function) && function.PrototypeOrInitialMap is Map initialMap &&
+            !initialMap.IsDictionaryMap)
         {
-            implicitReceiver = JSObject.New(isolate, function, newTargetReceiver, null);
+            // FastNewObject: new.target is the constructor and its initial map
+            // exists, so the allocation needs nothing from the context.
+            implicitReceiver = isolate.Factory.NewJSObjectFromMap(initialMap);
         }
-        finally
+        else
         {
-            isolate.Context = saved;
+            // Allocate the new receiver object in the constructor's context.
+            Context? saved = isolate.Context;
+            isolate.Context = function.Context;
+            try
+            {
+                implicitReceiver = JSObject.New(isolate, function, newTargetReceiver, null);
+            }
+            finally
+            {
+                isolate.Context = saved;
+            }
         }
 
         // The construct stub's frame (see InterpreterCalls.ConstructInterpreted).

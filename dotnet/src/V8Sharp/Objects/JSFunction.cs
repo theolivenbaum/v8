@@ -728,6 +728,12 @@ public sealed class JSFunction(Map map, SharedFunctionInfo shared, Context conte
 
     public bool TryGetInitialMap(out Map initialMap)
     {
+        // The common case first: prototype_or_initial_map holds the map itself.
+        if (PrototypeOrInitialMap is Map map)
+        {
+            initialMap = map;
+            return true;
+        }
         if (TryGetPrototypeOrInitialMap(out PrototypeOrInitialMapData pomd) && pomd.HasInitialMap)
         {
             initialMap = pomd.InitialMap!;
