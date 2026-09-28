@@ -434,35 +434,14 @@ public sealed class JSDate(Map map) : JSObject(map)
     }
 }
 
-/// <summary>V8's JSRegExp. The compiled data (RegExpData) belongs to V8Sharp.RegExp.</summary>
-public sealed class JSRegExp(Map map) : JSObject(map)
+/// <summary>
+/// V8's JSRegExp. The fields, RegExpData and the operations of
+/// src/objects/js-regexp.{h,cc} are in JSRegExp.cs.
+/// </summary>
+public sealed partial class JSRegExp(Map map) : JSObject(map)
 {
     /// <summary>In-object fields of a JSRegExp: lastIndex.</summary>
     public const int kInObjectFieldCount = 1;
-
-    /// <summary>JSRegExp::Flag.</summary>
-    [Flags]
-    public enum Flags
-    {
-        kNone = 0,
-        kHasIndices = 1 << 0,
-        kGlobal = 1 << 1,
-        kIgnoreCase = 1 << 2,
-        kLinear = 1 << 3,
-        kMultiline = 1 << 4,
-        kDotAll = 1 << 5,
-        kUnicode = 1 << 6,
-        kUnicodeSets = 1 << 7,
-        kSticky = 1 << 8,
-    }
-
-    /// <summary>JSRegExp::kLastIndexFieldIndex: lastIndex is the first in-object property.</summary>
-    public const int kLastIndexFieldIndex = 0;
-
-    /// <summary>The RegExpData (TODO(merge): V8Sharp.RegExp's type).</summary>
-    public object? Data;
-    public JSValue Source;
-    public Flags FlagsValue;
 }
 
 // ---- Promises ---------------------------------------------------------------------------
