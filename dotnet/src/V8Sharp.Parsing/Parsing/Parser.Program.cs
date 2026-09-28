@@ -611,7 +611,9 @@ public sealed partial class Parser
         return factory().NewCallRuntime(function, permissive_args, pos);
     }
 
-    public Parser(ParseInfo info) : this(info, new Scanner(info.character_stream(), info.flags()))
+    public Parser(ParseInfo info)
+        : this(info, new Scanner(info.character_stream(), info.flags(),
+                                 info.v8_flags().enable_experimental_regexp_engine))
     {
     }
 

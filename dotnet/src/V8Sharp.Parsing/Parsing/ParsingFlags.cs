@@ -37,6 +37,8 @@ public sealed class ParsingFlags
     public int function_context_cells_max_size { get; init; } = 2;
     // DEFINE_BOOL(ignition_elide_redundant_tdz_checks, true, ...)
     public bool ignition_elide_redundant_tdz_checks { get; init; } = true;
+    // DEFINE_BOOL(enable_experimental_regexp_engine, false, ...): the 'l' flag.
+    public bool enable_experimental_regexp_engine { get; init; }
     // DEFINE_BOOL(use_strict, false, "enforce strict mode")
     public bool use_strict { get; init; }
 
