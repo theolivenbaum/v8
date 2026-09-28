@@ -6,7 +6,7 @@ using V8Sharp.Roots;
 
 namespace V8Sharp.Tests.Builtins;
 
-public class TypedArrayTest : BuiltinsTestBase
+public class TypedArrayTest : ArrayTestBase
 {
     JSValue TA(string ctor, params double[] values) => New(ctor, Arr(values));
 

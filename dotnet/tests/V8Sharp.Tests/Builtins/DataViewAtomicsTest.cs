@@ -5,7 +5,7 @@ using V8Sharp.Objects;
 
 namespace V8Sharp.Tests.Builtins;
 
-public class DataViewAtomicsTest : BuiltinsTestBase
+public class DataViewAtomicsTest : ArrayTestBase
 {
     string Bytes(JSValue buffer)
     {

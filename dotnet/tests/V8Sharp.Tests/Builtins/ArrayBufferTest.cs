@@ -5,7 +5,7 @@ using V8Sharp.Objects;
 
 namespace V8Sharp.Tests.Builtins;
 
-public class ArrayBufferTest : BuiltinsTestBase
+public class ArrayBufferTest : ArrayTestBase
 {
     JSObject Options(double maxByteLength)
     {

@@ -5,7 +5,7 @@ using V8Sharp.Objects;
 
 namespace V8Sharp.Tests.Builtins;
 
-public class TypedArrayBase64Test : BuiltinsTestBase
+public class TypedArrayBase64Test : ArrayTestBase
 {
     const string kInvalid = "SyntaxError: Found a character that cannot be part of a valid base64 string.";
     const string kRemainder = "SyntaxError: The base64 input terminates with a single character, excluding padding (=).";

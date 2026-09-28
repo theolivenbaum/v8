@@ -5,7 +5,7 @@ using V8Sharp.Roots;
 
 namespace V8Sharp.Tests.Builtins;
 
-public class ArrayBuiltinsTest : BuiltinsTestBase
+public class ArrayBuiltinsTest : ArrayTestBase
 {
     JSValue ArrayProto(string name) => Get(Get(Global("Array"), "prototype"), name);
 

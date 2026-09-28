@@ -7,7 +7,7 @@ using V8Sharp.Objects;
 
 namespace V8Sharp.Tests.Builtins;
 
-public class ArraySortTest : BuiltinsTestBase
+public class ArraySortTest : ArrayTestBase
 {
     static double[] Data(int n, double seed)
     {
