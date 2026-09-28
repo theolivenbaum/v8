@@ -96,8 +96,10 @@ public static partial class BuiltinsString
     static void EnsureCaseBuffer(Isolate isolate, ref char[] buffer, int written, int additional)
     {
         int needed = written + additional;
-        if (needed <= buffer.Length) return;
+        // The buffer grows by doubling, so it can exceed String::kMaxLength:
+        // check the result length before the capacity.
         if (needed > JSString.kMaxLength) isolate.Throw(isolate.Factory.NewInvalidStringLengthError());
+        if (needed <= buffer.Length) return;
         char[] next = ArrayPool<char>.Shared.Rent(Math.Max(needed, buffer.Length * 2));
         buffer.AsSpan(0, written).CopyTo(next);
         ArrayPool<char>.Shared.Return(buffer);

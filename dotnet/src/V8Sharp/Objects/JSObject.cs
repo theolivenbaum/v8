@@ -1157,7 +1157,7 @@ public partial class JSObject
     {
         Debug.Assert(!value.IsTheHole);
         var it = new LookupIterator(isolate, obj, name, obj, LookupIterator.Configuration.OWN);
-        DefineOwnPropertyIgnoreAttributes(ref it, value, attributes);
+        DefineOwnPropertyIgnoreAttributes(ref it, value, attributes, ShouldThrow.ThrowOnError);
         return value;
     }
 
@@ -1166,7 +1166,7 @@ public partial class JSObject
     {
         Debug.Assert(obj is not JSTypedArray);
         var it = new LookupIterator(isolate, obj, index, obj, LookupIterator.Configuration.OWN);
-        DefineOwnPropertyIgnoreAttributes(ref it, value, attributes);
+        DefineOwnPropertyIgnoreAttributes(ref it, value, attributes, ShouldThrow.ThrowOnError);
         return value;
     }
 
@@ -1176,7 +1176,7 @@ public partial class JSObject
     {
         var key = new PropertyKey(isolate, name);
         var it = new LookupIterator(isolate, obj, key, obj, LookupIterator.Configuration.OWN);
-        DefineOwnPropertyIgnoreAttributes(ref it, value, attributes);
+        DefineOwnPropertyIgnoreAttributes(ref it, value, attributes, ShouldThrow.ThrowOnError);
         return value;
     }
 

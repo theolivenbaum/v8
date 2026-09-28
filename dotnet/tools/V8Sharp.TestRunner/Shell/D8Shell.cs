@@ -1,6 +1,7 @@
 // The d8 shell's run loop over an IJsEngine: Shell::Main / RunMain /
 // RunMainIsolate / SourceGroup::Execute / FinishExecuting /
 // ReportException / the Realm and setTimeout machinery of src/d8/d8.cc.
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
@@ -17,16 +18,17 @@ public sealed record ShellResult(int ExitCode, string Stdout, string Stderr, boo
 /// order in the main realm until one throws, then the task queue, then the
 /// unhandled-rejection check. Output goes to in-memory stdout/stderr.
 /// </summary>
-public sealed class D8Shell : IJsHost
+public sealed partial class D8Shell : IJsHost
 {
     static readonly string s_shimSource = LoadShim();
 
     readonly IJsEngine _engine;
     readonly D8Options _options;
     readonly string _workingDirectory;
-    readonly StringBuilder _stdout = new();
-    readonly StringBuilder _stderr = new();
-    readonly Stopwatch _clock = new();
+    // Shared by the main shell and its Worker shells (one d8 process); writers lock _stdout.
+    readonly StringBuilder _stdout;
+    readonly StringBuilder _stderr;
+    readonly Stopwatch _clock;
 
     IJsIsolate? _isolate;
     readonly List<RealmState?> _realms = [];
@@ -34,9 +36,13 @@ public sealed class D8Shell : IJsHost
     int _realmCurrent;
     int _realmSwitch;
     object? _realmSharedBox;
-    readonly Queue<(RealmState Realm, object Callback)> _tasks = new();
+    // The isolate's foreground task runner: setTimeout callbacks and Worker
+    // message tasks, posted from any thread, run in order on the shell's thread.
+    readonly ConcurrentQueue<Action> _tasks = new();
+    readonly SemaphoreSlim _taskSignal = new(0);
     readonly List<(object Promise, object? Value, RealmState Realm)> _unhandled = [];
     readonly Dictionary<string, string> _sources = new(StringComparer.Ordinal);
+    readonly Dictionary<string, double> _performanceMarks = new(StringComparer.Ordinal);
 
     volatile bool _timedOut;
     int? _quitCode;
@@ -53,6 +59,43 @@ public sealed class D8Shell : IJsHost
         _engine = engine;
         _options = options;
         _workingDirectory = workingDirectory;
+        _stdout = new();
+        _stderr = new();
+        _clock = new();
+        _root = this;
+    }
+
+    /// <summary>A Worker's shell: the same process (output, options, clock) with its own isolate.</summary>
+    D8Shell(D8Shell parent, WorkerState worker)
+    {
+        _engine = parent._engine;
+        _options = parent._options;
+        _workingDirectory = parent._workingDirectory;
+        _stdout = parent._stdout;
+        _stderr = parent._stderr;
+        _clock = parent._clock;
+        _root = parent._root;
+        _worker = worker;
+    }
+
+    /// <summary>PostTask on the foreground task runner (thread-safe).</summary>
+    void PostTask(Action task)
+    {
+        _tasks.Enqueue(task);
+        _taskSignal.Release();
+    }
+
+    /// <summary>Runs one posted task; false when there was none.</summary>
+    bool RunOneTask()
+    {
+        if (!_tasks.TryDequeue(out Action? task)) return false;
+        task();
+        return true;
+    }
+
+    void Out(string text)
+    {
+        lock (_stdout) _stdout.Append(text);
     }
 
     static string LoadShim()
@@ -68,6 +111,7 @@ public sealed class D8Shell : IJsHost
     {
         _timedOut = true;
         _isolate?.TerminateExecution();
+        TerminateAllWorkers();
     }
 
     public ShellResult Run()
@@ -80,11 +124,13 @@ public sealed class D8Shell : IJsHost
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
-            _stdout.Append("V8Sharp.TestRunner: host error: ").Append(e).Append('\n');
+            Out("V8Sharp.TestRunner: host error: " + e + "\n");
             exit = 1;
         }
         finally
         {
+            // Shell::WaitForRunningWorkers: workers still running are terminated.
+            WaitForRunningWorkers();
             try { _isolate?.Dispose(); } catch { }
         }
         if (_timedOut) exit = -1;
@@ -95,19 +141,19 @@ public sealed class D8Shell : IJsHost
     {
         if (_engine.UnavailableReason is { } why)
         {
-            _stdout.Append(why).Append('\n');
+            Out(why + "\n");
             return 1;
         }
         _isolate = _engine.CreateIsolate(this);
         _realms.Add(Install(_isolate.MainRealm, isMain: true));
         bool success = ExecuteSources();
-        if (_quitCode is { } q) return q;
+        if (QuitCode is { } q) return q;
         if (!_timedOut && !FinishExecuting()) success = false;
-        if (_quitCode is { } q2) return q2;
+        if (QuitCode is { } q2) return q2;
 
         if (_unhandledCount > 0)
         {
-            _stdout.Append(CultureInfo.InvariantCulture, $"{_unhandledCount} pending unhandled Promise rejection(s) detected.\n");
+            Out(string.Create(CultureInfo.InvariantCulture, $"{_unhandledCount} pending unhandled Promise rejection(s) detected.\n"));
             success = false;
         }
         if (_options.NoFail) return 0;
@@ -123,9 +169,30 @@ public sealed class D8Shell : IJsHost
         var options = Check(realm.RunScript(
             "({ omitQuit: " + (_options.OmitQuit ? "true" : "false") +
             ", noArguments: " + (_options.NoArguments ? "true" : "false") +
+            ", isWorker: " + (_worker is not null && isMain ? "true" : "false") +
+            ", serialization: " + (realm.SupportsSerialization ? "true" : "false") +
             ", maxFixedArrayCapacity: 134217725, maxFastArrayLength: 33554432 })", "d8-options.js"), "d8 options");
-        var helpers = Check(realm.Call(installer!, JsUndefined.Value, host, isMain, options), "d8 install");
+        // print, printErr and write are C++ functions in d8 (Shell::Print ...): when
+        // the engine can convert the arguments itself, no JS frame shows in stack traces.
+        object print = realm.CreateStringArgumentsFunction("print", (r, a) => Dispatch(r, ["print", JoinArguments(a)]))
+            ?? JsUndefined.Value;
+        object printErr = realm.CreateStringArgumentsFunction("printErr", (r, a) => Dispatch(r, ["printErr", JoinArguments(a)]))
+            ?? JsUndefined.Value;
+        object write = realm.CreateStringArgumentsFunction("write", (r, a) => Dispatch(r, ["write", JoinArguments(a)]))
+            ?? JsUndefined.Value;
+        var helpers = Check(realm.Call(installer!, JsUndefined.Value, host, isMain, options, print, printErr, write), "d8 install");
         return new RealmState(realm, helpers!);
+    }
+
+    static string JoinArguments(object?[] args)
+    {
+        var sb = new StringBuilder();
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (i != 0) sb.Append(' ');
+            sb.Append(args[i] as string);
+        }
+        return sb.ToString();
     }
 
     static object? Check(Completion c, string what) => c.Kind switch
@@ -155,7 +222,7 @@ public sealed class D8Shell : IJsHost
                 string? text = ReadSourceFile(src.Path!);
                 if (text is null)
                 {
-                    _stdout.Append(CultureInfo.InvariantCulture, $"Error reading '{src.Path}'\n");
+                    Out($"Error reading '{src.Path}'\n");
                     _quitCode = 1;
                     return false;
                 }
@@ -172,7 +239,10 @@ public sealed class D8Shell : IJsHost
         return true;
     }
 
-    bool Stopped => _timedOut || _quitCode is not null || _terminateRequested;
+    bool Stopped => _timedOut || QuitCode is not null || _terminateRequested || _root._timedOut;
+
+    /// <summary>quit() exits the whole d8 process, from any worker too.</summary>
+    int? QuitCode => _root._quitCode;
 
     RealmState CurrentRealm => _realms[_realmCurrent] ?? _realms[0]!;
 
@@ -202,19 +272,17 @@ public sealed class D8Shell : IJsHost
     bool FinishExecuting()
     {
         bool success = true;
+        _taskFailed = false;
         while (!Stopped)
         {
             // Engine-posted foreground tasks run before the next d8 task.
             if (_isolate!.PumpMessageLoop()) continue;
-            if (_tasks.Count == 0) break;
-            var (realm, callback) = _tasks.Dequeue();
-            var c = realm.Realm.Call(callback, JsUndefined.Value);
-            if (c.Kind == CompletionKind.Throw)
-            {
-                ReportException(realm, c.Exception!);
-                success = false;
-            }
+            if (RunOneTask()) continue;
+            // CompleteMessageLoop: wait for work while workers we listen to run.
+            if (!HasRunningSubscribedWorkers()) break;
+            _taskSignal.Wait(10);
         }
+        if (_taskFailed) success = false;
         if (Stopped) return success;
         if (_options.InvokeWeakCallbacks) _isolate!.CollectGarbage();
         if (!_options.IgnoreUnhandledPromises && _unhandled.Count > 0)
@@ -262,7 +330,12 @@ public sealed class D8Shell : IJsHost
 
     void ReportException(RealmState realm, JsExceptionInfo info)
     {
-        if (_timedOut || _quitCode is not null) return;
+        if (_timedOut || QuitCode is not null || _root._timedOut) return;
+        lock (_stdout) ReportExceptionLocked(realm, info);
+    }
+
+    void ReportExceptionLocked(RealmState realm, JsExceptionInfo info)
+    {
         string? text = CallHelper(realm, "exceptionToString", info.Exception) as string;
         var loc = info.Line >= 0 ? info : LocationFromStack(realm, info);
         if (loc.Line >= 0 && CallHelper(realm, "callOnError", "Uncaught " + text, loc.ResourceName, (double)loc.Line,
@@ -337,13 +410,13 @@ public sealed class D8Shell : IJsHost
         switch (op)
         {
             case "print":
-                _stdout.Append(A(0) as string).Append('\n');
+                Out(A(0) as string + "\n");
                 return JsUndefined.Value;
             case "printErr":
-                _stderr.Append(A(0) as string).Append('\n');
+                lock (_stdout) _stderr.Append(A(0) as string).Append('\n');
                 return JsUndefined.Value;
             case "write":
-                _stdout.Append(A(0) as string);
+                Out(A(0) as string ?? "");
                 return JsUndefined.Value;
             case "version":
                 return _engine.Version;
@@ -373,8 +446,7 @@ public sealed class D8Shell : IJsHost
             case "load":
                 return Load(caller, (string)A(0)!);
             case "quit":
-                _quitCode ??= ToInt(A(0));
-                _isolate!.TerminateExecution();
+                _root.Quit(ToInt(A(0)));
                 return JsUndefined.Value;
             case "terminate":
             case "terminateNow":
@@ -382,10 +454,23 @@ public sealed class D8Shell : IJsHost
                 _isolate!.TerminateExecution();
                 return JsUndefined.Value;
             case "setTimeout":
-                _tasks.Enqueue((StateOf(caller), A(0)!));
+            {
+                var realm = StateOf(caller);
+                object callback = A(0)!;
+                PostTask(() => RunTimeoutTask(realm, callback));
                 return JsUndefined.Value;
+            }
             case "performanceNow":
                 return _clock.Elapsed.TotalMilliseconds;
+            case "performanceMark":
+            {
+                // PerIsolateData::performance_mark_map_.
+                double timestamp = _clock.Elapsed.TotalMilliseconds;
+                _performanceMarks[(string)A(0)!] = timestamp;
+                return timestamp;
+            }
+            case "performanceMarkLookup":
+                return _performanceMarks.TryGetValue((string)A(0)!, out double markTime) ? markTime : JsUndefined.Value;
             case "realmCurrent":
                 return (double)_realmCurrent;
             case "realmOwner":
@@ -395,7 +480,7 @@ public sealed class D8Shell : IJsHost
             case "realmCreate":
             {
                 bool allowCrossRealm = A(0) is true;
-                var realm = _isolate!.CreateRealm(allowCrossRealm ? CurrentRealm.Realm : null);
+                var realm = _isolate!.CreateRealm(allowCrossRealm ? CurrentRealm.Realm : null, ownMicrotaskQueue: A(1) is true);
                 _realms.Add(Install(realm, isMain: false));
                 return (double)(_realms.Count - 1);
             }
@@ -451,6 +536,12 @@ public sealed class D8Shell : IJsHost
             case "realmSharedBox":
                 _realmSharedBox ??= Check(_realms[0]!.Realm.RunScript("({ value: undefined })", "(d8)"), "Realm.shared");
                 return _realmSharedBox;
+            default:
+                if (DispatchWorker(caller, op, args, out object? result)) return result;
+                break;
+        }
+        switch (op)
+        {
             case "unsupported":
                 throw new JsHostError("Error", $"{A(0)} is not supported by the V8Sharp test host");
             default:

@@ -300,9 +300,10 @@ public sealed class JSExternalObject(Map map) : JSObject(map)
 }
 
 /// <summary>
-/// V8's AllocationSite: allocation feedback for array and object literals
-/// (elements-kind transitions and pretenuring). V8Sharp has no mementos or
-/// pretenuring; the site records the transition feedback only.
+/// V8's AllocationSite (src/objects/allocation-site.h): allocation feedback for
+/// array and object literals and the Array constructor. Arrays created with a
+/// site carry an allocation memento (JSArray.AllocationMementoSite) through which
+/// elements-kind transitions are fed back. Pretenuring is not ported.
 /// </summary>
 public sealed class AllocationSite() : HeapObject(InstanceType.AllocationSiteType)
 {
@@ -317,9 +318,17 @@ public sealed class AllocationSite() : HeapObject(InstanceType.AllocationSiteTyp
     public bool DoNotInlineCall;
     public AllocationSite? NestedSite;
     public PretenureDecision Decision;
+    /// <summary>AllocationSite::SpeculationDisabled (the DoNotInlineBit of the transition info).</summary>
+    public bool SpeculationDisabled;
 
-    /// <summary>AllocationSite::ShouldTrack: only more-general transitions of array sites are tracked.</summary>
-    public static bool ShouldTrack(ElementsKind from, ElementsKind to) => ElementsKinds.IsMoreGeneralElementsKindTransition(from, to);
+    public bool IsZombie => Decision == PretenureDecision.kZombie;
+
+    /// <summary>AllocationSite::GetElementsKind (constructed arrays).</summary>
+    public ElementsKind GetElementsKind() => ElementsKind;
+
+    public void SetElementsKind(ElementsKind kind) => ElementsKind = kind;
+
+    public void SetSpeculationDisabled() => SpeculationDisabled = true;
 
     /// <summary>AllocationSite::kMaximumArrayBytesToPretransition.</summary>
     public const uint kMaximumArrayBytesToPretransition = 8 * 1024;

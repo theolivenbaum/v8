@@ -162,7 +162,7 @@ public sealed class Runner(RunnerOptions options)
     public async Task<int> RunAsync(CancellationToken cancel = default)
     {
         var buildVars = LoadBuildConfig(options.Engine);
-        var context = new SuiteContext(options.V8Root, FindTest262Root(options.V8Root, options.Test262Root), buildVars)
+        var context = new SuiteContext(options.V8Root, FindTest262Root(options.V8Root, options.Test262Root), buildVars, options.Engine)
         {
             ExtraFlags = options.ExtraFlags,
         };

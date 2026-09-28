@@ -3,17 +3,31 @@
 // current realm, on top of one host dispatcher: host(op, ...args).
 // Evaluates to the installer; the installer returns the helpers D8Shell uses
 // to report exceptions and run setTimeout callbacks.
-(function install(host, isMainRealm, options) {
+(function install(host, isMainRealm, options, nativePrint, nativePrintErr, nativeWrite) {
   'use strict';
   const global = globalThis;
   const ObjectDefineProperty = Object.defineProperty;
   const Uint8ArrayCtor = global.Uint8Array;
   const StringCtor = String;
   const charCodeAt = Function.prototype.call.bind(String.prototype.charCodeAt);
+  const ReflectApply = Reflect.apply;
+  const FunctionToString = Function.prototype.toString;
+  const JSONStringify = JSON.stringify;
+  const ArrayIsArray = Array.isArray;
+  const WeakMapCtor = WeakMap;
+  const weakMapGet = WeakMap.prototype.get;
+  const weakMapSet = WeakMap.prototype.set;
+  const weakMapHas = WeakMap.prototype.has;
+  const ErrorCtor = Error;
+  const TypeErrorCtor = TypeError;
 
   // ObjectTemplate::Set with default attributes: writable, enumerable, configurable.
   function set(obj, name, value) {
     ObjectDefineProperty(obj, name, { value, writable: true, enumerable: true, configurable: true });
+  }
+  // A FunctionTemplate method that reads its receiver.
+  function method(name, impl) {
+    return { [name](...args) { return impl(this, args); } }[name];
   }
   // FunctionTemplate functions have length 0 and no prototype-visible source;
   // the closest JS equivalent is a method (no [[Construct]], no .prototype).
@@ -56,9 +70,9 @@
   ObjectDefineProperty(global, Symbol.toStringTag, { value: 'global', writable: true, enumerable: true, configurable: true });
   set(global, 'onerror', null);
   set(global, 'version', fn('version', () => host('version')));
-  set(global, 'print', fn('print', (...a) => { host('print', join(a)); }));
-  set(global, 'printErr', fn('printErr', (...a) => { host('printErr', join(a)); }));
-  set(global, 'write', fn('write', (...a) => { host('write', join(a)); }));
+  set(global, 'print', nativePrint !== undefined ? nativePrint : fn('print', (...a) => { host('print', join(a)); }));
+  set(global, 'printErr', nativePrintErr !== undefined ? nativePrintErr : fn('printErr', (...a) => { host('printErr', join(a)); }));
+  set(global, 'write', nativeWrite !== undefined ? nativeWrite : fn('write', (...a) => { host('write', join(a)); }));
   set(global, 'read', fn('read', readFile));
   set(global, 'readbuffer', fn('readbuffer', readBuffer));
   set(global, 'readline', fn('readline', () => undefined));
@@ -75,7 +89,19 @@
   set(Realm, 'current', fn('current', () => host('realmCurrent')));
   set(Realm, 'owner', fn('owner', (o) => host('realmOwner', o)));
   set(Realm, 'global', fn('global', (i) => host('realmGlobal', i)));
-  set(Realm, 'create', fn('create', () => host('realmCreate', false)));
+  set(Realm, 'create', fn('create', (...a) => {
+    // Shell::RealmCreate reads realm_options.create_own_microtask_queue.
+    let ownQueue = false;
+    const opts = a[0];
+    if (a.length > 0 && ((typeof opts === 'object' && opts !== null) || typeof opts === 'function')) {
+      // A verbose TryCatch: an exception from the getter is reported, not thrown.
+      try {
+        ownQueue = !!opts.create_own_microtask_queue;
+      } catch (e) {
+      }
+    }
+    return host('realmCreate', false, ownQueue);
+  }));
   set(Realm, 'createAllowCrossRealmAccess', fn('createAllowCrossRealmAccess', () => host('realmCreate', true)));
   set(Realm, 'navigate', fn('navigate', (i) => host('realmNavigate', i, false)));
   set(Realm, 'navigateSameOrigin', fn('navigateSameOrigin', (i) => host('realmNavigate', i, true)));
@@ -95,12 +121,173 @@
 
   const performance = {};
   set(performance, 'now', fn('now', () => host('performanceNow')));
-  set(performance, 'mark', fn('mark', (name) => ({ entryType: 'mark', name: `${name}`, startTime: host('performanceNow'), duration: 0 })));
-  set(performance, 'measure', fn('measure', (name) => ({ entryType: 'measure', name: `${name}`, startTime: 0, duration: host('performanceNow') })));
+  // Shell::PerformanceMark / PerformanceMeasure.
+  const performanceEntry = (entryType, name, startTime, duration) => {
+    const entry = {};
+    ObjectDefineProperty(entry, 'entryType', { value: entryType, enumerable: true, configurable: true });
+    ObjectDefineProperty(entry, 'name', { value: name, enumerable: true, configurable: true });
+    ObjectDefineProperty(entry, 'startTime', { value: startTime, enumerable: true, configurable: true });
+    ObjectDefineProperty(entry, 'duration', { value: duration, enumerable: true, configurable: true });
+    return entry;
+  };
+  const lookupPerformanceMark = (name) => {
+    const t = host('performanceMarkLookup', name);
+    if (t === undefined) throw new ErrorCtor('Invalid performance.mark "' + name + '" does not exist');
+    return t;
+  };
+  set(performance, 'mark', fn('mark', (...a) => {
+    if (a.length < 1 || typeof a[0] !== 'string') throw new ErrorCtor("Invalid 'name' argument");
+    return performanceEntry('mark', a[0], host('performanceMark', a[0]), 0);
+  }));
+  set(performance, 'measure', fn('measure', (...a) => {
+    if (a.length < 1 || typeof a[0] !== 'string') throw new ErrorCtor("Invalid 'name' argument");
+    let start = 0;
+    let end = host('performanceNow');
+    const startMark = a[1];
+    if (typeof startMark === 'string') {
+      start = lookupPerformanceMark(startMark);
+      if (a.length === 3) {
+        if (typeof a[2] !== 'string') throw new ErrorCtor('Expect string as end mark.');
+        end = lookupPerformanceMark(a[2]);
+      }
+    } else if (startMark === undefined) {
+    } else if ((typeof startMark !== 'object' || startMark === null) && typeof startMark !== 'function') {
+      throw new ErrorCtor("Invalid 'startMark' argument: Not an Object");
+    } else if (a.length > 2) {
+      throw new ErrorCtor('Too many arguments');
+    } else {
+      const t = startMark.startTime;
+      if (typeof t !== 'number') throw new ErrorCtor("Invalid 'startMark' argument: No numeric 'startTime' field");
+      start = t;
+    }
+    return performanceEntry('measure', a[0], start, end - start);
+  }));
   set(performance, 'measureMemory', unsupported('measureMemory'));
   set(global, 'performance', performance);
 
-  set(global, 'Worker', unsupported('Worker'));
+  if (options.serialization) {
+    // Shell::CreateWorkerTemplate. The Worker's C++ object is the host's id,
+    // kept in a WeakMap in place of the internal field.
+    const workerIds = new WeakMapCtor();
+    const workerId = (self) => {
+      // The FunctionTemplate signature check.
+      if (!ReflectApply(weakMapHas, workerIds, [self])) throw new TypeErrorCtor('Illegal invocation');
+      return ReflectApply(weakMapGet, workerIds, [self]);
+    };
+    // Shell::ReadSource with CodeType::kFileName as the default.
+    const readSource = (args) => {
+      const arg0 = args[0];
+      let type = 'none';
+      let workerArguments;
+      const opts = args[1];
+      if (args.length > 1 && ((typeof opts === 'object' && opts !== null) || typeof opts === 'function')) {
+        const t = opts.type;
+        if (typeof t !== 'string') type = 'invalid';
+        else if (t === 'classic') type = 'file';
+        else if (t === 'string') type = 'string';
+        else if (t === 'function') type = 'function';
+        else type = 'invalid';
+        workerArguments = opts.arguments;
+      }
+      if (type === 'none') type = 'file';
+      switch (type) {
+        case 'function': {
+          if (typeof arg0 !== 'function') return undefined;
+          // Shell::FunctionAndArgumentsToString: ( function_to_string )( params )
+          // String::Concat returns an empty handle past String::kMaxLength.
+          const concat = (x, y) => {
+            try {
+              return x + y;
+            } catch (e) {
+              throw new ErrorCtor('String limit exceeded');
+            }
+          };
+          let source = concat('(', ReflectApply(FunctionToString, arg0, []));
+          source = concat(source, ')(');
+          if (workerArguments !== undefined) {
+            if (!ArrayIsArray(workerArguments)) throw new ErrorCtor("'arguments' must be an array");
+            for (let i = 0; i < workerArguments.length; i++) {
+              if (i > 0) source = concat(source, ',');
+              const argument = workerArguments[i];
+              let argumentString;
+              try {
+                argumentString = JSONStringify(argument);
+              } catch (e) {
+                throw new ErrorCtor('Failed to convert argument to string');
+              }
+              source = concat(source, argumentString);
+            }
+          }
+          return concat(source, ')');
+        }
+        case 'file':
+          if (typeof arg0 !== 'string') return undefined;
+          return host('read', arg0);
+        case 'string':
+          if (typeof arg0 !== 'string') return undefined;
+          return arg0;
+        default:
+          return undefined;
+      }
+    };
+    const Worker = function Worker(...args) {
+      if (args.length < 1 || (typeof args[0] !== 'string' && typeof args[0] !== 'function')) {
+        throw new ErrorCtor('1st argument must be a string or a function');
+      }
+      const source = readSource(args);
+      if (source === undefined) throw new ErrorCtor('Invalid argument');
+      if (new.target === undefined) throw new ErrorCtor('Worker must be constructed with new');
+      ReflectApply(weakMapSet, workerIds, [this, 0]);
+      const id = host('workerNew', toStr(source));
+      ReflectApply(weakMapSet, workerIds, [this, id]);
+    };
+    const proto = Worker.prototype;
+    set(proto, 'terminate', method('terminate', (self) => {
+      const id = workerId(self);
+      if (id) host('workerTerminate', id);
+    }));
+    set(proto, 'terminateAndWait', method('terminateAndWait', (self) => {
+      const id = workerId(self);
+      if (id) host('workerTerminateAndWait', id);
+    }));
+    set(proto, 'postMessage', method('postMessage', (self, args) => {
+      const id = workerId(self);
+      if (args.length < 1) throw new ErrorCtor('Invalid argument');
+      if (id) host('workerPostMessage', id, args[0], args.length >= 2 ? args[1] : undefined);
+    }));
+    set(proto, 'getMessage', method('getMessage', (self) => {
+      const id = workerId(self);
+      if (id) return host('workerGetMessage', id);
+    }));
+    ObjectDefineProperty(proto, 'onmessage', {
+      get: method('onmessage', (self) => {
+        const id = workerId(self);
+        if (id) return host('workerOnMessageGet', id);
+      }),
+      set: method('onmessage', (self, args) => {
+        const id = workerId(self);
+        if (args.length < 1) throw new ErrorCtor('Invalid argument');
+        if (!id || typeof args[0] !== 'function') return;
+        host('workerOnMessageSet', id, args[0]);
+      }),
+      enumerable: false,
+      configurable: true,
+    });
+    // ReadOnlyPrototype.
+    ObjectDefineProperty(Worker, 'prototype', { writable: false });
+    set(global, 'Worker', Worker);
+    if (options.isWorker) {
+      // Worker::ExecuteInThread installs postMessage, close and importScripts.
+      set(global, 'postMessage', fn('postMessage', (...a) => {
+        if (a.length < 1) throw new ErrorCtor('Invalid argument');
+        host('postMessageOut', a[0], a.length >= 2 ? a[1] : undefined);
+      }));
+      set(global, 'close', fn('close', () => { host('workerClose'); }));
+      set(global, 'importScripts', fn('importScripts', executeFile));
+    }
+  } else {
+    set(global, 'Worker', unsupported('Worker'));
+  }
 
   // D8Console (src/d8/d8-console.cc), the console delegate behind V8's own
   // console object: the methods d8 implements print; the rest stay no-ops.
@@ -169,8 +356,13 @@
   set(debuggerObj, 'disable', unsupported('d8.debugger.disable'));
   set(d8, 'debugger', debuggerObj);
   const serializer = {};
-  set(serializer, 'serialize', unsupported('d8.serializer.serialize'));
-  set(serializer, 'deserialize', unsupported('d8.serializer.deserialize'));
+  if (options.serialization) {
+    set(serializer, 'serialize', fn('serialize', (...a) => host('serializerSerialize', ...a)));
+    set(serializer, 'deserialize', fn('deserialize', (b) => host('serializerDeserialize', b)));
+  } else {
+    set(serializer, 'serialize', unsupported('d8.serializer.serialize'));
+    set(serializer, 'deserialize', unsupported('d8.serializer.deserialize'));
+  }
   set(d8, 'serializer', serializer);
   const profiler = {};
   set(profiler, 'setOnProfileEndListener', unsupported('d8.profiler.setOnProfileEndListener'));
@@ -223,6 +415,9 @@
       } catch { }
       return false;
     },
+    // The event object of a Worker message: {data}.
+    makeEvent(data) { return { data }; },
+    isFunction(f) { return typeof f === 'function'; },
     // Calls a setTimeout callback with an undefined receiver.
     callTask(f) { f(); },
   };

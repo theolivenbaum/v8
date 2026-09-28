@@ -51,6 +51,9 @@ public sealed class V8SharpHandle(JSValue value)
 
 sealed class V8SharpJsIsolate : IJsIsolate
 {
+    /// <summary>Nesting depth of script executions (v8's CallDepthScope for the microtask policy).</summary>
+    internal int ExecuteDepth;
+
     internal readonly VIsolate Isolate;
     internal readonly IJsHost Host;
     readonly List<V8SharpRealm> _realms = [];
@@ -79,12 +82,13 @@ sealed class V8SharpJsIsolate : IJsIsolate
 
     internal VIsolate.IsolateScope Enter() => Isolate.Enter();
 
-    public IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith)
+    public IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith, bool ownMicrotaskQueue = false)
     {
         NativeContext context;
         using (Enter())
         {
-            context = Bootstrapper.CreateEnvironment(Isolate);
+            // d8 creates the queue with v8::MicrotaskQueue::New (kExplicit): nothing flushes it.
+            context = Bootstrapper.CreateEnvironment(Isolate, ownMicrotaskQueue ? new MicrotaskQueue(Isolate) : null);
         }
         if (shareSecurityTokenWith is V8SharpRealm from) context.SecurityToken = from.Context.SecurityToken;
         var realm = new V8SharpRealm(this, context);
@@ -116,7 +120,10 @@ sealed class V8SharpJsIsolate : IJsIsolate
         {
             try
             {
-                return Isolate.RunPendingTasks();
+                // Wait for a delayed task in short slices so the shell's own task
+                // queue (setTimeout, Worker messages) keeps running; pending
+                // delayed tasks keep the shell's message loop alive.
+                return Isolate.RunPendingTasks(10) || Isolate.HasPendingTasks;
             }
             catch (TerminationException)
             {
@@ -141,9 +148,7 @@ sealed class V8SharpJsIsolate : IJsIsolate
         Host.OnPromiseRejection(realm, kind, new V8SharpHandle(promise), V8SharpRealm.ToHost(value));
     }
 
-    public void Dispose()
-    {
-    }
+    public void Dispose() => Isolate.Deinit();
 }
 
 sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRealm
@@ -184,10 +189,14 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
         using (owner.Enter())
         using (Isolate.EnterContext(Context))
         {
+            owner.ExecuteDepth++;
             try
             {
                 JSValue result = action();
-                VExecution.PerformMicrotaskCheckpoint(Isolate);
+                // v8::MicrotasksPolicy::kAuto: the checkpoint runs when the call
+                // depth returns to zero, so a nested Realm.eval does not run the
+                // microtasks its script queued.
+                if (owner.ExecuteDepth == 1) VExecution.PerformMicrotaskCheckpoint(Isolate);
                 return Completion.Of(ToHost(result));
             }
             catch (TerminationException)
@@ -207,6 +216,10 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
                 string text = "V8Sharp internal error: " + e.GetType().Name + ": " + e.Message;
                 if (Environment.GetEnvironmentVariable("V8SHARP_DEBUG_ERRORS") is not null) text += "\n" + e;
                 return new Completion(CompletionKind.Throw, Exception: new JsExceptionInfo(text));
+            }
+            finally
+            {
+                owner.ExecuteDepth--;
             }
         }
     }
@@ -274,29 +287,47 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
     public Completion GetProperty(object target, string name) => Execute(() =>
         ObjectOps.GetProperty(Isolate, ToScript(target), Isolate.Factory.InternalizeString(name)));
 
-    public object CreateFunction(string name, JsHostFunction function)
+    public object CreateFunction(string name, JsHostFunction function) => CreateFunction(name, function, false);
+
+    public object? CreateStringArgumentsFunction(string name, JsHostFunction function) => CreateFunction(name, function, true);
+
+    object CreateFunction(string name, JsHostFunction function, bool stringArguments)
     {
         using (owner.Enter())
         using (Isolate.EnterContext(Context))
         {
-            var adapter = new HostFunctionAdapter(this, function);
+            var adapter = new HostFunctionAdapter(this, function, stringArguments);
             var data = new FunctionTemplateInfo(adapter.Invoke) { Length = 0 };
             SharedFunctionInfo info = Isolate.Factory.NewSharedFunctionInfo(Isolate.Factory.InternalizeString(name), data,
                 Builtin.HandleApiCallOrConstruct, 0, false);
             info.BuiltinId = Builtin.HandleApiCallOrConstruct;
-            info.LanguageMode = LanguageMode.Strict;
+            // FunctionTemplate functions are sloppy natives (no receiver conversion).
+            info.LanguageMode = LanguageMode.Sloppy;
             info.Native = true;
             info.UpdateFunctionMapIndex();
             return new V8SharpHandle(Isolate.Factory.NewFunction(info, Context, Context.StrictFunctionWithoutPrototypeMap));
         }
     }
 
-    sealed class HostFunctionAdapter(V8SharpRealm realm, JsHostFunction function)
+    sealed class HostFunctionAdapter(V8SharpRealm realm, JsHostFunction function, bool stringArguments)
     {
         public JSValue Invoke(VIsolate isolate, in BuiltinArguments args)
         {
             var list = new object?[args.ArgcWithoutReceiver];
-            for (int i = 0; i < list.Length; i++) list[i] = ToHost(args.Arguments[i]);
+            for (int i = 0; i < list.Length; i++)
+            {
+                JSValue arg = args.Arguments[i];
+                if (stringArguments)
+                {
+                    // Shell::WriteToFile: symbols print their description.
+                    if (arg.HeapObjectOrNull is Symbol symbol) arg = symbol.Description;
+                    list[i] = ObjectOps.ToString(isolate, arg).ToString();
+                }
+                else
+                {
+                    list[i] = ToHost(arg);
+                }
+            }
             object? result;
             try
             {
@@ -330,6 +361,49 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
             return realm.ToScript(result);
         }
     }
+
+    // --- structured clone (d8's Worker messages and d8.serializer) ---
+
+    public bool SupportsSerialization => true;
+
+    /// <summary>Runs <paramref name="action"/> from inside a host call: no microtask checkpoint.</summary>
+    Completion ExecuteNested(Func<object?> action)
+    {
+        if (owner.Terminating) return Completion.Terminated;
+        using (owner.Enter())
+        using (Isolate.EnterContext(Context))
+        {
+            try
+            {
+                return Completion.Of(action());
+            }
+            catch (TerminationException)
+            {
+                return Completion.Terminated;
+            }
+            catch (JavaScriptException e)
+            {
+                if (owner.Terminating) return Completion.Terminated;
+                return new Completion(CompletionKind.Throw, Exception: ExceptionInfo(e));
+            }
+        }
+    }
+
+    public Completion SerializeValue(object? value, object? transfer) => ExecuteNested(() =>
+        V8Sharp.D8.D8Serialization.SerializeValue(Isolate, ToScript(value), ToScript(transfer)));
+
+    public Completion DeserializeValue(object message) => ExecuteNested(() =>
+        ToHost(V8Sharp.D8.D8Serialization.DeserializeValue(Isolate, (V8Sharp.D8.SerializationData)message)));
+
+    public Completion SerializerSerialize(object?[] values) => ExecuteNested(() =>
+    {
+        var jsValues = new JSValue[values.Length];
+        for (int i = 0; i < values.Length; i++) jsValues[i] = ToScript(values[i]);
+        return ToHost(V8Sharp.D8.D8Serialization.SerializerSerialize(Isolate, jsValues));
+    });
+
+    public Completion SerializerDeserialize(object? buffer) => ExecuteNested(() =>
+        ToHost(V8Sharp.D8.D8Serialization.SerializerDeserialize(Isolate, ToScript(buffer))));
 
     public void DetachGlobal()
     {

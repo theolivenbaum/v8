@@ -337,9 +337,15 @@ public sealed partial class Factory(Isolate isolate)
     /// a shallow clone with its own elements and property storage. V8 copies
     /// the object's bytes; V8Sharp clones the CLR object.
     /// </summary>
-    public JSObject CopyJSObject(JSObject source)
+    public JSObject CopyJSObject(JSObject source, AllocationSite? site = null)
     {
         JSObject clone = source.CloneShallow();
+        if (clone is JSArray cloneArray)
+        {
+            // CopyJSObjectWithAllocationSite: the memento goes behind the copy
+            // only when a site is passed (never copied from the source).
+            cloneArray.AllocationMementoSite = site;
+        }
 
         FixedArrayBase elements = source.Elements;
         // Update elements if necessary.

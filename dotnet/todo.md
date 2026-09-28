@@ -325,24 +325,11 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 
 ### Builtin failures seen by the interpreter port
 
-Failures the mjsunit/test262 runs show in code owned by other ports
-(checked with d8sharp against the oracle):
-
-- `Object.keys`/`JSON.stringify` of a typed array after a typed array of the
-  same map was enumerated returns no keys (mjsunit object-keys-typedarray,
-  json-stringify-typedarray): `BuiltinsObject.HasNoElements` treats the
-  typed array's empty `Elements` as "no elements" (V8 checks for
-  empty_fixed_array; typed arrays have a ByteArray).
-- `new Array(0)` is packed (V8: holey; allocation-site-info,
-  regress-crbug-245480).
-- The typed array species protectors are not invalidated
-  (protector-cell/*-species, typedarray-prototype-constructor-*).
-- `console` is not installed on the global object (the TestRunner shim wraps
-  it only when present).
-- The TestRunner's `print` is JavaScript in d8-shim.js, so it shows up in
-  stack traces (stack-trace-cpp-function-template-*; d8sharp is correct).
-- Atomics.waitAsync suspension, Array.fromAsync, ShadowRealm, Worker, the
-  d8 serializer and profiler hooks are not implemented.
+Resolved by the engine conformance pass (2026-09-28): Object.keys/JSON.stringify
+of typed arrays, holey `new Array(n)`, `console` installed in Genesis, `print`
+as an API function in the TestRunner, Atomics.waitAsync, Worker and the d8
+serializer. The typed array species protectors match the oracle (V8Sharp
+invalidates %TypedArray%'s one more often than V8, which only costs speed).
 
 ## Conformance progress (V8Sharp engine)
 
@@ -370,6 +357,8 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | NavierStokes | 632 | 1441 | 27465 |
 | 2026-09-28 | test262 | 84670 | 94901 | 89.2% | interpreter port complete (async, modules, eval); 98.8% without Temporal (9210). Remaining: import defer and source phase imports (not ported), ShadowRealm (124), Array.fromAsync, Atomics.waitAsync; expectations: tools/V8Sharp.TestRunner/expectations/test262.v8sharp.txt |
 | 2026-09-28 | mjsunit | 7074 | 7597 | 93.1% | clusters: Worker and d8 host features, optimization-status asserts, import defer (43), ShadowRealm/Wasm/shared structs; expectations: mjsunit.v8sharp.txt |
+| 2026-09-28 | test262 | 85199 | 85891 | 99.2% | engine conformance pass; left: import defer (180), dynamic-import/catch (128, modules), decorators (34, not in V8 either), bytes imports, ShadowRealm importValue, RegExp legacy accessors; expectations regenerated |
+| 2026-09-28 | mjsunit | 7259 | 7597 | 95.6% | engine conformance pass (Sparkplug off by default: opt-proto-seq/* fail); see "Engine-side conformance: what is left"; expectations regenerated |
 
 Octane (interpreter only, 2 runs, loaded 4-core container, 2026-09-28):
 Richards 257 / 1265 (v8 --jitless), DeltaBlue 240 / 1409, Crypto 218 / 1111,
@@ -403,52 +392,38 @@ and GC (object = JSObject + JSValue[] fields) and by runtime paths
       Rust crate temporal_rs (`third_party/rust/temporal_capi`, not in this
       checkout). Needs a C# implementation of the temporal_rs surface V8 uses.
 
-### Interpreter failures seen by the builtins conformance pass
+### Engine-side conformance: what is left (2026-09-28)
 
-Failures in test262 built-ins/annexB/staging and mjsunit whose cause is in the
-interpreter, compiler, ICs, modules or d8sharp rather than the builtins
-(2026-09-28, after merging the interpreter branch). Test ids, then the cause.
+Fixed by the engine conformance pass: `accessor` class elements and the
+%-call arity leniency under the fuzzing flags (runtime.cc's allowlist);
+the derived-constructor TypeError realm; `var`/function declarations on a
+non-extensible global (script and eval); --disallow-code-generation-from-strings
+for eval and Function; stack overflow through builtins and JSON.stringify
+(register-stack reservation, see deviations.md); allocation-site feedback for
+`Array(n)`, map and filter; console; ValueSerializer, Worker, d8.serializer,
+$262.agent and per-realm microtask queues in the TestRunner host;
+FutexEmulation::IsolateDeinit; cross-origin [[Get]] of well-known symbols;
+the store IC's lookup on dictionary receivers (--no-lazy-feedback-allocation
+cases); a handful of test natives.
 
-- test262 `flags: [module]` tests and module-only features:
-  built-ins/Proxy/preventExtensions/trap-is-undefined-target-is-proxy,
-  built-ins/ShadowRealm/prototype/importValue/* (8; need module loading and
-  HostImportModuleDynamically for the ShadowRealm), staging/sm/module/*,
-  staging/explicit-resource-management/await-using-in-top-level-module,
-  staging/source-phase-imports/*, staging/top-level-await/tla-hang-entry,
-  built-ins/AbstractModuleSource/* (%AbstractModuleSource% needs source-phase
-  imports): ES modules are not supported by the runner's v8sharp engine yet.
-- staging/decorators/{private,public}-auto-accessor: the parser does not
-  accept `accessor` class elements.
-- built-ins/Function/internals/Construct/derived-return-val-realm: the
-  TypeError for a derived constructor returning a non-object must come from
-  the callee's realm (it comes from the caller's).
-- staging/sm/global/adding-global-var-nonextensible-error: a `var` declared
-  by eval on a non-extensible global must throw TypeError
-  (DeclareEvalVar/DeclareGlobals path).
-- mjsunit/disallow-codegen-from-strings: direct eval ignores
-  --disallow-code-generation-from-strings.
-- mjsunit/stack-traces-custom (and CallSite.getMethodName users): the
-  inferred name `o.h1` is lost after compilation, so frames print
-  `Object.h1`; sloppy-mode receivers of top-level calls are not converted
-  (getMethodName returns null).
-- mjsunit/call-intrinsic-fuzzing, natives-builtins,
-  regress/regress-crbug-754177: the parser rejects %-calls with the wrong
-  arity where V8 (with fuzzing flags) is lenient.
-- mjsunit/json-stringify-recursive, messages, array-tostring-stack-overflow
-  and regress tests that expect a RangeError from deep recursion or
-  --stack-size: stack overflow handling of the interpreter.
-- Allocation-site elements-kind feedback (elements-kind,
-  filter-element-kinds, opt/osr-elements-kind,
-  regress/regress-trap-allocation-memento,
-  array-prototype-map-elements-kinds): no AllocationSite/AllocationMemento
-  tracking in literal creation (deviation).
-- d8 host features the runner/d8sharp lack: Worker, d8.dom, FastCAPI,
-  console.* specifics, os.*, async_hooks, writeFile, performance.mark,
-  per-realm microtask queues, `print` as a C++ API function
-  (stack-trace-cpp-function-template-*), multi-mapped mock allocator
-  (regress/regress-crbug-1041232).
-- ArrayBuffers of 2^31 bytes or more fail to allocate (byte[] backing
-  store; deviation), e.g. array-buffer-limit style tests.
+Still failing (mjsunit clusters, v8sharp engine):
+- opt-proto-seq/* (57): %CompileBaseline needs Sparkplug, which is off by
+  default for now (they pass with --sparkplug).
+- Optimization-status asserts in maglev/, turbolev/, compiler/, baseline/
+  (about 60): no optimizing tier.
+- `import defer` and module bundles (about 45): not ported (modules owner).
+- ArrayBuffers of 2^31 bytes or more (25, deviation).
+- FastCAPI, d8.dom (ic-megadom*), the inspector `send`, async_hooks,
+  code coverage (%DebugToggleBlockCoverage/%DebugCollectCoverage),
+  %RuntimeEvaluateREPL, os, writeFile, getV8Statistics, d8.test.* interceptors,
+  d8.getExtrasBindingObject (continuation-preserved embedder data), the
+  d8 `-C` working directory, Intl, WebAssembly, shared structs, ShadowRealm
+  importValue.
+- CloneObjectIC always takes the slow path, so `{...o}` never shares `o`'s map
+  (clone-ic-regressions).
+- Spread calls are capped at kMaxArguments (regress-869735,
+  regress-crbug-906043; V8 has no argument count limit there, only the stack).
+- `%IsSmi(%AllocateHeapNumberWithValue(1))` (call-intrinsic-fuzzing, deviation).
 
 ## Phase 2: the fast tiers
 

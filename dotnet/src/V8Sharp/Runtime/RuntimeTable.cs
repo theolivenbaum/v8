@@ -152,6 +152,19 @@ public static partial class RuntimeTable
         Register(FunctionId.DeleteProperty,
             static (i, a) => RuntimeObject.DeleteProperty(i, a[0], a[1], (LanguageMode)(int)a[2].Number));
         Register(FunctionId.HasProperty, static (i, a) => RuntimeObject.HasProperty(i, a[1], a[0]));
+        // Runtime_CreateDataProperty.
+        Register(FunctionId.CreateDataProperty, static (i, a) =>
+        {
+            var key = new PropertyKey(i, a[1]);
+            JSReceiver.CreateDataProperty(i, a[0].As<JSReceiver>(), key, a[2], ShouldThrow.ThrowOnError);
+            return a[2];
+        });
+        // Runtime_StoreInArrayLiteralIC_Slow (ic.cc).
+        Register(FunctionId.StoreInArrayLiteralIC_Slow,
+            static (i, a) => V8Sharp.IC.KeyedStoreIC.StoreOwnElement(i, a[1].As<JSArray>(), a[2], a[0]));
+        // Runtime_FunctionGetInferredName (runtime-debug.cc).
+        Register(FunctionId.FunctionGetInferredName, static (i, a) =>
+            a[0].HeapObjectOrNull is JSFunction f ? f.Shared.InferredName() : ReadOnlyRoots.empty_string);
         Register(FunctionId.SetFunctionName, static (i, a) => RuntimeObject.SetFunctionName(i, a[0], a[1]));
         Register(FunctionId.InternalSetPrototype, static (i, a) => RuntimeObject.InternalSetPrototype(i, a[0], a[1]));
         Register(FunctionId.DefineAccessorPropertyUnchecked,
@@ -356,6 +369,9 @@ public static partial class RuntimeTable
         // Debug-build-only diagnostics: no-ops in release V8 as well.
         Register(FunctionId.DisassembleFunction, RuntimeTest.ReturnUndefined);
         Register(FunctionId.VerifyGetJSBuiltinState, RuntimeTest.ReturnUndefined);
+        // Runtime_GetFeedback: undefined in V8_JITLESS builds (no feedback to print),
+        // which is what the tier queries answer as.
+        Register(FunctionId.GetFeedback, RuntimeTest.ReturnUndefined);
         Register(FunctionId.DebugPrint, static (i, a) => RuntimeTest.DebugPrint(i, a));
         Register(FunctionId.Is64Bit, static (i, a) => RuntimeTest.Is64Bit(i));
         Register(FunctionId.StringMaxLength, static (i, a) => RuntimeTest.StringMaxLength(i));
@@ -383,10 +399,10 @@ public static partial class RuntimeTable
         Register(FunctionId.StringWrapperToPrimitiveProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsStringWrapperToPrimitiveIntact(i)));
 
         // Strings, numbers and objects.
-        Register(FunctionId.ConstructConsString, static (i, a) => RuntimeTest.ConstructConsString(i, a[0], a[1]));
-        Register(FunctionId.ConstructSlicedString, static (i, a) => RuntimeTest.ConstructSlicedString(i, a[0], a[1]));
-        Register(FunctionId.ConstructInternalizedString, static (i, a) => RuntimeTest.ConstructInternalizedString(i, a[0]));
-        Register(FunctionId.ConstructThinString, static (i, a) => RuntimeTest.ConstructThinString(i, a[0]));
+        Register(FunctionId.ConstructConsString, RuntimeTest.ConstructConsString);
+        Register(FunctionId.ConstructSlicedString, RuntimeTest.ConstructSlicedString);
+        Register(FunctionId.ConstructInternalizedString, RuntimeTest.ConstructInternalizedString);
+        Register(FunctionId.ConstructThinString, RuntimeTest.ConstructThinString);
         Register(FunctionId.FlattenString, static (i, a) => RuntimeTest.FlattenString(i, a[0]));
         Register(FunctionId.StringIsFlat, static (i, a) => RuntimeTest.StringIsFlat(a[0]));
         Register(FunctionId.StringLessThan, static (i, a) => RuntimeTest.StringLessThan(i, a[0], a[1]));
@@ -397,7 +413,11 @@ public static partial class RuntimeTable
         Register(FunctionId.GetHoleNaNLower, static (i, a) => RuntimeTest.GetHoleNaNLower());
         Register(FunctionId.ConstructDouble, static (i, a) => RuntimeTest.ConstructDouble(a[0], a[1]));
         Register(FunctionId.AllocateHeapNumber, static (i, a) => JSValue.FromNumber(0));
-        Register(FunctionId.AllocateHeapNumberWithValue, static (i, a) => JSValue.FromNumber(a[0].Number));
+        Register(FunctionId.AllocateHeapNumberWithValue, static (i, a) =>
+            RuntimeTest.FailedUnlessFuzzing(i, a.Length == 1) ? JSValue.Undefined : ObjectOps.ToNumber(i, a[0]));
+        // V8_ENABLE_UNDEFINED_DOUBLE is off by default: CHECK_UNLESS_FUZZING(false).
+        Register(FunctionId.GetUndefinedNaN, static (i, a) =>
+            RuntimeTest.FailedUnlessFuzzing(i, false) ? JSValue.Undefined : JSValue.Undefined);
         Register(FunctionId.DoubleToStringWithRadix, static (i, a) => RuntimeTest.DoubleToStringWithRadix(i, a[0], a[1]));
         Register(FunctionId.StringParseInt, static (i, a) => RuntimeTest.StringParseInt(i, a[0], a[1]));
         Register(FunctionId.IsArray, static (i, a) => RuntimeTest.IsArray(a[0]));
@@ -431,8 +451,27 @@ public static partial class RuntimeTable
         Register(FunctionId.PretenureAllocationSite, RuntimeTest.ReturnUndefined);
         Register(FunctionId.ForceFlush, RuntimeTest.ReturnUndefined);
         Register(FunctionId.CompleteInobjectSlackTracking, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.OptimizeObjectForAddingMultipleProperties, static (i, a) => a[0]);
-        Register(FunctionId.TryMigrateInstance, static (i, a) => a[0]);
+        // Runtime_OptimizeObjectForAddingMultipleProperties.
+        Register(FunctionId.OptimizeObjectForAddingMultipleProperties, static (i, a) =>
+        {
+            JSObject obj = a[0].As<JSObject>();
+            int properties = (int)a[1].Number;
+            // Conservative upper limit to prevent fuzz tests from going OOM.
+            if (properties > 100000) return i.ThrowIllegalOperation();
+            if (obj.HasFastProperties && obj is not JSGlobalProxy)
+            {
+                JSObject.NormalizeProperties(i, obj, PropertyNormalizationMode.KEEP_INOBJECT_PROPERTIES, properties, "OptimizeForAdding");
+            }
+            return obj;
+        });
+        // Runtime_TryMigrateInstance.
+        Register(FunctionId.TryMigrateInstance, static (i, a) =>
+        {
+            JSObject obj = a[0].As<JSObject>();
+            if (!obj.Map.IsDeprecated) return JSValue.FromInt(0);
+            if (!JSObject.TryMigrateInstance(i, obj)) return JSValue.FromInt(0);
+            return obj;
+        });
         Register(FunctionId.SetForceSlowPath, RuntimeTest.ReturnUndefined);
         Register(FunctionId.DebugTraceMinimal, RuntimeTest.ReturnUndefined);
         Register(FunctionId.SetDispatchTableGCInterval, RuntimeTest.ReturnUndefined);

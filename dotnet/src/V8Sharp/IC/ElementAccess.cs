@@ -145,7 +145,7 @@ public static class ElementAccess
             if (index >= elements.Length)
             {
                 if (!ElementsAccessor.ForKind(kind).GrowCapacity(isolate, obj, (uint)index)) return false;
-                if (!ReferenceEquals(obj.Map, handler.ElementsTransitionMap ?? obj.Map)) return false;
+                if (obj.Map.ElementsKind != kind) return false;
                 elements = obj.Elements;
             }
             if (!WriteElement(elements, kind, index, value)) return false;

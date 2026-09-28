@@ -62,6 +62,7 @@ sealed partial class Genesis
         InitializeCallSiteBuiltins();
         InstallABunchOfRandomThings();
         InstallErrorStackAccessorFunctions();
+        BuiltinsConsole.InstallExtrasBindings(isolate, _nativeContext);
         ConfigureGlobalObject();
 
         _nativeContext.MicrotaskQueue = microtaskQueue ?? isolate.DefaultMicrotaskQueue;
@@ -107,7 +108,21 @@ sealed partial class Genesis
         // FOREACH_HARMONY_FLAG
         InitializeGlobal_js_source_phase_imports();
 
+        InitializeGlobal_regexp_linear_flag();
         InitializeGlobal_queueMicrotask();
+    }
+
+    /// <summary>Genesis::InitializeGlobal_regexp_linear_flag.</summary>
+    void InitializeGlobal_regexp_linear_flag()
+    {
+        if (!_isolate.Flags.enable_experimental_regexp_engine) return;
+
+        var regexpPrototype = (JSObject)_nativeContext.RegExpFunction.InstancePrototype;
+        Bootstrapper.SimpleInstallGetter(_isolate, regexpPrototype, ReadOnlyRoots.linear_string,
+            Builtin.RegExpPrototypeLinearGetter, true);
+
+        // Store regexp prototype map again after change.
+        _nativeContext.RegExpPrototypeMap = regexpPrototype.Map;
     }
 
     /// <summary>Genesis::ConfigureGlobalObject (no global proxy template): hooks the

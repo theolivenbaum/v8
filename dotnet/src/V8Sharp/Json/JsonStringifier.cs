@@ -56,6 +56,7 @@ public sealed class JsonStringifier
     public static JSValue JsonStringify(Isolate isolate, JSValue obj, JSValue replacer, JSValue gap)
     {
         var stringifier = new JsonStringifier(isolate);
+        int registerStackTop = isolate.RegisterStackTop;
         try
         {
             return stringifier.Stringify(obj, replacer, gap);
@@ -63,6 +64,7 @@ public sealed class JsonStringifier
         finally
         {
             stringifier.Release();
+            isolate.RegisterStackTop = registerStackTop;
         }
     }
 
@@ -187,9 +189,19 @@ public sealed class JsonStringifier
         return _stack[^1].Object;
     }
 
+    /// <summary>
+    /// The machine stack one level of V8's recursive Serialize_ takes, in stack
+    /// slots. Deviation: the recursion runs on the .NET stack, sized apart from
+    /// --stack-size; each level also reserves these slots on the register stack
+    /// (V8Sharp's stand-in for V8's machine stack), so deep structures overflow
+    /// at about V8's depth.
+    /// </summary>
+    const int kSerializeFrameSlots = 20;
+
     Result StackPush(JSReceiver obj, JSValue key)
     {
         _isolate.StackGuard.StackCheck(_isolate);
+        _isolate.AllocateRegisters(kSerializeFrameSlots);
         for (int i = 0; i < _stack.Count; ++i)
         {
             if (ReferenceEquals(_stack[i].Object, obj))
@@ -203,7 +215,11 @@ public sealed class JsonStringifier
         return Result.SUCCESS;
     }
 
-    void StackPop() => _stack.RemoveAt(_stack.Count - 1);
+    void StackPop()
+    {
+        _stack.RemoveAt(_stack.Count - 1);
+        _isolate.RegisterStackTop -= kSerializeFrameSlots;
+    }
 
     // ---------------------------------------------------------------------
     // CircularStructureMessageBuilder.

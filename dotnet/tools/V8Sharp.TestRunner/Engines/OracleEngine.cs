@@ -70,7 +70,7 @@ sealed class OracleIsolate : IJsIsolate
         if (!engine.AllowAtomicsWait) main.NativeOp("disallowAtomicsWait");
     }
 
-    public IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith)
+    public IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith, bool ownMicrotaskQueue = false)
     {
         var realm = new OracleRealm(this, _runtime.CreateScriptEngine(V8ScriptEngineFlags.EnableDynamicModuleImports | V8ScriptEngineFlags.DisableGlobalMembers));
         _realms.Add(realm);

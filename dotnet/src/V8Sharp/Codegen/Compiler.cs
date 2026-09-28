@@ -46,17 +46,17 @@ namespace V8Sharp.Codegen
         {
             if (isolate.CompilerParsingFlags is { } cached) return cached;
             FlagList f = isolate.Flags;
+            // The regexp literal syntax check of the parser reads it (process-wide).
+            V8Sharp.RegExp.RegExpParser.JsRegExpBufferBoundaries = f.js_regexp_buffer_boundaries;
             var flags = new ParsingFlags
             {
                 allow_natives_syntax = f.allow_natives_syntax,
+                stack_size = f.stack_size,
                 lazy = f.lazy,
                 max_lazy = f.max_lazy,
                 // Deviation: source positions are always collected (V8 collects them lazily).
                 enable_lazy_source_positions = false,
                 stress_lazy_source_positions = f.stress_lazy_source_positions,
-                // Deviation: --fuzzing is not passed on. The parser does not have
-                // runtime.cc's IsEnabledForFuzzing allowlist and would drop every
-                // intrinsic; wrong argument counts still fail the parse.
                 log_function_events = f.log_function_events,
                 print_scopes = f.print_scopes,
                 script_context_cells = f.script_context_cells,
@@ -65,6 +65,12 @@ namespace V8Sharp.Codegen
                 ignition_elide_redundant_tdz_checks = f.ignition_elide_redundant_tdz_checks,
                 enable_experimental_regexp_engine = f.enable_experimental_regexp_engine,
                 use_strict = f.use_strict,
+                fuzzing = f.fuzzing,
+                allow_natives_for_differential_fuzzing = f.allow_natives_for_differential_fuzzing,
+                hole_fuzzing = f.hole_fuzzing,
+                sandbox_testing = f.sandbox_testing,
+                sandbox_fuzzing = f.sandbox_fuzzing,
+                verify_bytecode_full = f.verify_bytecode_full,
                 js_decorators = f.js_decorators,
                 js_source_phase_imports = f.js_source_phase_imports,
                 js_defer_import_eval = f.js_defer_import_eval,
@@ -260,6 +266,11 @@ namespace V8Sharp.Codegen
             {
                 ReportPendingMessages(isolate, parseInfo, script);
             }
+            // Parser::HandleDebugMagicComments.
+            if (parseInfo.source_url_magic_comment is { } sourceUrl)
+            {
+                script.SourceUrl = isolate.Factory.InternalizeString(sourceUrl);
+            }
 
             var heap = new CompilerHeap(isolate, script);
             FunctionLiteral literal = parseInfo.literal()!;
@@ -450,8 +461,17 @@ namespace V8Sharp.Codegen
         {
             NativeContext nativeContext = isolate.NativeContext;
 
+            // Check if native context allows code generation from
+            // strings. Throw an exception if it doesn't.
+            JSString? source = Builtins.BuiltinsGlobal.ValidateDynamicCompilationSource(isolate, nativeContext, sourceObject,
+                out bool unknownObject);
             // If the argument is an unhandled string time, bounce to GlobalEval.
-            if (sourceObject.HeapObjectOrNull is not JSString source) return nativeContext.GlobalEvalFun;
+            if (unknownObject) return nativeContext.GlobalEvalFun;
+            if (source is null)
+            {
+                return isolate.Throw(isolate.Factory.NewEvalError(MessageTemplate.CodeGenFromStrings,
+                    Builtins.BuiltinsGlobal.ErrorMessageForCodeGenerationFromStrings(isolate, nativeContext)));
+            }
 
             // Deal with a normal eval call with a string argument. Compile it
             // and return the compiled function bound in the local context.
@@ -479,9 +499,20 @@ namespace V8Sharp.Codegen
             public static readonly DynamicFunctionCompiler Instance = new();
 
             public JSFunction GetFunctionFromString(Isolate isolate, NativeContext nativeContext, JSString source,
-                int parametersEndPos, bool isCodeLike) =>
-                GetFunctionFromValidatedString(isolate, nativeContext, source, ParseRestriction.ONLY_SINGLE_FUNCTION_LITERAL,
+                int parametersEndPos, bool isCodeLike)
+            {
+                // Compiler::GetFunctionFromString: ValidateDynamicCompilationSource,
+                // then GetFunctionFromValidatedString, which throws the EvalError
+                // for a null (disallowed) source.
+                JSString? validated = Builtins.BuiltinsGlobal.ValidateDynamicCompilationSource(isolate, nativeContext, source, out _);
+                if (validated is null)
+                {
+                    isolate.Throw(isolate.Factory.NewEvalError(MessageTemplate.CodeGenFromStrings,
+                        Builtins.BuiltinsGlobal.ErrorMessageForCodeGenerationFromStrings(isolate, nativeContext)));
+                }
+                return GetFunctionFromValidatedString(isolate, nativeContext, validated!, ParseRestriction.ONLY_SINGLE_FUNCTION_LITERAL,
                     parametersEndPos);
+            }
 
             JSFunction IDynamicFunctionCompiler.GetFunctionFromValidatedString(Isolate isolate, NativeContext nativeContext,
                 JSString source, ParseRestriction restriction, int parametersEndPos) =>

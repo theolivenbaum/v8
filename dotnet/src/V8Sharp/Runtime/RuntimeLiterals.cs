@@ -428,16 +428,18 @@ public static class RuntimeLiterals
     public static JSArray CreateEmptyArrayLiteral(Isolate isolate, FeedbackVector? vector, int slot)
     {
         ElementsKind kind = ElementsKind.PACKED_SMI_ELEMENTS;
+        AllocationSite? site = null;
         if (vector is not null)
         {
-            if (vector.Slots[slot].HeapObjectOrNull is AllocationSite existing)
+            // Array literals always have a valid AllocationSite to properly track
+            // elements transitions.
+            site = vector.Slots[slot].HeapObjectOrNull as AllocationSite;
+            if (site is null)
             {
-                kind = existing.ElementsKind;
+                site = new AllocationSite { ElementsKind = kind };
+                vector.Slots[slot] = site;
             }
-            else
-            {
-                vector.Slots[slot] = new AllocationSite { ElementsKind = kind };
-            }
+            kind = site.GetElementsKind();
         }
         JSArray array = isolate.Factory.NewJSArray(kind, 0, 0);
         // AllocateJSArray with the site: the array gets a memento.

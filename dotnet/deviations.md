@@ -21,7 +21,8 @@ for now, to be revisited when the reason goes away.
   `tools/V8Sharp.TestRunner/expectations/<suite>.oracle.txt`; the README there
   classifies them.
 - No Smi/HeapNumber distinction in `JSValue`; `IsSmi` is computed from the
-  value (architecture.md section 3).
+  value (architecture.md section 3). So `%IsSmi(%AllocateHeapNumberWithValue(1))`
+  is true (mjsunit call-intrinsic-fuzzing fails on it).
 
 ## V8Sharp.Base (numbers, math, unicode, hashing)
 
@@ -91,6 +92,12 @@ for now, to be revisited when the reason goes away.
   `PreparseData` class for V8's zone and heap forms (release byte format);
   flags passed per parse (`ParsingFlags`) instead of global.
 - Parsing: AstPrinter/ScopePrinter are always compiled (DEBUG-only in V8).
+- Parsing: stack_limit_ is a budget of 4 x --stack-size bytes of .NET stack
+  from where each parser starts (V8: the isolate's C stack limit). The .NET
+  parser frames are about four times V8's, so the RangeError comes at about
+  V8's nesting depth (2997 nested parentheses vs V8's 2296 at the default
+  984 KB, 2208 array literals vs 3100). The stack position is the address
+  of a local (`Unsafe.ByteOffset` from the null ref, no unsafe context).
 - Parsing: decorators (`@`) not scanned; V8's status lists those tests as FAIL.
 
 ## V8Sharp.RegExp
@@ -266,6 +273,13 @@ for now, to be revisited when the reason goes away.
   construct stub, which puts the RangeError at about the recursion depth V8
   reaches (12593 vs 12456 plain calls, 4844 vs 4790 constructs). The .NET
   stack is checked with `TryEnsureSufficientExecutionStack` on ordinary entries.
+  Builtins and the JSON serializer run on the .NET stack, which V8Sharp's
+  register-stack limit does not see, so a call to a builtin reserves 12
+  register slots (`kBuiltinFrameSlots`, about a builtin exit frame) and each
+  level of JSON.stringify's recursion 20 (`kSerializeFrameSlots`): recursion
+  through them (toString -> join -> toString, a toJSON that stringifies)
+  then overflows with a RangeError at about V8's depth instead of the .NET
+  stack guard's.
 - Exceptions are .NET exceptions (`JavaScriptException`); a frame's handler is
   found in an exception filter, so frames without a handler do not catch and
   rethrow. `Throw`/`ReThrow` dispatch to a handler in the same frame without a
@@ -281,7 +295,10 @@ for now, to be revisited when the reason goes away.
 - Runtime: `%` functions are delegates in `RuntimeTable`; functions only an
   optimizing tier or the debugger uses are not registered (their calls throw
   "runtime function %X is not implemented"). Tier queries (%IsTurbofanEnabled,
-  %GetOptimizationStatus ...) answer as --jitless V8 does.
+  %GetOptimizationStatus ...) and %GetFeedback answer as --jitless V8 does.
+- The TestRunner's v8sharp engine runs the microtask checkpoint when the
+  outermost script execution returns (d8's kAuto policy); a nested
+  `Realm.eval` leaves its microtasks queued.
 - Compiler: source positions are collected eagerly (no lazy source
   positions); there is no compilation cache and no preparse data (inner
   functions are reparsed); every lazy function has UncompiledData without
@@ -296,8 +313,11 @@ for now, to be revisited when the reason goes away.
   and import.meta callbacks) are delegates. Not ported: source phase imports
   and `import defer` (JSDeferredModuleNamespace), both behind harmony flags;
   WebAssembly, bytes modules and bundles in the d8 loader.
-- Parser flags: `--fuzzing` is not passed to the parser, which lacks
-  runtime.cc's IsEnabledForFuzzing allowlist (it would drop every intrinsic).
+- Parser flags: the fuzzing flags reach the parser, and
+  `RuntimeFuzzing.IsEnabledForFuzzing` is runtime.cc's allowlist; the
+  FOR_EACH_INTRINSIC_TEST list it needs is copied into the parsing assembly
+  (the engine's `FunctionId` table lives in V8Sharp, which the parser cannot
+  reference).
 - Stack traces: async frames are captured as CallSiteInfos with the source
   position already resolved from the generator's suspend offset (V8 stores the
   bytecode offset and resolves lazily).
@@ -375,14 +395,50 @@ Execution
 Bootstrapper
 - No snapshot: `Bootstrapper.CreateEnvironment` builds every native context
   from scratch with Genesis, in V8's order.
-- Not installed: Intl, Temporal, shared structs, extras and the extensions
-  other than gc and externalize-string. The RegExpMatchInfo of a native context is created on first use
+- Not installed: Intl, Temporal, shared structs and the extensions
+  other than gc and externalize-string. The extras binding object has only
+  what InstallExtrasBindings puts there (isTraceCategoryEnabled, trace). The RegExpMatchInfo of a native context is created on first use
   (`RegExpMatchInfo.Get`), not by InitializeGlobal.
 - The error stack getter and setter are JSFunctions created eagerly per native
   context (`NativeContext.ErrorStackGetterFun`/`ErrorStackSetterFun`), not
-  FunctionTemplateInfo roots instantiated lazily.
+  FunctionTemplateInfo roots instantiated lazily. They run in their own realm
+  (V8's run in the caller's), so the CallSite objects Error.prepareStackTrace
+  receives are made in the error's creation context rather than the current
+  one (`Messages.GetStackFrames`).
 - The empty function uses the bootstrapping ScopeInfo.
 - `V8_FUNCTION_ARGUMENTS_CALLER_ARE_OWN_PROPS` is off, as in V8's default build.
+
+Console (Builtins.Console.cs)
+- `console` is installed in Genesis like V8's. The debug::ConsoleDelegate is
+  an abstract C# class on `Isolate.ConsoleDelegate`; without one the methods
+  do nothing, as in V8. `console.profile`/`profileEnd` reach the delegate but
+  there is no CPU profiler behind them. Trace events: `isTraceCategoryEnabled`
+  always answers false and `trace` records nothing (no tracing controller).
+
+ValueSerializer (Objects/ValueSerializer.cs)
+- The buffer is a managed byte array; the delegate's
+  ReallocateBufferMemory/FreeBufferMemory hooks are not ported.
+- Strings are written one-byte (Latin-1) when every code unit is at most 0xFF,
+  which is where V8 writes a one-byte string's own representation; V8Sharp
+  strings are UTF-16 only.
+- ReadJSObjectProperties defines the properties one by one (V8 first tries
+  to follow the expected map transitions); the resulting maps are the same.
+- Not ported: WebAssembly modules and memories, shared structs/arrays and the
+  shared-object conveyor, host objects of the API (the delegate hooks exist).
+- ArrayBuffers of 2^31 bytes or more cannot be allocated (byte[] backing).
+
+d8 host in the TestRunner (tools/V8Sharp.TestRunner/Shell)
+- Worker, `d8.serializer` and the worker globals are implemented by the
+  TestRunner's D8Shell over `ValueSerializer` (Serialization.cs in
+  V8Sharp.D8 ports d8's SerializationData and delegates). Each worker is an
+  isolate on its own 256 MB .NET thread; messages go through a
+  SerializationDataQueue and the parent is notified through its task queue,
+  as in d8. The Worker constructor and methods are JavaScript in d8-shim.js
+  (V8: FunctionTemplates), holding the worker id in a WeakMap instead of an
+  internal field.
+- `print`, `printErr` and `write` are API functions (`CreateStringArgumentsFunction`),
+  so they do not appear in stack traces; API functions are sloppy, as V8's
+  FunctionTemplate functions are for CallSite purposes.
 
 ## String and RegExp builtins
 
@@ -540,8 +596,14 @@ Bootstrapper
   ResolveAsyncWaiterPromisesTask; the order is the same), and timeouts are
   delayed tasks on the isolate's foreground runner
   (`Isolate.PostNonNestableDelayedTask`, which `RunPendingTasks` waits for
-  when nothing else is pending, as d8's message loop does). Waiters of dead
-  isolates or contexts are not cleaned up (no IsolateDeinit hook).
+  when nothing else is pending, as d8's message loop does;
+  `RunPendingTasks(maxWaitMs)` bounds that wait for an embedder whose message
+  loop must also poll other queues, like the TestRunner's Worker host). Due
+  times use the Stopwatch clock, so a timeout never fires before an
+  embedder's high-resolution monotonic clock has seen it elapse. V8Sharp has
+  no Isolate::Deinit; the embedder calls `Isolate.Deinit()` when it is done
+  with an isolate, which runs FutexEmulation::IsolateDeinit and drops the
+  isolate's pending tasks (CancelableTaskManager::CancelAndWait).
 - Array.fromAsync keeps its resume state in a synthetic function context
   like array-from-async.tq, but the state machine loop is a C# switch over
   the labels; each await point is PromiseResolve + PerformPromiseThenImpl

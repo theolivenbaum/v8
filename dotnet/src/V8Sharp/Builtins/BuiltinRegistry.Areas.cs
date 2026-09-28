@@ -47,6 +47,7 @@ public static partial class BuiltinRegistry
         RegisterShadowRealm();
         RegisterArrayFromAsync();
         RegisterInternal();
+        RegisterConsole();
     }
 
     static partial void RegisterObject();
@@ -80,4 +81,5 @@ public static partial class BuiltinRegistry
     static partial void RegisterDisposableStack();
     /// <summary>Builtins used by bytecode handlers and the interpreter (InterpreterEntryTrampoline, Call/Construct stubs, ...).</summary>
     static partial void RegisterInternal();
+    static partial void RegisterConsole();
 }

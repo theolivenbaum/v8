@@ -190,6 +190,10 @@ public static class Execution
             // on-stack receiver as the result.
             if (implicitReceiver.IsTheHole)
             {
+                // JSConstructStubGeneric restores the caller's context from its frame
+                // before Runtime_ThrowConstructorReturnedNonObject, so the TypeError
+                // comes from the caller's realm.
+                isolate.Context = saved;
                 return isolate.ThrowTypeError(MessageTemplate.DerivedConstructorReturnedNonObject);
             }
             return implicitReceiver;

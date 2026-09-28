@@ -276,6 +276,9 @@ public sealed class CallSiteInfo : HeapObject
             JSValue value;
             if (dictionary is GlobalDictionary global)
             {
+                // GlobalDictionary::ToKey: the key is the cell's name.
+                key = global.NameAt(entry);
+                if (key.IsSymbol) continue;
                 details = global.DetailsAt(entry);
                 value = global.ValueAt(entry);
             }

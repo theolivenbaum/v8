@@ -18,6 +18,13 @@ namespace V8Sharp.RegExp;
 
 public static class RegExpParser
 {
+    /// <summary>--js-regexp-buffer-boundaries, copied in from the isolate's flags.</summary>
+    public static bool JsRegExpBufferBoundaries
+    {
+        get => RegExpParserImpl.s_jsRegExpBufferBoundaries;
+        set => RegExpParserImpl.s_jsRegExpBufferBoundaries = value;
+    }
+
     /// <summary>Parser::ParseRegExpFromHeapString.</summary>
     public static bool ParseRegExp(string input, RegExpFlags flags, RegExpCompileData result)
     {
@@ -947,8 +954,6 @@ internal sealed class RegExpParserImpl
                 case '\\':
                 {
                     int escapedChar = Next();
-                    // v8_flags.js_regexp_buffer_boundaries (\A, \z, \Z) is off by
-                    // default and not ported as a flag.
                     if (s_jsRegExpBufferBoundaries && IsUnicodeMode)
                     {
                         bool isBufferBoundaryAssertion = true;
@@ -1219,6 +1224,8 @@ internal sealed class RegExpParserImpl
     }
 
     /// <summary>--js-regexp-buffer-boundaries (\A, \z, \Z). Off by default in V8.</summary>
+    /// Process-wide like the other engine flags; the isolate's flag is copied in
+    /// when scripts are compiled.
     internal static bool s_jsRegExpBufferBoundaries = false;
 
     /// <summary>--regexp-possessive-quantifier (debug-only in V8, default false).</summary>

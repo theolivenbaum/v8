@@ -581,17 +581,14 @@ public sealed partial class Parser
     }
 
     // More permissive runtime-function creation on fuzzers.
-    // V8 consults Runtime::IsEnabledForFuzzing, the allowlist in
-    // runtime.cc; that list is not part of V8Sharp.Parsing, so every function
-    // counts as not enabled and the call is dropped.
     private Expression NewV8RuntimeFunctionForFuzzing(RuntimeFunction function, ScopedPtrList<Expression> args,
                                                       int pos)
     {
         // Intrinsics are not supported for fuzzing. Only allow runtime functions
         // marked as fuzzing-safe. Also prevent later errors due to too few arguments
         // and just ignore this call.
-        const bool is_enabled_for_fuzzing = false;
-        if (function == null || !is_enabled_for_fuzzing || function.nargs > args.length())
+        if (function == null || !RuntimeFuzzing.IsEnabledForFuzzing(function.function_id, v8_flags()) ||
+            function.nargs > args.length())
         {
             return factory().NewUndefinedLiteral(kNoSourcePosition);
         }

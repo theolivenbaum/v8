@@ -95,7 +95,8 @@ public interface IJsIsolate : IDisposable
     /// realm's security token (d8's Realm.createAllowCrossRealmAccess);
     /// otherwise it keeps its own, so cross-realm access to its global proxy
     /// fails with "no access" (Realm.create).</summary>
-    IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith);
+    /// <param name="ownMicrotaskQueue">Realm.create({create_own_microtask_queue: true}): the context gets a MicrotaskQueue of its own.</param>
+    IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith, bool ownMicrotaskQueue = false);
 
     /// <summary>v8::Isolate::TerminateExecution. Thread-safe; used by the
     /// watchdog and by <c>quit()</c>.</summary>
@@ -140,6 +141,35 @@ public interface IJsRealm : IDisposable
 
     /// <summary>v8::Context::DetachGlobal.</summary>
     void DetachGlobal();
+
+    /// <summary>
+    /// A host function whose arguments the engine converts to strings first
+    /// (symbols to their description, everything else with ToString), as
+    /// d8's print/printErr/write do in C++, so that no JS frame of the host
+    /// shows in stack traces. Null when the engine cannot provide one.
+    /// </summary>
+    object? CreateStringArgumentsFunction(string name, JsHostFunction function) => null;
+
+    /// <summary>Whether <see cref="SerializeValue"/> and friends work (d8's Worker and d8.serializer).</summary>
+    bool SupportsSerialization => false;
+
+    /// <summary>
+    /// Shell::SerializeValue: structured-clones <paramref name="value"/> with
+    /// the <paramref name="transfer"/> list into an engine-specific message
+    /// (the completion's value), for <see cref="DeserializeValue"/> in any
+    /// isolate of the process. Throws (as a completion) like d8 does. Called
+    /// from inside a host function: no microtask checkpoint.
+    /// </summary>
+    Completion SerializeValue(object? value, object? transfer) => throw new NotSupportedException();
+
+    /// <summary>Shell::DeserializeValue of a message made by <see cref="SerializeValue"/>.</summary>
+    Completion DeserializeValue(object message) => throw new NotSupportedException();
+
+    /// <summary>d8.serializer.serialize: the ValueSerializer bytes of the arguments as an ArrayBuffer.</summary>
+    Completion SerializerSerialize(object?[] values) => throw new NotSupportedException();
+
+    /// <summary>d8.serializer.deserialize of an ArrayBuffer.</summary>
+    Completion SerializerDeserialize(object? buffer) => throw new NotSupportedException();
 }
 
 public enum CompletionKind { Normal, Throw, Terminated }

@@ -265,6 +265,12 @@ public static class InterpreterCalls
                 isolate.Context = outer;
             }
         }
+        // The builtin's frame takes machine stack in V8 (BuiltinExitFrame and the
+        // C++/CSA frames below it); reserving it on the register stack makes
+        // recursion through builtins (callbacks, toString/join, Reflect.apply)
+        // overflow at about V8's depth. Deviation: V8Sharp's builtins run on
+        // the .NET stack, which is sized independently of --stack-size.
+        int stackTop = isolate.AllocateRegisters(kBuiltinFrameSlots);
         int depth = isolate.InterpreterFrameDepth;
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
         frame.Function = function;
@@ -286,8 +292,12 @@ public static class InterpreterCalls
             isolate.Context = saved;
             isolate.InterpreterFrameDepth = depth;
             isolate.InterpreterFrames[depth] = default;
+            isolate.RegisterStackTop = stackTop;
         }
     }
+
+    /// <summary>The stack slots of a builtin's frames, measured against V8 (see CallBuiltin).</summary>
+    internal const int kBuiltinFrameSlots = 12;
 
     /// <summary>CallWithSpread: the last argument is spread (builtins-call-gen.cc CallOrConstructWithSpread).</summary>
     public static JSValue CallWithSpread(Isolate isolate, JSValue callee, ReadOnlySpan<JSValue> receiverAndArgs)
@@ -412,23 +422,6 @@ public static class InterpreterCalls
         return implicitReceiver;
     }
 
-    /// <summary>
-    /// The allocation-site part of ArrayConstructorImpl (builtins-array.cc /
-    /// ArrayConstructorImpl): the array starts in the site's elements kind and
-    /// keeps a memento while the site tracks it. V8 allocates with the site's
-    /// kind directly; V8Sharp transitions the array the Array builtin made.
-    /// </summary>
-    static void ApplyArrayAllocationSite(Isolate isolate, JSArray array, AllocationSite site)
-    {
-        ElementsKind kind = array.GetElementsKind();
-        if (!ElementsKinds.IsFastElementsKind(kind)) return;
-        ElementsKind toKind = site.ElementsKind;
-        if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
-        if (ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind)) JSObject.TransitionElementsKind(isolate, array, toKind);
-        // If we don't care to track arrays of this kind, don't keep a memento.
-        if (AllocationSite.ShouldTrack(site.ElementsKind)) array.AllocationMementoSite = site;
-    }
-
     /// <summary>Builtins::Construct for everything but bytecode functions.</summary>
     public static JSValue ConstructGeneric(Isolate isolate, JSValue constructor, JSValue newTarget, ReadOnlySpan<JSValue> args,
         AllocationSite? site = null)
@@ -438,10 +431,13 @@ public static class InterpreterCalls
             SharedFunctionInfo shared = function.Shared;
             if (shared.HasBuiltinId && shared.BuiltinId != Builtin.CompileLazy)
             {
+                // Construct with an AllocationSite: ArrayConstructorImpl gets the site.
+                if (site is not null && shared.BuiltinId == Builtin.ArrayConstructor)
+                {
+                    isolate.ArrayConstructorAllocationSite = site;
+                }
                 // JSBuiltinsConstructStub: the builtin creates its own receiver.
-                JSValue result = CallBuiltin(isolate, function, JSValue.TheHole, args, newTarget);
-                if (site is not null && result.HeapObjectOrNull is JSArray array) ApplyArrayAllocationSite(isolate, array, site);
-                return result;
+                return CallBuiltin(isolate, function, JSValue.TheHole, args, newTarget);
             }
             if (!shared.IsCompiled && !shared.HasBuiltinId)
             {

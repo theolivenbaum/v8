@@ -150,6 +150,18 @@ public sealed class StoreIC : IC
         FeedbackMetadata.GetLanguageModeFromSlotKind(kind) == LanguageMode.Strict ? ShouldThrow.ThrowOnError : ShouldThrow.DontThrow;
 
     /// <summary>
+    /// HandleProtoHandler's LookupOnLookupStartObjectBits case: a handler for a
+    /// property on the prototype chain of a dictionary-mode receiver (other than
+    /// the global object) misses when the receiver has the property itself. V8
+    /// sets the bit when the handler is created for a dictionary map; testing
+    /// the receiver's properties here is the same condition.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool FoundOnLookupStartObject(JSValue receiver, Name name) =>
+        receiver._obj is JSObject { HasFastProperties: false } o and not JSGlobalObject &&
+        o.PropertyDictionary.FindEntry(name).IsFound;
+
+    /// <summary>
     /// Executes a store handler (HandleStoreICHandlerCase). Returns false
     /// when the handler does not apply (the caller misses).
     /// </summary>
@@ -217,11 +229,13 @@ public sealed class StoreIC : IC
                 return true;
             }
             case StoreHandler.Kind.kAccessorFromPrototype:
+                if (FoundOnLookupStartObject(receiver, name)) return false;
                 ObjectOps.SetPropertyWithDefinedSetter(isolate, receiver, handler.Data.As<JSReceiver>(), value, ShouldThrowFor(kind));
                 return true;
             case StoreHandler.Kind.kNativeDataProperty:
             {
                 var info = handler.Data.As<AccessorInfo>();
+                if (handler.Holder is not null && FoundOnLookupStartObject(receiver, name)) return false;
                 JSReceiver target = handler.Holder ?? receiver.As<JSReceiver>();
                 if (info.Setter is null || target is not JSObject holder) return false;
                 info.Setter(isolate, receiver, holder, name, value, ShouldThrowFor(kind));
@@ -229,6 +243,7 @@ public sealed class StoreIC : IC
             }
             case StoreHandler.Kind.kProxy:
             {
+                if (handler.Holder is not null && FoundOnLookupStartObject(receiver, name)) return false;
                 JSReceiver target = handler.Holder ?? receiver.As<JSReceiver>();
                 if (target is not JSProxy proxy) return false;
                 JSProxy.SetProperty(isolate, proxy, name, value, receiver, ShouldThrowFor(kind));
@@ -1010,11 +1025,11 @@ public sealed class KeyedStoreIC : IC
     bool MayHaveTypedArrayInPrototypeChain(JSObject obj) => StoreIC.MayHaveTypedArrayInPrototypeChain(_isolate, obj);
 
     /// <summary>StoreOwnElement (ic.cc).</summary>
-    static JSValue StoreOwnElement(Isolate isolate, JSArray array, JSValue index, JSValue value)
+    internal static JSValue StoreOwnElement(Isolate isolate, JSArray array, JSValue index, JSValue value)
     {
         var key = new PropertyKey(isolate, index);
         var it = new LookupIterator(isolate, array, key, LookupIterator.Configuration.OWN);
-        JSObject.DefineOwnPropertyIgnoreAttributes(ref it, value, PropertyAttributes.NONE);
+        JSObject.DefineOwnPropertyIgnoreAttributes(ref it, value, PropertyAttributes.NONE, ShouldThrow.ThrowOnError);
         return value;
     }
 

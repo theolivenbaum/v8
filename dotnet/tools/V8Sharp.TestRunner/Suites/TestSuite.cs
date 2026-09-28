@@ -11,7 +11,8 @@ namespace V8Sharp.TestRunner.Suites;
 public sealed record SuiteContext(
     string V8Root,
     string Test262Root,
-    IReadOnlyDictionary<string, object?> StatusVariables)
+    IReadOnlyDictionary<string, object?> StatusVariables,
+    string Engine = "oracle")
 {
     /// <summary>run-tests.py's --extra-flags: appended to every test's flags.</summary>
     public IReadOnlyList<string> ExtraFlags { get; init; } = [];
@@ -302,8 +303,10 @@ public sealed class Test262Suite(SuiteContext context) : TestSuite("test262", co
 
         bool isAsync = fm.HasFlag("async");
         // harness-agent.js implements $262.agent on d8's Worker (a second isolate
-        // on another thread sharing SharedArrayBuffers), which the shell lacks.
-        string? skip = name.StartsWith("built-ins/Atomics/", StringComparison.Ordinal) && source.Contains("$262.agent", StringComparison.Ordinal)
+        // on another thread sharing SharedArrayBuffers), which only the v8sharp
+        // engine's host provides (the oracle's ClearScript host cannot).
+        string? skip = Context.Engine != "v8sharp" && name.StartsWith("built-ins/Atomics/", StringComparison.Ordinal) &&
+            source.Contains("$262.agent", StringComparison.Ordinal)
             ? "needs $262.agent (d8 Worker), which the test host does not provide"
             : null;
         // VariantsGenerator: noStrict runs sloppy, onlyStrict runs strict, the rest both.

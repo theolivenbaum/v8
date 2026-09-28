@@ -611,6 +611,20 @@ public static class FutexEmulation
         }
     }
 
+    /// <summary>
+    /// FutexEmulation::IsolateDeinit: deletes the nodes belonging to a dying
+    /// isolate. Its promises are not resolved and its timeout tasks are
+    /// cancelled by <see cref="Isolate.Deinit"/>.
+    /// </summary>
+    internal static void IsolateDeinit(Isolate isolate)
+    {
+        lock (s_mutex)
+        {
+            s_waitList.RemoveAll(node => ReferenceEquals(node.AsyncIsolate, isolate));
+            s_toResolve.RemoveAll(node => ReferenceEquals(node.AsyncIsolate, isolate));
+        }
+    }
+
     /// <summary>FutexEmulation::NumUnresolvedAsyncPromisesForTesting.</summary>
     internal static int NumUnresolvedAsyncPromisesForTesting(BackingStore store, long addr)
     {

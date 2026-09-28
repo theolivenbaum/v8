@@ -423,8 +423,10 @@ public static class RuntimeScopes
 
         if (!isVar) it.Restart();
 
-        // Define or redefine own property.
-        JSObject.DefineOwnPropertyIgnoreAttributes(ref it, value, attr);
+        // Define or redefine own property. (V8 calls the MaybeHandle overload,
+        // which passes Just(kThrowOnError): a var on a non-extensible global
+        // throws even in sloppy code.)
+        JSObject.DefineOwnPropertyIgnoreAttributes(ref it, value, attr, ShouldThrow.ThrowOnError);
     }
 
     /// <summary>Runtime_DeclareGlobals.</summary>

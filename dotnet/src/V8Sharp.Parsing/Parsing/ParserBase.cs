@@ -208,7 +208,30 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         compile_hints_per_function_magic_enabled_ = compile_hints_per_function_magic_enabled;
         pointer_buffer_ = new List<object>(32);
         variable_buffer_ = new List<(VariableProxy, int)>(32);
+        stack_limit_ = GetCurrentStackPosition() - (nint)Math.Min(
+            (long)Math.Max(v8_flags.stack_size, 1) * 1024 * kManagedStackBytesPerV8Byte, int.MaxValue);
     }
+
+    // The machine stack position (the address of a local), as
+    // GetCurrentStackPosition returns it. Unsafe.ByteOffset from the null ref
+    // is the address without an unsafe context; stack locals do not move.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    protected static nint GetCurrentStackPosition()
+    {
+        byte local = 0;
+        return Unsafe.ByteOffset(ref Unsafe.NullRef<byte>(), ref local);
+    }
+
+    // V8's parser frames are smaller than the managed ones: one parenthesized
+    // expression level takes about 430 bytes of machine stack in V8 and about
+    // this many times more in V8Sharp's parser. Scaling --stack-size by it puts
+    // the parser's RangeError at about V8's nesting depth.
+    const int kManagedStackBytesPerV8Byte = 4;
+
+    // stack_limit_: V8 takes the isolate's C stack limit; V8Sharp gives each
+    // parser a budget of --stack-size from where it starts (the parser runs on
+    // the .NET stack, which the JS register stack limit does not describe).
+    readonly nint stack_limit_;
 
     public UnoptimizedCompileFlags flags() => flags_;
 
@@ -854,12 +877,14 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         pending_error_handler().set_stack_overflow();
     }
 
-    // V8 compares the machine stack position with stack_limit_; the managed
-    // equivalent asks the runtime whether enough stack is left.
     protected void CheckStackOverflow()
     {
         // Any further calls to Next or peek will return the illegal token.
-        if (!RuntimeHelpers.TryEnsureSufficientExecutionStack()) set_stack_overflow();
+        // The runtime check guards the .NET thread's own stack as well.
+        if (GetCurrentStackPosition() < stack_limit_ || !RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            set_stack_overflow();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
