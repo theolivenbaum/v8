@@ -411,6 +411,50 @@ calls through CallBuiltin (Array.prototype.push ~200 ns), object
 allocation (JSObject + JSValue[] fields, GC), and JIT warm-up (libclrjit is
 20-25% of a short Octane run; ReadyToRun or a longer run would cut it).
 
+Octane, interpreter only, after the second interpreter performance pass
+(2026-09-28, 4-core container, load 1-3; mean of 3 interleaved runs of
+V8Sharp.Bench `octane:<name>` with `v8sharp@<build>`; "before" is 757f225f,
+"now" is this pass):
+
+| benchmark | before | now | V8 --jitless | now / jitless |
+|---|---|---|---|---|
+| Richards | 509 | 572 | 1319 | 43% |
+| DeltaBlue | 418 | 528 | 1371 | 39% |
+| Crypto | 484 | 476 | 1238 | 38% |
+| RayTrace | 1118 | 1169 | 3406 | 34% |
+| EarleyBoyer | 1532 | 1809 | 5428 | 33% |
+| RegExp | 1019 | 1039 | 2258 | 46% |
+| Splay | 1543 | 2373 | 3569 | 67% |
+| NavierStokes | 1175 | 1097 | 1498 | 73% |
+| geomean | 964 | 1081 | 2369 | 46% |
+
+(With a quiet machine V8 --jitless scores about 20% higher than in the
+table above this one; both V8Sharp columns run `--engine v8sharp`.) By
+thread CPU time (`octane-cpu`, fixed work) the pass is +13% on the same
+eight: Richards +13%, DeltaBlue +20%, RayTrace +15%, EarleyBoyer +35%,
+NavierStokes +6%, Crypto 0, RegExp -5%, Splay -1%. The pass, one commit
+each (git log): in-object properties in object slots (V8's layout, neutral
+for speed), `InterpreterState` as a ref struct (no write barriers on it),
+inline calls that leave their frame's slots for the next call at the depth
+and compare before each reference store (micro CallLoop +25%), frame
+records not cleared on return, FastNewObject for `new F`, CSA-style
+fast paths for instanceof (EarleyBoyer +7%) and push/pop/shift (micro
+ArrayPush +48%), compare feedback by instance type, a dispatch loop whose
+hot helpers all fit RyuJIT's inlining budget again (Richards +9%,
+NavierStokes +11%), and prototype-field loads on the inline IC path.
+ReadyToRun for `d8sharp` publishes cuts start-up (print(1) 339 to 138 ms)
+but not Octane scores; TieredPGO is worth about 20% and stays on.
+
+What is left before 2x of jitless (46% now): the dispatch loop itself
+(Crypto is 73% in the loop: 16-byte JSValue registers, Smi checks on
+doubles for every arithmetic feedback update), calls (~45 ns vs ~20 ns:
+CallUndefinedReceiver2 is still ~200 instructions and the register stack
+stores of object arguments pay GC write barriers), allocation (a plain
+object is 56 bytes of header plus 16-byte slots; JSObject header fields
+_dictionary and _identityHash could fold into V8's properties_or_hash),
+builtin calls through CallBuiltin (Math.*, charCodeAt: 3-4.5x slower than
+V8 jitless), and string concatenation (4.5x).
+
 Performance with the baseline tier (Octane, 2026-09-28, 4-core container
 shared with other jobs, mean of 2 runs; V8Sharp.Bench):
 
