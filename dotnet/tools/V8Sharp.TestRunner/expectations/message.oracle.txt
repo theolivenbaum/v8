@@ -93,7 +93,7 @@ mjsunit/fail/assert-promise-result-rejects  # FAIL
 mjsunit/fail/assert-promise-result-rejects-empty  # FAIL
 mjsunit/fail/assert-promise-result-rejects-with-throw-empty  # FAIL
 mjsunit/fail/assert-promise-result-resolves  # FAIL
-mjsunit/fail/assert-promise-result-wasm-compile-fail  # CRASH
+mjsunit/fail/assert-promise-result-wasm-compile-fail  # FAIL
 regress/fail/regress-4266  # FAIL
 regress/fail/regress-900383  # FAIL
 regress/fail/regress-9603  # FAIL
@@ -101,6 +101,7 @@ regress/fail/regress-crbug-1265570  # FAIL
 regress/fail/regress-crbug-669017  # FAIL
 wasm-compilation-hints-inlining  # FAIL
 wasm-compilation-hints-inlining-no-liftoff  # FAIL
+wasm-finish-compilation  # FAIL
 wasm-function-name-async  # CRASH
 wasm-function-name-streaming  # FAIL
 wasm-generate-compilation-hints  # FAIL

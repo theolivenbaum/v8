@@ -138,8 +138,77 @@ source line) or Terminated. `V8SharpEngine` is the stub to fill in.
 
 ## Oracle baseline
 
-BASELINE
+The oracle's run of every suite (`--jobs 3`, 2026-09-28), committed as
+`expectations/<suite>.oracle.txt`. "As expected" means the outcome the
+`.status` file expects for this tree (V8 15.6); test262 counts runs, so most
+tests count twice (sloppy and `@strict`).
+
+| suite | run | as expected | unexpected | skipped | time |
+|---|---:|---:|---:|---:|---:|
+| mjsunit | 8908 | 8138 (91.4%) | 770 | 764 | ~5-10 min |
+| test262 | 102953 | 88601 (86.1%) | 14352 | 898 | ~5-6 min |
+| test262 without Temporal and ShadowRealm | 89495 | 88601 (99.0%) | 894 | | |
+| message | 373 | 260 (69.7%) | 113 | 13 | <1 min |
+| webkit | 543 | 543 (100%) | 0 | 1 | <1 min |
+| mozilla | - | - | - | - | `test/mozilla/data` is not checked out |
+
+Skipped: `SKIP` in the status files, flag contradictions (d8 would refuse
+the flags), and test262's `$262.agent` tests (below). About 8 mjsunit
+results per run are flaky and pass when rerun (WebAssembly tests that crash
+the worker now and then, GC timing).
+
+Where the unexpected outcomes come from (classified from the results JSON):
+
+| class | mjsunit | test262 | message |
+|---|---:|---:|---:|
+| V8 14.7 lacks a 15.6 feature: Temporal (13364 runs, glob lines in the file), `Iterator.zip`/`includes`/`zipKeyed`, `import defer`/`source`, newer wasm proposals | 8 | 12444 | 2 |
+| V8 14.7 does not know a 15.6 flag the test needs (d8 ignores unknown flags, so the feature stays off) | 176 | 268 | 7 |
+| other version skew: behaviour changed between 14.7 and 15.6 (optimization-status asserts, `Math.expm1`, `Date`, TypedArray species, ...) | 173 | ~40 | |
+| V8 14.7 `CHECK`/fatal errors, mostly on regression tests for bugs fixed after 14.7 | 109 | 54 | 5 |
+| ICU and Unicode data older than 15.6's (RegExp property escapes, Unicode 17 identifiers, `intl402`) | | 354 | |
+| d8 features the host does not provide: `Worker` (128), `d8.test.FastCAPI`, `d8.serializer`, `d8.dom`, `d8.profiler`, `d8.debugger`, `async_hooks`, `os`, the inspector's `send`, `--bundle` | 264 | | 1 |
+| ClearScript limitations: no ShadowRealm host callback (94 runs); a dynamic `import()` of a module whose evaluation throws does not reject properly; `import()` evaluates synchronously | 37 | 292 | 18 |
+| the uncaught-exception report: ClearScript exposes no `v8::Message` range, so the `^^^` underline and some positions differ from d8's | | | 80 |
+| timeouts (`es6/promises` clobbers every global, including ClearScript's own) | 3 | | |
+
+So nearly everything the oracle gets "wrong" is version skew or a d8 feature
+the ClearScript host cannot provide; the runner's own classes (missing d8
+builtins it could provide, module resolution, cross-realm access, flag
+handling, output formats) were fixed along the way.
 
 ## Known limitations
 
-LIMITATIONS
+- Only the `default` variant runs. `variants.py`'s tables are ported
+  (`Status/Variants.cs`) but other variants would need per-variant flags and
+  process groups.
+- No test combining (`TestCombiner`), sharding, `--isolates`, `--stress-*`
+  runs, or the num-fuzzer.
+- Oracle host, compared with d8:
+  - Values cross ClearScript as .NET objects, so a symbol returned by
+    `Realm.eval` arrives as `undefined` (`Realm.shared` is kept in JS and is
+    fine).
+  - `Realm.owner` is approximate (by prototype chain), `Realm.navigate`
+    creates a fresh global instead of reusing the global proxy, and
+    `Realm.create`'s `create_own_microtask_queue` option is ignored.
+  - `performance.mark/measure` are stubs; `d8.log.getAndStop` returns "";
+    `readline` returns undefined; `writeFile` and `os` are not installed.
+  - Uncaught-exception reports: the location comes from ClearScript's error
+    details, the underline length from a token heuristic.
+  - A module that imports itself is loaded through a one-line importer unless
+    it uses `await` (quit() during a pending top-level await under the
+    importer hits a CHECK in ClearScript's V8).
+  - JSON modules are recognised by the `.json` extension (ClearScript does
+    not pass import attributes).
+  - `EngineInternal`, ClearScript's helper object, is a non-enumerable global
+    it cannot remove; it is frozen so tests that clobber globals cannot break
+    the host.
+  - Unhandled rejections of non-Error values are reported without a source
+    location.
+- Worker processes are started per distinct (flags, environment) set:
+  mjsunit has about 1200 of them, so a full run starts that many processes.
+  Setting flags per test in one process (`--no-freeze-flags-after-init`)
+  works for simple flags but cannot undo implications, and ClearScript's
+  library does not export `FlagList::ResetAllFlags`, so it is not used.
+- The v8sharp engine is a stub (`Engines/V8SharpEngine.cs`): every test fails
+  with "cannot run JavaScript yet" and no v8sharp expectation files are
+  committed.

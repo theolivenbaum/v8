@@ -36,6 +36,7 @@ public sealed class D8Options
         "--no-fuzzy-module-file-extensions", "--enable-etw-stack-walking", "--enable-system-instrumentation",
         "--expose-fast-api", "--flush-denormals", "--isolate", "--simulate-errors", "--shell", "--bundle",
         "--disallow-unsafe-flags", "--run-as-security-poc", "--run-as-sandbox-security-poc", "--sandbox-fuzzing",
+        "--wasm-trap-handler", "--no-wasm-trap-handler",
     };
 
     // d8 options of the form --name=value.

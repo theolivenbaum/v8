@@ -14,9 +14,14 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [x] Oracle: real V8 14.7 in-process via ClearScript, with V8 flags by P/Invoke
       (`V8Sharp.Oracle.ReferenceV8`)
 - [x] test262 checkout at V8's pinned commit (`test/test262/data`, git-ignored)
-- [ ] TestRunner: `.status` files, `// Flags:`, mjsunit harness, test262
-      frontmatter and includes, in-process isolates with watchdog, both engines
-- [ ] Baseline results of the oracle on mjsunit / test262 (expected-pass lists)
+- [x] TestRunner (`tools/V8Sharp.TestRunner`, see its README): `.status` files,
+      `// Flags:`, mjsunit harness, test262 frontmatter and includes, message,
+      webkit; worker processes per flag set with watchdog and crash isolation;
+      the d8 shell over an engine interface; oracle engine; v8sharp stub
+- [x] Baseline results of the oracle on mjsunit / test262 / message / webkit
+      (`tools/V8Sharp.TestRunner/expectations/*.oracle.txt`)
+- [ ] v8sharp engine behind the runner (`Engines/V8SharpEngine.cs`) and its
+      expectation files; grow `tests/V8Sharp.Conformance.Tests/curated/v8sharp.txt`
 - [ ] d8sharp shell: `print`, `load`, `read`, `quit`, `version`, `-e`, `--flags`,
       `%` natives, `d8.*` test helpers used by mjsunit
 - [ ] Golden bytecode test harness (`bytecode_expectations/*.golden`)
@@ -87,7 +92,9 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 (Every intentional behaviour difference from V8, with the reason.)
 
 - Oracle version: V8 14.7 with ICU vs. this tree 15.6 without ICU. Tests whose
-  expectations differ for that reason are listed in the runner's
-  `oracle-deviations` file.
+  outcome on the oracle differs from the `.status` files (version skew, ICU,
+  d8 features the ClearScript host lacks) are listed in
+  `tools/V8Sharp.TestRunner/expectations/<suite>.oracle.txt`; the README there
+  classifies them.
 - No Smi/HeapNumber distinction in `JSValue`; `IsSmi` is computed from the
   value (architecture.md section 3).

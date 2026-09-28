@@ -26,7 +26,7 @@ compiler/primitive-keys-ic  # FAIL
 compiler/regress-331909453  # FAIL
 compiler/regress-498818400  # FAIL
 compiler/regress-519664497  # FAIL
-compiler/regress-522125255  # CRASH
+compiler/regress-522125255  # FAIL
 compiler/regress-531297707  # FAIL
 compiler/regress-558734727  # FAIL
 compiler/regress-561186948  # CRASH
@@ -397,15 +397,12 @@ regress/regress-v8-12219  # FAIL
 regress/regress-v8-5009  # FAIL
 regress/regress-value-serializer  # FAIL
 regress/wasm/regress-1010272  # FAIL
-regress/wasm/regress-10126  # CRASH
-regress/wasm/regress-1051912  # CRASH
 regress/wasm/regress-1067621  # FAIL
 regress/wasm/regress-1073553  # CRASH
 regress/wasm/regress-11024  # FAIL
 regress/wasm/regress-1338150  # CRASH
 regress/wasm/regress-1500804  # FAIL
 regress/wasm/regress-1517559  # FAIL
-regress/wasm/regress-1523740  # CRASH
 regress/wasm/regress-324475066  # FAIL
 regress/wasm/regress-324690505  # FAIL
 regress/wasm/regress-326156493  # FAIL
@@ -416,7 +413,6 @@ regress/wasm/regress-336007398  # FAIL
 regress/wasm/regress-358393368  # FAIL
 regress/wasm/regress-361717714  # FAIL
 regress/wasm/regress-370191716  # FAIL
-regress/wasm/regress-373684419  # CRASH
 regress/wasm/regress-373907109  # FAIL
 regress/wasm/regress-375270509  # FAIL
 regress/wasm/regress-377942344  # FAIL
@@ -443,7 +439,6 @@ regress/wasm/regress-455832038  # FAIL
 regress/wasm/regress-456319253  # FAIL
 regress/wasm/regress-457106696  # FAIL
 regress/wasm/regress-461547336  # FAIL
-regress/wasm/regress-463089250  # CRASH
 regress/wasm/regress-464606523  # FAIL
 regress/wasm/regress-470127856  # FAIL
 regress/wasm/regress-471380636  # FAIL
@@ -481,6 +476,7 @@ regress/wasm/regress-497330272  # FAIL
 regress/wasm/regress-498814570  # FAIL
 regress/wasm/regress-498818401  # FAIL
 regress/wasm/regress-499027764  # FAIL
+regress/wasm/regress-499150024  # FAIL
 regress/wasm/regress-499492236  # FAIL
 regress/wasm/regress-500113958  # FAIL
 regress/wasm/regress-500890918  # FAIL
@@ -536,7 +532,7 @@ regress/wasm/regress-563427048-3  # FAIL
 regress/wasm/regress-565565747  # FAIL
 regress/wasm/regress-670683  # CRASH
 regress/wasm/regress-709684  # CRASH
-regress/wasm/regress-757217  # CRASH
+regress/wasm/regress-734108  # CRASH
 regress/wasm/regress-7785  # FAIL
 regress/wasm/regress-801850  # FAIL
 regress/wasm/regress-803427  # FAIL
@@ -544,9 +540,7 @@ regress/wasm/regress-8059  # FAIL
 regress/wasm/regress-808012  # FAIL
 regress/wasm/regress-808848  # FAIL
 regress/wasm/regress-824681  # CRASH
-regress/wasm/regress-837417  # CRASH
 regress/wasm/regress-8896  # FAIL
-regress/wasm/regress-956771  # CRASH
 regress/wasm/regress-crbug-1463232  # FAIL
 regress/wasm/regress-crbug-1466312  # FAIL
 regress/wasm/regress-simd-520944504  # FAIL
@@ -556,7 +550,7 @@ regress/wasm/regress-simd-i16x8-extmul-high-u-no-avx  # FAIL
 regress/wasm/regress-v8-14710  # FAIL
 regress/wasm/regress-wasmfx-unreachable-resume  # FAIL
 resizablearraybuffer-growablesharedarraybuffer  # FAIL
-stack-trace-cpp-function-template-1  # FAIL
+stack-trace-cpp-function-template-1  # CRASH
 stack-trace-cpp-function-template-2  # FAIL
 stack-trace-cpp-function-template-3  # FAIL
 stack-traces-overflow  # FAIL
@@ -684,13 +678,13 @@ wasm/graceful_shutdown  # CRASH
 wasm/grow-shared-memory  # FAIL
 wasm/grow-shared-memory-resizable-buffer  # FAIL
 wasm/imported-strings-invalid  # FAIL
-wasm/imported-strings-streaming  # CRASH
 wasm/imported-strings-utf8  # FAIL
 wasm/inlining  # FAIL
 wasm/instantiate-run-basic  # CRASH
 wasm/interrupt-worker-with-perf  # FAIL
 wasm/js-api  # CRASH
 wasm/jspi  # FAIL
+wasm/liftoff  # CRASH
 wasm/log-code-after-post-message  # FAIL
 wasm/log-wasm-to-js-wrapper-callref  # FAIL
 wasm/log-wasm-to-js-wrapper-indirect  # FAIL
@@ -767,7 +761,6 @@ wasm/stringview-valuestack  # FAIL
 wasm/subtyping-invalid  # FAIL
 wasm/test-partial-serialization  # FAIL
 wasm/test-serialization-with-lazy-compilation  # FAIL
-wasm/trap-location  # CRASH
 wasm/turboshaft/instruction-selection  # FAIL
 wasm/wasm-gc-js-roundtrip  # FAIL
 wasm/wasm-interpreter  # FAIL
@@ -778,5 +771,4 @@ wasm/worker-memory  # FAIL
 wasm/worker-module  # FAIL
 wasm/worker-running-empty-loop-interruptible  # FAIL
 wasm/wrapper-compilation  # FAIL
-weakrefs/finalizationregistry-independent-lifetime  # FAIL
 weakrefs/finalizationregistry-scheduled-for-cleanup-multiple-times  # FAIL

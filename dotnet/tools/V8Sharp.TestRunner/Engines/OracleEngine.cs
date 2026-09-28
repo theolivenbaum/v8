@@ -29,11 +29,6 @@ public sealed class OracleEngine : IJsEngine
         // a temporary file instead; a test that sets these flags still wins.
         ReferenceV8.SetFlags("--no-logfile-per-isolate");
         ReferenceV8.SetFlags("--logfile=+");
-        // WebAssembly's trap handler catches out-of-bounds accesses with a
-        // SIGSEGV handler, which fights the .NET runtime's own: out-of-bounds
-        // traps then crash the worker at random. Explicit bounds checks give
-        // the same semantics (V8's no_wasm_traps variant).
-        ReferenceV8.SetFlags("--no-wasm-trap-handler");
         foreach (var f in flags)
         {
             // d8's --no-can-block is Isolate::SetAllowAtomicsWait(false).
