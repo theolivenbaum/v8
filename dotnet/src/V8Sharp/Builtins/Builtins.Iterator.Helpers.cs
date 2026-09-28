@@ -1573,7 +1573,7 @@ public static partial class IteratorBuiltins
                 {
                     // i. Let value be Completion(Get(iterables, key)).
                     // ii. IfAbruptCloseIterators(value, iters).
-                    JSValue value = ObjectOps.GetProperty(isolate, iterablesObj, key.As<Name>());
+                    JSValue value = ObjectOps.GetPropertyOrElement(isolate, iterablesObj, key.As<Name>());
                     // iii. If value is not undefined, then
                     if (!value.IsUndefined)
                     {
@@ -1617,7 +1617,7 @@ public static partial class IteratorBuiltins
                     {
                         // 1. Let value be Completion(Get(paddingOption, key)).
                         // 3. Append value to padding.
-                        padding[j] = ObjectOps.GetProperty(isolate, paddingOption, keys[j].As<Name>());
+                        padding[j] = ObjectOps.GetPropertyOrElement(isolate, paddingOption, keys[j].As<Name>());
                     }
                     catch (JavaScriptException)
                     {
