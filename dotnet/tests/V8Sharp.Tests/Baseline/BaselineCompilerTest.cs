@@ -262,6 +262,27 @@ public class BaselineCompilerTest
     }
 
     [Fact]
+    public void OsrInAnInlineFrameReturnsToTheInterpretedCaller()
+    {
+        // The caller runs in the interpreter and calls inner inline
+        // (InterpreterInlineCalls); inner tiers up during its loop, continues in
+        // baseline code, and returns (or throws) to the caller's dispatch loop.
+        Assert.Equal("499500,499500,true,caught 7", Run("--sparkplug --no-baseline-batch-compilation", """
+            function inner(n, t) {
+              var s = 0;
+              for (var i = 0; i < n; i++) { s += i; if (i == t) throw 'caught ' + t; }
+              return s;
+            }
+            var r = [];
+            r.push(inner(1000, -1));
+            r.push(inner(1000, -1));
+            r.push(%ActiveTierIsSparkplug(inner));
+            try { inner(1000, 7); } catch (e) { r.push(e); }
+            r.join();
+            """));
+    }
+
+    [Fact]
     public void ExceptionFromCalleeReachesBaselineHandler()
     {
         Assert.Equal("caught:boom:3", Run("--always-sparkplug", """
