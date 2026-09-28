@@ -255,6 +255,8 @@ public abstract partial class JSReceiver
 
         var from = (JSObject)sourceReceiver;
         if (from.Elements != FixedArray.Empty && from.Elements.Length != 0) return false;
+        // V8's typed arrays have ByteArray elements, never empty_fixed_array.
+        if (ElementsKinds.IsTypedArrayOrRabGsabTypedArrayElementsKind(map.ElementsKind)) return false;
 
         bool stable = true;
 
@@ -282,6 +284,12 @@ public abstract partial class JSReceiver
                         continue;
                     }
                 }
+                // CopyDataProperties step 4.c: an excluded key is skipped before its
+                // value is read, so an excluded getter is not called
+                // (mjsunit/regress/regress-41488094). No element indexes get here, so
+                // the exclusion check cannot yield false negatives for type mismatch.
+                if (!useSet && excludedProperties.Length != 0 && HasExcludedProperty(excludedProperties, nextKey)) continue;
+
                 JSValue propValue;
                 // Directly decode from the descriptor array if |from| did not change
                 // shape.
@@ -322,10 +330,6 @@ public abstract partial class JSReceiver
                 }
                 else
                 {
-                    // No element indexes should get here or the exclusion check may
-                    // yield false negatives for type mismatch.
-                    if (excludedProperties.Length != 0 && HasExcludedProperty(excludedProperties, nextKey)) continue;
-
                     // 4a ii 2. Perform ? CreateDataProperty(target, nextKey, propValue).
                     CreateDataProperty(isolate, target, nextKey, propValue, ShouldThrow.ThrowOnError);
                 }

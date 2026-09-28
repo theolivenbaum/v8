@@ -234,6 +234,12 @@ for now, to be revisited when the reason goes away.
   and import.meta callbacks) are delegates. Not ported: source phase imports
   and `import defer` (JSDeferredModuleNamespace), both behind harmony flags;
   WebAssembly, bytes modules and bundles in the d8 loader.
+- Stack traces: async frames are captured as CallSiteInfos with the source
+  position already resolved from the generator's suspend offset (V8 stores the
+  bytecode offset and resolves lazily).
+- `FastAssign` (Objects/JSReceiver.cs) checks the excluded keys of
+  CopyDataProperties before reading a value rather than after, so an excluded
+  getter is not called; this matches what V8 does (regress-41488094).
 - Test natives: `%ConstructThinString` returns a cons string with the same
   contents (V8Sharp has no thin strings), `%DetachGlobal`-like realm operations are no-ops in the
   TestRunner engine, and `RunModule` checks a rejected top-level promise once

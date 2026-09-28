@@ -304,8 +304,9 @@ public sealed class StoreHandler : HeapObject
 
     /// <summary>StoreHandler for element stores (StoreElementTransition / the element store builtins).</summary>
     public static StoreHandler StoreElement(Isolate isolate, ElementsKind elementsKind, Map? transitionMap,
-        KeyedAccessStoreMode storeMode) =>
-        new(Kind.kElement, elementsKind: elementsKind, elementsTransitionMap: transitionMap, storeMode: storeMode);
+        KeyedAccessStoreMode storeMode, Cell? validityCell = null) =>
+        new(Kind.kElement, elementsKind: elementsKind, elementsTransitionMap: transitionMap, storeMode: storeMode,
+            validityCell: validityCell);
 
     public bool IsValid { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => ValidityCell is null || !ValidityCell.Value.IsIdenticalTo(Cell.kPrototypeChainInvalid); }
 
