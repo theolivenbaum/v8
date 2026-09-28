@@ -137,8 +137,11 @@ internal static class InterpreterInlineCalls
         // Missing arguments are undefined (V8's argument adaption).
         for (int i = argc; i < paramSlots; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = default;
 
+        // Reference stores cost a GC write barrier each: the ones whose value
+        // is often unchanged (a call between functions of the same context, a
+        // call of the same function at the same depth) compare first.
         Context context = function.Context;
-        isolate.Context = context;
+        if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
         Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset) = context;
         Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset) = function;
         // The argument count slot (fp - 4) is not read in V8Sharp: frames keep
@@ -159,9 +162,9 @@ internal static class InterpreterInlineCalls
 
         int depth = isolate.InterpreterFrameDepth;
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
-        frame.Function = function;
-        frame.Bytecode = bytecode;
-        frame.Receiver = default;
+        // PopFrame leaves Function and Bytecode in the record.
+        if (!ReferenceEquals(frame.Function, function)) frame.Function = function;
+        if (!ReferenceEquals(frame.Bytecode, bytecode)) frame.Bytecode = bytecode;
         frame.Fp = fp;
         frame.Pc = 0;
         frame.Argc = argc;
@@ -176,7 +179,7 @@ internal static class InterpreterInlineCalls
         st.Bytecode = bytecode;
         if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
         st.FeedbackVector = feedbackVector;
-        st.Context = context;
+        if (!ReferenceEquals(st.Context, context)) st.Context = context;
         st.Accumulator = JSValue.Undefined;
         st.Pc = 0;
         st.Fp = fp;
@@ -211,8 +214,22 @@ internal static class InterpreterInlineCalls
     public static void PopFrame(Isolate isolate, ref InterpreterState st)
     {
         InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
-        int start = frames[st.FrameIndex].RegisterStart;
-        isolate.PopFramesTo(st.FrameIndex);
+        ref InterpreterFrameRecord record = ref frames[st.FrameIndex];
+        int start = record.RegisterStart;
+        // Clears the record except Function and Bytecode (functions and their
+        // bytecode are long-lived; keeping them lets the next call at this depth
+        // skip the reference stores). Every push sets both.
+        record.Receiver = default;
+        record.Fp = 0;
+        record.Pc = 0;
+        record.Argc = 0;
+        record.Kind = default;
+        record.IsConstructor = false;
+        record.IsBaseline = false;
+        record.InlineCall = false;
+        record.ReturnPc = 0;
+        record.RegisterStart = 0;
+        isolate.InterpreterFrameDepth = st.FrameIndex;
         isolate.ReleaseRegisters(start);
 
         int callerIndex = st.FrameIndex - 1;
@@ -221,12 +238,13 @@ internal static class InterpreterInlineCalls
         int fp = caller.Fp;
         JSValue[] stack = isolate.RegisterStack;
         Context context = stack[fp + InterpreterRuntime.kContextOffset].UncheckedAs<Context>();
-        isolate.Context = context;
+        if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
 
         st.Function = caller.Function;
         st.Bytecode = bytecode;
-        st.FeedbackVector = stack[fp + InterpreterRuntime.kFeedbackVectorOffset]._obj as FeedbackVector;
-        st.Context = context;
+        // The slot holds the frame's FeedbackVector or undefined.
+        st.FeedbackVector = Unsafe.As<FeedbackVector?>(stack[fp + InterpreterRuntime.kFeedbackVectorOffset]._obj);
+        if (!ReferenceEquals(st.Context, context)) st.Context = context;
         st.Pc = caller.ReturnPc;
         st.Fp = fp;
         st.FrameIndex = callerIndex;
