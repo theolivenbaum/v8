@@ -370,7 +370,7 @@ public sealed class StoreIC : IC
                 UpdateLookupStartObjectMap(obj);
                 if (_lookupStartObjectMap is not null) SetCache(name, StoreHandler.StoreSlow(_isolate));
             }
-            return _isolate.ThrowTypeError(MessageTemplate.NonObjectPropertyStoreWithProperty, name, obj);
+            return _isolate.ThrowTypeError(MessageTemplate.NonObjectPropertyStoreWithProperty, obj, name);
         }
 
         JSObject.MakePrototypesFast(obj, WhereToStart.StartAtPrototype, _isolate);
