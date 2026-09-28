@@ -1049,6 +1049,8 @@ public static class ObjectOps
                 case LookupIterator.StateKind.ACCESS_CHECK:
                     if (it.HasAccess()) continue;
                     // JSObject::GetPropertyWithFailedAccessCheck (no interceptors).
+                    // Cross-Origin [[Get]] of Well-Known Symbols does not throw, and returns undefined.
+                    if (it.GetName() is Symbol { IsWellKnownSymbol: true }) return JSValue.Undefined;
                     return it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
                 case LookupIterator.StateKind.MODULE_NAMESPACE:
                     continue;
