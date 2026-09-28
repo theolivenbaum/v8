@@ -32,10 +32,8 @@ public static class BaselineSupport
     /// <summary>GenerateBaselineCode.</summary>
     public static BaselineCode GenerateBaselineCode(Isolate isolate, SharedFunctionInfo shared)
     {
-        var bytecode = (BytecodeArray)shared.FunctionData!;
-        var compiler = new BaselineCompiler(isolate, shared, bytecode);
-        compiler.GenerateCode();
-        return compiler.Build();
+        // (The IL is generated on the code's first run; see BaselineCode.)
+        return new BaselineCode(isolate, shared, (BytecodeArray)shared.FunctionData!);
     }
 
     /// <summary>SharedFunctionInfo::PassesFilter over the debug name.</summary>

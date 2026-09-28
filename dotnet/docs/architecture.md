@@ -256,9 +256,10 @@ OSR, budget interrupts), `BaselineBatchCompiler.cs`, `Baseline.cs`
 `Codegen/Compiler.Baseline.cs` (CompileSharedWithBaseline, CompileBaseline,
 CompileAllWithBaseline).
 
-**Code shape.** A baseline function is one `DynamicMethod`
-`JSValue (Isolate, ref InterpreterState)`, created with `skipVisibility` in the
-engine's module (so it may call internal helpers). Each bytecode becomes an IL
+**Code shape.** A baseline function is one static method
+`JSValue (Isolate, ref InterpreterState)` in its own type of a process-wide
+Reflection.Emit assembly (`BaselineCodeSpace`; the assembly carries
+`IgnoresAccessChecksTo("V8Sharp")` so the code may reach engine internals). Each bytecode becomes an IL
 block; operands are decoded at compile time and pushed as constants.
 Jump targets are IL labels, `SwitchOnSmiNoFeedback` and
 `SwitchOnGeneratorState` are IL `switch` tables. The IL evaluation stack is
@@ -315,6 +316,13 @@ next `JumpLoop` (OSR to baseline, `InterpreterOnStackReplacement_ToBaseline`):
 the dispatch loop returns to `Run`, which continues the same frame in the
 baseline code at the loop header. `--jitless` implies `--no-sparkplug`.
 
-**RyuJIT.** Dynamic methods are compiled once, with full optimization, on
-their first call (no tier-0, no PGO); the generated IL is kept small by
-calling helpers, because very large methods fall back to MinOpts.
+**RyuJIT.** Methods of a (non-collectible) dynamic assembly take part in
+RyuJIT's tiered compilation: a baseline method is first jitted quickly at
+tier 0, hot ones are rejitted at tier 1 with dynamic PGO, and long-running
+loops in tier-0 code switch to optimized code through RyuJIT's OSR. This is
+what makes Sparkplug's "compile fast" property hold: a `DynamicMethod` is
+always compiled with full optimization, which with the inlined IC and
+arithmetic fast paths cost ~7 ms per function (eval-heavy code became 30x
+slower than the interpreter). `V8SHARP_BASELINE_DYNAMICMETHOD=1` switches back
+to collectible DynamicMethods for comparison. The generated IL stays small
+by calling helpers, because very large methods fall back to MinOpts.

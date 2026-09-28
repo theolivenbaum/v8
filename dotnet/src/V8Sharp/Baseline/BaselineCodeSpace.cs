@@ -41,15 +41,27 @@ internal sealed class BaselineCodeSpace
     }
 
     static int s_spaces;
-    static BaselineCodeSpace? s_shared;
+    static BaselineCodeSpace? s_current;
     static readonly Lock s_lock = new();
 
-    /// <summary>The code space (one per process), created on first use.</summary>
+    /// <summary>
+    /// Types per assembly: TypeBuilder.CreateType gets slower as a module grows
+    /// (one module: 1.5 ms per function at 1000 types, 6 ms at 10000), while each
+    /// new module resolves its member tokens again; 1024 measured best (about
+    /// 1 ms per function to emit, create and tier-0 jit).
+    /// </summary>
+    const int kTypesPerAssembly = 1024;
+
+    /// <summary>The current code space (one at a time per process, shared by all isolates).</summary>
     public static BaselineCodeSpace For(Isolate isolate)
     {
-        if (isolate.BaselineCodeSpace is { } space) return space;
-        lock (s_lock) s_shared ??= new BaselineCodeSpace();
-        return isolate.BaselineCodeSpace = s_shared;
+        lock (s_lock) return Current();
+    }
+
+    static BaselineCodeSpace Current()
+    {
+        if (s_current is null || s_current._counter >= kTypesPerAssembly) s_current = new BaselineCodeSpace();
+        return s_current;
     }
 
     /// <summary>Defines a type holding one static method with the baseline entry signature.</summary>

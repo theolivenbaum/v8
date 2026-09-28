@@ -3,11 +3,18 @@
 //
 // V8's baseline code is machine code with the interpreter's frame layout and a
 // bytecode offset table (src/baseline/bytecode-offset-iterator.h) mapping
-// machine pcs back to bytecode offsets. V8Sharp's is a DynamicMethod over the
+// machine pcs back to bytecode offsets. V8Sharp's is an IL method over the
 // same register-stack frame as the interpreter; it keeps the current bytecode
 // offset in the frame record instead of a pc table, and can be entered at
-// every offset in EntryOffsets (the function start, exception handlers and
-// loop headers for OSR from the interpreter).
+// every entry offset (the function start, exception handlers and loop
+// headers for OSR from the interpreter).
+//
+// Deviation: the IL is generated when the code first runs, not when the code
+// object is created. The function counts as baseline-compiled from the
+// moment the code is installed (HasBaselineCode, %ActiveTierIsSparkplug), as
+// in V8; only the work is deferred. Generating and jitting a method costs
+// about a millisecond, and --always-sparkplug installs code for every
+// function a script contains, most of which never run.
 using V8Sharp.Interpreter;
 
 namespace V8Sharp.Baseline;
@@ -20,24 +27,33 @@ namespace V8Sharp.Baseline;
 public delegate JSValue BaselineCodeEntry(Isolate isolate, ref InterpreterState state);
 
 /// <summary>Code of kind BASELINE.</summary>
-public sealed class BaselineCode(SharedFunctionInfo shared, BytecodeArray bytecode, BaselineCodeEntry entry, int[] entryOffsets,
-    int ilSize)
+public sealed class BaselineCode(Isolate isolate, SharedFunctionInfo shared, BytecodeArray bytecode)
 {
+    BaselineCodeEntry? _entry;
+    int _ilSize = -1;
+
     public SharedFunctionInfo SharedFunctionInfo { get; } = shared;
 
     /// <summary>The bytecode the code was compiled from (V8: the Code's bytecode_or_interpreter_data).</summary>
     public BytecodeArray Bytecode { get; } = bytecode;
 
-    public BaselineCodeEntry Entry { get; } = entry;
+    /// <summary>The compiled method (generated on first use).</summary>
+    public BaselineCodeEntry Entry => _entry ?? Generate();
 
-    /// <summary>The bytecode offsets at which the code can be entered, sorted.</summary>
-    public int[] EntryOffsets { get; } = entryOffsets;
-
-    /// <summary>The size of the generated IL in bytes (V8: instruction_size).</summary>
-    public int ILSize { get; } = ilSize;
+    /// <summary>The size of the generated IL in bytes (V8: instruction_size); -1 before generation.</summary>
+    public int ILSize => _ilSize;
 
     /// <summary>Whether the bytecode has exception handlers (the entry then needs the handler dispatch loop).</summary>
     public bool HasHandlers { get; } = bytecode.HandlerTable.Length != 0;
 
     public static CodeKind Kind => CodeKind.BASELINE;
+
+    BaselineCodeEntry Generate()
+    {
+        var compiler = new BaselineCompiler(isolate, SharedFunctionInfo, Bytecode);
+        compiler.GenerateCode();
+        (BaselineCodeEntry entry, int ilSize) = compiler.Build();
+        _ilSize = ilSize;
+        return _entry = entry;
+    }
 }

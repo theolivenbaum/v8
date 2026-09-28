@@ -19,9 +19,6 @@ public sealed partial class Isolate
     TieringManager? _tieringManager;
     BaselineBatchCompiler? _baselineBatchCompiler;
 
-    /// <summary>The dynamic assembly baseline code is emitted into (Baseline/BaselineCodeSpace.cs).</summary>
-    internal BaselineCodeSpace? BaselineCodeSpace;
-
     /// <summary>Isolate::tiering_manager.</summary>
     public TieringManager TieringManager => _tieringManager ??= new TieringManager(this);
 

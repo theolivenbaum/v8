@@ -127,8 +127,8 @@ public sealed class BaselineCompiler
         _masm.Return();
     }
 
-    /// <summary>BaselineCompiler::Build: the code object.</summary>
-    public BaselineCode Build()
+    /// <summary>BaselineCompiler::Build: the finished method and its IL size.</summary>
+    public (BaselineCodeEntry Entry, int ILSize) Build()
     {
         BaselineCodeEntry entry;
         if (_method is not null)
@@ -140,9 +140,7 @@ public sealed class BaselineCompiler
             Type type = BaselineCodeSpace.CreateType(_type!);
             entry = (BaselineCodeEntry)type.GetMethod(_methodBuilder!.Name)!.CreateDelegate(typeof(BaselineCodeEntry));
         }
-        int[] entries = new int[_entryOffsets.Count];
-        _entryOffsets.CopyTo(entries);
-        return new BaselineCode(_shared, _bytecode, entry, entries, _il.ILOffset);
+        return (entry, _il.ILOffset);
     }
 
     Label EnsureLabel(int offset)

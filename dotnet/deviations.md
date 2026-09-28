@@ -185,8 +185,10 @@ for now, to be revisited when the reason goes away.
 
 ## Baseline compiler (Sparkplug) and tiering
 
-- Code generation: IL in a `DynamicMethod` per function instead of machine
-  code (architecture.md section 9.1); no bytecode offset table: the current
+- Code generation: IL in a static method of a dynamic assembly per function
+  instead of machine code (architecture.md section 9.1). The assembly is not
+  collectible (RyuJIT does not tier collectible code), so baseline code is
+  never freed, where V8 collects Code objects; no bytecode offset table: the current
   bytecode offset is stored in the frame record before each bytecode that can
   throw or call (`BaselineAssembler.StoreBytecodeOffset`), so the frame walker
   and handler lookup work as for interpreted frames.
@@ -204,8 +206,9 @@ for now, to be revisited when the reason goes away.
   loop header (the same bytecode runs next). The max_arguments stack check
   before OSR is not needed (arguments are not pushed on a machine stack).
 - `--concurrent-sparkplug` is off (V8's x64 default is on): the batch is
-  compiled on the main thread. IL generation is cheap and RyuJIT compiles a
-  DynamicMethod lazily on its first call.
+  compiled on the main thread. IL generation is cheap, and RyuJIT compiles
+  each method lazily on its first call (tier 0) and optimizes hot ones on a
+  background thread (tier 1).
 - No optimizing tier yet: `Isolate.UseOptimizer` is false, so
   `TieringManager` behaves as in a V8 built without Turbofan and Maglev
   (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the
