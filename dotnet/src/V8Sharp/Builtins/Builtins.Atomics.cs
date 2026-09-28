@@ -415,7 +415,7 @@ public static class BuiltinsAtomics
         BackingStore store = arrayBuffer.GetBackingStore()!;
         if (!isAsync)
         {
-            return FutexEmulation.WaitSync(isolate, store, addr, v, is64, timeoutNumber);
+            return Str(isolate, FutexEmulation.WaitSync(store, addr, v, is64, timeoutNumber));
         }
         return WaitAsync(isolate, store, addr, v, is64, timeoutNumber);
     }
@@ -502,14 +502,14 @@ public static class FutexEmulation
     }
 
     /// <summary>FutexEmulation::WaitSync: "ok", "not-equal" or "timed-out".</summary>
-    internal static JSValue WaitSync(Isolate isolate, BackingStore store, long addr, long value, bool is64, double relTimeoutMs)
+    internal static string WaitSync(BackingStore store, long addr, long value, bool is64, double relTimeoutMs)
     {
         var waiter = new Waiter(store, addr);
         lock (s_mutex)
         {
             // Compare under the mutex, so a notify between the check and the
             // wait cannot be lost.
-            if (LoadValue(store, addr, is64) != value) return isolate.Factory.NewStringFromAsciiChecked("not-equal");
+            if (LoadValue(store, addr, is64) != value) return "not-equal";
 
             s_waitList.Add(waiter);
             bool timedOut = false;
@@ -538,7 +538,7 @@ public static class FutexEmulation
             {
                 s_waitList.Remove(waiter);
             }
-            return isolate.Factory.NewStringFromAsciiChecked(timedOut ? "timed-out" : "ok");
+            return timedOut ? "timed-out" : "ok";
         }
     }
 

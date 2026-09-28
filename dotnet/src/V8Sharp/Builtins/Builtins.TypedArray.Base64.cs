@@ -109,9 +109,8 @@ public static partial class BuiltinsTypedArray
     /// error to throw (0 for none) and sets read/written.
     /// </summary>
     static MessageTemplate FromBase64(ReadOnlySpan<char> input, Base64Alphabet alphabet, LastChunkHandling lastChunkHandling,
-        Span<byte> output, out int read, out int written)
+        Span<byte> output, long maxLength, out int read, out int written, bool continueParsing = false)
     {
-        int maxLength = output.Length;
         read = 0;
         written = 0;
         // 3. If maxLength = 0, return { read: 0, bytes: «», error: none }.
@@ -201,9 +200,12 @@ public static partial class BuiltinsTypedArray
             if (value < 0) return MessageTemplate.InvalidBase64Character;
 
             // h. Let remaining be maxLength - the length of bytes.
-            int remaining = maxLength - written;
+            long remaining = maxLength - written;
             // i. If remaining = 1 and chunkLength = 2, or if remaining = 2 and chunkLength = 3, then
-            if ((remaining == 1 && chunkLength == 2) || (remaining == 2 && chunkLength == 3)) return 0;
+            if ((remaining == 1 && chunkLength == 2) || (remaining == 2 && chunkLength == 3))
+            {
+                return continueParsing ? TailDecode(input, read, alphabet, lastChunkHandling, output, ref written, out read) : 0;
+            }
 
             // j. Set chunk to the string-concatenation of chunk and char.
             // k. Set chunkLength to chunkLength + 1.
@@ -222,7 +224,10 @@ public static partial class BuiltinsTypedArray
                 // iv. Set read to index.
                 read = index;
                 // v. If the number of elements in bytes = maxLength, return.
-                if (written == maxLength) return 0;
+                if (written == maxLength)
+                {
+                    return continueParsing ? TailDecode(input, read, alphabet, lastChunkHandling, output, ref written, out read) : 0;
+                }
             }
         }
     }
@@ -254,6 +259,139 @@ public static partial class BuiltinsTypedArray
         if (end > 0 && input[end - 1] == '=') { padding++; end--; }
         long actualLength = input.Length - padding;
         return (int)Math.Min(int.MaxValue, actualLength / 4 * 3 + (actualLength % 4 > 1 ? actualLength % 4 - 1 : 0));
+    }
+
+    /// <summary>The 6-bit value of a base64 character of the alphabet, or -1 (also for '=').</summary>
+    static int DecodeChar(char c, Base64Alphabet alphabet)
+    {
+        if (alphabet == Base64Alphabet.Base64Url)
+        {
+            if (c is '+' or '/') return -1;
+            if (c == '-') return 62;
+            if (c == '_') return 63;
+        }
+        return Base64Value(c);
+    }
+
+    /// <summary>
+    /// Where the proposal's FromBase64 stops because the output is full, V8
+    /// (simdutf::base64_to_binary_safe with decode_up_to_bad_char) keeps
+    /// parsing the rest of the input chunk by chunk (base64_tail_decode_safe):
+    /// a bad character or an invalid final chunk after that point is still
+    /// reported, and it stops only when a complete chunk does not fit. This
+    /// continues from <paramref name="inputIndex"/> with the output written so
+    /// far. (simdutf is not part of the V8 checkout; the model follows V8's
+    /// observable results, see TypedArrayBase64Test.)
+    /// </summary>
+    static MessageTemplate TailDecode(ReadOnlySpan<char> input, int inputIndex, Base64Alphabet alphabet,
+        LastChunkHandling lastChunkHandling, Span<byte> output, ref int written, out int read)
+    {
+        int outlen = output.Length;
+        int length = input.Length;
+        Span<int> chunk = stackalloc int[4];
+        int idx;
+
+        // The tail, without trailing whitespace and up to two '=' of padding.
+        int tailEnd = length;
+        while (tailEnd > inputIndex && IsAsciiWhitespace(input[tailEnd - 1])) tailEnd--;
+        int padding = 0;
+        if (tailEnd > inputIndex && input[tailEnd - 1] == '=')
+        {
+            tailEnd--;
+            padding++;
+            while (tailEnd > inputIndex && IsAsciiWhitespace(input[tailEnd - 1])) tailEnd--;
+            if (tailEnd > inputIndex && input[tailEnd - 1] == '=')
+            {
+                tailEnd--;
+                padding++;
+            }
+        }
+
+        // base64_tail_decode_safe.
+        idx = 0;
+        int chunkStart = inputIndex;
+        for (int i = inputIndex; i < tailEnd; i++)
+        {
+            char c = input[i];
+            if (IsAsciiWhitespace(c)) continue;
+            if (idx == 0) chunkStart = i;
+            int v = DecodeChar(c, alphabet);
+            if (v < 0)
+            {
+                read = i;
+                return MessageTemplate.InvalidBase64Character;
+            }
+            chunk[idx++] = v;
+            if (idx == 4)
+            {
+                if (outlen - written < 3)
+                {
+                    // OUTPUT_BUFFER_TOO_SMALL: not an error for setFromBase64.
+                    read = chunkStart;
+                    return 0;
+                }
+                WriteChunk(chunk, output, ref written);
+                idx = 0;
+            }
+        }
+        if (idx > 0)
+        {
+            if (idx == 1)
+            {
+                if (lastChunkHandling == LastChunkHandling.StopBeforePartial && padding == 0)
+                {
+                    read = chunkStart;
+                    return 0;
+                }
+                read = chunkStart;
+                return MessageTemplate.Base64InputRemainder;
+            }
+            if (padding > 0 && idx + padding != 4)
+            {
+                read = chunkStart;
+                return MessageTemplate.InvalidBase64Character;
+            }
+            if (padding == 0)
+            {
+                if (lastChunkHandling == LastChunkHandling.Strict)
+                {
+                    read = chunkStart;
+                    return MessageTemplate.Base64InputRemainder;
+                }
+                if (lastChunkHandling == LastChunkHandling.StopBeforePartial)
+                {
+                    read = chunkStart;
+                    return 0;
+                }
+            }
+            if (lastChunkHandling == LastChunkHandling.Strict && HasExtraBits(chunk, idx))
+            {
+                read = chunkStart;
+                return MessageTemplate.Base64ExtraBits;
+            }
+            if (outlen - written < idx - 1)
+            {
+                read = chunkStart;
+                return 0;
+            }
+            DecodeFinalBase64Chunk(chunk, idx, output, ref written);
+        }
+        else if (padding > 0)
+        {
+            // Padding after a complete chunk.
+            read = inputIndex;
+            return MessageTemplate.InvalidBase64Character;
+        }
+        read = length;
+        return 0;
+    }
+
+    static void WriteChunk(ReadOnlySpan<int> chunk, Span<byte> output, ref int written)
+    {
+        int triple = (chunk[0] << 18) | (chunk[1] << 12) | (chunk[2] << 6) | chunk[3];
+        output[written++] = (byte)(triple >> 16);
+        output[written++] = (byte)(triple >> 8);
+        output[written++] = (byte)triple;
     }
 
     static JSTypedArray ValidateUint8Receiver(Isolate isolate, JSValue receiver, string methodName, bool validate)
@@ -308,7 +446,9 @@ public static partial class BuiltinsTypedArray
         // 9. Let result be ? FromBase64(string, alphabet, lastChunkHandling).
         ReadOnlySpan<char> input = inputString.FlatSpan();
         byte[] output = new byte[MaximalBinaryLengthFromBase64(input)];
-        MessageTemplate error = FromBase64(input, alphabet, lastChunkHandling, output, out _, out int outputLength);
+        // fromBase64 has no output limit (maxLength is 2^53 - 1); the maximal
+        // binary length bounds what can be decoded.
+        MessageTemplate error = FromBase64(input, alphabet, lastChunkHandling, output, long.MaxValue, out _, out int outputLength);
 
         JSArrayBuffer? buffer = isolate.Factory.NewJSArrayBufferAndBackingStore((ulong)outputLength, initialized: false);
         if (buffer is null)
@@ -359,8 +499,10 @@ public static partial class BuiltinsTypedArray
 
         // 14-19. FromBase64 does not invoke any user code, so the ArrayBuffer
         // backing into cannot have been detached or shrunk; decode directly into it.
-        MessageTemplate error = FromBase64(inputString.FlatSpan(), alphabet, lastChunkHandling,
-            uint8array.DataSpan(0, arrayLength), out int read, out int written);
+        ReadOnlySpan<char> input = inputString.FlatSpan();
+        Span<byte> into = uint8array.DataSpan(0, arrayLength);
+        MessageTemplate error = FromBase64(input, alphabet, lastChunkHandling, into, (long)arrayLength, out int read,
+            out int written, continueParsing: true);
 
         // 20. If result.[[Error]] is not none, then
         //    a. Throw result.[[Error]].
