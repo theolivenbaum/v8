@@ -151,6 +151,7 @@ public static class BaselineCalls
         if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
         var state = new InterpreterState
         {
+            Isolate = isolate,
             Function = function,
             Bytecode = bytecode,
             FeedbackVector = vector,

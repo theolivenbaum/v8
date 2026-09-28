@@ -352,31 +352,31 @@ public static class InterpreterOps
     // ---- Unary ----------------------------------------------------------------------
 
     /// <summary>Inc (Generate_IncrementWithFeedback).</summary>
-    public static JSValue Increment(Isolate isolate, JSValue value, ref byte feedback)
+    public static JSValue Increment(Isolate isolate, JSValue value, ref byte feedback) =>
+        value.IsNumber ? IncrementNumber(value.Number, ref feedback) : UnarySlow(isolate, Operation.Increment, value, ref feedback);
+
+    /// <summary>Inc of a number.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue IncrementNumber(double d, ref byte feedback)
     {
-        if (value.IsNumber)
-        {
-            double d = value.Number;
-            double result = d + 1;
-            UpdateBinaryFeedback(ref feedback,
-                IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
-            return JSValue.FromNumber(result);
-        }
-        return UnarySlow(isolate, Operation.Increment, value, ref feedback);
+        double result = d + 1;
+        UpdateBinaryFeedback(ref feedback,
+            IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
+        return JSValue.FromNumber(result);
     }
 
     /// <summary>Dec (Generate_DecrementWithFeedback).</summary>
-    public static JSValue Decrement(Isolate isolate, JSValue value, ref byte feedback)
+    public static JSValue Decrement(Isolate isolate, JSValue value, ref byte feedback) =>
+        value.IsNumber ? DecrementNumber(value.Number, ref feedback) : UnarySlow(isolate, Operation.Decrement, value, ref feedback);
+
+    /// <summary>Dec of a number.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue DecrementNumber(double d, ref byte feedback)
     {
-        if (value.IsNumber)
-        {
-            double d = value.Number;
-            double result = d - 1;
-            UpdateBinaryFeedback(ref feedback,
-                IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
-            return JSValue.FromNumber(result);
-        }
-        return UnarySlow(isolate, Operation.Decrement, value, ref feedback);
+        double result = d - 1;
+        UpdateBinaryFeedback(ref feedback,
+            IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
+        return JSValue.FromNumber(result);
     }
 
     /// <summary>Negate (Generate_NegateWithFeedback).</summary>

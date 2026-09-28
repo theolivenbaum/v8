@@ -138,6 +138,7 @@ public static partial class InterpreterExecution
         if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
         var state = new InterpreterState
         {
+            Isolate = isolate,
             Function = function,
             Bytecode = bytecode,
             FeedbackVector = feedbackVector,

@@ -79,6 +79,15 @@ public sealed class LoadHandler : HeapObject
     /// <summary>kElement: ElementsKindBits.</summary>
     public readonly ElementsKind ElementsKind;
 
+    /// <summary>
+    /// The field index of a kField handler for the lookup start object itself,
+    /// else -1: the case the interpreter's GetNamedProperty handles inline.
+    /// </summary>
+    public readonly int OwnFieldIndex;
+
+    /// <summary>A kConstantFromPrototype handler that needs no lookup on the start object (the inline case for methods).</summary>
+    public readonly bool IsPrototypeConstant;
+
     LoadHandler(Kind kind, int fieldIndex = -1, JSReceiver? holder = null, JSValue data = default, Cell? validityCell = null,
         bool lookupOnLookupStartObject = false, bool allowOutOfBounds = false, bool isJSArray = false,
         bool allowHandlingHole = false, ElementsKind elementsKind = default) : base(InstanceType.CodeType)
@@ -93,6 +102,8 @@ public sealed class LoadHandler : HeapObject
         IsJSArray = isJSArray;
         AllowHandlingHole = allowHandlingHole;
         ElementsKind = elementsKind;
+        OwnFieldIndex = kind == Kind.kField && holder is null ? fieldIndex : -1;
+        IsPrototypeConstant = kind == Kind.kConstantFromPrototype && !lookupOnLookupStartObject;
     }
 
     static readonly LoadHandler s_slow = new(Kind.kSlow);
@@ -240,6 +251,12 @@ public sealed class StoreHandler : HeapObject
     /// <summary>kElement: KeyedAccessStoreMode (grow / handle COW / ignore OOB).</summary>
     public readonly KeyedAccessStoreMode StoreMode;
 
+    /// <summary>
+    /// The field index of a kField handler whose representation is Tagged (any
+    /// value fits), else -1: the case the interpreter's SetNamedProperty handles inline.
+    /// </summary>
+    public readonly int TaggedFieldIndex;
+
     StoreHandler(Kind kind, int fieldIndex = -1, Representation representation = default, Map? fieldTypeClass = null,
         Map? transitionMap = null, JSReceiver? holder = null, JSValue data = default, Cell? validityCell = null,
         ElementsKind elementsKind = default, Map? elementsTransitionMap = null,
@@ -256,6 +273,7 @@ public sealed class StoreHandler : HeapObject
         ElementsKind = elementsKind;
         ElementsTransitionMap = elementsTransitionMap;
         StoreMode = storeMode;
+        TaggedFieldIndex = kind == Kind.kField && representation.IsTagged ? fieldIndex : -1;
     }
 
     static readonly StoreHandler s_slow = new(Kind.kSlow);

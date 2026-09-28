@@ -42,6 +42,8 @@ public struct QuadrupleScale : IOperandScale
 /// <summary>The live state of an interpreter frame, spilled while a prefixed bytecode runs and after an exception.</summary>
 public struct InterpreterState
 {
+    /// <summary>The isolate (kept here so the dispatch loop need not hold it in a register).</summary>
+    public Isolate Isolate;
     public JSFunction Function;
     public BytecodeArray Bytecode;
     public FeedbackVector? FeedbackVector;
