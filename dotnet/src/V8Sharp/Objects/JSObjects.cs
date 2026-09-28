@@ -127,6 +127,9 @@ public partial class JSObject : JSReceiver
         Elements = map.GetInitialElements();
     }
 
+    /// <summary>A memberwise copy of this object (Factory::CopyJSObject then fixes up the storage).</summary>
+    internal JSObject CloneShallow() => (JSObject)MemberwiseClone();
+
     /// <summary>
     /// Factory::InitializeJSObjectFromMap for an existing object: resets the
     /// fields and elements to the fresh state of <paramref name="map"/>.

@@ -334,6 +334,51 @@ public sealed partial class Factory(Isolate isolate)
         return map;
     }
 
+    /// <summary>
+    /// Factory::CopyJSObject (CopyJSObjectWithAllocationSite without a site):
+    /// a shallow clone with its own elements and property storage. V8 copies
+    /// the object's bytes; V8Sharp clones the CLR object.
+    /// </summary>
+    public JSObject CopyJSObject(JSObject source)
+    {
+        JSObject clone = source.CloneShallow();
+
+        FixedArrayBase elements = source.Elements;
+        // Update elements if necessary.
+        if (elements.Length > 0)
+        {
+            if (elements.IsCowArray)
+            {
+                clone.Elements = elements;
+            }
+            else if (elements is FixedDoubleArray doubles)
+            {
+                var copy = new FixedDoubleArray(doubles.Length);
+                doubles.Data.AsSpan().CopyTo(copy.Data);
+                clone.Elements = copy;
+            }
+            else if (elements is FixedArray fixedArray)
+            {
+                clone.Elements = fixedArray.CopyAndResize(fixedArray.Length, false);
+            }
+            else if (elements is NumberDictionary numberDictionary)
+            {
+                clone.Elements = numberDictionary.ShallowCopy();
+            }
+        }
+
+        // Update properties if necessary.
+        if (source.HasFastProperties)
+        {
+            clone._fields = source._fields.Length == 0 ? source._fields : (JSValue[])source._fields.Clone();
+        }
+        else
+        {
+            clone.SetProperties(source.PropertyDictionary.ShallowCopy());
+        }
+        return clone;
+    }
+
     /// <summary>Factory::NewOrderedHashSet.</summary>
     public OrderedHashSet NewOrderedHashSet() => OrderedHashSet.Allocate(OrderedHashTable.kInitialCapacity, _isolate);
 
