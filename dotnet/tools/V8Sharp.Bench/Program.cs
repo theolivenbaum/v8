@@ -68,7 +68,8 @@ public static partial class Program
               V8Sharp.Bench run --engine <engine> --suite <suite>
               V8Sharp.Bench list
             engines: v8:jit, v8:jitless, v8:sparkplug, v8:maglev, v8sharp, v8sharp:jitless, v8sharp:sparkplug,
-                     v8sharp:always-sparkplug (V8SHARP_BENCH_FLAGS adds V8 flags to v8sharp runs)
+                     v8sharp:always-sparkplug (V8SHARP_BENCH_FLAGS adds V8 flags to v8sharp runs);
+                     <engine>@<dir> runs it with the V8Sharp.Bench build in <dir> (another revision, a publish)
             suites:  octane (all), octane:<name>, perf:<js-perf-test dir>, micro:<name> | micro:all
             Octane is fetched by tools/V8Sharp.Bench/fetch-octane.sh into dotnet/artifacts/octane.
             """);
@@ -175,9 +176,11 @@ public static partial class Program
         int timeout = int.Parse(Arg(args, "--timeout") ?? "600", CultureInfo.InvariantCulture);
 
         var results = new List<Measurement>();
+        // Runs are the outer loop so the engines (and builds) are interleaved:
+        // on a shared machine, load changes then hit every column alike.
         foreach (var suite in suites)
-            foreach (var engine in engines)
-                for (int r = 0; r < runs; r++)
+            for (int r = 0; r < runs; r++)
+                foreach (var engine in engines)
                 {
                     var m = Measure(engine, suite, timeout);
                     results.Add(m);
@@ -207,17 +210,43 @@ public static partial class Program
 
     static Measurement Measure(string engine, string suite, int timeoutSec)
     {
+        // "<engine>@<dir>" runs the measurement with the V8Sharp.Bench build in
+        // <dir> (another revision, or a ReadyToRun publish), so old and new
+        // builds can be interleaved in one comparison.
+        string childEngine = engine;
+        string? buildDir = null;
+        int at = engine.IndexOf('@');
+        if (at >= 0)
+        {
+            childEngine = engine[..at];
+            buildDir = Path.GetFullPath(engine[(at + 1)..]);
+        }
         var psi = new ProcessStartInfo(Environment.ProcessPath!)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        if (buildDir is not null)
+        {
+            string apphost = Path.Combine(buildDir, OperatingSystem.IsWindows() ? "V8Sharp.Bench.exe" : "V8Sharp.Bench");
+            if (File.Exists(apphost))
+            {
+                psi.FileName = apphost;
+            }
+            else
+            {
+                psi.FileName = "dotnet";
+                psi.ArgumentList.Add(Path.Combine(buildDir, "V8Sharp.Bench.dll"));
+            }
+            // A build outside the tree finds dotnet/ (Octane, micro/) through this.
+            psi.Environment["V8SHARP_BENCH_ROOT"] = Paths.DotnetRoot;
+        }
         // Environment.ProcessPath is the apphost; when run as `dotnet V8Sharp.Bench.dll`
         // it is `dotnet` and the dll has to be passed along.
-        if (Path.GetFileNameWithoutExtension(psi.FileName) == "dotnet")
+        else if (Path.GetFileNameWithoutExtension(psi.FileName) == "dotnet")
             psi.ArgumentList.Add(typeof(Program).Assembly.Location);
-        foreach (var a in new[] { "run", "--engine", engine, "--suite", suite }) psi.ArgumentList.Add(a);
+        foreach (var a in new[] { "run", "--engine", childEngine, "--suite", suite }) psi.ArgumentList.Add(a);
 
         using var p = Process.Start(psi)!;
         var stdout = new StringBuilder();
@@ -311,6 +340,8 @@ static class Paths
 
     static string FindDotnetRoot()
     {
+        string? root = Environment.GetEnvironmentVariable("V8SHARP_BENCH_ROOT");
+        if (!string.IsNullOrEmpty(root)) return Path.GetFullPath(root);
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
             if (File.Exists(Path.Combine(d.FullName, "V8Sharp.slnx"))) return d.FullName;
         throw new DirectoryNotFoundException("cannot find dotnet/V8Sharp.slnx above " + AppContext.BaseDirectory);
