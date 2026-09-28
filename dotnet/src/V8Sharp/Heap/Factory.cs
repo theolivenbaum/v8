@@ -368,7 +368,8 @@ public sealed partial class Factory(Isolate isolate)
         // Update properties if necessary.
         if (source.HasFastProperties)
         {
-            clone._fields = source._fields.Length == 0 ? source._fields : (JSValue[])source._fields.Clone();
+            // Array.Clone is a runtime call, like MemberwiseClone.
+            clone._fields = source._fields.Length == 0 ? source._fields : source._fields.AsSpan().ToArray();
         }
         else
         {

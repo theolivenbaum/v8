@@ -40,6 +40,30 @@ public static class RuntimeLiterals
         ArrayBoilerplateDescription description, int flags) =>
         CreateLiteral(isolate, vector, slot, description, flags);
 
+    /// <summary>
+    /// The FastCloneSupported path of the CreateObjectLiteral / CreateArrayLiteral
+    /// handlers: ConstructorBuiltinsAssembler::CreateShallowObjectLiteral and
+    /// CreateShallowArrayLiteral. A shallow literal's boilerplate holds no
+    /// nested objects, so the copy is CopyJSObject without the walk (and the
+    /// memento of an array copy, as StructureWalk gives it). Null when there is
+    /// no boilerplate yet (the handler calls the runtime).
+    /// </summary>
+    public static JSObject? TryCreateShallowLiteral(Isolate isolate, FeedbackVector vector, int slot, int flags)
+    {
+        JSValue literalSite = vector.Slots[slot];
+        if (!HasBoilerplate(literalSite)) return null;
+        var site = literalSite.UncheckedAs<AllocationSite>();
+        JSObject boilerplate = site.Boilerplate!;
+        if (boilerplate.Map.IsDeprecated) return null;
+        JSObject copy = isolate.Factory.CopyJSObject(boilerplate);
+        if (copy is JSArray copyArray)
+        {
+            var usageContext = new AllocationSiteUsageContext(site, (flags & kDisableMementos) == 0);
+            copyArray.AllocationMementoSite = usageContext.ShouldCreateMemento(boilerplate) ? site : null;
+        }
+        return copy;
+    }
+
     static JSObject CreateFromDescription(Isolate isolate, HeapObject description, int flags) =>
         description is ObjectBoilerplateDescription objectDescription
             ? CreateObjectLiteral(isolate, objectDescription, flags)

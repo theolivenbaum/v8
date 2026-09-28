@@ -11,8 +11,19 @@ namespace V8Sharp.Objects;
 /// V8's JSArray. An array is in one of two modes: fast (backing storage is a
 /// FixedArray and length &lt;= elements.length) or slow (a NumberDictionary).
 /// </summary>
-public sealed class JSArray(Map map) : JSObject(map)
+public sealed class JSArray : JSObject
 {
+    public JSArray(Map map) : base(map)
+    {
+    }
+
+    /// <summary>A field-for-field copy (JSObject.CloneShallow).</summary>
+    internal JSArray(JSArray source) : base(source)
+    {
+        Length = source.Length;
+        AllocationMementoSite = source.AllocationMementoSite;
+    }
+
     /// <summary>Number of element slots to pre-allocate for an empty array.</summary>
     public const int kPreallocatedArrayElements = 4;
 

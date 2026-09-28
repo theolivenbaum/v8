@@ -35,6 +35,18 @@ public static partial class InterpreterExecution
     static ref JSValue Reg<TS>(ref JSValue fp, ref byte code, int offset) where TS : struct, IOperandScale =>
         ref Unsafe.Subtract(ref fp, kRegBase + Signed<TS>(ref code, offset));
 
+    /// <summary>
+    /// A register store that skips the reference store (a GC write barrier)
+    /// when the slot already holds the same object or tag: registers often keep
+    /// numbers (the tag never changes) or the same object across iterations.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static void StoreRegister(ref JSValue slot, JSValue value)
+    {
+        if (!ReferenceEquals(slot._obj, value._obj)) Unsafe.AsRef(in slot._obj) = value._obj;
+        Unsafe.AsRef(in slot._num) = value._num;
+    }
+
     /// <summary>ToBoolean on a value passed by value (the loop's accumulator must not have its address taken).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static bool ToBoolean(JSValue value)
@@ -393,6 +405,11 @@ public static partial class InterpreterExecution
         JSValue description = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1)];
         int slot = Unsigned<TS>(ref code, pc + 1 + S);
         int flags = Byte(ref code, pc + 1 + 2 * S);
+        if (st.FeedbackVector is { } fv && CreateArrayLiteralFlags.DecodeFastCloneSupported((byte)flags) &&
+            RuntimeLiterals.TryCreateShallowLiteral(isolate, fv, slot, CreateArrayLiteralFlags.DecodeFlags((byte)flags)) is { } shallow)
+        {
+            return shallow;
+        }
         return RuntimeLiterals.CreateArrayLiteral(isolate, st.FeedbackVector, slot, description.UncheckedAs<ArrayBoilerplateDescription>(),
             CreateArrayLiteralFlags.DecodeFlags((byte)flags));
     }
@@ -414,6 +431,11 @@ public static partial class InterpreterExecution
         JSValue description = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1)];
         int slot = Unsigned<TS>(ref code, pc + 1 + S);
         int flags = Byte(ref code, pc + 1 + 2 * S);
+        if (st.FeedbackVector is { } fv && CreateObjectLiteralFlags.DecodeFastCloneSupported((byte)flags) &&
+            RuntimeLiterals.TryCreateShallowLiteral(isolate, fv, slot, CreateObjectLiteralFlags.DecodeFlags((byte)flags)) is { } shallow)
+        {
+            return shallow;
+        }
         return RuntimeLiterals.CreateObjectLiteral(isolate, st.FeedbackVector, slot, description.UncheckedAs<ObjectBoilerplateDescription>(),
             CreateObjectLiteralFlags.DecodeFlags((byte)flags));
     }

@@ -69,10 +69,20 @@ public static class InterpreterOps
 
     // ---- Number fast paths -------------------------------------------------------------
 
+    /// <summary>
+    /// Embedded binary feedback that no number operation can widen (Number,
+    /// NumberOrOddball, Any): the operation then skips computing its operand
+    /// types, as the result of UpdateBinaryFeedback would be the same byte.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsNumberFeedbackSaturated(byte feedback) =>
+        (uint)(feedback - (byte)BOF.TypeIndex.Number) <= 1 || feedback == (byte)BOF.TypeIndex.Any;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static JSValue AddNumbers(Isolate isolate, double lhs, double rhs, ref byte feedback)
     {
         double result = lhs + rhs;
+        if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
         UpdateBinaryFeedback(ref feedback,
             IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall
             : AddNumberFeedback(isolate, lhs, rhs, result));
@@ -111,6 +121,7 @@ public static class InterpreterOps
     public static JSValue SubtractNumbers(double lhs, double rhs, ref byte feedback)
     {
         double result = lhs - rhs;
+        if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
         UpdateBinaryFeedback(ref feedback,
             IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
         return JSValue.FromNumber(result);
@@ -120,6 +131,7 @@ public static class InterpreterOps
     public static JSValue MultiplyNumbers(double lhs, double rhs, ref byte feedback)
     {
         double result = lhs * rhs;
+        if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
         UpdateBinaryFeedback(ref feedback,
             IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
         return JSValue.FromNumber(result);
@@ -364,6 +376,7 @@ public static class InterpreterOps
     public static JSValue IncrementNumber(double d, ref byte feedback)
     {
         double result = d + 1;
+        if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
         UpdateBinaryFeedback(ref feedback,
             IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
         return JSValue.FromNumber(result);
@@ -378,6 +391,7 @@ public static class InterpreterOps
     public static JSValue DecrementNumber(double d, ref byte feedback)
     {
         double result = d - 1;
+        if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
         UpdateBinaryFeedback(ref feedback,
             IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
         return JSValue.FromNumber(result);

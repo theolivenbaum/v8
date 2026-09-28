@@ -169,7 +169,7 @@ public static partial class InterpreterExecution
 
                 // ---- Register loads ----------------------------------------------------
                 case Bytecode.Star:
-                    Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)) = acc;
+                    StoreRegister(ref Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc);
                     pc += 1 + S;
                     continue;
                 case Bytecode.Mov:
@@ -177,67 +177,67 @@ public static partial class InterpreterExecution
                     pc += 1 + 2 * S;
                     continue;
                 case Bytecode.Star0:
-                    Unsafe.Add(ref fpSlot, 0) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 0), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star1:
-                    Unsafe.Add(ref fpSlot, 1) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 1), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star2:
-                    Unsafe.Add(ref fpSlot, 2) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 2), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star3:
-                    Unsafe.Add(ref fpSlot, 3) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 3), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star4:
-                    Unsafe.Add(ref fpSlot, 4) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 4), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star5:
-                    Unsafe.Add(ref fpSlot, 5) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 5), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star6:
-                    Unsafe.Add(ref fpSlot, 6) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 6), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star7:
-                    Unsafe.Add(ref fpSlot, 7) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 7), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star8:
-                    Unsafe.Add(ref fpSlot, 8) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 8), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star9:
-                    Unsafe.Add(ref fpSlot, 9) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 9), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star10:
-                    Unsafe.Add(ref fpSlot, 10) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 10), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star11:
-                    Unsafe.Add(ref fpSlot, 11) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 11), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star12:
-                    Unsafe.Add(ref fpSlot, 12) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 12), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star13:
-                    Unsafe.Add(ref fpSlot, 13) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 13), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star14:
-                    Unsafe.Add(ref fpSlot, 14) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 14), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star15:
-                    Unsafe.Add(ref fpSlot, 15) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 15), acc);
                     pc += 1;
                     continue;
 
