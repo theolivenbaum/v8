@@ -105,17 +105,11 @@ public static class CloneObjectIC
     {
         JSObject target = JSObject.AllocateForMap(targetMap);
 
-        // Copy the property backing store (V8's PropertyArray and the used
-        // in-object properties; V8Sharp keeps both in one array, and the IC
-        // only caches maps whose field layouts are identical).
-        JSValue[] sourceFields = source._fields;
-        if (sourceFields.Length > 0)
-        {
-            int length = Math.Max(sourceFields.Length, targetMap.GetInObjectProperties());
-            var fields = new JSValue[length];
-            sourceFields.AsSpan().CopyTo(fields);
-            target._fields = fields;
-        }
+        // Copy the property backing store: the in-object properties and the
+        // PropertyArray (the IC only caches maps whose field layouts are
+        // identical, JS_OBJECT_TYPE on both sides; JSObject.CopyFastFieldsFrom
+        // also handles differing in-object counts).
+        target.CopyFastFieldsFrom(source);
 
         // Clone the elements.
         FixedArrayBase sourceElements = source.Elements;

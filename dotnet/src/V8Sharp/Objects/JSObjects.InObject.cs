@@ -137,6 +137,36 @@ public partial class JSObject
         return ref _fields[index];
     }
 
+    /// <summary>
+    /// Copies the fast-mode fields of <paramref name="source"/> (in-object
+    /// properties, then the PropertyArray, in property-index order) into this
+    /// freshly allocated object, laid out for this object's map.
+    /// </summary>
+    internal void CopyFastFieldsFrom(JSObject source)
+    {
+        Map sourceMap = source.Map;
+        Map targetMap = Map;
+        int sourceInObject = sourceMap.GetInObjectProperties();
+        int targetInObject = targetMap.GetInObjectProperties();
+        JSValue[] sourceArray = source._fields;
+        int sourceArrayStart = sourceMap.HasInObjectSlots ? 0 : sourceInObject;
+        int total = sourceInObject + sourceArray.Length - sourceArrayStart;
+        int targetArrayStart = targetMap.HasInObjectSlots ? 0 : targetInObject;
+        int targetArrayLength = Math.Max(targetArrayStart + total - targetInObject, targetArrayStart);
+        if (_fields.Length < targetArrayLength)
+        {
+            var array = new JSValue[targetArrayLength];
+            _fields.AsSpan().CopyTo(array);
+            _fields = array;
+        }
+        for (int p = 0; p < total; p++)
+        {
+            JSValue value = p < sourceInObject ? source.InObjectPropertyRef(p) : sourceArray[sourceArrayStart + p - sourceInObject];
+            if (p < targetInObject) InObjectPropertyRef(p) = value;
+            else _fields[targetArrayStart + p - targetInObject] = value;
+        }
+    }
+
     /// <summary>Clears in-object slots [0, count) (V8 fills freed in-object space with Smi zero or fillers).</summary>
     internal void ClearInObjectSlots(int count, JSValue value)
     {
