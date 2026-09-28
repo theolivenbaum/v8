@@ -78,6 +78,24 @@ public sealed partial class Isolate
     /// <summary>Isolate::formatting_stack_trace.</summary>
     public bool FormattingStackTrace;
 
+    /// <summary>
+    /// Isolate::SetHostCreateShadowRealmContextCallback: creates the native
+    /// context of a new ShadowRealm (d8 creates a fresh context); null when not set.
+    /// </summary>
+    public Func<Isolate, NativeContext, NativeContext>? HostCreateShadowRealmContextCallback;
+
+    /// <summary>Isolate::RunHostCreateShadowRealmContextCallback.</summary>
+    public NativeContext RunHostCreateShadowRealmContextCallback()
+    {
+        if (HostCreateShadowRealmContextCallback is null)
+        {
+            Throw(Factory.NewError(NativeContext.ErrorFunction, MessageTemplate.Unsupported, []));
+        }
+        // V8 also sets the context's scope info to shadow_realm_scope_info
+        // (a ScopeType::SHADOW_REALM_SCOPE marker); V8Sharp does not model it.
+        return HostCreateShadowRealmContextCallback!(this, NativeContext);
+    }
+
     /// <summary>Isolate::allow_atomics_wait (v8::Isolate::SetAllowAtomicsWait; d8's --no-can-block).</summary>
     public bool AllowAtomicsWait = true;
 

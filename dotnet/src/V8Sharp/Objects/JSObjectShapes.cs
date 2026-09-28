@@ -389,6 +389,22 @@ public sealed partial class JSWrappedFunction
     public static JSValue Call(Isolate isolate, JSWrappedFunction function, JSValue receiver, ReadOnlySpan<JSValue> args)
     {
         isolate.StackGuard.StackCheck(isolate);
+        // The CallWrappedFunction builtin runs in the wrapped function's context
+        // (the caller realm), so its TypeErrors come from that realm.
+        Context? saved = isolate.Context;
+        isolate.Context = function.Context;
+        try
+        {
+            return CallInCallerRealm(isolate, function, receiver, args);
+        }
+        finally
+        {
+            isolate.Context = saved;
+        }
+    }
+
+    static JSValue CallInCallerRealm(Isolate isolate, JSWrappedFunction function, JSValue receiver, ReadOnlySpan<JSValue> args)
+    {
 
         // 1. Let target be F.[[WrappedTargetFunction]].
         JSReceiver target = function.WrappedTargetFunction;
@@ -423,7 +439,7 @@ public sealed partial class JSWrappedFunction
             // 11. Else,
             // 11a. Throw a TypeError exception.
             JSString str = ObjectOps.NoSideEffectsToString(isolate, e.Value);
-            isolate.Throw(isolate.Factory.NewTypeError(MessageTemplate.CallWrappedFunctionThrew, str));
+            isolate.Throw(ErrorUtils.ShadowRealmConstructTypeErrorCopy(isolate, e.Value, MessageTemplate.CallWrappedFunctionThrew, [str]));
             return default;
         }
 

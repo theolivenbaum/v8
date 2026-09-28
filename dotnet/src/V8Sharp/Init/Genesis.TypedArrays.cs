@@ -335,6 +335,8 @@ sealed partial class Genesis
     void InitializeExperimentalGlobalTypedArrays()
     {
         InitializeGlobal_js_immutable_arraybuffer();
+        // FOREACH_EXPERIMENTAL_FEATURE_FLAG (Genesis.ShadowRealm.cs).
+        InitializeGlobal_harmony_shadow_realm();
         InitializeGlobal_sharedarraybuffer();
     }
 

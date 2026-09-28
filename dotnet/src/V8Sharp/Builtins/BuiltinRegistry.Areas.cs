@@ -44,6 +44,7 @@ public static partial class BuiltinRegistry
         RegisterGenerator();
         RegisterAsync();
         RegisterDisposableStack();
+        RegisterShadowRealm();
         RegisterInternal();
     }
 
@@ -68,6 +69,7 @@ public static partial class BuiltinRegistry
     static partial void RegisterJson();
     static partial void RegisterDate();
     static partial void RegisterCollections();
+    static partial void RegisterShadowRealm();
     static partial void RegisterWeakRefs();
     static partial void RegisterPromise();
     static partial void RegisterIterator();
