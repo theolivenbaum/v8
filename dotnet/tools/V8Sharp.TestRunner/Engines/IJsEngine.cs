@@ -51,7 +51,7 @@ public interface IJsHost
     void OnPromiseRejection(IJsRealm realm, PromiseRejectionKind kind, object promise, object? value);
 }
 
-public sealed record ModuleSource(string Name, string Source, bool IsJson = false);
+public sealed record ModuleSource(string Name, string Source, bool IsJson = false, byte[]? Bytes = null);
 
 public enum PromiseRejectionKind { RejectedWithoutHandler, HandlerAddedAfterReject }
 

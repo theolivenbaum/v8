@@ -149,6 +149,7 @@ public enum InstanceType : ushort
     JSAtomicsMutexType,
     JSAtomicsConditionType,
     JSModuleNamespaceType,
+    JSDeferredModuleNamespaceType,
     JSContextExtensionObjectType,
     JSArgumentsExoticObjectType,
     JSRawJsonType,

@@ -278,6 +278,10 @@ public sealed class LoadIC : IC
                     if (!it.Isolate.IsAccessCheckNeeded(it.GetHolder<JSObject>())) continue;
                     return;
                 case LookupIterator.StateKind.MODULE_NAMESPACE:
+                    if (JSDeferredModuleNamespace.TriggersEvaluation(ref it)) return;
+                    // Once a deferred module is evaluated, we will fallback to perform IC
+                    // as an ordinary module namespace. This way it can be either ACCESSOR
+                    // or NOT_FOUND state.
                     continue;
                 case LookupIterator.StateKind.ACCESSOR:
                 case LookupIterator.StateKind.TYPED_ARRAY_INDEX_NOT_FOUND:

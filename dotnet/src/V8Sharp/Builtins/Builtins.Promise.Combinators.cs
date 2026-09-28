@@ -36,6 +36,52 @@ public static partial class PromiseBuiltins
         return resolve;
     }
 
+    /// <summary>
+    /// JSPromise::PerformPromiseAll (src/objects/objects.cc): Promise.all over a
+    /// list of native promises, for the engine's own use (import defer).
+    /// </summary>
+    public static JSPromise PerformPromiseAll(Isolate isolate, ReadOnlySpan<JSPromise> promises)
+    {
+        NativeContext nativeContext = isolate.NativeContext;
+        PromiseCapability capability = NewPromiseCapability(isolate, nativeContext.PromiseFunction, false);
+        var capabilityPromise = capability.Promise.As<JSPromise>();
+        Context resolveElementContext = CreatePromiseAllResolveElementContext(isolate, capability, nativeContext);
+
+        int length = promises.Length;
+        if (length == 0)
+        {
+            JSArray emptyArray = isolate.Factory.NewJSArrayWithElements(FixedArray.Empty);
+            Execution.Call(isolate, capability.Resolve, JSValue.Undefined, [emptyArray]);
+            return capabilityPromise;
+        }
+
+        if (length >= kPropertyArrayHashFieldMax)
+        {
+            JSObject error = isolate.Factory.NewRangeError(MessageTemplate.TooManyElementsInPromiseCombinator,
+                isolate.Factory.NewStringFromAsciiChecked("all"));
+            Execution.Call(isolate, capability.Reject, JSValue.Undefined, [error]);
+            return capabilityPromise;
+        }
+
+        resolveElementContext[kPromiseAllResolveElementValuesSlot] = FixedArray.NewWithHoles(length);
+        resolveElementContext[kPromiseAllResolveElementRemainingSlot] = JSValue.FromInt(length);
+        for (int i = 0; i < length; i++)
+        {
+            JSFunction resolveElement = CreatePromiseAllResolveElementFunction(isolate, resolveElementContext, i + 1,
+                Builtin.PromiseAllResolveElementClosure);
+            try
+            {
+                PerformPromiseThen(isolate, promises[i], resolveElement, capability.Reject, JSValue.Undefined);
+            }
+            catch (JavaScriptException e)
+            {
+                Execution.Call(isolate, capability.Reject, JSValue.Undefined, [e.Value]);
+                return capabilityPromise;
+            }
+        }
+        return capabilityPromise;
+    }
+
     /// <summary>PerformPromiseAll (ES #sec-performpromiseall / #sec-performpromiseallsettled).</summary>
     static JSValue PerformPromiseAll(Isolate isolate, NativeContext nativeContext, in IteratorRecord iter, JSReceiver constructor,
         PromiseCapability capability, JSValue promiseResolveFunction, CombinatorKind kind, out bool rejected, out JSValue rejectReason)

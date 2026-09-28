@@ -70,6 +70,7 @@ public sealed class Shell
             shell.InstallGlobals(isolate.NativeContext);
             shell._moduleLoader = new ModuleLoader(isolate, isolate.NativeContext,
                 new D8ModuleSourceProvider(Directory.GetCurrentDirectory()));
+            isolate.HostCreateShadowRealmContextCallback = ModuleLoader.HostCreateShadowRealmContext;
             int result = 0;
             try
             {
@@ -136,7 +137,7 @@ public sealed class Shell
         {
             // If the exception has been caught by the promise pipeline, we rethrow
             // here in order to ReportException.
-            ReportException(new JavaScriptException(resultPromise.Result, null));
+            ReportException(new JavaScriptException(resultPromise.Result, _isolate.CreateMessage(resultPromise.Result, null)));
             return false;
         }
 
@@ -174,6 +175,7 @@ public sealed class Shell
     {
         try
         {
+            _moduleLoader.Origin = name;
             RunScript(source, name);
             Execution.PerformMicrotaskCheckpoint(_isolate);
             return true;

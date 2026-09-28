@@ -40,6 +40,7 @@ public abstract partial class JSReceiver
                     // TypedArray out-of-bounds access.
                     return false;
                 case LookupIterator.StateKind.MODULE_NAMESPACE:
+                    JSDeferredModuleNamespace.MaybeEvaluate(ref it);
                     continue;
                 case LookupIterator.StateKind.ACCESSOR:
                 case LookupIterator.StateKind.DATA:
@@ -69,7 +70,7 @@ public abstract partial class JSReceiver
     /// <summary>JSReceiver::HasOwnProperty.</summary>
     public static bool HasOwnProperty(Isolate isolate, JSReceiver obj, Name name)
     {
-        if (obj.InstanceType == InstanceType.JSModuleNamespaceType)
+        if (obj.InstanceType is InstanceType.JSModuleNamespaceType or InstanceType.JSDeferredModuleNamespaceType)
         {
             var desc = new PropertyDescriptor();
             return GetOwnPropertyDescriptor(isolate, obj, name, ref desc);
@@ -144,6 +145,11 @@ public abstract partial class JSReceiver
                 case LookupIterator.StateKind.NOT_FOUND:
                     return JSValue.Undefined;
                 case LookupIterator.StateKind.MODULE_NAMESPACE:
+                    if (JSDeferredModuleNamespace.TriggersEvaluation(ref it))
+                    {
+                        it.NotFound();
+                        return JSValue.Undefined;
+                    }
                     continue;
                 default:
                     throw new InvalidOperationException("unreachable");
@@ -604,6 +610,7 @@ public abstract partial class JSReceiver
                 case LookupIterator.StateKind.TYPED_ARRAY_INDEX_NOT_FOUND:
                     return PropertyAttributes.ABSENT;
                 case LookupIterator.StateKind.MODULE_NAMESPACE:
+                    JSDeferredModuleNamespace.MaybeEvaluate(ref it);
                     continue;
                 case LookupIterator.StateKind.ACCESSOR:
                     if (it.GetHolder<JSReceiver>() is JSModuleNamespace)
@@ -694,6 +701,7 @@ public abstract partial class JSReceiver
                 case LookupIterator.StateKind.TYPED_ARRAY_INDEX_NOT_FOUND:
                     return true;
                 case LookupIterator.StateKind.MODULE_NAMESPACE:
+                    JSDeferredModuleNamespace.MaybeEvaluate(ref it);
                     continue;
                 case LookupIterator.StateKind.DATA:
                 case LookupIterator.StateKind.ACCESSOR:

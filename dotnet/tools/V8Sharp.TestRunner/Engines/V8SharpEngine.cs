@@ -67,13 +67,8 @@ sealed class V8SharpJsIsolate : IJsIsolate
         Isolate = VIsolate.New(flags);
         Isolate.AllowAtomicsWait = engine.AllowAtomicsWait;
         // d8's Shell::HostCreateShadowRealmContext: a plain new context in the
-        // initiator's origin (same security token).
-        Isolate.HostCreateShadowRealmContextCallback = static (isolate, initiator) =>
-        {
-            NativeContext context = Bootstrapper.CreateEnvironment(isolate);
-            context.SecurityToken = initiator.SecurityToken;
-            return context;
-        };
+        // initiator's origin (same security token), with its own module map.
+        Isolate.HostCreateShadowRealmContextCallback = ModuleLoader.HostCreateShadowRealmContext;
         Isolate.PromiseRejectCallback = OnPromiseReject;
         var main = new V8SharpRealm(this, Isolate.InitialNativeContext!);
         _realms.Add(main);
@@ -242,6 +237,9 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
 
     public Completion RunScript(string source, string name) => Execute(() =>
     {
+        // Shell::ExecuteString: the script's name is the origin for resolving
+        // imports that have no referrer (ShadowRealm.prototype.importValue).
+        _moduleLoader.Origin = name;
         JSFunction function = Compiler.CompileScript(Isolate, Isolate.Factory.NewStringFromUtf16(source),
             Isolate.Factory.NewStringFromUtf16(name));
         return Compiler.RunScript(Isolate, function);
@@ -255,8 +253,9 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
         (_, JSPromise promise) = _moduleLoader.StartModule(name, new ModuleSourceText(name, source));
         VExecution.PerformMicrotaskCheckpoint(Isolate);
         // A module's evaluation returns a promise (top-level await); d8 reports
-        // its rejection as an uncaught exception.
-        if (promise.Status == PromiseState.kRejected) Isolate.ReThrow(promise.Result);
+        // its rejection as an uncaught exception, thrown afresh (ThrowException)
+        // so the message's location comes from the exception or is empty.
+        if (promise.Status == PromiseState.kRejected) Isolate.Throw(promise.Result);
         return JSValue.Undefined;
     });
 
@@ -267,8 +266,9 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
         {
             try
             {
-                ModuleSource m = host.LoadModule(specifier, referrer, type switch { ModuleType.kJSON => "json", ModuleType.kText => "text", _ => null });
-                return new ModuleSourceText(m.Name, m.Source);
+                ModuleSource m = host.LoadModule(specifier, referrer,
+                    type switch { ModuleType.kJSON => "json", ModuleType.kText => "text", ModuleType.kBytes => "bytes", _ => null });
+                return new ModuleSourceText(m.Name, m.Source, m.Bytes);
             }
             catch (JsHostError e)
             {

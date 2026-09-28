@@ -1,7 +1,8 @@
 // Port of src/builtins/builtins-shadow-realm.cc (ShadowRealmConstructor,
 // ShadowRealmPrototypeEvaluate), of the ImportValue parts of
 // builtins-shadow-realm-gen.cc (ShadowRealmPrototypeImportValue,
-// ShadowRealmImportValueRejected) and of src/runtime/runtime-shadow-realm.cc
+// ShadowRealmImportValueFulfilled, ShadowRealmImportValueRejected) and of
+// src/runtime/runtime-shadow-realm.cc
 // (Runtime_ShadowRealmImportValue, Runtime_ShadowRealmThrow).
 // ShadowRealmGetWrappedValue and CallWrappedFunction are JSWrappedFunction.
 namespace V8Sharp.Builtins;
@@ -13,6 +14,7 @@ public static partial class BuiltinRegistry
         Register(Builtin.ShadowRealmConstructor, BuiltinsShadowRealm.ShadowRealmConstructor);
         Register(Builtin.ShadowRealmPrototypeEvaluate, BuiltinsShadowRealm.ShadowRealmPrototypeEvaluate);
         Register(Builtin.ShadowRealmPrototypeImportValue, BuiltinsShadowRealm.ShadowRealmPrototypeImportValue);
+        Register(Builtin.ShadowRealmImportValueFulfilled, BuiltinsShadowRealm.ShadowRealmImportValueFulfilled);
         Register(Builtin.ShadowRealmImportValueRejected, BuiltinsShadowRealm.ShadowRealmImportValueRejected);
     }
 }
@@ -185,7 +187,7 @@ public static class BuiltinsShadowRealm
         // 3. Let specifierString be ? ToString(specifier).
         JSString specifierString = ObjectOps.ToString(isolate, args.AtOrUndefined(1));
         // 4. Let exportNameString be ? ToString(exportName).
-        ObjectOps.ToString(isolate, args.AtOrUndefined(2));
+        JSString exportNameString = ObjectOps.ToString(isolate, args.AtOrUndefined(2));
         // 5. Let callerRealm be the current Realm Record.
         NativeContext callerContext = isolate.NativeContext;
         // 6. Let evalRealm be O.[[ShadowRealm]].
@@ -193,21 +195,44 @@ public static class BuiltinsShadowRealm
         NativeContext evalContext = shadowRealm.NativeContext;
         // 8. Return ? ShadowRealmImportValue(specifierString, exportNameString,
         // callerRealm, evalRealm, evalContext).
-        return ImportValue(isolate, callerContext, evalContext, specifierString);
+        return ImportValue(isolate, callerContext, evalContext, specifierString, exportNameString);
     }
 
+    /// <summary>ImportValueFulfilledFunctionContextSlot.</summary>
+    const int kEvalContextSlot = (int)Context.Field.MIN_CONTEXT_SLOTS;
+    const int kSpecifierSlot = kEvalContextSlot + 1;
+    const int kExportNameSlot = kEvalContextSlot + 2;
+    const int kContextLength = kEvalContextSlot + 3;
+
     /// <summary>ShadowRealmBuiltinsAssembler::ImportValue (https://tc39.es/proposal-shadowrealm/#sec-shadowrealmimportvalue).</summary>
-    static JSValue ImportValue(Isolate isolate, NativeContext callerContext, NativeContext evalContext, JSString specifier)
+    static JSValue ImportValue(Isolate isolate, NativeContext callerContext, NativeContext evalContext, JSString specifier,
+        JSString exportName)
     {
-        // 2.-8. Perform ! HostImportModuleDynamically(null, specifierString,
-        // innerCapability) in evalContext (Runtime_ShadowRealmImportValue).
+        // 1. Assert: evalContext is an execution context associated to a ShadowRealm
+        // instance's [[ExecutionContext]].
+        // 2. Let innerCapability be ! NewPromiseCapability(%Promise%).
+        // 3. Let runningContext be the running execution context.
+        // 4. If runningContext is not already suspended, suspend runningContext.
+        // 5. Push evalContext onto the execution context stack; evalContext is now
+        // the running execution context.
+        // 6. Perform ! HostImportModuleDynamically(null, specifierString,
+        // innerCapability).
+        // 7. Suspend evalContext and remove it from the execution context stack.
+        // 8. Resume the context that is now on the top of the execution context stack
+        // as the running execution context.
         JSPromise innerCapability = ShadowRealmImportValueRuntime(isolate, evalContext, specifier);
 
-        // 9.-11. onFulfilled is the ExportGetter (ShadowRealmImportValueFulfilled).
-        // V8Sharp has no host module loader behind dynamic import yet, so the
-        // inner promise always rejects and the ExportGetter is never reached; it
-        // is not created (deviations.md).
-        JSValue onFulfilled = JSValue.Undefined;
+        // 9. Let steps be the steps of an ExportGetter function as described below.
+        // 10. Let onFulfilled be ! CreateBuiltinFunction(steps, 1, "", «
+        // [[ExportNameString]] », callerRealm).
+        // 11. Set onFulfilled.[[ExportNameString]] to exportNameString.
+        Context functionContext = RootSharedFunctions.AllocateSyntheticFunctionContext(isolate, callerContext, kContextLength);
+        functionContext[kEvalContextSlot] = evalContext;
+        functionContext[kSpecifierSlot] = specifier;
+        functionContext[kExportNameSlot] = exportName;
+        JSFunction onFulfilled = RootSharedFunctions.AllocateRootFunctionWithContext(isolate,
+            Builtin.ShadowRealmImportValueFulfilled, functionContext, callerContext);
+
         JSFunction onRejected = callerContext.ShadowRealmImportValueRejected;
         // 12. Let promiseCapability be ! NewPromiseCapability(%Promise%).
         Context? saved = isolate.Context;
@@ -227,8 +252,7 @@ public static class BuiltinsShadowRealm
 
     /// <summary>
     /// Runtime_ShadowRealmImportValue: Isolate::RunHostImportModuleDynamicallyCallback
-    /// in the eval realm. Without a host callback V8 rejects the promise with
-    /// an Error kUnsupported, which is what V8Sharp does (no module loader yet).
+    /// (no referrer, evaluation phase) in the eval realm.
     /// </summary>
     static JSPromise ShadowRealmImportValueRuntime(Isolate isolate, NativeContext evalContext, JSString specifier)
     {
@@ -236,15 +260,65 @@ public static class BuiltinsShadowRealm
         isolate.Context = evalContext;
         try
         {
-            JSPromise promise = PromiseBuiltins.NewJSPromise(isolate);
-            JSObject error = isolate.Factory.NewError(evalContext.ErrorFunction, MessageTemplate.Unsupported, []);
-            PromiseBuiltins.RejectPromise(isolate, promise, error, false);
-            return promise;
+            JSValue innerCapability = V8Sharp.Runtime.RuntimeModules.RunHostImportModuleDynamicallyCallback(isolate, null, specifier,
+                Ast.ModuleImportPhase.kEvaluation, false, JSValue.Undefined);
+            return innerCapability.As<JSPromise>();
         }
         finally
         {
             isolate.Context = saved;
         }
+    }
+
+    /// <summary>
+    /// ShadowRealmImportValueFulfilled: the ExportGetter of
+    /// https://tc39.es/proposal-shadowrealm/#sec-shadowrealmimportvalue.
+    /// </summary>
+    public static JSValue ShadowRealmImportValueFulfilled(Isolate isolate, in BuiltinArguments args)
+    {
+        // An ExportGetter function is an anonymous built-in function with a
+        // [[ExportNameString]] internal slot. When an ExportGetter function is called
+        // with argument exports, it performs the following steps:
+        // 8. Let realm be f.[[Realm]].
+        Context context = args.Target.Context;
+        var evalContext = context[kEvalContextSlot].As<NativeContext>();
+
+        // 2. Let f be the active function object.
+        // 3. Let string be f.[[ExportNameString]].
+        // 4. Assert: Type(string) is String.
+        var exportNameString = context[kExportNameSlot].As<JSString>();
+
+        // 1. Assert: exports is a module namespace exotic object.
+        // Spec issue: https://github.com/tc39/proposal-shadowrealm/issues/424
+        var exports = args.AtOrUndefined(1).As<JSModuleNamespace>();
+
+        // 5. Let hasOwn be ? HasOwnProperty(exports, string).
+        // 6. If hasOwn is false, throw a TypeError exception.
+        // 7. Let value be ? Get(exports, string).
+
+        // The only exceptions thrown by Runtime::kGetModuleNamespaceExport are
+        // either the export is not found or the module is not initialized.
+        JSValue value;
+        Context? saved = isolate.Context;
+        isolate.Context = evalContext;
+        try
+        {
+            value = V8Sharp.Runtime.RuntimeModules.GetModuleNamespaceExport(isolate, exports, exportNameString);
+        }
+        catch (JavaScriptException)
+        {
+            isolate.Context = saved;
+            var specifierString = context[kSpecifierSlot].As<JSString>();
+            return isolate.ThrowTypeError(MessageTemplate.UnresolvableExport, specifierString, exportNameString);
+        }
+        finally
+        {
+            isolate.Context = saved;
+        }
+
+        // 9. Return ? GetWrappedValue(realm, value).
+        NativeContext callerContext = context.NativeContext;
+        return JSWrappedFunction.GetWrappedValue(isolate, callerContext, value);
     }
 
     /// <summary>ShadowRealmImportValueRejected: ShadowRealmThrow(kImportShadowRealmRejected, exception).</summary>

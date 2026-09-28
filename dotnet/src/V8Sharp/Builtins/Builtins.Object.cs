@@ -609,7 +609,14 @@ public static class BuiltinsObject
                 case LookupIterator.StateKind.NOT_FOUND:
                     return JSValue.Undefined;
                 case LookupIterator.StateKind.MODULE_NAMESPACE:
-                    // Deferred module namespaces (import defer) are not ported.
+                    // We need to trigger evaluation due to [[GetOwnProperty]].
+                    // https://tc39.es/ecma262/#sec-object.prototype.__lookupGetter__
+                    // https://tc39.es/ecma262/#sec-object.prototype.__lookupSetter__
+                    if (JSDeferredModuleNamespace.TriggersEvaluation(ref it))
+                    {
+                        JSDeferredModuleNamespace.EvaluateModuleSync(isolate, it.GetHolder<JSDeferredModuleNamespace>());
+                        return JSValue.Undefined;
+                    }
                     continue;
                 case LookupIterator.StateKind.ACCESSOR:
                 {

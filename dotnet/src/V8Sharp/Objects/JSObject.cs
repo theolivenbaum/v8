@@ -452,6 +452,8 @@ public partial class JSObject
                 return new JSAsyncDisposableStack(map);
             case InstanceType.JSModuleNamespaceType:
                 return new JSModuleNamespace(map);
+            case InstanceType.JSDeferredModuleNamespaceType:
+                return new JSDeferredModuleNamespace(map);
             case InstanceType.JSRawJsonType:
                 return new JSRawJson(map);
             case InstanceType.JSShadowRealmType:
@@ -611,6 +613,7 @@ public partial class JSObject
             case InstanceType.JSIteratorZipKeyedHelperType:
                 return kHeaderSize + 5 * kTagged;
             case InstanceType.JSModuleNamespaceType:
+            case InstanceType.JSDeferredModuleNamespaceType:
                 return kHeaderSize + kTagged;
             case InstanceType.JSSharedArrayType:
             case InstanceType.JSSharedStructType:

@@ -832,7 +832,7 @@ public sealed class Map : HeapObject
     public static bool IsSpecialReceiverMap(Map map)
     {
         bool result = map.InstanceType <= InstanceType.JSSpecialApiObjectType ||
-                      map.InstanceType == InstanceType.JSModuleNamespaceType;
+                      map.InstanceType is InstanceType.JSModuleNamespaceType or InstanceType.JSDeferredModuleNamespaceType;
         return result || map.HasNamedInterceptor || map.IsAccessCheckNeeded;
     }
 
@@ -847,7 +847,8 @@ public sealed class Map : HeapObject
     public static bool IsJSReceiverMap(Map map) => InstanceTypeChecks.IsJSReceiver(map.InstanceType);
     public static bool IsJSArrayMap(Map map) => map.InstanceType == InstanceType.JSArrayType;
     public static bool IsJSFunctionMap(Map map) => InstanceTypeChecks.IsJSFunction(map.InstanceType);
-    public static bool IsJSModuleNamespaceMap(Map map) => map.InstanceType == InstanceType.JSModuleNamespaceType;
+    public static bool IsJSModuleNamespaceMap(Map map) =>
+        map.InstanceType is InstanceType.JSModuleNamespaceType or InstanceType.JSDeferredModuleNamespaceType;
     public static bool IsJSTypedArrayMap(Map map) => map.InstanceType == InstanceType.JSTypedArrayType;
 
     // ---- Static operations (map.cc) --------------------------------------------------

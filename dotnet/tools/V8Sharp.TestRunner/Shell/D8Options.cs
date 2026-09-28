@@ -21,6 +21,8 @@ public sealed class D8Options
     public bool NoFail { get; set; }
     public bool NoCanBlock { get; set; }
     public bool InvokeWeakCallbacks { get; set; }
+    /// <summary>d8's --bundle: a script file may be a bundle of scripts and modules (TryExecuteBundle).</summary>
+    public bool Bundle { get; set; }
 
     /// <summary>Options d8 understands that the host ignores (reported for diagnostics).</summary>
     public List<string> Ignored { get; } = [];
@@ -34,7 +36,7 @@ public sealed class D8Options
         "--disable-in-process-stack-traces", "--enable-os-system", "--no-apply-priority", "--stress-delay-tasks",
         "--cpu-profiler", "--cpu-profiler-print", "--stress-deserialize", "--compile-only",
         "--no-fuzzy-module-file-extensions", "--enable-etw-stack-walking", "--enable-system-instrumentation",
-        "--expose-fast-api", "--flush-denormals", "--isolate", "--simulate-errors", "--shell", "--bundle",
+        "--expose-fast-api", "--flush-denormals", "--isolate", "--simulate-errors", "--shell",
         "--disallow-unsafe-flags", "--run-as-security-poc", "--run-as-sandbox-security-poc", "--sandbox-fuzzing",
         "--wasm-trap-handler", "--no-wasm-trap-handler",
     };
@@ -85,6 +87,7 @@ public sealed class D8Options
                 case "--no-fail": o.NoFail = true; continue;
                 case "--no-can-block": o.NoCanBlock = true; continue;
                 case "--invoke-weak-callbacks": o.InvokeWeakCallbacks = true; continue;
+                case "--bundle": o.Bundle = true; continue;
             }
             if (s_ignoredD8Options.Contains(n) || Array.Exists(s_ignoredD8OptionsWithValue, p => n.StartsWith(p, StringComparison.Ordinal)))
             {

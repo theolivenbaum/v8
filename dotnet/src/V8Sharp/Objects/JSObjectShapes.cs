@@ -9,7 +9,8 @@
 // (JSPromise is in JSPromise.cs, the collections in JSCollection.cs, the weak
 // references in JSWeakRefs.cs, the iterator helpers in JSIteratorHelpers.cs and
 // the disposable stacks in JSDisposableStack.cs.)
-//   src/objects/module.{h,cc}          JSModuleNamespace (exports as a name -> Cell table)
+//   src/objects/module.{h,cc}          JSModuleNamespace (exports as a name -> Cell table),
+//                                      JSDeferredModuleNamespace
 //   src/objects/js-raw-json.h, js-shadow-realm.h, js-external-object.h
 //   src/objects/allocation-site.h      AllocationSite
 //   src/builtins/builtins-shadow-realm-gen.cc  CallWrappedFunction, GetWrappedValue
@@ -200,7 +201,7 @@ public sealed class JSRegExpStringIterator(Map map) : JSObject(map)
 /// the namespace keeps the export table V8 reads through module()->exports():
 /// name -> Cell whose value is the export binding (TheHole while in TDZ).
 /// </summary>
-public sealed class JSModuleNamespace(Map map) : JSObject(map)
+public class JSModuleNamespace(Map map) : JSObject(map)
 {
     /// <summary>The module.</summary>
     public Module Module = null!;
@@ -246,6 +247,7 @@ public sealed class JSModuleNamespace(Map map) : JSObject(map)
         {
             isolate.Throw(isolate.Factory.NewReferenceError(MessageTemplate.NotDefined, name));
         }
+        if (obj is JSDeferredModuleNamespace) return PropertyAttributes.DONT_DELETE;
         return it.PropertyAttributes();
     }
 
@@ -278,6 +280,65 @@ public sealed class JSModuleNamespace(Map map) : JSObject(map)
         }
 
         return true;
+    }
+}
+
+/// <summary>
+/// V8's JSDeferredModuleNamespace: the namespace of an `import defer`. Looking
+/// up a string key (other than "then") evaluates the module synchronously.
+/// </summary>
+public sealed class JSDeferredModuleNamespace(Map map) : JSModuleNamespace(map)
+{
+    /// <summary>JSDeferredModuleNamespace::EvaluateModuleSync (https://tc39.es/proposal-defer-import-eval/#sec-EvaluateModuleSync).</summary>
+    public static void EvaluateModuleSync(Isolate isolate, JSDeferredModuleNamespace holder)
+    {
+        Module module = holder.Module;
+
+        // https://tc39.es/proposal-defer-import-eval/#sec-GetModuleExportsList
+        var seenModules = new HashSet<Module>(ReferenceEqualityComparer.Instance);
+        if (!SourceTextModule.ReadyForSyncExecution(isolate, module, seenModules))
+        {
+            isolate.Throw(isolate.Factory.NewTypeError(MessageTemplate.NotReadyForSyncExec));
+        }
+
+        JSPromise promise = Module.Evaluate(isolate, module);
+
+        // The result is always the module's top-level capability promise.
+        // 5. If promise.[[PromiseState]] is rejected, then
+        if (promise.Status == PromiseState.kRejected)
+        {
+            // a. If promise.[[PromiseIsHandled]] is false, perform
+            // HostPromiseRejectionTracker(promise, "handle").
+            if (!promise.HasHandler)
+            {
+                isolate.ReportPromiseReject(promise, JSValue.Undefined, PromiseRejectEvent.kPromiseHandlerAddedAfterReject);
+            }
+            promise.HasHandler = true;
+            isolate.Throw(promise.Result);
+        }
+        Debug.Assert(promise.Status == PromiseState.kFulfilled);
+    }
+
+    /// <summary>JSDeferredModuleNamespace::TriggersEvaluation.</summary>
+    public static bool TriggersEvaluation(ref LookupIterator it)
+    {
+        if (it.GetHolder<JSReceiver>() is JSDeferredModuleNamespace ns)
+        {
+            // https://tc39.es/proposal-defer-import-eval/#sec-IsSymbolLikeNamespaceKey
+            Name name = it.GetName();
+            if (ReferenceEquals(name, ReadOnlyRoots.then_string) || name is Symbol) return false;
+            return ns.Module.ModuleStatus != Module.Status.kEvaluated;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The MODULE_NAMESPACE case of the lookup loops: evaluates a deferred
+    /// module whose evaluation the lookup triggers.
+    /// </summary>
+    public static void MaybeEvaluate(ref LookupIterator it)
+    {
+        if (TriggersEvaluation(ref it)) EvaluateModuleSync(it.Isolate, it.GetHolder<JSDeferredModuleNamespace>());
     }
 }
 

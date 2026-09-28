@@ -227,6 +227,11 @@ public sealed partial class D8Shell : IJsHost
                     return false;
                 }
                 string name = src.IsModule ? NormalizePath(src.Path!, _workingDirectory) : src.Path!;
+                if (_options.Bundle && !src.IsModule && TryExecuteBundle(text, name, out bool bundleSuccess))
+                {
+                    if (!bundleSuccess) return false;
+                    continue;
+                }
                 c = RunInCurrentRealm(text, name, src.IsModule);
             }
             if (c.Kind == CompletionKind.Terminated) return true;
@@ -238,6 +243,137 @@ public sealed partial class D8Shell : IJsHost
         }
         return true;
     }
+
+    /// <summary>bundle_module_files: normalized module name to source, while a bundle runs.</summary>
+    readonly Dictionary<string, string> _bundleModuleFiles = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// d8's TryExecuteBundle: a file whose first non-comment text is a
+    /// "// JS_BUNDLE_" marker is a bundle of scripts ("// JS_BUNDLE_SCRIPT"),
+    /// modules ("// JS_BUNDLE_MODULE:name") and module entry points
+    /// ("// JS_BUNDLE_MODULE_ENTRYPOINT[:name]"). All modules are registered
+    /// first; then the scripts and entry points run in order. Returns false
+    /// when the file is not a bundle.
+    /// </summary>
+    bool TryExecuteBundle(string content, string fileName, out bool success)
+    {
+        success = true;
+        const string scriptMarker = "// JS_BUNDLE_SCRIPT";
+        const string moduleMarkerPrefix = "// JS_BUNDLE_MODULE:";
+        const string entrypointMarkerPrefix = "// JS_BUNDLE_MODULE_ENTRYPOINT";
+        const string markerPrefix = "// JS_BUNDLE_";
+
+        int pos = 0;
+        // Skip whitespace and comments before the first marker.
+        while (pos < content.Length)
+        {
+            if (char.IsWhiteSpace(content[pos]))
+            {
+                pos++;
+                continue;
+            }
+            if (pos + 2 <= content.Length && content[pos] == '/')
+            {
+                if (content[pos + 1] == '/')
+                {
+                    // Check if it's a marker.
+                    if (string.CompareOrdinal(content, pos, markerPrefix, 0, markerPrefix.Length) == 0) break;
+                    // Skip single line comment.
+                    pos = content.IndexOf('\n', pos);
+                    if (pos < 0) return false;
+                    pos++;
+                    continue;
+                }
+                if (content[pos + 1] == '*')
+                {
+                    // Skip multi-line comment.
+                    pos = content.IndexOf("*/", pos + 2, StringComparison.Ordinal);
+                    if (pos < 0) return false;
+                    pos += 2;
+                    continue;
+                }
+            }
+            // Not a bundle if we encounter anything else.
+            return false;
+        }
+        if (pos >= content.Length) return false;
+
+        _bundleModuleFiles.Clear();
+        var executionOrder = new List<(bool IsScript, string ContentOrName)>();
+        int anonModuleCounter = 0;
+        while (pos < content.Length)
+        {
+            // We expect a marker at pos.
+            if (string.CompareOrdinal(content, pos, markerPrefix, 0, markerPrefix.Length) != 0) break;
+
+            int nlPos = content.IndexOf('\n', pos);
+            string header;
+            if (nlPos < 0)
+            {
+                header = content[pos..];
+                pos = content.Length;
+            }
+            else
+            {
+                header = content[pos..nlPos];
+                if (header.EndsWith('\r')) header = header[..^1];
+                pos = nlPos + 1;
+            }
+
+            // Find the next marker.
+            int nextMarker = content.IndexOf(markerPrefix, pos, StringComparison.Ordinal);
+            int partEnd = nextMarker < 0 ? content.Length : nextMarker;
+            string partContent = content[pos..partEnd];
+            pos = partEnd;
+
+            if (header == scriptMarker)
+            {
+                executionOrder.Add((true, partContent));
+            }
+            else if (header.StartsWith(moduleMarkerPrefix, StringComparison.Ordinal))
+            {
+                string mName = header[moduleMarkerPrefix.Length..];
+                _bundleModuleFiles[NormalizeModuleSpecifier(mName, _workingDirectory)] = partContent;
+            }
+            else if (header.StartsWith(entrypointMarkerPrefix, StringComparison.Ordinal))
+            {
+                string mName = header.Length > entrypointMarkerPrefix.Length && header[entrypointMarkerPrefix.Length] == ':'
+                    ? header[(entrypointMarkerPrefix.Length + 1)..]
+                    : "entrypoint_" + anonModuleCounter++ + ".mjs";
+                string normalizedName = NormalizeModuleSpecifier(mName, _workingDirectory);
+                _bundleModuleFiles[normalizedName] = partContent;
+                executionOrder.Add((false, normalizedName));
+            }
+            else
+            {
+                Out("Warning: Unknown bundle marker: " + header + "\n");
+            }
+        }
+
+        // Second pass: Execution
+        foreach (var (isScript, contentOrName) in executionOrder)
+        {
+            if (Stopped) break;
+            Completion c = isScript
+                ? RunInCurrentRealm(contentOrName, fileName, isModule: false)
+                : RunInCurrentRealm(_bundleModuleFiles[contentOrName], contentOrName, isModule: true);
+            if (c.Kind == CompletionKind.Terminated) break;
+            if (c.Kind == CompletionKind.Throw)
+            {
+                ReportException(CurrentRealm, c.Exception!);
+                success = false;
+            }
+        }
+        _bundleModuleFiles.Clear();
+        return true;  // Bundle handled successfully (even if execution failed)
+    }
+
+    /// <summary>NormalizeModuleSpecifier: data URLs and http(s) URLs are returned unchanged.</summary>
+    static string NormalizeModuleSpecifier(string specifier, string dir) =>
+        specifier.StartsWith(DataUrlPrefix, StringComparison.Ordinal) ||
+        specifier.StartsWith("http://", StringComparison.Ordinal) || specifier.StartsWith("https://", StringComparison.Ordinal)
+            ? specifier
+            : NormalizePath(specifier, dir);
 
     bool Stopped => _timedOut || QuitCode is not null || _terminateRequested || _root._timedOut;
 
@@ -640,6 +776,12 @@ public sealed partial class D8Shell : IJsHost
             resolved = NormalizePath(specifier, dir);
         }
         string importedBy = referrer.Length > 0 && _modules.Contains(referrer) ? "\n    imported by " + referrer : "";
+        if (_options.Bundle && _bundleModuleFiles.TryGetValue(resolved, out string? bundled))
+        {
+            _modules.Add(resolved);
+            _sources[resolved] = bundled;
+            return new ModuleSource(resolved, bundled, IsJson: type == "json");
+        }
         if (resolved.StartsWith(DataUrlPrefix, StringComparison.Ordinal))
         {
             _modules.Add(resolved);
@@ -650,6 +792,12 @@ public sealed partial class D8Shell : IJsHost
             throw new JsHostError("Error", $"d8: Reading module from {resolved} is not supported.{importedBy}");
         }
         if (!File.Exists(resolved)) throw new JsHostError("Error", $"d8: Error reading module from {resolved}{importedBy}");
+        if (type == "bytes")
+        {
+            // d8 reads a bytes module's file as raw data.
+            _modules.Add(resolved);
+            return new ModuleSource(resolved, "", Bytes: File.ReadAllBytes(resolved));
+        }
         string source = ReadText(resolved);
         _sources[resolved] = source;
         _modules.Add(resolved);

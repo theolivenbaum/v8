@@ -202,13 +202,154 @@ public static class RuntimeObject
         return JSValue.Undefined;
     }
 
-    /// <summary>Runtime::GetPrivateMember (the private brand and private accessors).</summary>
-    public static JSValue GetPrivateMember(Isolate isolate, JSValue receiver, JSValue name) =>
-        GetObjectProperty(isolate, receiver, name, receiver, out _);
+    enum PrivateMemberType { kPrivateField, kPrivateAccessor, kPrivateMethod }
 
-    /// <summary>Runtime::SetPrivateMember.</summary>
-    public static JSValue SetPrivateMember(Isolate isolate, JSValue receiver, JSValue name, JSValue value) =>
-        SetObjectProperty(isolate, receiver, name, value, StoreOrigin.MaybeKeyed, ShouldThrow.ThrowOnError);
+    readonly record struct PrivateMember(PrivateMemberType Type, JSValue BrandOrFieldSymbol, JSValue Value);
+
+    static bool IsPrivateMethodOrAccessorVariableMode(VariableMode mode) =>
+        mode is VariableMode.PrivateMethod or VariableMode.PrivateSetterOnly or VariableMode.PrivateGetterOnly
+            or VariableMode.PrivateGetterAndSetter;
+
+    /// <summary>CollectPrivateMethodsAndAccessorsFromContext (runtime-object.cc).</summary>
+    static void CollectPrivateMethodsAndAccessorsFromContext(Isolate isolate, Context context, JSString desc, JSValue brand,
+        IsStaticFlag isStaticFlag, List<PrivateMember> results)
+    {
+        ScopeInfo scopeInfo = context.ScopeInfo;
+        int contextIndex = scopeInfo.ContextSlotIndex(desc, out ScopeInfo.VariableLookupResult lookupResult);
+        if (contextIndex == -1 || !IsPrivateMethodOrAccessorVariableMode(lookupResult.Mode) ||
+            lookupResult.IsStaticFlag != isStaticFlag)
+        {
+            return;
+        }
+
+        JSValue slotValue = context[contextIndex];
+        results.Add(new PrivateMember(
+            lookupResult.Mode == VariableMode.PrivateMethod ? PrivateMemberType.kPrivateMethod : PrivateMemberType.kPrivateAccessor,
+            brand, slotValue));
+    }
+
+    /// <summary>CollectPrivateMembersFromReceiver (runtime-object.cc).</summary>
+    static void CollectPrivateMembersFromReceiver(Isolate isolate, JSReceiver receiver, JSString desc,
+        List<PrivateMember> results)
+    {
+        FixedArray keys = KeyAccumulator.GetKeys(isolate, receiver, KeyCollectionMode.OwnOnly,
+            PropertyFilter.PRIVATE_NAMES_ONLY, GetKeysConversion.ConvertToString);
+
+        if (receiver is JSFunction func)
+        {
+            SharedFunctionInfo shared = func.Shared;
+            if (shared.IsClassConstructor && shared.HasStaticPrivateMethodsOrAccessors)
+            {
+                CollectPrivateMethodsAndAccessorsFromContext(isolate, func.Context, desc, func, IsStaticFlag.Static,
+                    results);
+            }
+        }
+
+        for (int i = 0; i < keys.Length; ++i)
+        {
+            var symbol = keys.Get(i).As<Symbol>();
+            Debug.Assert(symbol.IsAnyPrivateName);
+            JSValue value = ObjectOps.GetProperty(isolate, receiver, symbol);
+
+            if (symbol.IsPrivateBrand)
+            {
+                CollectPrivateMethodsAndAccessorsFromContext(isolate, value.As<Context>(), desc, symbol,
+                    IsStaticFlag.NotStatic, results);
+            }
+            else if (symbol.Description.HeapObjectOrNull is JSString symbolDesc && JSString.Equals(symbolDesc, desc))
+            {
+                results.Add(new PrivateMember(PrivateMemberType.kPrivateField, symbol, value));
+            }
+        }
+    }
+
+    /// <summary>FindPrivateMembersFromReceiver (runtime-object.cc).</summary>
+    static PrivateMember FindPrivateMembersFromReceiver(Isolate isolate, JSReceiver receiver, JSString desc,
+        MessageTemplate notFoundMessage)
+    {
+        var results = new List<PrivateMember>();
+        CollectPrivateMembersFromReceiver(isolate, receiver, desc, results);
+
+        if (results.Count == 0)
+        {
+            isolate.Throw(isolate.Factory.NewError(isolate.NativeContext.ErrorFunction, notFoundMessage, [desc]));
+        }
+        else if (results.Count > 1)
+        {
+            isolate.Throw(isolate.Factory.NewError(isolate.NativeContext.ErrorFunction, MessageTemplate.ConflictingPrivateName,
+                [desc]));
+        }
+        return results[0];
+    }
+
+    /// <summary>
+    /// Runtime_GetPrivateMember and Runtime::GetPrivateMember: reads the private
+    /// member named <paramref name="name"/> (its description) of the receiver,
+    /// for debug-evaluate and eval code that could not resolve the private name.
+    /// </summary>
+    public static JSValue GetPrivateMember(Isolate isolate, JSValue receiver, JSValue name)
+    {
+        var desc = name.As<JSString>();
+        if (receiver.HeapObjectOrNull is not JSReceiver target)
+        {
+            return isolate.ThrowTypeError(MessageTemplate.NonObjectPrivateNameAccess, desc, receiver);
+        }
+        PrivateMember result = FindPrivateMembersFromReceiver(isolate, target, desc, MessageTemplate.InvalidPrivateMemberRead);
+
+        switch (result.Type)
+        {
+            case PrivateMemberType.kPrivateField:
+            case PrivateMemberType.kPrivateMethod:
+                return result.Value;
+            default:
+            {
+                // The accessors are collected from the contexts, so there is no need to
+                // perform brand checks.
+                var pair = result.Value.As<AccessorPair>();
+                if (pair.Getter.IsNull)
+                {
+                    return isolate.Throw(isolate.Factory.NewError(isolate.NativeContext.ErrorFunction,
+                        MessageTemplate.InvalidPrivateGetterAccess, [desc]));
+                }
+                return Execution.Call(isolate, pair.Getter, target, []);
+            }
+        }
+    }
+
+    /// <summary>Runtime_SetPrivateMember and Runtime::SetPrivateMember.</summary>
+    public static JSValue SetPrivateMember(Isolate isolate, JSValue receiver, JSValue name, JSValue value)
+    {
+        var desc = name.As<JSString>();
+        if (receiver.HeapObjectOrNull is not JSReceiver target)
+        {
+            return isolate.ThrowTypeError(MessageTemplate.NonObjectPrivateNameAccess, desc, receiver);
+        }
+        PrivateMember result = FindPrivateMembersFromReceiver(isolate, target, desc, MessageTemplate.InvalidPrivateMemberRead);
+
+        switch (result.Type)
+        {
+            case PrivateMemberType.kPrivateField:
+            {
+                var symbol = result.BrandOrFieldSymbol.As<Symbol>();
+                return ObjectOps.SetProperty(isolate, target, symbol, value, StoreOrigin.MaybeKeyed, ShouldThrow.ThrowOnError);
+            }
+            case PrivateMemberType.kPrivateMethod:
+                return isolate.Throw(isolate.Factory.NewError(isolate.NativeContext.ErrorFunction,
+                    MessageTemplate.InvalidPrivateMethodWrite, [desc]));
+            default:
+            {
+                // The accessors are collected from the contexts, so there is no need to
+                // perform brand checks.
+                var pair = result.Value.As<AccessorPair>();
+                if (pair.Setter.IsNull)
+                {
+                    return isolate.Throw(isolate.Factory.NewError(isolate.NativeContext.ErrorFunction,
+                        MessageTemplate.InvalidPrivateSetterAccess, [desc]));
+                }
+                return Execution.Call(isolate, pair.Setter, target, [value]);
+            }
+        }
+    }
 
     /// <summary>Runtime_LoadPrivateGetter / LoadPrivateSetter: the component of an AccessorPair.</summary>
     public static JSValue LoadPrivateAccessorComponent(JSValue pair, bool getter)
