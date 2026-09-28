@@ -1,8 +1,10 @@
 // Port of the JavaScript-visible builtins of src/builtins/builtins-async-function-gen.cc
 // (AsyncFunctionAwaitResolveClosure, AsyncFunctionAwaitRejectClosure) and
 // src/builtins/builtins-async-generator-gen.cc (AsyncGeneratorPrototypeNext,
-// Return and Throw, and the await/yield/return closures). The algorithms are
-// the interpreter's (InterpreterAsync).
+// Return and Throw, and the await/yield/return closures) and
+// src/builtins/builtins-async-module.cc (CallAsyncModuleFulfilled and
+// CallAsyncModuleRejected). The algorithms are the interpreter's
+// (InterpreterAsync) and the module system's (SourceTextModule).
 using V8Sharp.Interpreter;
 
 namespace V8Sharp.Builtins;
@@ -22,6 +24,9 @@ public static partial class BuiltinRegistry
         Register(Builtin.AsyncGeneratorReturnResolveClosure, BuiltinsAsync.AsyncGeneratorReturnResolveClosure);
         Register(Builtin.AsyncGeneratorReturnClosedResolveClosure, BuiltinsAsync.AsyncGeneratorReturnClosedResolveClosure);
         Register(Builtin.AsyncGeneratorReturnClosedRejectClosure, BuiltinsAsync.AsyncGeneratorReturnClosedRejectClosure);
+        Register(Builtin.CallAsyncModuleFulfilled, BuiltinsAsync.CallAsyncModuleFulfilled);
+        Register(Builtin.CallAsyncModuleRejected, BuiltinsAsync.CallAsyncModuleRejected);
+        Register(Builtin.AbstractModuleSourceToStringTag, BuiltinsAsync.AbstractModuleSourceToStringTag);
     }
 }
 
@@ -96,4 +101,34 @@ public static class BuiltinsAsync
     public static JSValue AsyncGeneratorReturnClosedRejectClosure(Isolate isolate, in BuiltinArguments args) =>
         InterpreterAsync.AsyncGeneratorReturnClosedReject(isolate,
             InterpreterAsync.GeneratorOfAwaitClosure<JSAsyncGeneratorObject>(args), args.AtOrUndefined(1));
+
+    // ---- builtins-async-module.cc -------------------------------------------------------------
+
+    static SourceTextModule ModuleOfClosure(in BuiltinArguments args) =>
+        args.Target.Context[SourceTextModule.kExecuteAsyncModuleContextModuleSlot].As<SourceTextModule>();
+
+    public static JSValue CallAsyncModuleFulfilled(Isolate isolate, in BuiltinArguments args)
+    {
+        SourceTextModule.AsyncModuleExecutionFulfilled(isolate, ModuleOfClosure(args));
+        return JSValue.Undefined;
+    }
+
+    public static JSValue CallAsyncModuleRejected(Isolate isolate, in BuiltinArguments args)
+    {
+        SourceTextModule.AsyncModuleExecutionRejected(isolate, ModuleOfClosure(args), args.AtOrUndefined(1));
+        return JSValue.Undefined;
+    }
+
+    // ---- builtins-abstract-module-source.cc ---------------------------------------------------
+
+    /// <summary>get %AbstractModuleSource%.prototype[@@toStringTag].</summary>
+    public static JSValue AbstractModuleSourceToStringTag(Isolate isolate, in BuiltinArguments args)
+    {
+        // 1. Let O be the this value.
+        // 2. If O is not an Object, return undefined.
+        // 3. Let sourceNameResult be Completion(HostGetModuleSourceName(O)).
+        // 4. If sourceNameResult is an abrupt completion, return undefined.
+        // V8Sharp has no WebAssembly, so no object has a module source name.
+        return JSValue.Undefined;
+    }
 }

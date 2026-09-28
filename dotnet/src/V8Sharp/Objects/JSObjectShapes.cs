@@ -202,11 +202,11 @@ public sealed class JSRegExpStringIterator(Map map) : JSObject(map)
 /// </summary>
 public sealed class JSModuleNamespace(Map map) : JSObject(map)
 {
-    /// <summary>The module's exports (V8: module()->exports()); TODO(merge): the Module type of the module system.</summary>
-    public ObjectHashTable Exports = ObjectHashTable.New(0);
+    /// <summary>The module.</summary>
+    public Module Module = null!;
 
-    /// <summary>The module (TODO(merge): V8Sharp's Module when the module system is ported).</summary>
-    public object? Module;
+    /// <summary>The module's exports (module()->exports()).</summary>
+    public ObjectHashTable Exports => Module.Exports;
 
     /// <summary>JSModuleNamespace::HasExport.</summary>
     public bool HasExport(Isolate isolate, JSString name) => !Exports.Lookup(isolate, name).IsTheHole;

@@ -3,6 +3,7 @@
 // the oracle.
 using V8Sharp.Builtins;
 using V8Sharp.Codegen;
+using V8Sharp.D8;
 using V8Sharp.Common;
 using V8Sharp.Init;
 using V8Sharp.Objects;
@@ -209,8 +210,35 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
         return Compiler.RunScript(Isolate, function);
     });
 
-    public Completion RunModule(string source, string name) =>
-        new(CompletionKind.Throw, Exception: new JsExceptionInfo("V8Sharp: ES modules are not supported yet"));
+    /// <summary>The realm's module map and callbacks (d8's ModuleEmbedderData), created with the realm.</summary>
+    readonly ModuleLoader _moduleLoader = new(owner.Isolate, context, new HostModuleSourceProvider(owner.Host));
+
+    public Completion RunModule(string source, string name) => Execute(() =>
+    {
+        (_, JSPromise promise) = _moduleLoader.StartModule(name, new ModuleSourceText(name, source));
+        VExecution.PerformMicrotaskCheckpoint(Isolate);
+        // A module's evaluation returns a promise (top-level await); d8 reports
+        // its rejection as an uncaught exception.
+        if (promise.Status == PromiseState.kRejected) Isolate.ReThrow(promise.Result);
+        return JSValue.Undefined;
+    });
+
+    /// <summary>Module resolution and reading through the embedding shell (IJsHost.LoadModule).</summary>
+    sealed class HostModuleSourceProvider(IJsHost host) : IModuleSourceProvider
+    {
+        public ModuleSourceText Load(string specifier, string referrer, ModuleType type)
+        {
+            try
+            {
+                ModuleSource m = host.LoadModule(specifier, referrer, type switch { ModuleType.kJSON => "json", ModuleType.kText => "text", _ => null });
+                return new ModuleSourceText(m.Name, m.Source);
+            }
+            catch (JsHostError e)
+            {
+                throw new ModuleLoadException(e.Message, e.ErrorType);
+            }
+        }
+    }
 
     public Completion Call(object function, object? receiver, params object?[] args) => Execute(() =>
     {

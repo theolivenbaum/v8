@@ -32,7 +32,7 @@ public static class InterpreterIntrinsicsDispatch
                 args[0].As<JSGeneratorObject>().ContinuationValue = JSGeneratorObject.kGeneratorClosed;
                 return JSValue.Undefined;
             case IntrinsicsHelper.IntrinsicId.GetImportMetaObject:
-                throw new NotSupportedException("V8Sharp: import.meta requires ES modules, which are not supported yet");
+                return RuntimeModules.GetImportMetaObject(isolate);
             case IntrinsicsHelper.IntrinsicId.CreateAsyncFromSyncIterator:
                 return InterpreterAsync.CreateAsyncFromSyncIterator(isolate, args[0]);
             case IntrinsicsHelper.IntrinsicId.AsyncFunctionEnter:

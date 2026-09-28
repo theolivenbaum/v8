@@ -104,6 +104,9 @@ sealed partial class Genesis
         // InitializeGlobal_sharedarraybuffer (Genesis.TypedArrays.cs).
         InitializeExperimentalGlobalTypedArrays();
 
+        // FOREACH_HARMONY_FLAG
+        InitializeGlobal_js_source_phase_imports();
+
         InitializeGlobal_queueMicrotask();
     }
 

@@ -808,6 +808,23 @@ sealed partial class Genesis
             nativeContext.JsonObject = jsonObject;
         }
 
+        {  // -- J S M o d u l e N a m e s p a c e
+            Map map = _factory.NewContextfulMapForCurrentContext(InstanceType.JSModuleNamespaceType,
+                JSObject.GetHeaderSize(InstanceType.JSModuleNamespaceType) + Map.kTaggedSize,
+                ElementsKind.TERMINAL_FAST_ELEMENTS_KIND, 1);
+            map.SetConstructor(nativeContext.ObjectFunction);
+            Map.SetPrototype(isolate, map, null);
+            Map.EnsureDescriptorSlack(isolate, map, 1);
+            nativeContext.JSModuleNamespaceMap = map;
+
+            {  // Install @@toStringTag.
+                Descriptor d = Descriptor.DataField(ReadOnlyRoots.to_string_tag_symbol, 0,
+                    PropertyAttributes.DONT_DELETE | PropertyAttributes.DONT_ENUM | PropertyAttributes.READ_ONLY,
+                    Representation.Tagged);
+                map.AppendDescriptor(isolate, d);
+            }
+        }
+
         {  // -- M a t h
             JSObject math = _factory.NewJSObject(nativeContext.ObjectFunction);
             JSObject.AddProperty(isolate, global, "Math", math, PropertyAttributes.DONT_ENUM);

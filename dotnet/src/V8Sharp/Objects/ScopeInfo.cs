@@ -63,7 +63,10 @@ public sealed partial class ScopeInfo : HeapObject
     public JSValue InferredFunctionNameValue;
     public ScopeInfo? OuterScopeInfoValue;
     /// <summary>module_info (SourceTextModuleInfo), for module scopes.</summary>
-    public object? ModuleInfo;
+    public SourceTextModuleInfo? ModuleInfo;
+
+    /// <summary>ScopeInfo::ModuleDescriptorInfo.</summary>
+    public SourceTextModuleInfo ModuleDescriptorInfo() => ModuleInfo!;
     public ModuleVariableEntry[] ModuleVariables = [];
     public ulong UnusedParameterBits;
 

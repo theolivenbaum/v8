@@ -47,6 +47,10 @@ public sealed class Shell
                 Console.Out.WriteLine("V8 version " + Version);
                 return 0;
             }
+            else if (arg.EndsWith(".mjs", StringComparison.Ordinal))
+            {
+                sources.Add(("module", arg));
+            }
             else if (arg.StartsWith('-'))
             {
                 // V8 flags; unknown ones are ignored as d8 ignores them.
@@ -64,6 +68,8 @@ public sealed class Shell
             var shell = new Shell(isolate);
             shell.Register();
             shell.InstallGlobals(isolate.NativeContext);
+            shell._moduleLoader = new ModuleLoader(isolate, isolate.NativeContext,
+                new D8ModuleSourceProvider(Directory.GetCurrentDirectory()));
             int result = 0;
             try
             {
@@ -72,7 +78,7 @@ public sealed class Shell
                     bool ok = kind switch
                     {
                         "e" => shell.ExecuteString(value, "unnamed"),
-                        "module" => shell.ReportModulesUnsupported(value),
+                        "module" => shell.ExecuteModule(value),
                         _ => shell.ExecuteFile(value),
                     };
                     if (!ok)
@@ -94,10 +100,56 @@ public sealed class Shell
 
     const string Version = "14.7.0 (V8Sharp)";
 
-    bool ReportModulesUnsupported(string file)
+    ModuleLoader _moduleLoader = null!;
+
+    /// <summary>Shell::ExecuteModule.</summary>
+    bool ExecuteModule(string fileName)
     {
-        Console.Out.WriteLine("d8sharp: ES modules are not supported yet: " + file);
-        return false;
+        SourceTextModule rootModule;
+        JSPromise resultPromise;
+        try
+        {
+            (rootModule, resultPromise) = _moduleLoader.StartModule(fileName);
+            Execution.PerformMicrotaskCheckpoint(_isolate);
+            // Loop until module execution finishes.
+            while (resultPromise.Status == PromiseState.kPending && (_isolate.HasPendingTasks || _timeouts.Count > 0))
+            {
+                if (!RunMessageLoopOnce()) return false;
+            }
+        }
+        catch (JavaScriptException e)
+        {
+            ReportException(e);
+            return false;
+        }
+        catch (TerminationException)
+        {
+            return true;
+        }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException or InvalidOperationException)
+        {
+            Console.Out.Write("V8Sharp internal error: " + e.GetType().Name + ": " + e.Message + "\n\n");
+            return false;
+        }
+
+        if (resultPromise.Status == PromiseState.kRejected)
+        {
+            // If the exception has been caught by the promise pipeline, we rethrow
+            // here in order to ReportException.
+            ReportException(new JavaScriptException(resultPromise.Result, null));
+            return false;
+        }
+
+        List<(SourceTextModule Module, JSMessageObject Message)> stalled = rootModule.GetStalledTopLevelAwaitMessages(_isolate);
+        if (stalled.Count > 0)
+        {
+            JSMessageObject message = stalled[0].Message;
+            JSString messageText = MessageFormatter.Format(_isolate, message.Type, [message.Argument]);
+            ReportException(new JavaScriptException(
+                _isolate.Factory.NewError(_isolate.NativeContext.ErrorFunction, messageText), message));
+            return false;
+        }
+        return true;
     }
 
     // ---- Running scripts --------------------------------------------------------------
@@ -154,25 +206,34 @@ public sealed class Shell
     /// <summary>The message loop: pending setTimeout callbacks, each followed by a microtask checkpoint.</summary>
     bool RunMessageLoop()
     {
-        // Foreground tasks posted by the engine (FinalizationRegistry cleanup,
-        // asynchronous gc()) run before the next timeout, as d8 pumps the
-        // platform's task queue between them.
         while (_timeouts.Count > 0 || _isolate.HasPendingTasks)
         {
-            try
-            {
-                if (_isolate.RunPendingTasks()) continue;
-                JSFunction callback = _timeouts.Dequeue();
-                Execution.Call(_isolate, callback, JSValue.Undefined, []);
-                Execution.PerformMicrotaskCheckpoint(_isolate);
-            }
-            catch (JavaScriptException e)
-            {
-                ReportException(e);
-                return false;
-            }
+            if (!RunMessageLoopOnce()) return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// One step of the message loop. Foreground tasks posted by the engine
+    /// (FinalizationRegistry cleanup, asynchronous gc()) run before the next
+    /// timeout, as d8 pumps the platform's task queue between them.
+    /// </summary>
+    bool RunMessageLoopOnce()
+    {
+        try
+        {
+            if (_isolate.RunPendingTasks()) return true;
+            if (_timeouts.Count == 0) return true;
+            JSFunction callback = _timeouts.Dequeue();
+            Execution.Call(_isolate, callback, JSValue.Undefined, []);
+            Execution.PerformMicrotaskCheckpoint(_isolate);
+            return true;
+        }
+        catch (JavaScriptException e)
+        {
+            ReportException(e);
+            return false;
+        }
     }
 
     /// <summary>Shell::ReportException.</summary>

@@ -123,6 +123,19 @@ namespace V8Sharp.Codegen
         }
 
         /// <summary>
+        /// ScriptCompiler::CompileModule: compiles a module script and creates its
+        /// SourceTextModule (Factory::NewSourceTextModule). Throws the SyntaxError.
+        /// </summary>
+        public static SourceTextModule CompileModule(Isolate isolate, JSString source, JSValue name)
+        {
+            Script script = isolate.Factory.NewScript(source);
+            script.Name = name;
+            script.OriginOptionsIsModule = true;
+            SharedFunctionInfo shared = CompileScript(isolate, script);
+            return SourceTextModule.New(isolate, shared);
+        }
+
+        /// <summary>
         /// Execution::CallScript: creates the script context (NewScriptContext)
         /// and runs the toplevel code with the global proxy as receiver.
         /// </summary>

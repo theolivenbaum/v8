@@ -394,6 +394,15 @@ public static partial class RuntimeTable
         Register(FunctionId.CreateJSGeneratorObject,
             static (i, a) => Interpreter.InterpreterGenerators.CreateJSGeneratorObject(i, a[0].As<JSFunction>(), a[1]));
         Register(FunctionId.GeneratorGetFunction, static (i, a) => a[0].As<JSGeneratorObject>().Function);
+        // runtime-module.cc.
+        Register(FunctionId.DeclareModuleExports,
+            static (i, a) => RuntimeModules.DeclareModuleExports(i, a[0].As<FixedArray>(), a[1].As<JSFunction>()));
+        Register(FunctionId.GetModuleNamespace, static (i, a) => RuntimeModules.GetModuleNamespace(i, (int)a[0].Number));
+        Register(FunctionId.GetImportMetaObject, static (i, a) => RuntimeModules.GetImportMetaObject(i));
+        Register(FunctionId.GetModuleNamespaceExport,
+            static (i, a) => RuntimeModules.GetModuleNamespaceExport(i, a[0].As<JSModuleNamespace>(), a[1].As<JSString>()));
+        Register(FunctionId.DynamicImportCall, static (i, a) => RuntimeModules.DynamicImportCall(i, a));
+        Register(FunctionId.GetAbstractModuleSource, static (i, a) => i.NativeContext.AbstractModuleSourceFunction);
         Register(FunctionId.CreateAsyncFromSyncIterator,
             static (i, a) => Builtins.AsyncFromSyncIteratorBuiltins.CreateAsyncFromSyncIterator(i, a[0]));
     }
