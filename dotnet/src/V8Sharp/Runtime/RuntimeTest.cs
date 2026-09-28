@@ -121,8 +121,24 @@ public static class RuntimeTest
     /// <summary>%GetUndetectable: an undetectable callable object (d8's Object with the undetectable map bit).</summary>
     public static JSValue GetUndetectable(Isolate isolate)
     {
-        Map map = Map.Copy(isolate, isolate.NativeContext.ObjectFunction.InitialMap, "Undetectable");
+        // v8::ObjectTemplate with MarkAsUndetectable and SetCallAsFunctionHandler(ReturnNull):
+        // the instance's map is callable and its constructor is the template's API function.
+        var templ = new FunctionTemplateInfo(static (Isolate _, in BuiltinArguments _) => JSValue.Undefined)
+        {
+            InstanceCallHandler = new FunctionTemplateInfo(static (Isolate _, in BuiltinArguments _) => JSValue.Null),
+        };
+        SharedFunctionInfo info = isolate.Factory.NewSharedFunctionInfo(ReadOnlyRoots.empty_string, templ,
+            Builtin.HandleApiCallOrConstruct, 0, false);
+        info.BuiltinId = Builtin.HandleApiCallOrConstruct;
+        info.LanguageMode = LanguageMode.Strict;
+        info.Native = true;
+        info.UpdateFunctionMapIndex();
+        NativeContext nc = isolate.NativeContext;
+        JSFunction constructor = isolate.Factory.NewFunction(info, nc, nc.StrictFunctionWithoutPrototypeMap);
+        Map map = Map.Copy(isolate, nc.ObjectFunction.InitialMap, "Undetectable");
         map.IsUndetectable = true;
+        map.IsCallable = true;
+        map.SetConstructor(constructor);
         return isolate.Factory.NewJSObjectFromMap(map);
     }
 

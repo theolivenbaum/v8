@@ -31,6 +31,10 @@ public static class Execution
                 return JSProxy.Call(isolate, proxy, receiver, args);
             case JSWrappedFunction wrapped:
                 return JSWrappedFunction.Call(isolate, wrapped, receiver, args);
+            case JSObject apiObject when apiObject.Map.IsCallable:
+                // Builtins::Call: a callable API object is called through the
+                // CALL_AS_FUNCTION_DELEGATE with itself as the receiver.
+                return CallFunction(isolate, isolate.NativeContext.CallAsFunctionDelegate, apiObject, args);
             default:
                 return isolate.Throw(ErrorUtils.NewCalledNonCallableError(isolate, callable));
         }

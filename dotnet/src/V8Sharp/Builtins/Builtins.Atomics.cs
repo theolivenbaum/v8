@@ -406,8 +406,10 @@ public static class BuiltinsAtomics
         }
 
         // 9. If mode is sync and AgentCanSuspend() is false, throw a TypeError exception.
-        // V8Sharp's isolates always allow Atomics.wait (V8's default for
-        // Isolate::CreateParams::allow_atomics_wait, and d8's main thread).
+        if (!isAsync && !isolate.AllowAtomicsWait)
+        {
+            isolate.ThrowTypeError(MessageTemplate.AtomicsOperationNotAllowed, Str(isolate, "Atomics.wait"));
+        }
 
         JSArrayBuffer arrayBuffer = sta.Buffer;
         int size = is64 ? 8 : 4;

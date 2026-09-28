@@ -390,7 +390,7 @@ public struct PrototypeIterator
             }
             JSReceiver? proto = JSProxy.GetPrototype(_isolate, proxy);
             _object = proto;
-            _isAtEnd = proto is null;
+            _isAtEnd = _whereToEnd == WhereToEnd.END_AT_NON_HIDDEN || proto is null;
             return true;
         }
         AdvanceIgnoringProxies();

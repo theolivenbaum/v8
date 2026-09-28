@@ -26,10 +26,14 @@ public sealed class V8SharpEngine : IJsEngine
     {
         foreach (var f in flags)
         {
+            // d8's --no-can-block is Isolate::SetAllowAtomicsWait(false).
+            if (f is "--no-can-block") { AllowAtomicsWait = false; continue; }
             // d8 ignores flags it does not know.
             try { _flags.SetFlagsFromCommandLine([f]); } catch (Exception) { }
         }
     }
+
+    internal bool AllowAtomicsWait { get; private set; } = true;
 
     public IJsIsolate CreateIsolate(IJsHost host) => new V8SharpJsIsolate(this, host, _flags.Clone());
 }
@@ -57,6 +61,7 @@ sealed class V8SharpJsIsolate : IJsIsolate
     {
         Host = host;
         Isolate = VIsolate.New(flags);
+        Isolate.AllowAtomicsWait = engine.AllowAtomicsWait;
         Isolate.PromiseRejectCallback = OnPromiseReject;
         var main = new V8SharpRealm(this, Isolate.InitialNativeContext!);
         _realms.Add(main);

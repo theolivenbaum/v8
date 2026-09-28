@@ -177,10 +177,12 @@ public sealed class Runner(RunnerOptions options)
         }
         if (options.ListOnly)
         {
-            foreach (var (_, tests) in all)
+            foreach (var (suite, tests) in all)
             {
+                var expectations = new ExpectationsFile(options.ExpectationsDirectory, suite.Name, options.Engine);
                 foreach (var t in tests)
                 {
+                    if (t.SkipReason is null && expectations.SkipReasonFor(t.Id) is { } engineSkip) t.SkipReason = engineSkip;
                     options.Out.WriteLine($"{t.FullId}  [{string.Join(' ', t.CommandLine)}]{(t.SkipReason is null ? "" : "  SKIP: " + t.SkipReason)}");
                 }
             }
@@ -200,6 +202,8 @@ public sealed class Runner(RunnerOptions options)
             reportsBySuite[suite.Name] = report;
             foreach (var t in tests)
             {
+                // An expectation glob whose reason starts with "SKIP" does not run on this engine.
+                if (t.SkipReason is null && report.Expectations.SkipReasonFor(t.Id) is { } engineSkip) t.SkipReason = engineSkip;
                 if (t.SkipReason is not null && !options.RunSkipped) report.Results.Add(new TestResult(t, Outcome.Skip, null, false, false));
                 else toRun.Add(t);
             }

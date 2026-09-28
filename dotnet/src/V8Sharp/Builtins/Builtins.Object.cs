@@ -197,7 +197,9 @@ public static class BuiltinsObject
     static bool HasNoElements(JSObject obj)
     {
         FixedArrayBase elements = obj.Elements;
-        return elements.Length == 0 || ReferenceEquals(elements, ReadOnlyRoots.empty_slow_element_dictionary);
+        // IsEmptyFixedArray || IsEmptySlowElementDictionary: a typed array's
+        // (empty byte array) elements say nothing about its length.
+        return ReferenceEquals(elements, FixedArray.Empty) || ReferenceEquals(elements, ReadOnlyRoots.empty_slow_element_dictionary);
     }
 
     static FixedArray CopyEnumCacheKeys(Map map, int enumLength)

@@ -78,6 +78,9 @@ public sealed partial class Isolate
     /// <summary>Isolate::formatting_stack_trace.</summary>
     public bool FormattingStackTrace;
 
+    /// <summary>Isolate::allow_atomics_wait (v8::Isolate::SetAllowAtomicsWait; d8's --no-can-block).</summary>
+    public bool AllowAtomicsWait = true;
+
     /// <summary>Isolate::error_message_param (used by DataView builtins' stack names).</summary>
     public int ErrorMessageParam;
 
