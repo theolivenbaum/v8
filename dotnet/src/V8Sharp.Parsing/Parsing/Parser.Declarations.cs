@@ -1571,6 +1571,8 @@ public sealed partial class Parser
         {
             scope.set_is_wrapped_function();
         }
+        // DEBUG-only in V8; kept so Scope.Print shows the name.
+        scope.SetScopeName(function_name);
 
         if (!is_wrapped && !Check(Token.LeftParen))
         {
@@ -1869,6 +1871,7 @@ public sealed partial class Parser
     public override void DeclareClassVariable(ClassScope scope, AstRawString name, ClassInfo class_info,
                                               int class_token_pos)
     {
+        scope.SetScopeName(name);
         // Declare a special class variable for anonymous classes with the dot
         // if we need to save it for static private method access.
         Variable class_variable = scope.DeclareClassVariable(ast_value_factory(), name, class_token_pos);
@@ -1997,6 +2000,7 @@ public sealed partial class Parser
             class_name, scope, statements, 0, 0, 0, FunctionLiteral.ParameterFlag.kNoDuplicateParameters,
             FunctionSyntaxKind.AccessorOrMethod, FunctionLiteral.EagerCompileHint.kShouldEagerCompile,
             scope.start_position(), false, function_literal_id);
+        scope.SetScopeName(class_name);
         RecordFunctionLiteralSourceRange(result);
 
         return result;

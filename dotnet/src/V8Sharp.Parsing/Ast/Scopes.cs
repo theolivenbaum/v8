@@ -295,7 +295,7 @@ public class Scope
     }
 
     // The scope name is only used for printing/debugging.
-    public void SetScopeName(AstRawString scope_name) => _scopeName = scope_name;
+    public void SetScopeName(AstRawString? scope_name) => _scopeName = scope_name;
 
     // An ID that uniquely identifies this scope within the script. Inner scopes
     // have a higher ID than their outer scopes. ScopeInfo created from a scope
@@ -3644,6 +3644,7 @@ public sealed class ClassScope : Scope
     internal UnresolvedList EnsureUnresolvedPrivateNames() => EnsureRareData().unresolved_private_names;
 
     private RareData? GetRareData() => _rareData;
+    internal VariableMap? private_name_map_for_printing() => _rareData?.private_name_map;
     private RareData EnsureRareData() => _rareData ??= new RareData();
     private void SetIsParsingHeritage(bool v) => _isParsingHeritage = v;
 }
