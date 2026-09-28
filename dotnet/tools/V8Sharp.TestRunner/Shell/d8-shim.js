@@ -7,7 +7,7 @@
   'use strict';
   const global = globalThis;
   const ObjectDefineProperty = Object.defineProperty;
-  const Uint8ArrayCtor = Uint8Array;
+  const Uint8ArrayCtor = global.Uint8Array;
   const StringCtor = String;
   const charCodeAt = Function.prototype.call.bind(String.prototype.charCodeAt);
 
@@ -152,10 +152,13 @@
   set(log, 'getAndStop', fn('getAndStop', () => ''));
   set(d8, 'log', log);
   const test = {};
-  for (const n of ['verifySourcePositions', 'installConditionalFeatures', 'setFlushDenormals',
-                   'createInterceptorObject', 'createAccessCheckedObject',
-                   'createAccessCheckedInterceptorObject', 'setAccessPolicy']) {
-    set(test, n, unsupported('d8.test.' + n));
+  // An indexed loop, not for-of: the shim must not depend on the builtins
+  // under test (Array.prototype[Symbol.iterator]).
+  const testNames = ['verifySourcePositions', 'installConditionalFeatures', 'setFlushDenormals',
+                     'createInterceptorObject', 'createAccessCheckedObject',
+                     'createAccessCheckedInterceptorObject', 'setAccessPolicy'];
+  for (let i = 0; i < testNames.length; i++) {
+    set(test, testNames[i], unsupported('d8.test.' + testNames[i]));
   }
   set(d8, 'test', test);
   const promise = {};
