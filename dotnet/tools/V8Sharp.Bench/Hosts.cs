@@ -31,6 +31,7 @@ sealed class OracleHost : IBenchHost
         _engine.AddHostObject("__print", new Action<string>(Console.WriteLine));
         _engine.AddHostObject("__load", new Action<string>(f => LoadFile(Path.Combine(_workDir, f))));
         _engine.AddHostObject("__read", new Func<string, string>(f => File.ReadAllText(Path.Combine(_workDir, f))));
+        _engine.AddHostObject("cpuTimeMs", new Func<double>(Program.ThreadCpuTimeMs));
         _engine.Execute("""
             (function () {
               const p = __print, l = __load, r = __read;
@@ -76,6 +77,8 @@ sealed class V8SharpHost : IBenchHost
             Install(context, global, "load", Load);
             Install(context, global, "read", Read);
             Install(context, global, "quit", static (Isolate i, in BuiltinArguments a) => JSValue.Undefined);
+            Install(context, global, "cpuTimeMs",
+                static (Isolate i, in BuiltinArguments a) => JSValue.FromNumber(Program.ThreadCpuTimeMs()));
             JSObject d8 = _isolate.Factory.NewJSObject(context.ObjectFunction);
             JSObject file = _isolate.Factory.NewJSObject(context.ObjectFunction);
             Install(context, file, "execute", Load);

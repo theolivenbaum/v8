@@ -15,6 +15,24 @@ namespace V8Sharp.Bench;
 
 public static partial class Program
 {
+    /// <summary>
+    /// CPU time of the calling thread in milliseconds (Linux: the first field
+    /// of /proc/thread-self/schedstat, in nanoseconds), or NaN elsewhere.
+    /// </summary>
+    public static double ThreadCpuTimeMs()
+    {
+        try
+        {
+            string stat = File.ReadAllText("/proc/thread-self/schedstat");
+            int space = stat.IndexOf(' ');
+            return long.Parse(space < 0 ? stat : stat[..space], CultureInfo.InvariantCulture) / 1e6;
+        }
+        catch (IOException)
+        {
+            return double.NaN;
+        }
+    }
+
     /// <summary>Octane 2.0 benchmarks, in the order of Octane's run.js.</summary>
     static readonly string[] OctaneBenchmarks =
     [
@@ -70,7 +88,9 @@ public static partial class Program
             engines: v8:jit, v8:jitless, v8:sparkplug, v8:maglev, v8sharp, v8sharp:jitless, v8sharp:sparkplug,
                      v8sharp:always-sparkplug (V8SHARP_BENCH_FLAGS adds V8 flags to v8sharp runs);
                      <engine>@<dir> runs it with the V8Sharp.Bench build in <dir> (another revision, a publish)
-            suites:  octane (all), octane:<name>, perf:<js-perf-test dir>, micro:<name> | micro:all
+            suites:  octane (all), octane:<name>, octane-cpu (all) | octane-cpu:<name> (fixed work, scored
+                     by thread CPU time; V8SHARP_BENCH_SCALE divides the iterations, default 50),
+                     perf:<js-perf-test dir>, micro:<name> | micro:all
             Octane is fetched by tools/V8Sharp.Bench/fetch-octane.sh into dotnet/artifacts/octane.
             """);
         return 1;
@@ -124,9 +144,10 @@ public static partial class Program
     /// <summary>Returns (working directory, files to load, driver source) for a suite.</summary>
     static (string WorkDir, string[] Files, string? Driver) Workload(string suite)
     {
-        if (suite.StartsWith("octane:", StringComparison.Ordinal))
+        bool fixedWork = suite.StartsWith("octane-cpu:", StringComparison.Ordinal);
+        if (suite.StartsWith("octane:", StringComparison.Ordinal) || fixedWork)
         {
-            string name = suite[7..];
+            string name = suite[(suite.IndexOf(':') + 1)..];
             string dir = Paths.Octane;
             if (!File.Exists(Path.Combine(dir, "base.js")))
                 throw new FileNotFoundException("Octane is missing; run tools/V8Sharp.Bench/fetch-octane.sh", dir);
@@ -144,7 +165,37 @@ public static partial class Program
                   NotifyScore: function (score) { }
                 });
                 """;
-            return (dir, files.Select(f => Path.Combine(dir, f)).ToArray(), driver);
+            // octane-cpu: a fixed amount of work (Octane's deterministic mode with
+            // the iteration counts divided by V8SHARP_BENCH_SCALE, default 50, at
+            // least minIterations) scored by the CPU time of the thread running
+            // it: 1e6 / cpu-ms, higher is better. On a shared, loaded machine the
+            // thread's CPU time varies much less than the wall time Octane scores.
+            const string fixedDriver = """
+                (function () {
+                  var scale = __benchScale;
+                  BenchmarkSuite.config.doDeterministic = true;
+                  for (var s = 0; s < BenchmarkSuite.suites.length; s++) {
+                    var bs = BenchmarkSuite.suites[s].benchmarks;
+                    for (var b = 0; b < bs.length; b++) {
+                      bs[b].deterministicIterations =
+                          Math.max(bs[b].minIterations, Math.ceil(bs[b].deterministicIterations / scale));
+                    }
+                  }
+                  var last = cpuTimeMs();
+                  BenchmarkSuite.RunSuites({
+                    NotifyResult: function (name, result) {
+                      var now = cpuTimeMs();
+                      print(name + '(Score): ' + (1e6 / (now - last)));
+                      last = now;
+                    },
+                    NotifyError: function (name, error) { print(name + '(Error): ' + error); },
+                    NotifyScore: function (score) { }
+                  });
+                })();
+                """;
+            string scale = Environment.GetEnvironmentVariable("V8SHARP_BENCH_SCALE") ?? "50";
+            return (dir, files.Select(f => Path.Combine(dir, f)).ToArray(),
+                fixedWork ? "var __benchScale = " + int.Parse(scale, CultureInfo.InvariantCulture) + ";\n" + fixedDriver : driver);
         }
         if (suite.StartsWith("micro:", StringComparison.Ordinal))
         {
@@ -170,7 +221,7 @@ public static partial class Program
     static int Compare(string[] args)
     {
         var suites = (Arg(args, "--suites") ?? "octane").Split(',', StringSplitOptions.RemoveEmptyEntries)
-            .SelectMany(s => s == "octane" ? OctaneBenchmarks.Select(b => "octane:" + b) : [s]).ToList();
+            .SelectMany(s => s is "octane" or "octane-cpu" ? OctaneBenchmarks.Select(b => s + ":" + b) : [s]).ToList();
         var engines = (Arg(args, "--engines") ?? "v8:jit,v8:jitless,v8sharp").Split(',', StringSplitOptions.RemoveEmptyEntries);
         int runs = int.Parse(Arg(args, "--runs") ?? "1", CultureInfo.InvariantCulture);
         int timeout = int.Parse(Arg(args, "--timeout") ?? "600", CultureInfo.InvariantCulture);
