@@ -274,6 +274,39 @@ public static partial class BuiltinsArray
         // ArrayConstructorImpl in a register; see Isolate.ArrayConstructorAllocationSite).
         AllocationSite? site = isolate.ArrayConstructorAllocationSite;
         isolate.ArrayConstructorAllocationSite = null;
+
+        // ArrayConstructorImpl: without a subclass, GenerateDispatchToArrayStub
+        // handles a single Smi length in CSA (CreateArrayDispatchSingleArgument
+        // and ArraySingleArgumentConstructor): the kind is made holey, in the
+        // allocation site too, even for length 0. Everything else is
+        // Runtime_NewArray (the no-argument stub allocates what it would).
+        if (ReferenceEquals(newTarget, function) && args.ArgcWithoutReceiver == 1)
+        {
+            ElementsKind kind;
+            if (site is not null)
+            {
+                kind = site.GetElementsKind();
+                if (!ElementsKinds.IsHoleyElementsKind(kind))
+                {
+                    // Make elements kind holey and update elements kind in the type info.
+                    kind = ElementsKinds.GetHoleyElementsKind(kind);
+                    site.SetElementsKind(kind);
+                }
+            }
+            else
+            {
+                kind = ElementsKinds.GetHoleyElementsKind(ElementsKind.PACKED_SMI_ELEMENTS);
+            }
+            JSValue arraySize = args.Arguments[0];
+            if (arraySize.IsSmi && (uint)(int)arraySize.Number < JSArray.kInitialMaxFastElementArray)
+            {
+                int size = (int)arraySize.Number;
+                JSArray array = isolate.Factory.NewJSArray(kind, size, size,
+                    Factory.ArrayStorageAllocationMode.INITIALIZE_ARRAY_ELEMENTS_WITH_HOLE);
+                if (site is not null && AllocationSite.ShouldTrack(kind)) array.AllocationMementoSite = site;
+                return array;
+            }
+        }
         return NewArray(isolate, function, newTarget, args.Arguments, site);
     }
 
