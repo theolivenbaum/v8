@@ -2872,6 +2872,437 @@ public partial class ParsingTest
         RunParserSyncTest(postfix_context_data, bad_statement_data_common, kError);
     }
 
+    // V8 runs these through %FunctionGetInferredName, which returns the
+    // SharedFunctionInfo's inferred name: the literal's raw_inferred_name.
+    private List<FunctionLiteral> ParseAllLiterals(string source)
+    {
+        v8_flags.allow_natives_syntax = true;
+        UnoptimizedCompileFlags flags = NewScriptFlags();
+        flags.set_allow_lazy_parsing(false);
+        ParseInfo info = NewParseInfo(flags);
+        CHECK_PARSE_PROGRAM(info, new SourceScript(source, 1));
+        List<FunctionLiteral> literals = PreParserTest.CollectLiterals(info.literal());
+        literals.Sort((a, b) => a.function_token_position().CompareTo(b.function_token_position()));
+        return literals;
+    }
+
+    private static string InferredName(FunctionLiteral literal) =>
+        literal.raw_inferred_name()?.ToFlatString() ?? "";
+
+    [Fact]
+    public void FuncNameInferrerBasic()
+    {
+        // Tests that function names are inferred properly.
+        List<FunctionLiteral> literals = ParseAllLiterals(
+            "var foo1 = function() {}; " +
+            "var foo2 = function foo3() {}; " +
+            "function not_ctor() { " +
+            "  var foo4 = function() {}; " +
+            "  return %FunctionGetInferredName(foo4); " +
+            "} " +
+            "function Ctor() { " +
+            "  var foo5 = function() {}; " +
+            "  return %FunctionGetInferredName(foo5); " +
+            "} " +
+            "var obj1 = { foo6: function() {} }; " +
+            "var obj2 = { 'foo7': function() {} }; " +
+            "var obj3 = {}; " +
+            "obj3[1] = function() {}; " +
+            "var obj4 = {}; " +
+            "obj4[1] = function foo8() {}; " +
+            "var obj5 = {}; " +
+            "obj5['foo9'] = function() {}; " +
+            "var obj6 = { obj7 : { foo10: function() {} } };");
+        // In source order; null for the two declarations, which V8 does not check.
+        string[] expected =
+        [
+            "foo1",
+            // foo2 is not unnamed -> its name is not inferred.
+            "",
+            null,  // not_ctor
+            "foo4",
+            null,  // Ctor
+            "Ctor.foo5",
+            "obj1.foo6",
+            "obj2.foo7",
+            "obj3.<computed>",
+            "",
+            "obj5.foo9",
+            "obj6.obj7.foo10",
+        ];
+        Assert.Equal(expected.Length, literals.Count);
+        for (int i = 0; i < expected.Length; i++)
+        {
+            if (expected[i] != null) Assert.Equal(expected[i], InferredName(literals[i]));
+        }
+    }
+
+    [Fact]
+    public void FuncNameInferrerTwoByte()
+    {
+        // Tests function name inferring in cases where some parts of the inferred
+        // function name are two-byte strings.
+        List<FunctionLiteral> literals = ParseAllLiterals(
+            "var obj1 = { očj2 : { foo1: function() {} } }; " +
+            "%FunctionGetInferredName(obj1.očj2.foo1)");
+        Assert.Single(literals);
+        Assert.Equal("obj1.očj2.foo1", InferredName(literals[0]));
+    }
+
+    [Fact]
+    public void FuncNameInferrerEscaped()
+    {
+        // The same as FuncNameInferrerTwoByte, except that we express the two-byte
+        // character as a Unicode escape.
+        List<FunctionLiteral> literals = ParseAllLiterals(
+            "var obj1 = { o\\u010dj2 : { foo1: function() {} } }; " +
+            "%FunctionGetInferredName(obj1.o\\u010dj2.foo1)");
+        Assert.Single(literals);
+        Assert.Equal("obj1.očj2.foo1", InferredName(literals[0]));
+    }
+
+
+
+
+
+    // RunJS for scripts whose completion value is a top-level function named
+    // |name| (a declaration or a variable initialized with a function): the
+    // function as a lazily compilable SharedFunctionInfo.
+    private static PreParserTest.LazyFunction RunJSForFunction(string source, string name)
+    {
+        var script = new SourceScript(source, PreParserTest.kScriptId);
+        ParseInfo info = PreParserTest.ParseScript(script);
+        foreach (FunctionLiteral literal in PreParserTest.CollectLiterals(info.literal()))
+        {
+            if (literal.ShouldEagerCompile()) continue;
+            string literal_name = literal.raw_name()?.ToFlatString() ?? "";
+            if (literal_name.Length == 0) literal_name = literal.raw_inferred_name()?.ToFlatString() ?? "";
+            if (literal_name == name) return new PreParserTest.LazyFunction(script, literal);
+        }
+        throw new InvalidOperationException("no lazy function " + name);
+    }
+
+    // The ScopeInfo of the context the closures created by |outer| capture:
+    // V8 runs |outer| and reads context()->scope_info() off the closure it
+    // returns. The port compiles |outer| lazily and allocates its ScopeInfos.
+    private static IScopeInfo ClosureContextScopeInfo(PreParserTest.LazyFunction outer)
+    {
+        ParseInfo compiled = PreParserTest.CompileLazily(outer, true);
+        DeclarationScope scope = compiled.literal().scope();
+        Assert.True(scope.NeedsContext());
+        return scope.scope_info();
+    }
+
+    [Fact]
+    public void SerializationOfMaybeAssignmentFlag()
+    {
+        const string src =
+            "function h() {" +
+            "  var result = [];" +
+            "  function f() {" +
+            "    result.push(2);" +
+            "  }" +
+            "  function assertResult(r) {" +
+            "    f();" +
+            "    result = [];" +
+            "  }" +
+            "  assertResult([2]);" +
+            "  assertResult([2]);" +
+            "  return f;" +
+            "};" +
+            "h();";
+
+        IScopeInfo context_scope_info = ClosureContextScopeInfo(RunJSForFunction(src, "h"));
+        var avf = new AstValueFactory();
+        AstRawString name = avf.GetOneByteString("result");
+        var script_scope = new DeclarationScope(avf);
+        Scope s = Scope.DeserializeScopeChain(TestScopeInfoProvider.Instance, context_scope_info, script_scope, avf,
+                                              Scope.DeserializationMode.kIncludingVariables);
+        Assert.True(s != script_scope);
+        Assert.NotNull(name);
+
+        // Get result from h's function context (that is f's context)
+        Variable var = s.LookupForTesting(name);
+
+        Assert.NotNull(var);
+        // Maybe assigned should survive deserialization
+        Assert.Equal(MaybeAssignedFlag.kMaybeAssigned, var.maybe_assigned());
+        // TODO(sigurds) Figure out if is_used should survive context serialization.
+    }
+
+    [Fact]
+    public void IfArgumentsArrayAccessedThenParametersMaybeAssigned()
+    {
+        const string src =
+            "function f(x) {" +
+            "    var a = arguments;" +
+            "    function g(i) {" +
+            "      ++a[0];" +
+            "    };" +
+            "    return g;" +
+            "  }" +
+            "f(0);";
+
+        IScopeInfo context_scope_info = ClosureContextScopeInfo(RunJSForFunction(src, "f"));
+        var avf = new AstValueFactory();
+        AstRawString name_x = avf.GetOneByteString("x");
+
+        var script_scope = new DeclarationScope(avf);
+        Scope s = Scope.DeserializeScopeChain(TestScopeInfoProvider.Instance, context_scope_info, script_scope, avf,
+                                              Scope.DeserializationMode.kIncludingVariables);
+        Assert.True(s != script_scope);
+
+        // Get result from f's function context (that is g's outer context)
+        Variable var_x = s.LookupForTesting(name_x);
+        Assert.NotNull(var_x);
+        Assert.Equal(MaybeAssignedFlag.kMaybeAssigned, var_x.maybe_assigned());
+    }
+
+    [Fact]
+    public void InnerAssignment()
+    {
+        const string prefix = "function f() {";
+        const string midfix = " function g() {";
+        const string suffix = "}}; f";
+        (string source, bool assigned, bool strict)[] outers =
+        [
+            // Actual assignments.
+            ("var x; var x = 5;", true, false),
+            ("var x; { var x = 5; }", true, false),
+            ("'use strict'; let x; x = 6;", true, true),
+            ("var x = 5; function x() {}", true, false),
+            ("var x = 4; var x = 5;", true, false),
+            ("var [x, x] = [4, 5];", true, false),
+            ("var x; [x, x] = [4, 5];", true, false),
+            ("var {a: x, b: x} = {a: 4, b: 5};", true, false),
+            ("var x = {a: 4, b: (x = 5)};", true, false),
+            ("var {x=1} = {a: 4, b: (x = 5)};", true, false),
+            ("var {x} = {x: 4, b: (x = 5)};", true, false),
+            // Actual non-assignments.
+            ("var x;", false, false),
+            ("var x = 5;", false, false),
+            ("'use strict'; let x;", false, true),
+            ("'use strict'; let x = 6;", false, true),
+            ("'use strict'; var x = 0; { let x = 6; }", false, true),
+            ("'use strict'; var x = 0; { let x; x = 6; }", false, true),
+            ("'use strict'; let x = 0; { let x = 6; }", false, true),
+            ("'use strict'; let x = 0; { let x; x = 6; }", false, true),
+            ("var x; try {} catch (x) { x = 5; }", false, false),
+            ("function x() {}", false, false),
+            // Eval approximation.
+            ("var x; eval('');", true, false),
+            ("eval(''); var x;", true, false),
+            ("'use strict'; let x; eval('');", true, true),
+            ("'use strict'; eval(''); let x;", true, true),
+            // Non-assignments not recognized, because the analysis is approximative.
+            ("var x; var x;", true, false),
+            ("var x = 5; var x;", true, false),
+            ("var x; { var x; }", true, false),
+            ("var x; function x() {}", true, false),
+            ("function x() {}; var x;", true, false),
+            ("var x; try {} catch (x) { var x = 5; }", true, false),
+        ];
+
+        // We set allow_error_in_inner_function to true in cases where our handling of
+        // assigned variables in lazy inner functions is currently overly pessimistic.
+        // FIXME(marja): remove it when no longer needed.
+        (string source, bool assigned, bool with, bool allow_error_in_inner_function)[] inners =
+        [
+            // Actual assignments.
+            ("x = 1;", true, false, false),
+            ("x++;", true, false, false),
+            ("++x;", true, false, false),
+            ("x--;", true, false, false),
+            ("--x;", true, false, false),
+            ("{ x = 1; }", true, false, false),
+            ("'use strict'; { let x; }; x = 0;", true, false, false),
+            ("'use strict'; { const x = 1; }; x = 0;", true, false, false),
+            ("'use strict'; { function x() {} }; x = 0;", true, false, false),
+            ("with ({}) { x = 1; }", true, true, false),
+            ("eval('');", true, false, false),
+            ("'use strict'; { let y; eval('') }", true, false, false),
+            ("function h() { x = 0; }", true, false, false),
+            ("(function() { x = 0; })", true, false, false),
+            ("(function() { x = 0; })", true, false, false),
+            ("with ({}) (function() { x = 0; })", true, true, false),
+            ("for (x of [1,2,3]) {}", true, false, false),
+            ("for (x in {a: 1}) {}", true, false, false),
+            ("for ([x] of [[1],[2],[3]]) {}", true, false, false),
+            ("for ([x] in {ab: 1}) {}", true, false, false),
+            ("for ([...x] in {ab: 1}) {}", true, false, false),
+            ("[x] = [1]", true, false, false),
+            // Actual non-assignments.
+            ("", false, false, false),
+            ("x;", false, false, false),
+            ("var x;", false, false, false),
+            ("var x = 8;", false, false, false),
+            ("var x; x = 8;", false, false, false),
+            ("'use strict'; let x;", false, false, false),
+            ("'use strict'; let x = 8;", false, false, false),
+            ("'use strict'; let x; x = 8;", false, false, false),
+            ("'use strict'; const x = 8;", false, false, false),
+            ("function x() {}", false, false, false),
+            ("function x() { x = 0; }", false, false, true),
+            ("function h(x) { x = 0; }", false, false, false),
+            ("'use strict'; { let x; x = 0; }", false, false, false),
+            ("{ var x; }; x = 0;", false, false, false),
+            ("with ({}) {}", false, true, false),
+            ("var x; { with ({}) { x = 1; } }", false, true, false),
+            ("try {} catch(x) { x = 0; }", false, false, true),
+            ("try {} catch(x) { with ({}) { x = 1; } }", false, true, true),
+            // Eval approximation.
+            ("eval('');", true, false, false),
+            ("function h() { eval(''); }", true, false, false),
+            ("(function() { eval(''); })", true, false, false),
+            // Shadowing not recognized because of eval approximation.
+            ("var x; eval('');", true, false, false),
+            ("'use strict'; let x; eval('');", true, false, false),
+            ("try {} catch(x) { eval(''); }", true, false, false),
+            ("function x() { eval(''); }", true, false, false),
+            ("(function(x) { eval(''); })", true, false, false),
+        ];
+
+        for (int i = 0; i < outers.Length; ++i)
+        {
+            string outer = outers[i].source;
+            for (int j = 0; j < inners.Length; ++j)
+            {
+                for (int lazy = 0; lazy < 2; ++lazy)
+                {
+                    if (outers[i].strict && inners[j].with) continue;
+                    string inner = inners[j].source;
+                    string program = prefix + outer + midfix + inner + suffix;
+
+                    ParseInfo info;
+                    if (lazy != 0)
+                    {
+                        PreParserTest.LazyFunction f = RunJSForFunction(program, "f");
+                        UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForFunctionCompile(
+                            ParsingFlags.Default, UnoptimizedCompileFlags.DetailsOf(f.literal), PreParserTest.Details());
+                        info = new ParseInfo(flags);
+                        info.set_scope_info_provider(TestScopeInfoProvider.Instance);
+                        CHECK_PARSE_FUNCTION(info, f);
+                    }
+                    else
+                    {
+                        var script = new SourceScript(program, 1);
+                        UnoptimizedCompileFlags flags = NewScriptFlags();
+                        flags.set_allow_lazy_parsing(false);
+                        info = NewParseInfo(flags);
+                        CHECK_PARSE_PROGRAM(info, script);
+                    }
+
+                    Scope scope = info.literal().scope();
+                    if (lazy == 0)
+                    {
+                        scope = scope.inner_scope();
+                    }
+                    Assert.NotNull(scope);
+                    Assert.Null(scope.sibling());
+                    Assert.True(scope.is_function_scope());
+                    AstRawString var_name = info.ast_value_factory().GetOneByteString("x");
+                    Variable var = scope.LookupForTesting(var_name);
+                    bool expected = outers[i].assigned || inners[j].assigned;
+                    Assert.NotNull(var);
+                    bool is_maybe_assigned = var.maybe_assigned() == MaybeAssignedFlag.kMaybeAssigned;
+                    Assert.True(is_maybe_assigned == expected ||
+                                (is_maybe_assigned && inners[j].allow_error_in_inner_function), program);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void MaybeAssignedParameters()
+    {
+        (bool arg_assigned, string source)[] tests =
+        [
+            (false, "function f(arg) {}"),
+            (false, "function f(arg) {g(arg)}"),
+            (false, "function f(arg) {function h() { g(arg) }; h()}"),
+            (false, "function f(arg) {function h() { g(arg) }; return h}"),
+            (false, "function f(arg=1) {}"),
+            (false, "function f(arg=1) {g(arg)}"),
+            (false, "function f(arg, arguments) {g(arg); arguments[0] = 42; g(arg)}"),
+            (false, "function f(arg, ...arguments) {g(arg); arguments[0] = 42; g(arg)}"),
+            (false, "function f(arg, arguments=[]) {g(arg); arguments[0] = 42; g(arg)}"),
+            (false, "function f(...arg) {g(arg); arguments[0] = 42; g(arg)}"),
+            (false, "function f(arg) {g(arg); g(function() {arguments[0] = 42}); g(arg)}"),
+
+            // strict arguments object
+            (false, "function f(arg, x=1) {g(arg); arguments[0] = 42; g(arg)}"),
+            (false, "function f(arg, ...x) {g(arg); arguments[0] = 42; g(arg)}"),
+            (false, "function f(arg=1) {g(arg); arguments[0] = 42; g(arg)}"),
+            (false, "function f(arg) {'use strict'; g(arg); arguments[0] = 42; g(arg)}"),
+            (false, "function f(arg) {g(arg); f.arguments[0] = 42; g(arg)}"),
+            (false, "function f(arg, args=arguments) {g(arg); args[0] = 42; g(arg)}"),
+
+            (true, "function f(arg) {g(arg); arg = 42; g(arg)}"),
+            (true, "function f(arg) {g(arg); eval('arg = 42'); g(arg)}"),
+            (true, "function f(arg) {g(arg); var arg = 42; g(arg)}"),
+            (true, "function f(arg, x=1) {g(arg); arg = 42; g(arg)}"),
+            (true, "function f(arg, ...x) {g(arg); arg = 42; g(arg)}"),
+            (true, "function f(arg=1) {g(arg); arg = 42; g(arg)}"),
+            (true, "function f(arg) {'use strict'; g(arg); arg = 42; g(arg)}"),
+            (true, "function f(arg, {a=(g(arg), arg=42)}) {g(arg)}"),
+            (true, "function f(arg) {g(arg); g(function() {arg = 42}); g(arg)}"),
+            (true, "function f(arg) {g(arg); g(function() {eval('arg = 42')}); g(arg)}"),
+            (true, "function f(arg) {g(arg); g(() => arg = 42); g(arg)}"),
+            (true, "function f(arg) {g(arg); g(() => eval('arg = 42')); g(arg)}"),
+            (true, "function f(...arg) {g(arg); eval('arg = 42'); g(arg)}"),
+
+            // sloppy arguments object
+            (true, "function f(arg) {g(arg); arguments[0] = 42; g(arg)}"),
+            (true, "function f(arg) {g(arg); h(arguments); g(arg)}"),
+            (true, "function f(arg) {((args) => {arguments[0] = 42})(arguments); " + "g(arg)}"),
+            (true, "function f(arg) {g(arg); eval('arguments[0] = 42'); g(arg)}"),
+            (true, "function f(arg) {g(arg); g(() => arguments[0] = 42); g(arg)}"),
+
+            // default values
+            (false, "function f({x:arg = 1}) {}"),
+            (true, "function f({x:arg = 1}, {y:b=(arg=2)}) {}"),
+            (true, "function f({x:arg = (arg = 2)}) {}"),
+            (false, "var f = ({x:arg = 1}) => {}"),
+            (true, "var f = ({x:arg = 1}, {y:b=(arg=2)}) => {}"),
+            (true, "var f = ({x:arg = (arg = 2)}) => {}"),
+        ];
+
+        const string suffix = "; f";
+
+        for (int i = 0; i < tests.Length; ++i)
+        {
+            bool assigned = tests[i].arg_assigned;
+            string source = tests[i].source;
+            for (int allow_lazy = 0; allow_lazy < 2; ++allow_lazy)
+            {
+                string program = source + suffix;
+                PreParserTest.LazyFunction shared = RunJSForFunction(program, "f");
+                UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForFunctionCompile(
+                    ParsingFlags.Default, UnoptimizedCompileFlags.DetailsOf(shared.literal), PreParserTest.Details());
+                flags.set_allow_lazy_parsing(allow_lazy != 0);
+                var info = new ParseInfo(flags);
+                info.set_scope_info_provider(TestScopeInfoProvider.Instance);
+                CHECK_PARSE_FUNCTION(info, shared);
+
+                Scope scope = info.literal().scope();
+                Assert.False(scope.AsDeclarationScope().was_lazily_parsed());
+                Assert.Null(scope.sibling());
+                Assert.True(scope.is_function_scope());
+                AstRawString var_name = info.ast_value_factory().GetOneByteString("arg");
+                Variable var = scope.LookupForTesting(var_name);
+                Assert.True(var.is_used() || !assigned);
+                bool is_maybe_assigned = var.maybe_assigned() == MaybeAssignedFlag.kMaybeAssigned;
+                Assert.True(assigned == is_maybe_assigned, program);
+            }
+        }
+    }
+
+
+
+
+
+
+
     [Fact]
     public void MaybeAssignedInsideLoop()
     {
@@ -3337,6 +3768,125 @@ public partial class ParsingTest
             TestMaybeAssigned(wrap(input), "foo", false, false);
         }
     }
+
+    [Fact]
+    public void MaybeAssignedTopLevel()
+    {
+        string[] prefixes =
+        [
+            "let foo; ",
+            "let foo = 0; ",
+            "let [foo] = [1]; ",
+            "let {foo} = {foo: 2}; ",
+            "let {foo=3} = {}; ",
+            "var foo; ",
+            "var foo = 0; ",
+            "var [foo] = [1]; ",
+            "var {foo} = {foo: 2}; ",
+            "var {foo=3} = {}; ",
+            "{ var foo; }; ",
+            "{ var foo = 0; }; ",
+            "{ var [foo] = [1]; }; ",
+            "{ var {foo} = {foo: 2}; }; ",
+            "{ var {foo=3} = {}; }; ",
+            "function foo() {}; ",
+            "function* foo() {}; ",
+            "async function foo() {}; ",
+            "class foo {}; ",
+            "class foo extends null {}; ",
+        ];
+
+        string[] module_and_script_tests =
+        [
+            "function bar() {foo = 42}; ext(bar); ext(foo)",
+            "ext(function() {foo++}); ext(foo)",
+            "bar = () => --foo; ext(bar); ext(foo)",
+            "function* bar() {eval(ext)}; ext(bar); ext(foo)",
+        ];
+
+        string[] script_only_tests =
+        [
+            "",
+            "{ function foo() {}; }; ",
+            "{ function* foo() {}; }; ",
+            "{ async function foo() {}; }; ",
+        ];
+
+        for (int i = 0; i < prefixes.Length; ++i)
+        {
+            for (int j = 0; j < module_and_script_tests.Length; ++j)
+            {
+                string source = prefixes[i] + module_and_script_tests[j];
+                var input = new Input(true, source, []);
+                for (int module = 0; module <= 1; ++module)
+                {
+                    for (int allow_lazy_parsing = 0; allow_lazy_parsing <= 1; ++allow_lazy_parsing)
+                    {
+                        TestMaybeAssigned(input, "foo", module, allow_lazy_parsing);
+                    }
+                }
+            }
+        }
+
+        for (int i = 0; i < prefixes.Length; ++i)
+        {
+            for (int j = 0; j < script_only_tests.Length; ++j)
+            {
+                string source = prefixes[i] + script_only_tests[j];
+                var input = new Input(true, source, []);
+                for (int allow_lazy_parsing = 0; allow_lazy_parsing <= 1; ++allow_lazy_parsing)
+                {
+                    TestMaybeAssigned(input, "foo", false, allow_lazy_parsing);
+                }
+            }
+        }
+    }
+
+    // V8 counts the use counters through the isolate's callback while running
+    // the script; the port asks the parser for them (Parser::UpdateStatistics).
+    private List<UseCounterFeature> CompileForUseCounts(string source)
+    {
+        var use_counts = new List<UseCounterFeature>();
+        ParseInfo info = NewParseInfo(NewScriptFlags());
+        Assert.True(ParsingEntry.ParseProgram(info, new SourceScript(source, 1), null, use_counts));
+        return use_counts;
+    }
+
+    [Fact]
+    public void StrictModeUseCount()
+    {
+        List<UseCounterFeature> use_counts = CompileForUseCounts(
+            "\"use strict\";\n" + "function bar() { var baz = 1; }");  // strict mode inherits
+        Assert.Contains(UseCounterFeature.kStrictMode, use_counts);
+        Assert.DoesNotContain(UseCounterFeature.kSloppyMode, use_counts);
+    }
+
+    [Fact]
+    public void SloppyModeUseCount()
+    {
+        // Force eager parsing (preparser doesn't update use counts).
+        v8_flags.lazy = false;
+        v8_flags.lazy_streaming = false;
+        List<UseCounterFeature> use_counts = CompileForUseCounts("function bar() { var baz = 1; }");
+        Assert.Contains(UseCounterFeature.kSloppyMode, use_counts);
+        Assert.DoesNotContain(UseCounterFeature.kStrictMode, use_counts);
+    }
+
+    [Fact]
+    public void BothModesUseCount()
+    {
+        v8_flags.lazy = false;
+        v8_flags.lazy_streaming = false;
+        List<UseCounterFeature> use_counts = CompileForUseCounts("function bar() { 'use strict'; var baz = 1; }");
+        Assert.Contains(UseCounterFeature.kSloppyMode, use_counts);
+        Assert.Contains(UseCounterFeature.kStrictMode, use_counts);
+    }
+
+
+
+
+
+
 
     [Fact]
     public void LineOrParagraphSeparatorAsLineTerminator()
