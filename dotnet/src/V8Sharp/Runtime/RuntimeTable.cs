@@ -286,6 +286,75 @@ public static partial class RuntimeTable
         Register(FunctionId.CreatePrivateSymbol, static (i, a) => RuntimeTest.CreatePrivateSymbol(i, a));
         Register(FunctionId.HasOwnConstDataProperty, static (i, a) => RuntimeTest.HasOwnConstDataProperty(i, a[0], a[1]));
         Register(FunctionId.Call, static (i, a) => Execution.Call(i, a[0], a[1], a[2..]));
+
+        // Protectors.
+        Register(FunctionId.IsConcatSpreadableProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsIsConcatSpreadableLookupChainIntact(i)));
+        Register(FunctionId.TypedArraySpeciesProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsTypedArraySpeciesLookupChainIntact(i)));
+        Register(FunctionId.RegExpSpeciesProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsRegExpSpeciesLookupChainIntact(i)));
+        Register(FunctionId.PromiseSpeciesProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsPromiseSpeciesLookupChainIntact(i)));
+        Register(FunctionId.ArraySpeciesProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsArraySpeciesLookupChainIntact(i)));
+        Register(FunctionId.MapIteratorProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsMapIteratorLookupChainIntact(i)));
+        Register(FunctionId.SetIteratorProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsSetIteratorLookupChainIntact(i)));
+        Register(FunctionId.StringIteratorProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsStringIteratorLookupChainIntact(i)));
+        Register(FunctionId.ArrayIteratorProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsArrayIteratorLookupChainIntact(i)));
+        Register(FunctionId.NoElementsProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsNoElementsIntact(i)));
+        Register(FunctionId.StringWrapperToPrimitiveProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsStringWrapperToPrimitiveIntact(i)));
+
+        // Strings, numbers and objects.
+        Register(FunctionId.ConstructConsString, static (i, a) => RuntimeTest.ConstructConsString(i, a[0], a[1]));
+        Register(FunctionId.ConstructSlicedString, static (i, a) => RuntimeTest.ConstructSlicedString(i, a[0], a[1]));
+        Register(FunctionId.ConstructInternalizedString, static (i, a) => RuntimeTest.ConstructInternalizedString(i, a[0]));
+        Register(FunctionId.ConstructThinString, static (i, a) => RuntimeTest.ConstructThinString(i, a[0]));
+        Register(FunctionId.FlattenString, static (i, a) => RuntimeTest.FlattenString(i, a[0]));
+        Register(FunctionId.StringIsFlat, static (i, a) => RuntimeTest.StringIsFlat(a[0]));
+        Register(FunctionId.StringLessThan, static (i, a) => RuntimeTest.StringLessThan(i, a[0], a[1]));
+        Register(FunctionId.StringAdd, static (i, a) => Interpreter.InterpreterOps.StringAdd(i, a[0].As<JSString>(), a[1].As<JSString>()));
+        Register(FunctionId.MaxSmi, static (i, a) => RuntimeTest.MaxSmi());
+        Register(FunctionId.GetHoleNaN, static (i, a) => RuntimeTest.GetHoleNaN());
+        Register(FunctionId.GetHoleNaNUpper, static (i, a) => RuntimeTest.GetHoleNaNUpper());
+        Register(FunctionId.GetHoleNaNLower, static (i, a) => RuntimeTest.GetHoleNaNLower());
+        Register(FunctionId.ConstructDouble, static (i, a) => RuntimeTest.ConstructDouble(a[0], a[1]));
+        Register(FunctionId.AllocateHeapNumber, static (i, a) => JSValue.FromNumber(0));
+        Register(FunctionId.AllocateHeapNumberWithValue, static (i, a) => JSValue.FromNumber(a[0].Number));
+        Register(FunctionId.DoubleToStringWithRadix, static (i, a) => RuntimeTest.DoubleToStringWithRadix(i, a[0], a[1]));
+        Register(FunctionId.StringParseInt, static (i, a) => RuntimeTest.StringParseInt(i, a[0], a[1]));
+        Register(FunctionId.IsArray, static (i, a) => RuntimeTest.IsArray(a[0]));
+        Register(FunctionId.IsSameHeapObject, static (i, a) => RuntimeTest.IsSameHeapObject(a[0], a[1]));
+        Register(FunctionId.SymbolIsPrivate, static (i, a) => RuntimeTest.SymbolIsPrivate(a[0]));
+        Register(FunctionId.Typeof, static (i, a) => RuntimeTest.Typeof(i, a[0]));
+        Register(FunctionId.EnqueueMicrotask, static (i, a) => RuntimeTest.EnqueueMicrotask(i, a[0]));
+        Register(FunctionId.NewRegExpWithBacktrackLimit, static (i, a) => RuntimeTest.NewRegExpWithBacktrackLimit(i, a[0], a[1], a[2]));
+        Register(FunctionId.ThrowStackOverflow, static (i, a) => i.StackOverflow());
+        Register(FunctionId.CollectGarbage, static (i, a) => RuntimeTest.CollectGarbage());
+        Register(FunctionId.MajorGCForCompilerTesting, static (i, a) => RuntimeTest.CollectGarbage());
+
+        // Tiering and heap-layout queries, as a --jitless V8 answers them.
+        Register(FunctionId.ICsAreEnabled, static (i, a) => JSValue.FromBoolean(i.Flags.use_ic));
+        Register(FunctionId.IsMaglevEnabled, RuntimeTest.ReturnFalse);
+        Register(FunctionId.IsSparkplugEnabled, RuntimeTest.ReturnFalse);
+        Register(FunctionId.IsUndefinedDoubleEnabled, RuntimeTest.ReturnFalse);
+        Register(FunctionId.RunningInSimulator, RuntimeTest.ReturnFalse);
+        Register(FunctionId.ActiveTierIsTurbofan, RuntimeTest.ReturnFalse);
+        Register(FunctionId.ActiveTierIsMaglev, RuntimeTest.ReturnFalse);
+        Register(FunctionId.ActiveTierIsSparkplug, RuntimeTest.ReturnFalse);
+        Register(FunctionId.CurrentFrameIsTurbofan, RuntimeTest.ReturnFalse);
+        Register(FunctionId.InYoungGeneration, RuntimeTest.ReturnFalse);
+        Register(FunctionId.InLargeObjectSpace, RuntimeTest.ReturnFalse);
+        Register(FunctionId.IsInWritableSharedSpace, RuntimeTest.ReturnFalse);
+        Register(FunctionId.IsSharedString, RuntimeTest.ReturnFalse);
+        Register(FunctionId.HasCowElements, RuntimeTest.ReturnFalse);
+        Register(FunctionId.AssertNotPeeled, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.BaselineOsr, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.DisableOptimizationFinalization, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.PretenureAllocationSite, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.ForceFlush, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.CompleteInobjectSlackTracking, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.OptimizeObjectForAddingMultipleProperties, static (i, a) => a[0]);
+        Register(FunctionId.TryMigrateInstance, static (i, a) => a[0]);
+        Register(FunctionId.SetForceSlowPath, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.DebugTraceMinimal, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.SetDispatchTableGCInterval, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.VerifyType, static (i, a) => a[0]);
     }
 
     static void RegisterIntrinsics()

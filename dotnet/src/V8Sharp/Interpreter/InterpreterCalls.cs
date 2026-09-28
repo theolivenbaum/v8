@@ -291,6 +291,9 @@ public static class InterpreterCalls
     /// JSConstructStubGeneric for a bytecode function: allocates the receiver
     /// for base constructors, runs the bytecode, and picks the result.
     /// </summary>
+    /// <summary>The stack slots of V8's construct stub frame, measured against --jitless V8.</summary>
+    const int kConstructStubFrameSlots = 16;
+
     static JSValue ConstructInterpreted(Isolate isolate, JSFunction function, JSValue newTarget, int argsStart, int argc,
         ReadOnlySpan<JSValue> spanArgs, bool useSpan = false)
     {
@@ -315,9 +318,15 @@ public static class InterpreterCalls
             implicitReceiver = JSValue.TheHole;
         }
 
+        // The construct stub's frame (JSConstructStubGeneric: its fixed slots and
+        // the copied arguments) takes stack space in V8; reserving the same on the
+        // register stack keeps the recursion depth at which `new` overflows close
+        // to V8's.
+        int stubStart = isolate.AllocateRegisters(kConstructStubFrameSlots);
         JSValue result = useSpan
             ? InterpreterExecution.Invoke(isolate, function, implicitReceiver, spanArgs, newTarget, true)
             : InterpreterExecution.InvokeFromRegisters(isolate, function, implicitReceiver, argsStart, argc, newTarget, true);
+        isolate.RegisterStackTop = stubStart;
 
         // If the result is an object (in the ECMA sense), we should get rid
         // of the receiver and use the result; see ECMA-262 section 13.2.2-7

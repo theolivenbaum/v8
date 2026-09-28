@@ -4,6 +4,7 @@
 // status reports lite mode, and the heap-shape queries answer from the
 // object model.
 using System.Globalization;
+using V8Sharp.Base.Numbers;
 
 namespace V8Sharp.Runtime;
 
@@ -175,4 +176,115 @@ public static class RuntimeTest
     public static JSValue ReturnTrue(Isolate isolate, ReadOnlySpan<JSValue> args) => JSValue.True;
 
     public static JSValue ReturnFalse(Isolate isolate, ReadOnlySpan<JSValue> args) => JSValue.False;
+
+    // ---- Strings (runtime-test.cc / runtime-strings.cc) -----------------------------------
+
+    /// <summary>%ConstructConsString.</summary>
+    public static JSValue ConstructConsString(Isolate isolate, JSValue left, JSValue right) =>
+        isolate.Factory.NewConsString(left.As<JSString>(), right.As<JSString>());
+
+    /// <summary>%ConstructSlicedString.</summary>
+    public static JSValue ConstructSlicedString(Isolate isolate, JSValue str, JSValue index)
+    {
+        JSString s = str.As<JSString>();
+        return isolate.Factory.NewSubString(s, (int)index.Number, s.Length);
+    }
+
+    /// <summary>%ConstructInternalizedString.</summary>
+    public static JSValue ConstructInternalizedString(Isolate isolate, JSValue str) =>
+        isolate.Factory.InternalizeString(str.As<JSString>());
+
+    /// <summary>
+    /// %ConstructThinString. Deviation: V8Sharp has no ThinStrings (an
+    /// internalized copy never forwards the original), so the string is
+    /// returned as a cons string with the same contents.
+    /// </summary>
+    public static JSValue ConstructThinString(Isolate isolate, JSValue str)
+    {
+        JSString s = str.As<JSString>();
+        if (s is ConsString) return s;
+        return isolate.Factory.NewConsString(ReadOnlyRoots.empty_string, s);
+    }
+
+    /// <summary>%FlattenString.</summary>
+    public static JSValue FlattenString(Isolate isolate, JSValue str) => JSString.Flatten(isolate, str.As<JSString>());
+
+    /// <summary>%StringIsFlat.</summary>
+    public static JSValue StringIsFlat(JSValue str) => JSValue.FromBoolean(str.As<JSString>() is not ConsString);
+
+    /// <summary>%StringLessThan.</summary>
+    public static JSValue StringLessThan(Isolate isolate, JSValue x, JSValue y) =>
+        JSValue.FromBoolean(ObjectOps.Compare(isolate, x, y) == ComparisonResult.LessThan);
+
+    // ---- Numbers (runtime-numbers.cc / runtime-test.cc) -------------------------------------
+
+    /// <summary>%MaxSmi.</summary>
+    public static JSValue MaxSmi() => JSValue.FromInt(JSValue.SmiMaxValue);
+
+    /// <summary>%GetHoleNaN: a number with the hole NaN's bits.</summary>
+    public static JSValue GetHoleNaN() => JSValue.FromNumber(FixedDoubleArray.HoleNaN);
+
+    /// <summary>%GetHoleNaNUpper / %GetHoleNaNLower.</summary>
+    public static JSValue GetHoleNaNUpper() => JSValue.FromNumber(unchecked((uint)((ulong)EngineGlobals.kHoleNanInt64 >> 32)));
+
+    public static JSValue GetHoleNaNLower() => JSValue.FromNumber(unchecked((uint)(ulong)EngineGlobals.kHoleNanInt64));
+
+    /// <summary>%ConstructDouble(hi, lo).</summary>
+    public static JSValue ConstructDouble(JSValue hi, JSValue lo)
+    {
+        ulong bits = ((ulong)Conversions.NumberToUint32(hi.Number) << 32) | Conversions.NumberToUint32(lo.Number);
+        return JSValue.FromNumber(BitConverter.UInt64BitsToDouble(bits));
+    }
+
+    /// <summary>%DoubleToStringWithRadix.</summary>
+    public static JSValue DoubleToStringWithRadix(Isolate isolate, JSValue number, JSValue radix) =>
+        isolate.Factory.NewStringFromUtf16(Conversions.DoubleToRadixCString(number.Number, Conversions.NumberToInt32(radix.Number)));
+
+    /// <summary>%StringParseInt.</summary>
+    public static JSValue StringParseInt(Isolate isolate, JSValue str, JSValue radix)
+    {
+        JSString subject = JSString.Flatten(isolate, ObjectOps.ToString(isolate, str));
+        if (!radix.IsNumber) radix = ObjectOps.ToNumber(isolate, radix);
+        int radix32 = Conversions.DoubleToInt32(radix.Number);
+        if (radix32 != 0 && (radix32 < 2 || radix32 > 36)) return JSValue.FromNumber(double.NaN);
+        return JSValue.FromNumber(Conversions.StringToInt(subject.FlatSpan(), radix32));
+    }
+
+    // ---- Objects -------------------------------------------------------------------------
+
+    /// <summary>%IsArray.</summary>
+    public static JSValue IsArray(JSValue obj) => JSValue.FromBoolean(obj.HeapObjectOrNull is JSArray);
+
+    /// <summary>%IsSameHeapObject.</summary>
+    public static JSValue IsSameHeapObject(JSValue a, JSValue b) =>
+        JSValue.FromBoolean(a.IsHeapObject && ReferenceEquals(a.HeapObjectOrNull, b.HeapObjectOrNull));
+
+    /// <summary>%SymbolIsPrivate.</summary>
+    public static JSValue SymbolIsPrivate(JSValue symbol) => JSValue.FromBoolean(symbol.As<Symbol>().IsAnyPrivate);
+
+    /// <summary>%Typeof.</summary>
+    public static JSValue Typeof(Isolate isolate, JSValue value) => ObjectOps.TypeOf(isolate, value);
+
+    /// <summary>%EnqueueMicrotask.</summary>
+    public static JSValue EnqueueMicrotask(Isolate isolate, JSValue function)
+    {
+        var f = function.As<JSFunction>();
+        f.NativeContext.MicrotaskQueue?.EnqueueMicrotask(new CallableTask(f, f.NativeContext));
+        return JSValue.Undefined;
+    }
+
+    /// <summary>%NewRegExpWithBacktrackLimit.</summary>
+    public static JSValue NewRegExpWithBacktrackLimit(Isolate isolate, JSValue pattern, JSValue flags, JSValue limit)
+    {
+        RegExp.RegExpFlags? parsed = JSRegExp.FlagsFromString(isolate, flags.As<JSString>());
+        if (parsed is null) return isolate.ThrowTypeError(MessageTemplate.InvalidRegExpFlags, flags);
+        return JSRegExp.New(isolate, pattern.As<JSString>(), parsed.Value, (uint)(int)limit.Number);
+    }
+
+    /// <summary>%CollectGarbage and friends: a full .NET collection.</summary>
+    public static JSValue CollectGarbage()
+    {
+        GC.Collect();
+        return JSValue.Undefined;
+    }
 }
