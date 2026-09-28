@@ -3,9 +3,9 @@
 // tree takes them from llvm-libc (correctly rounded). So the correctly rounded
 // functions may differ from the oracle by one ulp, the fdlibm formulas built
 // on them (sinh, cosh, asinh, acosh, atanh) by a few ulps. tanh is
-// std::tanh in this tree, the platform's, and each of that and the oracle's
-// fdlibm tanh is within one ulp, so they differ by up to two; pow
-// goes through std::pow in both and must match exactly.
+// std::tanh in this tree, the platform's (glibc documents up to two ulps),
+// against the oracle's fdlibm tanh; pow goes through std::pow in both and
+// must match exactly.
 
 using V8Sharp.Base.Numbers;
 using V8Sharp.Oracle;
@@ -44,6 +44,14 @@ public class Ieee754OracleTest
         return v8.Run(js).Trim().Split(',').Select(long.Parse).ToArray();
     }
 
+    // A seed per function that does not depend on string hash randomization.
+    static int Seed(string fn)
+    {
+        int seed = 17;
+        foreach (char c in fn) seed = seed * 31 + c;
+        return seed & 0xFFFF;
+    }
+
     static long UlpDistance(double a, long bBits)
     {
         long aBits = BitConverter.DoubleToInt64Bits(a);
@@ -72,7 +80,7 @@ public class Ieee754OracleTest
     [InlineData("asinh", 3)]
     [InlineData("acosh", 3)]
     [InlineData("atanh", 3)]
-    [InlineData("tanh", 2)]
+    [InlineData("tanh", 4)]
     public void MatchesOracleWithinUlps(string fn, int ulps)
     {
         Func<double, double> f = fn switch
@@ -83,7 +91,7 @@ public class Ieee754OracleTest
             "acos" => Ieee754.acos, "sinh" => Ieee754.sinh, "cosh" => Ieee754.cosh, "asinh" => Ieee754.asinh,
             "acosh" => Ieee754.acosh, "atanh" => Ieee754.atanh, _ => Ieee754.tanh,
         };
-        double[] xs = Inputs(4000, fn.GetHashCode(StringComparison.Ordinal) & 0xFFFF);
+        double[] xs = Inputs(40000, Seed(fn));
         long[] expected = Oracle("Math." + fn + "(x[i])", xs);
         for (int i = 0; i < xs.Length; i++)
         {

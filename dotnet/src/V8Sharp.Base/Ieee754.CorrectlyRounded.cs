@@ -7,10 +7,13 @@
 // nearest even), which fixes their results completely, but its sources are
 // not part of this checkout (third_party/llvm-libc holds only BUILD.gn). The
 // port therefore computes the same correctly rounded results with its own
-// algorithm: Ziv's strategy over a multiprecision fixed-point evaluation
+// algorithms, in three stages: the table-driven kernels of
+// Ieee754.Kernels.cs (the common path, a few tens of nanoseconds), the
+// double-double evaluation of Ieee754.FastPath.cs, and this file: Ziv's
+// strategy over a multiprecision fixed-point evaluation
 // (System.Numerics.BigInteger), doubling the working precision until the
-// rounding of the enclosing interval is decided. The results are the same;
-// the speed is not (see todo.md).
+// rounding of the enclosing interval is decided. This last stage is also the
+// reference the tests hold the faster stages to.
 
 using System.Numerics;
 using System.Runtime.CompilerServices;

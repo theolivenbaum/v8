@@ -1,5 +1,7 @@
-// The fast path of the correctly rounded functions (see
-// Ieee754.CorrectlyRounded.cs): the function is evaluated in double-double
+// The second stage of the correctly rounded functions (see
+// Ieee754.CorrectlyRounded.cs), used when a table-driven kernel of
+// Ieee754.Kernels.cs cannot decide the rounding or does not cover the
+// argument: the function is evaluated in double-double
 // arithmetic (about 2^-100 relative error) and the result is returned when
 // Ziv's rounding test proves that the rounding of every value within the
 // error bound is the same double. Otherwise, which happens for about one
@@ -330,16 +332,18 @@ internal static partial class CorrectlyRounded
     public static bool TryLog(Fn fn, double x, out double result)
     {
         result = 0;
-        ulong bits = BitConverter.DoubleToUInt64Bits(x);
-        if (fn == Fn.Log2 && x >= kTwoPowM1022 && (bits & 0x000F_FFFF_FFFF_FFFFUL) == 0)
-        {
-            result = Math.ILogB(x);
-            return true;
-        }
         DoubleDouble v = LogDD(x);
         if (fn == Fn.Log2) v = Mul(v, Constants.InvLn2);
         else if (fn == Fn.Log10) v = Mul(v, Constants.InvLn10);
         return TryRound(v, out result);
+    }
+
+    // log2 of a normal power of two is its exponent.
+    public static bool TryLog2Exact(double x, out double result)
+    {
+        ulong bits = BitConverter.DoubleToUInt64Bits(x);
+        result = Math.ILogB(x);
+        return x >= kTwoPowM1022 && (bits & 0x000F_FFFF_FFFF_FFFFUL) == 0;
     }
 
     public static bool TryLog1p(double x, out double result)

@@ -56,7 +56,7 @@ public static class Ieee754
         if (double.IsNaN(x) || Math.Abs(x) > 1) return double.NaN;
         if (x == 1) return 0.0;
         if (x == 0) return 1.5707963267948966;
-        if (TryAcos(x, out double r)) return r;
+        if (Ieee754Kernels.TryAcos(x, out double r) || TryAcos(x, out r)) return r;
         return Evaluate(Fn.Acos, x, 0, Math.Acos(x));
     }
 
@@ -116,7 +116,7 @@ public static class Ieee754
         if (double.IsNaN(x) || Math.Abs(x) > 1) return double.NaN;
         if (x == 0) return x;
         if (Math.Abs(x) < kTwoPowM27) return x;
-        if (TryAsin(x, out double r)) return r;
+        if (Ieee754Kernels.TryAsin(x, out double r) || TryAsin(x, out r)) return r;
         return Evaluate(Fn.Asin, x, 0, Math.Asin(x));
     }
 
@@ -176,7 +176,7 @@ public static class Ieee754
         if (x == 0) return x;
         if (double.IsInfinity(x)) return x > 0 ? 1.5707963267948966 : -1.5707963267948966;
         if (Math.Abs(x) < kTwoPowM27) return x;
-        if (TryAtan(x, out double r)) return r;
+        if (Ieee754Kernels.TryAtan(x, out double r) || TryAtan(x, out r)) return r;
         return Evaluate(Fn.Atan, x, 0, Math.Atan(x));
     }
 
@@ -206,7 +206,7 @@ public static class Ieee754
             return yNegative ? -pi : pi;
         }
         if (double.IsInfinity(y)) return yNegative ? -pi_o_2 : pi_o_2;
-        if (TryAtan2(y, x, out double r)) return r;
+        if (Ieee754Kernels.TryAtan2(y, x, out double r) || TryAtan2(y, x, out r)) return r;
         return Evaluate(Fn.Atan2, y, x, Math.Atan2(y, x), yNegative);
     }
 
@@ -216,7 +216,7 @@ public static class Ieee754
         if (!double.IsFinite(x)) return double.NaN;
         if (x == 0) return 1.0;
         if (Math.Abs(x) < kTwoPowM27) return 1.0;
-        if (TryTrig(Fn.Cos, x, out double r)) return r;
+        if (Ieee754Kernels.TryCos(x, out double r) || TryTrig(Fn.Cos, x, out r)) return r;
         return Evaluate(Fn.Cos, x, 0, Math.Cos(x));
     }
 
@@ -226,7 +226,7 @@ public static class Ieee754
         if (!double.IsFinite(x)) return double.NaN;
         if (x == 0) return x;
         if (Math.Abs(x) < kTwoPowM27) return x;
-        if (TryTrig(Fn.Sin, x, out double r)) return r;
+        if (Ieee754Kernels.TrySin(x, out double r) || TryTrig(Fn.Sin, x, out r)) return r;
         return Evaluate(Fn.Sin, x, 0, Math.Sin(x));
     }
 
@@ -237,7 +237,7 @@ public static class Ieee754
         if (x == 0) return 1.0;
         if (x > 710) return double.PositiveInfinity;
         if (x < -746) return 0.0;
-        if (TryExp(x, out double r)) return r;
+        if (Ieee754Kernels.TryExp(x, out double r) || TryExp(x, out r)) return r;
         return Evaluate(Fn.Exp, x, 0, 1.0);
     }
 
@@ -304,7 +304,7 @@ public static class Ieee754
         if (x == 0) return double.NegativeInfinity;
         if (x == 1) return 0.0;
         if (double.IsPositiveInfinity(x)) return x;
-        if (TryLog(Fn.Log, x, out double r)) return r;
+        if (Ieee754Kernels.TryLog(Fn.Log, x, out double r) || TryLog(Fn.Log, x, out r)) return r;
         return Evaluate(Fn.Log, x, 0, Math.Log(x));
     }
 
@@ -315,7 +315,7 @@ public static class Ieee754
         if (x == -1) return double.NegativeInfinity;
         if (x == 0) return x;
         if (double.IsPositiveInfinity(x)) return x;
-        if (TryLog1p(x, out double r)) return r;
+        if (Ieee754Kernels.TryLog1p(x, out double r) || TryLog1p(x, out r)) return r;
         return Evaluate(Fn.Log1p, x, 0, Math.Abs(x) < 1e-5 ? x : Math.Log(1 + x));
     }
 
@@ -326,7 +326,7 @@ public static class Ieee754
         if (x == 0) return double.NegativeInfinity;
         if (x == 1) return 0.0;
         if (double.IsPositiveInfinity(x)) return x;
-        if (TryLog(Fn.Log2, x, out double r)) return r;
+        if (TryLog2Exact(x, out double r) || Ieee754Kernels.TryLog(Fn.Log2, x, out r) || TryLog(Fn.Log2, x, out r)) return r;
         return Evaluate(Fn.Log2, x, 0, Math.Log2(x));
     }
 
@@ -337,7 +337,7 @@ public static class Ieee754
         if (x == 0) return double.NegativeInfinity;
         if (x == 1) return 0.0;
         if (double.IsPositiveInfinity(x)) return x;
-        if (TryLog(Fn.Log10, x, out double r)) return r;
+        if (Ieee754Kernels.TryLog(Fn.Log10, x, out double r) || TryLog(Fn.Log10, x, out r)) return r;
         return Evaluate(Fn.Log10, x, 0, Math.Log10(x));
     }
 
@@ -356,7 +356,7 @@ public static class Ieee754
         if (x == 0) return x;
         if (x > 710) return double.PositiveInfinity;
         if (x < -40) return -1.0;
-        if (TryExpm1(x, out double r)) return r;
+        if (Ieee754Kernels.TryExpm1(x, out double r) || TryExpm1(x, out r)) return r;
         return Evaluate(Fn.Expm1, x, 0, Math.Abs(x) < 1e-5 ? x : Math.Exp(x) - 1);
     }
 
@@ -417,7 +417,7 @@ public static class Ieee754
         if (!double.IsFinite(x)) return double.NaN;
         if (x == 0) return x;
         if (Math.Abs(x) < kTwoPowM27) return x;
-        if (TryTrig(Fn.Tan, x, out double r)) return r;
+        if (Ieee754Kernels.TryTan(x, out double r) || TryTrig(Fn.Tan, x, out r)) return r;
         return Evaluate(Fn.Tan, x, 0, Math.Tan(x));
     }
 
