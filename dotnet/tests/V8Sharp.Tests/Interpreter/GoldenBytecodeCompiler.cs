@@ -25,8 +25,10 @@ public sealed class GoldenBytecodeCompiler : IBytecodeExpectationsCompiler
 
     /// <summary>The flags generate-bytecode-expectations and the unit test set
     /// (allow_natives_syntax, no lazy source positions, no function context
-    /// cells, --no-lazy) plus the header's extra flags.</summary>
-    public static (ParsingFlags, BytecodeGeneratorFlags) FlagsFor(BytecodeExpectationsHeaderOptions options)
+    /// cells, --no-lazy) plus the header's extra flags. |function_context_cells| is
+    /// V8's default, which the oracle comparison uses.</summary>
+    public static (ParsingFlags, BytecodeGeneratorFlags) FlagsFor(BytecodeExpectationsHeaderOptions options,
+                                                                  bool function_context_cells = false)
     {
         bool array_destructure_bytecode = false, for_of_optimization = false, private_field_bytecodes = false;
         bool proto_assign_seq_opt = true, ignition_elide_redundant_tdz_checks = true;
@@ -54,7 +56,7 @@ public sealed class GoldenBytecodeCompiler : IBytecodeExpectationsCompiler
             allow_natives_syntax = true,
             lazy = false,
             enable_lazy_source_positions = false,
-            function_context_cells = false,
+            function_context_cells = function_context_cells,
             ignition_elide_redundant_tdz_checks = ignition_elide_redundant_tdz_checks,
         };
         var generator = new BytecodeGeneratorFlags
@@ -76,14 +78,15 @@ public sealed class GoldenBytecodeCompiler : IBytecodeExpectationsCompiler
         public required BytecodeExpectationsHeaderOptions Options { get; init; }
     }
 
-    public static CompiledScript CompileScript(string source, BytecodeExpectationsHeaderOptions options)
+    public static CompiledScript CompileScript(string source, BytecodeExpectationsHeaderOptions options,
+                                               bool function_context_cells = false)
     {
-        (ParsingFlags parsing_flags, _) = FlagsFor(options);
+        (ParsingFlags parsing_flags, _) = FlagsFor(options, function_context_cells);
         UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForScriptCompile(
             parsing_flags,
             new UnoptimizedCompileFlags.ScriptDetails(1, true, LanguageMode.Sloppy, false, options.module, false,
                                                       false, false));
-        return Compile(source, flags, null, options);
+        return Compile(source, flags, null, options, function_context_cells);
     }
 
     /// <summary>Compiler::GetFunctionFromEval: compiles |source| as a direct
@@ -103,9 +106,9 @@ public sealed class GoldenBytecodeCompiler : IBytecodeExpectationsCompiler
     }
 
     static CompiledScript Compile(string source, UnoptimizedCompileFlags flags, IScopeInfo? outer_scope_info,
-                                  BytecodeExpectationsHeaderOptions options)
+                                  BytecodeExpectationsHeaderOptions options, bool function_context_cells = false)
     {
-        (ParsingFlags parsing_flags, BytecodeGeneratorFlags generator_flags) = FlagsFor(options);
+        (ParsingFlags parsing_flags, BytecodeGeneratorFlags generator_flags) = FlagsFor(options, function_context_cells);
         var info = new ParseInfo(flags, parsing_flags);
         info.set_scope_info_provider(GoldenScopeInfoProvider.Instance);
         var script = new SourceScript(source, 1);

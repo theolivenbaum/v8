@@ -34,7 +34,9 @@ public sealed class ObjectBoilerplateDescriptionData(int boilerplatePropertyCoun
     public string InstanceTypeName => "OBJECT_BOILERPLATE_DESCRIPTION_TYPE";
     public string? PrintedValue => null;
     public string Brief() =>
-        "<ObjectBoilerplateDescription[" + (2 * BoilerplatePropertyCount + 1).ToString(CultureInfo.InvariantCulture) + "]>";
+        // ObjectBoilerplateDescription::New: capacity is 2 * boilerplate (flags and
+        // backing_store_size are header fields).
+        "<ObjectBoilerplateDescription[" + (2 * BoilerplatePropertyCount).ToString(CultureInfo.InvariantCulture) + "]>";
     public override string ToString() => Brief();
 }
 

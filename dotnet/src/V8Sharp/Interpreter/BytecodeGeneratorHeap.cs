@@ -64,7 +64,8 @@ public sealed class SharedFunctionInfoDescription(FunctionLiteral literal) : IPr
 {
     public FunctionLiteral Literal { get; } = literal;
     public int FunctionLiteralId { get; } = literal.function_literal_id();
-    public string Name { get; } = literal.GetDebugName();
+    // SharedFunctionInfo::Name(): the literal's own name, not the inferred one.
+    public string Name { get; } = literal.raw_name() is { } name && !name.IsEmpty() ? literal.GetDebugName() : "";
     public FunctionKind Kind { get; } = literal.kind();
     public LanguageMode LanguageMode { get; } = literal.language_mode();
     public int ParameterCount { get; } = literal.parameter_count();
@@ -86,7 +87,7 @@ public sealed class SharedFunctionInfoDescription(FunctionLiteral literal) : IPr
 
     public string InstanceTypeName => "SHARED_FUNCTION_INFO_TYPE";
     public string? PrintedValue => null;
-    public string Brief() => "<SharedFunctionInfo " + Name + ">";
+    public string Brief() => Name.Length == 0 ? "<SharedFunctionInfo>" : "<SharedFunctionInfo " + Name + ">";
     public override string ToString() => Brief();
 }
 
