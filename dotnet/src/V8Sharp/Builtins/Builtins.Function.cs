@@ -291,7 +291,7 @@ public static class BuiltinsFunction
     /// object with its initial map and length, or a fast JSArray (holey ones
     /// only with the initial Array.prototype and the no-elements protector).
     /// </summary>
-    static bool TryGetFastElements(Isolate isolate, JSValue argumentsList, out FixedArrayBase? elements, out int length)
+    internal static bool TryGetFastElements(Isolate isolate, JSValue argumentsList, out FixedArrayBase? elements, out int length)
     {
         elements = null;
         length = 0;

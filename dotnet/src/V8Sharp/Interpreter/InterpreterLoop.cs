@@ -23,6 +23,22 @@ public static partial class InterpreterExecution
     /// until the frame returns or suspends; for the prefixed scales it runs one
     /// bytecode and returns to the SingleScale loop.
     /// </summary>
+    // The shape of this method is dictated by RyuJIT: a method with more than
+    // 512 locals (inlinee temps count) stops inlining, and one with more than
+    // JitMaxLocalsToTrack stops promoting structs, which puts the accumulator
+    // (a 16-byte JSValue) and the offset in memory and makes every handler
+    // copy them. So the loop keeps only the handlers whose fast path is a few
+    // instructions; everything else is one call to a NoInlining handler in
+    // InterpreterHandlers.cs (the same body the case had), with the operands
+    // decoded there. The handlers take (isolate, st, fp, code, pc, acc), which
+    // fits the six argument registers plus xmm0.
+    //
+    // AggressiveOptimization: the loop runs for the whole life of a frame and
+    // of every frame it calls inline, so it is entered rarely; with tiered
+    // compilation it would run as OSR code (tier-0 frame layout, no struct
+    // promotion) and rarely reach tier 1, and its tier-0 instrumentation never
+    // produces a profile for it anyway.
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     internal static JSValue Loop<TS>(Isolate isolate, ref InterpreterState st) where TS : struct, IOperandScale
     {
         int S = typeof(TS) == typeof(SingleScale) ? 1 : typeof(TS) == typeof(DoubleScale) ? 2 : 4;
@@ -34,17 +50,15 @@ public static partial class InterpreterExecution
         ref byte code = ref MemoryMarshal.GetArrayDataReference(st.Bytecode.Bytecodes);
         JSValue acc = st.Accumulator;
         int pc = st.Pc;
-        ref InterpreterFrameRecord frame = ref isolate.InterpreterFrames[st.FrameIndex];
         bool stepped = false;
         // A call or return run in this loop (InterpreterInlineCalls) switches
         // frames by updating {st} and reloading the locals here.
         goto start;
     reload:
-        fpSlot = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), st.Fp);
+        fpSlot = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(st.Isolate.RegisterStack), st.Fp);
         code = ref MemoryMarshal.GetArrayDataReference(st.Bytecode.Bytecodes);
         acc = st.Accumulator;
         pc = st.Pc;
-        frame = ref isolate.InterpreterFrames[st.FrameIndex];
     start:
 
         while (true)
@@ -60,23 +74,50 @@ public static partial class InterpreterExecution
                 stepped = true;
             }
 
-            frame.Pc = pc;
+            // The offset is not stored in the frame record here: the handlers
+            // that call out store it (SavePc), as V8's SaveBytecodeOffset.
             switch ((Bytecode)Unsafe.Add(ref code, pc))
             {
                 case Bytecode.Wide:
                 case Bytecode.ExtraWide:
                 {
-                    if ((typeof(TS) != typeof(SingleScale))) throw new InvalidOperationException("V8Sharp: nested operand scale prefix");
-                    bool wide = (Bytecode)Unsafe.Add(ref code, pc) == Bytecode.Wide;
+                    if ((typeof(TS) != typeof(SingleScale))) ThrowNestedPrefix();
+                    // LdaSmi with a 16/32-bit immediate (loop bounds, constants)
+                    // is by far the most frequent prefixed bytecode: it is
+                    // handled here rather than by a call into the scaled loop.
+                    // The same for the bitwise operators with a wide immediate
+                    // (masks such as 0x3fff and 0xfffffff in Crypto).
+                    {
+                        bool isWide = (Bytecode)Unsafe.Add(ref code, pc) == Bytecode.Wide;
+                        int immediate = isWide ? Signed<DoubleScale>(ref code, pc + 2) : Signed<QuadrupleScale>(ref code, pc + 2);
+                        int immediateEnd = pc + 2 + (isWide ? 2 : 4);
+                        JSValue result = default;
+                        switch ((Bytecode)Unsafe.Add(ref code, pc + 1))
+                        {
+                            case Bytecode.LdaSmi:
+                                acc = JSValue.FromInt(immediate);
+                                pc = immediateEnd;
+                                continue;
+                            case Bytecode.BitwiseAndSmi:
+                                result = InterpreterBitwise.TryWithSmi<BitwiseAndOp>(acc, immediate, ref Unsafe.Add(ref code, immediateEnd));
+                                break;
+                            case Bytecode.BitwiseOrSmi:
+                                result = InterpreterBitwise.TryWithSmi<BitwiseOrOp>(acc, immediate, ref Unsafe.Add(ref code, immediateEnd));
+                                break;
+                            case Bytecode.BitwiseXorSmi:
+                                result = InterpreterBitwise.TryWithSmi<BitwiseXorOp>(acc, immediate, ref Unsafe.Add(ref code, immediateEnd));
+                                break;
+                        }
+                        if (result._obj is not null)
+                        {
+                            acc = result;
+                            pc = immediateEnd + 1;
+                            continue;
+                        }
+                    }
                     st.Pc = pc + 1;
                     st.Accumulator = acc;
-                    if (wide) Loop<DoubleScale>(isolate, ref st);
-                    else Loop<QuadrupleScale>(isolate, ref st);
-                    if (st.Done)
-                    {
-                        st.Done = false;
-                        return st.Accumulator;
-                    }
+                    if (RunPrefixed(st.Isolate, ref st)) return st.Accumulator;
                     pc = st.Pc;
                     acc = st.Accumulator;
                     continue;
@@ -129,9 +170,9 @@ public static partial class InterpreterExecution
                 case Bytecode.LdaImmutableContextSlot:
                 {
                     Context c = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)).UncheckedAs<Context>();
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
                     int depth = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    acc = InterpreterRuntime.GetContextAtDepth(c, depth).Slots[slot];
+                    while (depth-- > 0) c = Unsafe.As<Context>(c.Slots[(int)Context.Field.PREVIOUS_INDEX]._obj!);
+                    acc = c.Slots[Unsigned<TS>(ref code, pc + 1 + S)];
                     pc += 1 + 3 * S;
                     continue;
                 }
@@ -144,117 +185,113 @@ public static partial class InterpreterExecution
 
                 // ---- Register loads ----------------------------------------------------
                 case Bytecode.Star:
-                    Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)) = acc;
+                    StoreRegister(ref Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc);
                     pc += 1 + S;
                     continue;
                 case Bytecode.Mov:
-                    Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + S)) = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
+                    StoreRegister(ref Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + S)),
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)));
                     pc += 1 + 2 * S;
                     continue;
                 case Bytecode.Star0:
-                    Unsafe.Add(ref fpSlot, 0) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 0), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star1:
-                    Unsafe.Add(ref fpSlot, 1) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 1), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star2:
-                    Unsafe.Add(ref fpSlot, 2) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 2), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star3:
-                    Unsafe.Add(ref fpSlot, 3) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 3), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star4:
-                    Unsafe.Add(ref fpSlot, 4) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 4), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star5:
-                    Unsafe.Add(ref fpSlot, 5) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 5), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star6:
-                    Unsafe.Add(ref fpSlot, 6) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 6), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star7:
-                    Unsafe.Add(ref fpSlot, 7) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 7), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star8:
-                    Unsafe.Add(ref fpSlot, 8) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 8), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star9:
-                    Unsafe.Add(ref fpSlot, 9) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 9), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star10:
-                    Unsafe.Add(ref fpSlot, 10) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 10), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star11:
-                    Unsafe.Add(ref fpSlot, 11) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 11), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star12:
-                    Unsafe.Add(ref fpSlot, 12) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 12), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star13:
-                    Unsafe.Add(ref fpSlot, 13) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 13), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star14:
-                    Unsafe.Add(ref fpSlot, 14) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 14), acc);
                     pc += 1;
                     continue;
                 case Bytecode.Star15:
-                    Unsafe.Add(ref fpSlot, 15) = acc;
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, 15), acc);
                     pc += 1;
                     continue;
 
                 case Bytecode.PushContext:
-                {
-                    // Saves the current context in <context>, and pushes the accumulator
-                    // as the new current context.
-                    Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)) = st.Context;
-                    st.Context = acc.UncheckedAs<Context>();
-                    Unsafe.Add(ref fpSlot, InterpreterRuntime.kContextOffset) = st.Context;
-                    isolate.Context = st.Context;
+                    PushContext<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + S;
                     continue;
-                }
                 case Bytecode.PopContext:
-                    st.Context = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)).UncheckedAs<Context>();
-                    Unsafe.Add(ref fpSlot, InterpreterRuntime.kContextOffset) = st.Context;
-                    isolate.Context = st.Context;
+                    PopContext<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc);
                     pc += 1 + S;
                     continue;
 
                 // ---- Test operations -------------------------------------------------------
                 case Bytecode.TestReferenceEqual:
-                    acc = JSValue.FromBoolean(Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)).IsIdenticalTo(acc));
+                {
+                    JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
+                    acc = JSValue.FromBoolean(ReferenceEquals(lhs._obj, acc._obj) &&
+                        (!ReferenceEquals(lhs._obj, NumberTag.Instance) ||
+                         BitConverter.DoubleToInt64Bits(lhs._num) == BitConverter.DoubleToInt64Bits(acc._num)));
                     pc += 1 + S;
                     continue;
+                }
                 case Bytecode.TestNull:
-                    acc = JSValue.FromBoolean(acc.IsNull);
+                    acc = JSValue.FromBoolean(ReferenceEquals(acc._obj, Oddball.Null));
                     pc += 1;
                     continue;
                 case Bytecode.TestUndefined:
-                    acc = JSValue.FromBoolean(acc.IsUndefined);
+                    acc = JSValue.FromBoolean(acc._obj is null);
                     pc += 1;
                     continue;
                 case Bytecode.TestUndetectable:
                     // x == null: hot in object-graph code (Richards, DeltaBlue).
-                    acc = JSValue.FromBoolean(acc.IsNullOrUndefined ||
-                        (acc._obj is JSReceiver undetectable && undetectable.Map.IsUndetectable));
+                    acc = JSValue.FromBoolean(acc._obj is null || ReferenceEquals(acc._obj, Oddball.Null) || IsUndetectableReceiver(acc._obj));
                     pc += 1;
                     continue;
                 case Bytecode.TestTypeOf:
-                    acc = JSValue.FromBoolean(InterpreterOps.TestTypeOf(acc, (TestTypeOfFlags.LiteralFlag)Byte(ref code, pc + 1)));
+                    acc = JSValue.FromBoolean(TestTypeOf(acc, (TestTypeOfFlags.LiteralFlag)Byte(ref code, pc + 1)));
                     pc += 2;
                     continue;
 
@@ -262,30 +299,36 @@ public static partial class InterpreterExecution
                 case Bytecode.LdaGlobal:
                 case Bytecode.LdaGlobalInsideTypeof:
                 {
-                    var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1)].UncheckedAs<Name>();
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
-                    TypeofMode mode = (Bytecode)Unsafe.Add(ref code, pc) == Bytecode.LdaGlobal ? TypeofMode.NotInside : TypeofMode.Inside;
-                    acc = LoadGlobalIC.Load(isolate, st.FeedbackVector, slot, st.Context, name, mode);
+                    // LoadGlobalIC.Load's hit on a global object PropertyCell.
+                    FeedbackVector? fv = st.FeedbackVector;
+                    if (fv is not null && fv.Slots[Unsigned<TS>(ref code, pc + 1 + S)]._obj is PropertyCell cell)
+                    {
+                        JSValue value = cell.Value;
+                        if (!ReferenceEquals(value._obj, Oddball.TheHole) && !ReferenceEquals(value._obj, Oddball.PropertyCellHole) &&
+                            cell.PropertyDetails.Kind == PropertyKind.Data)
+                        {
+                            acc = value;
+                            pc += 1 + 2 * S;
+                            continue;
+                        }
+                    }
+                    acc = LdaGlobal<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 2 * S;
                     continue;
                 }
                 case Bytecode.StaGlobal:
-                {
-                    var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1)].UncheckedAs<Name>();
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
-                    StoreGlobalIC.Store(isolate, st.FeedbackVector, slot, st.Context, name, acc);
+                    StaGlobal<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 2 * S;
                     continue;
-                }
 
                 // ---- Context stores ------------------------------------------------------------
                 case Bytecode.StaContextSlotNoCell:
                 case Bytecode.StaContextSlot:
                 {
                     Context c = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)).UncheckedAs<Context>();
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
                     int depth = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    InterpreterRuntime.GetContextAtDepth(c, depth).Slots[slot] = acc;
+                    while (depth-- > 0) c = Unsafe.As<Context>(c.Slots[(int)Context.Field.PREVIOUS_INDEX]._obj!);
+                    c.Slots[Unsigned<TS>(ref code, pc + 1 + S)] = acc;
                     pc += 1 + 3 * S;
                     continue;
                 }
@@ -298,18 +341,81 @@ public static partial class InterpreterExecution
                 // ---- Property loads ------------------------------------------------------------------
                 case Bytecode.GetNamedProperty:
                 {
-                    JSValue receiver = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1 + S)].UncheckedAs<Name>();
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    acc = LoadIC.LoadNamed(isolate, st.FeedbackVector, slot, receiver, name);
+                    // The monomorphic hits of AccessorAssembler::HandleLoadICHandlerCase
+                    // (LoadIC.LoadNamed): an own field, and a constant on the
+                    // prototype chain (methods).
+                    HeapObject? o = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1))._obj;
+                    FeedbackVector? fv = st.FeedbackVector;
+                    if (fv is not null && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
+                    {
+                        JSValue[] slots = fv.Slots;
+                        int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
+                        if (ReferenceEquals(slots[slot]._obj, Unsafe.As<JSReceiver>(o).Map) && slots[slot + 1]._obj is LoadHandler handler)
+                        {
+                            if (handler.OwnFieldIndex >= 0)
+                            {
+                                acc = Unsafe.As<JSReceiver>(o)._fields[handler.OwnFieldIndex];
+                                pc += 1 + 3 * S;
+                                continue;
+                            }
+                            if (handler.IsPrototypeConstant && handler.IsValid)
+                            {
+                                acc = handler.Data;
+                                pc += 1 + 3 * S;
+                                continue;
+                            }
+                        }
+                    }
+                    acc = GetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 3 * S;
                     continue;
                 }
                 case Bytecode.GetKeyedProperty:
                 {
-                    JSValue obj = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
-                    acc = KeyedLoadIC.Load(isolate, st.FeedbackVector, slot, obj, acc);
+                    // KeyedLoadIC.Load's element hits (monomorphic, or polymorphic
+                    // as KeyedLoadIC.LoadSlow): an in-bounds, non-hole element of a
+                    // fast elements kind.
+                    HeapObject? o = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1))._obj;
+                    FeedbackVector? fv = st.FeedbackVector;
+                    if (fv is not null && acc._obj == NumberTag.Instance && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
+                    {
+                        JSValue[] slots = fv.Slots;
+                        int slot = Unsigned<TS>(ref code, pc + 1 + S);
+                        int index = (int)acc._num;
+                        HeapObject? feedback = slots[slot]._obj;
+                        Map map = Unsafe.As<JSReceiver>(o).Map;
+                        HeapObject? found = ReferenceEquals(feedback, map) ? slots[slot + 1]._obj
+                            : feedback is FixedArray polymorphic ? FindPolymorphicHandler(polymorphic, map) : null;
+                        if (found is LoadHandler handler && handler.FastElementsMode != 0 && index == acc._num && index >= 0)
+                        {
+                            // The map matched the handler's receiver map: {o} is a JSObject.
+                            FixedArrayBase elements = Unsafe.As<JSObject>(o).Elements;
+                            if (!handler.IsJSArray || index < (int)Unsafe.As<JSArray>(o).Length._num)
+                            {
+                                if (elements is FixedArray fixedArray)
+                                {
+                                    JSValue[] data = fixedArray._data;
+                                    if ((uint)index < (uint)data.Length && !ReferenceEquals(data[index]._obj, Oddball.TheHole))
+                                    {
+                                        acc = data[index];
+                                        pc += 1 + 2 * S;
+                                        continue;
+                                    }
+                                }
+                                else if (elements is FixedDoubleArray doubleArray)
+                                {
+                                    double[] data = doubleArray._data;
+                                    if ((uint)index < (uint)data.Length && !FixedDoubleArray.IsHoleBits(data[index]))
+                                    {
+                                        acc = JSValue.FromNumber(data[index]);
+                                        pc += 1 + 2 * S;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    acc = GetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 2 * S;
                     continue;
                 }
@@ -317,53 +423,67 @@ public static partial class InterpreterExecution
                 // ---- Property stores ------------------------------------------------------------------------
                 case Bytecode.SetNamedProperty:
                 {
-                    JSValue obj = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1 + S)].UncheckedAs<Name>();
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    StoreIC.StoreNamed(isolate, st.FeedbackVector, slot, obj, name, acc);
+                    // The monomorphic hits of StoreIC.StoreNamed: a store to an own
+                    // field, or a transition that adds one.
+                    HeapObject? o = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1))._obj;
+                    FeedbackVector? fv = st.FeedbackVector;
+                    if (fv is not null && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
+                    {
+                        JSValue[] slots = fv.Slots;
+                        int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
+                        // A field store handler is only recorded for a JSObject map.
+                        if (ReferenceEquals(slots[slot]._obj, Unsafe.As<JSReceiver>(o).Map) && slots[slot + 1]._obj is StoreHandler handler &&
+                            StoreIC.TryStoreOwnField(Unsafe.As<JSObject>(o), handler, acc))
+                        {
+                            pc += 1 + 3 * S;
+                            continue;
+                        }
+                    }
+                    SetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 3 * S;
                     continue;
                 }
                 case Bytecode.DefineNamedOwnProperty:
-                {
-                    JSValue obj = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1 + S)].UncheckedAs<Name>();
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    StoreIC.DefineNamedOwn(isolate, st.FeedbackVector, slot, obj, name, acc);
+                    DefineNamedOwnProperty<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 3 * S;
                     continue;
-                }
                 case Bytecode.SetKeyedProperty:
                 {
-                    JSValue obj = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
+                    // KeyedStoreIC.Store's monomorphic in-bounds element store.
+                    HeapObject? o = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1))._obj;
                     JSValue key = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + S));
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    KeyedStoreIC.Store(isolate, st.FeedbackVector, slot, obj, key, acc);
+                    FeedbackVector? fv = st.FeedbackVector;
+                    if (fv is not null && key._obj == NumberTag.Instance && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
+                    {
+                        JSValue[] slots = fv.Slots;
+                        int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
+                        if (ReferenceEquals(slots[slot]._obj, Unsafe.As<JSReceiver>(o).Map) && slots[slot + 1]._obj is StoreHandler handler &&
+                            handler.IsSimpleElementStore && ElementAccess.TryStoreInBounds(Unsafe.As<JSObject>(o), key._num, acc))
+                        {
+                            pc += 1 + 3 * S;
+                            continue;
+                        }
+                    }
+                    SetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 3 * S;
                     continue;
                 }
                 case Bytecode.StaInArrayLiteral:
-                {
-                    JSValue array = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    JSValue index = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + S));
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    KeyedStoreIC.StoreInArrayLiteral(isolate, st.FeedbackVector, slot, array, index, acc);
+                    StaInArrayLiteral<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 3 * S;
                     continue;
-                }
 
                 // ---- Binary operators ----------------------------------------------------------------------
                 case Bytecode.Add:
                 {
                     JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    ref byte feedback = ref Unsafe.Add(ref code, pc + 1 + S);
                     if (lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance)
                     {
-                        acc = InterpreterOps.AddNumbers(isolate, lhs._num, acc._num, ref feedback);
+                        acc = InterpreterOps.AddNumbers(st.Isolate, lhs._num, acc._num, ref Unsafe.Add(ref code, pc + 1 + S));
                     }
                     else
                     {
-                        acc = InterpreterOps.AddSlow(isolate, lhs, acc, ref feedback);
+                        acc = AddSlow<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     }
                     pc += 2 + S;
                     continue;
@@ -371,14 +491,13 @@ public static partial class InterpreterExecution
                 case Bytecode.Sub:
                 {
                     JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    ref byte feedback = ref Unsafe.Add(ref code, pc + 1 + S);
                     if (lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance)
                     {
-                        acc = InterpreterOps.SubtractNumbers(lhs._num, acc._num, ref feedback);
+                        acc = InterpreterOps.SubtractNumbers(lhs._num, acc._num, ref Unsafe.Add(ref code, pc + 1 + S));
                     }
                     else
                     {
-                        acc = InterpreterOps.BinarySlow(isolate, Operation.Subtract, lhs, acc, ref feedback);
+                        acc = BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     }
                     pc += 2 + S;
                     continue;
@@ -386,467 +505,354 @@ public static partial class InterpreterExecution
                 case Bytecode.Mul:
                 {
                     JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    ref byte feedback = ref Unsafe.Add(ref code, pc + 1 + S);
                     if (lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance)
                     {
-                        acc = InterpreterOps.MultiplyNumbers(lhs._num, acc._num, ref feedback);
+                        acc = InterpreterOps.MultiplyNumbers(lhs._num, acc._num, ref Unsafe.Add(ref code, pc + 1 + S));
                     }
                     else
                     {
-                        acc = InterpreterOps.BinarySlow(isolate, Operation.Multiply, lhs, acc, ref feedback);
+                        acc = BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     }
                     pc += 2 + S;
                     continue;
                 }
                 case Bytecode.Div:
-                    acc = InterpreterOps.Binary(isolate, Operation.Divide, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
-                        ref Unsafe.Add(ref code, pc + 1 + S));
-                    pc += 2 + S;
-                    continue;
                 case Bytecode.Mod:
-                    acc = InterpreterOps.Binary(isolate, Operation.Modulus, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
                 case Bytecode.BitwiseOr:
-                    acc = InterpreterBitwise.Binary<BitwiseOrOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<BitwiseOrOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.BitwiseXor:
-                    acc = InterpreterBitwise.Binary<BitwiseXorOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<BitwiseXorOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.BitwiseAnd:
-                    acc = InterpreterBitwise.Binary<BitwiseAndOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<BitwiseAndOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.ShiftLeft:
-                    acc = InterpreterBitwise.Binary<ShiftLeftOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<ShiftLeftOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.ShiftRight:
-                    acc = InterpreterBitwise.Binary<ShiftRightOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<ShiftRightOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.ShiftRightLogical:
-                    acc = InterpreterBitwise.Binary<ShiftRightLogicalOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<ShiftRightLogicalOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
 
                 // ---- Binary operators with an immediate ---------------------------------------------------------
                 case Bytecode.AddSmi:
-                {
-                    ref byte feedback = ref Unsafe.Add(ref code, pc + 1 + S);
-                    int imm = Signed<TS>(ref code, pc + 1);
                     if (acc._obj == NumberTag.Instance)
                     {
-                        acc = InterpreterOps.AddNumbers(isolate, acc._num, imm, ref feedback);
+                        acc = InterpreterOps.AddNumbers(st.Isolate, acc._num, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
                     }
                     else
                     {
-                        acc = InterpreterOps.AddSlow(isolate, acc, JSValue.FromInt(imm), ref feedback);
+                        acc = BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     }
                     pc += 2 + S;
                     continue;
-                }
                 case Bytecode.SubSmi:
-                {
-                    ref byte feedback = ref Unsafe.Add(ref code, pc + 1 + S);
-                    int imm = Signed<TS>(ref code, pc + 1);
                     if (acc._obj == NumberTag.Instance)
                     {
-                        acc = InterpreterOps.SubtractNumbers(acc._num, imm, ref feedback);
+                        acc = InterpreterOps.SubtractNumbers(acc._num, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
                     }
                     else
                     {
-                        acc = InterpreterOps.BinarySlow(isolate, Operation.Subtract, acc, JSValue.FromInt(imm), ref feedback);
+                        acc = BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     }
                     pc += 2 + S;
                     continue;
-                }
                 case Bytecode.MulSmi:
-                    acc = InterpreterOps.Binary(isolate, Operation.Multiply, acc, JSValue.FromInt(Signed<TS>(ref code, pc + 1)),
-                        ref Unsafe.Add(ref code, pc + 1 + S));
-                    pc += 2 + S;
-                    continue;
                 case Bytecode.DivSmi:
-                    acc = InterpreterOps.Binary(isolate, Operation.Divide, acc, JSValue.FromInt(Signed<TS>(ref code, pc + 1)),
-                        ref Unsafe.Add(ref code, pc + 1 + S));
-                    pc += 2 + S;
-                    continue;
                 case Bytecode.ModSmi:
-                    acc = InterpreterOps.Binary(isolate, Operation.Modulus, acc, JSValue.FromInt(Signed<TS>(ref code, pc + 1)),
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
                 case Bytecode.BitwiseOrSmi:
-                    acc = InterpreterBitwise.WithSmi<BitwiseOrOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<BitwiseOrOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.BitwiseXorSmi:
-                    acc = InterpreterBitwise.WithSmi<BitwiseXorOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<BitwiseXorOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.BitwiseAndSmi:
-                    acc = InterpreterBitwise.WithSmi<BitwiseAndOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<BitwiseAndOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.ShiftLeftSmi:
-                    acc = InterpreterBitwise.WithSmi<ShiftLeftOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<ShiftLeftOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.ShiftRightSmi:
-                    acc = InterpreterBitwise.WithSmi<ShiftRightOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<ShiftRightOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.ShiftRightLogicalSmi:
-                    acc = InterpreterBitwise.WithSmi<ShiftRightLogicalOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<ShiftRightLogicalOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
 
                 // ---- Unary operators ------------------------------------------------------------------------------
                 case Bytecode.Inc:
-                    acc = InterpreterOps.Increment(isolate, acc, ref Unsafe.Add(ref code, pc + 1));
+                    acc = acc._obj == NumberTag.Instance
+                        ? InterpreterOps.IncrementNumber(acc._num, ref Unsafe.Add(ref code, pc + 1))
+                        : UnaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2;
                     continue;
                 case Bytecode.Dec:
-                    acc = InterpreterOps.Decrement(isolate, acc, ref Unsafe.Add(ref code, pc + 1));
+                    acc = acc._obj == NumberTag.Instance
+                        ? InterpreterOps.DecrementNumber(acc._num, ref Unsafe.Add(ref code, pc + 1))
+                        : UnaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2;
                     continue;
                 case Bytecode.Negate:
-                    acc = InterpreterOps.Negate(isolate, acc, ref Unsafe.Add(ref code, pc + 1));
-                    pc += 2;
-                    continue;
                 case Bytecode.BitwiseNot:
-                    acc = InterpreterOps.BitwiseNot(isolate, acc, ref Unsafe.Add(ref code, pc + 1));
+                    acc = UnaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2;
                     continue;
                 case Bytecode.ToBooleanLogicalNot:
-                    acc = JSValue.FromBoolean(!InterpreterOps.ToBoolean(acc));
+                    acc = JSValue.FromBoolean(!ToBoolean(acc));
                     pc += 1;
                     continue;
                 case Bytecode.LogicalNot:
-                    acc = JSValue.FromBoolean(!acc.IsTrue);
+                    acc = JSValue.FromBoolean(!ReferenceEquals(acc._obj, Oddball.True));
                     pc += 1;
                     continue;
                 case Bytecode.TypeOf:
-                    acc = InterpreterOps.TypeOf(isolate, acc, st.FeedbackVector, Unsigned<TS>(ref code, pc + 1));
+                    acc = InterpreterOps.TypeOf(st.Isolate, acc, st.FeedbackVector, Unsigned<TS>(ref code, pc + 1));
                     pc += 1 + S;
                     continue;
 
                 // ---- Calls ------------------------------------------------------------------------------------------
+                // A call to a function with bytecode enters it in this loop (the
+                // handler sets up the frame and returns true); anything else
+                // returns false with the result in st.Accumulator.
                 case Bytecode.CallAnyReceiver:
                 case Bytecode.CallProperty:
-                {
-                    JSValue callee = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref code, pc + 1 + S);
-                    int count = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 3 * S);
-                    JSValue receiver = Unsafe.Add(ref fpSlot, first);
-                    InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
-                    if (!(typeof(TS) != typeof(SingleScale)) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
-                    {
-                        InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, st.Fp + first + 1, count - 1, default, default, pc + 1 + 4 * S);
-                        goto reload;
-                    }
-                    acc = InterpreterCalls.Call(isolate, callee, receiver, st.Fp + first + 1, count - 1,
-                        (Bytecode)Unsafe.Add(ref code, pc) == Bytecode.CallProperty
-                            ? ConvertReceiverMode.NotNullOrUndefined
-                            : ConvertReceiverMode.Any);
+                    if (CallProperty<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc)) goto reload;
+                    acc = st.Accumulator;
                     pc += 1 + 4 * S;
                     continue;
-                }
                 case Bytecode.CallProperty0:
-                {
-                    JSValue callee = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    JSValue receiver = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + S));
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
-                    if (!(typeof(TS) != typeof(SingleScale)) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
-                    {
-                        InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, 0, 0, default, default, pc + 1 + 3 * S);
-                        goto reload;
-                    }
-                    acc = InterpreterCalls.Call(isolate, callee, receiver, 0, 0, ConvertReceiverMode.NotNullOrUndefined);
+                    if (CallProperty0<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc)) goto reload;
+                    acc = st.Accumulator;
                     pc += 1 + 3 * S;
                     continue;
-                }
                 case Bytecode.CallProperty1:
-                {
-                    JSValue callee = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    int receiverOperand = Signed<TS>(ref code, pc + 1 + S);
-                    JSValue receiver = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + receiverOperand);
-                    int argOperand = Signed<TS>(ref code, pc + 1 + 2 * S);
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 3 * S);
-                    InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
-                    if (!(typeof(TS) != typeof(SingleScale)) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
-                    {
-                        InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1, default, default, pc + 1 + 4 * S);
-                        goto reload;
-                    }
-                    acc = InterpreterCalls.Call(isolate, callee, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
-                        ConvertReceiverMode.NotNullOrUndefined);
+                    if (CallProperty1<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc)) goto reload;
+                    acc = st.Accumulator;
                     pc += 1 + 4 * S;
                     continue;
-                }
                 case Bytecode.CallProperty2:
-                {
-                    JSValue callee = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    JSValue receiver = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + S));
-                    int arg0 = Signed<TS>(ref code, pc + 1 + 2 * S);
-                    int arg1 = Signed<TS>(ref code, pc + 1 + 3 * S);
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 4 * S);
-                    InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
-                    if (!(typeof(TS) != typeof(SingleScale)) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
-                    {
-                        InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, arg1 == arg0 - 1 ? st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0 : -1, 2,
-                            Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + arg0), Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + arg1), pc + 1 + 5 * S);
-                        goto reload;
-                    }
-                    acc = InterpreterCalls.Call2(isolate, callee, receiver, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + arg0), Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + arg1),
-                        st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0, arg1 == arg0 - 1,
-                        ConvertReceiverMode.NotNullOrUndefined);
+                    if (CallProperty2<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc)) goto reload;
+                    acc = st.Accumulator;
                     pc += 1 + 5 * S;
                     continue;
-                }
                 case Bytecode.CallUndefinedReceiver:
-                {
-                    JSValue callee = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref code, pc + 1 + S);
-                    int count = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 3 * S);
-                    InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
-                    if (!(typeof(TS) != typeof(SingleScale)) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
-                    {
-                        InterpreterInlineCalls.PushFrame(isolate, ref st, target, default(JSValue), st.Fp + first, count, default, default, pc + 1 + 4 * S);
-                        goto reload;
-                    }
-                    acc = InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + first, count,
-                        ConvertReceiverMode.NullOrUndefined);
+                    if (CallUndefinedReceiver<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc)) goto reload;
+                    acc = st.Accumulator;
                     pc += 1 + 4 * S;
                     continue;
-                }
                 case Bytecode.CallUndefinedReceiver0:
-                {
-                    JSValue callee = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
-                    InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
-                    if (!(typeof(TS) != typeof(SingleScale)) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
-                    {
-                        InterpreterInlineCalls.PushFrame(isolate, ref st, target, default(JSValue), 0, 0, default, default, pc + 1 + 2 * S);
-                        goto reload;
-                    }
-                    acc = InterpreterCalls.Call(isolate, callee, default(JSValue), 0, 0, ConvertReceiverMode.NullOrUndefined);
+                    if (CallUndefinedReceiver0<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc)) goto reload;
+                    acc = st.Accumulator;
                     pc += 1 + 2 * S;
                     continue;
-                }
                 case Bytecode.CallUndefinedReceiver1:
-                {
-                    JSValue callee = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    int argOperand = Signed<TS>(ref code, pc + 1 + S);
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
-                    if (!(typeof(TS) != typeof(SingleScale)) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
-                    {
-                        InterpreterInlineCalls.PushFrame(isolate, ref st, target, default(JSValue), st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1, default, default, pc + 1 + 3 * S);
-                        goto reload;
-                    }
-                    acc = InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand,
-                        1, ConvertReceiverMode.NullOrUndefined);
+                    if (CallUndefinedReceiver1<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc)) goto reload;
+                    acc = st.Accumulator;
                     pc += 1 + 3 * S;
                     continue;
-                }
                 case Bytecode.CallUndefinedReceiver2:
-                {
-                    JSValue callee = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    int arg0 = Signed<TS>(ref code, pc + 1 + S);
-                    int arg1 = Signed<TS>(ref code, pc + 1 + 2 * S);
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 3 * S);
-                    InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
-                    if (!(typeof(TS) != typeof(SingleScale)) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
-                    {
-                        InterpreterInlineCalls.PushFrame(isolate, ref st, target, default(JSValue), arg1 == arg0 - 1 ? st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0 : -1, 2,
-                            Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + arg0), Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + arg1), pc + 1 + 4 * S);
-                        goto reload;
-                    }
-                    acc = InterpreterCalls.Call2(isolate, callee, default(JSValue), Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + arg0), Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + arg1),
-                        st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0, arg1 == arg0 - 1,
-                        ConvertReceiverMode.NullOrUndefined);
+                    if (CallUndefinedReceiver2<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc)) goto reload;
+                    acc = st.Accumulator;
                     pc += 1 + 4 * S;
                     continue;
-                }
                 case Bytecode.CallRuntime:
-                {
-                    int id = Short(ref code, pc + 1);
-                    int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref code, pc + 3);
-                    int count = Unsigned<TS>(ref code, pc + 3 + S);
-                    acc = RuntimeTable.Call(isolate, (FunctionId)id, isolate.RegisterStack.AsSpan(st.Fp + first, count));
+                    acc = CallRuntime<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 3 + 2 * S;
                     continue;
-                }
                 case Bytecode.InvokeIntrinsic:
-                {
-                    int id = Byte(ref code, pc + 1);
-                    int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref code, pc + 2);
-                    int count = Unsigned<TS>(ref code, pc + 2 + S);
-                    acc = InterpreterIntrinsicsDispatch.Invoke(isolate, (IntrinsicsHelper.IntrinsicId)id,
-                        isolate.RegisterStack.AsSpan(st.Fp + first, count));
+                    acc = InvokeIntrinsic<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + 2 * S;
                     continue;
-                }
 
                 // ---- Construct ----------------------------------------------------------------------------------------
                 case Bytecode.Construct:
-                {
-                    JSValue constructor = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref code, pc + 1 + S);
-                    int count = Unsigned<TS>(ref code, pc + 1 + 2 * S);
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 3 * S);
-                    if (!(typeof(TS) != typeof(SingleScale)) &&
-                        InterpreterInlineCalls.TryPushConstructFrame(isolate, ref st, slot, constructor, acc, st.Fp + first, count,
-                            pc + 1 + 4 * S))
-                    {
-                        goto reload;
-                    }
-                    acc = InterpreterCalls.Construct(isolate, st.FeedbackVector, slot, constructor, acc, st.Fp + first, count);
+                    if (Construct<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc)) goto reload;
+                    acc = st.Accumulator;
                     pc += 1 + 4 * S;
                     continue;
-                }
 
                 // ---- Compare operations -------------------------------------------------------------------------------
                 case Bytecode.TestEqual:
-                    acc = InterpreterOps.Equal(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
+                    acc = lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance
+                        ? InterpreterOps.EqualNumbers(lhs._num, acc._num, ref Unsafe.Add(ref code, pc + 1 + S))
+                        : TestEqual<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.TestEqualStrict:
-                    acc = InterpreterOps.StrictEqual(Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
+                    acc = lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance
+                        ? InterpreterOps.EqualNumbers(lhs._num, acc._num, ref Unsafe.Add(ref code, pc + 1 + S))
+                        : TestEqualStrict<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.TestLessThan:
                 {
                     JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    ref byte feedback = ref Unsafe.Add(ref code, pc + 1 + S);
                     acc = lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance
-                        ? InterpreterOps.CompareNumbers(Operation.LessThan, lhs._num, acc._num, ref feedback)
-                        : InterpreterOps.Relational(isolate, Operation.LessThan, lhs, acc, ref feedback);
+                        ? InterpreterOps.CompareNumbers(Operation.LessThan, lhs._num, acc._num, ref Unsafe.Add(ref code, pc + 1 + S))
+                        : Relational<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
                 }
                 case Bytecode.TestGreaterThan:
                 {
                     JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    ref byte feedback = ref Unsafe.Add(ref code, pc + 1 + S);
                     acc = lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance
-                        ? InterpreterOps.CompareNumbers(Operation.GreaterThan, lhs._num, acc._num, ref feedback)
-                        : InterpreterOps.Relational(isolate, Operation.GreaterThan, lhs, acc, ref feedback);
+                        ? InterpreterOps.CompareNumbers(Operation.GreaterThan, lhs._num, acc._num, ref Unsafe.Add(ref code, pc + 1 + S))
+                        : Relational<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
                 }
                 case Bytecode.TestLessThanOrEqual:
                 {
                     JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    ref byte feedback = ref Unsafe.Add(ref code, pc + 1 + S);
                     acc = lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance
-                        ? InterpreterOps.CompareNumbers(Operation.LessThanOrEqual, lhs._num, acc._num, ref feedback)
-                        : InterpreterOps.Relational(isolate, Operation.LessThanOrEqual, lhs, acc, ref feedback);
+                        ? InterpreterOps.CompareNumbers(Operation.LessThanOrEqual, lhs._num, acc._num, ref Unsafe.Add(ref code, pc + 1 + S))
+                        : Relational<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
                 }
                 case Bytecode.TestGreaterThanOrEqual:
                 {
                     JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    ref byte feedback = ref Unsafe.Add(ref code, pc + 1 + S);
                     acc = lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance
-                        ? InterpreterOps.CompareNumbers(Operation.GreaterThanOrEqual, lhs._num, acc._num, ref feedback)
-                        : InterpreterOps.Relational(isolate, Operation.GreaterThanOrEqual, lhs, acc, ref feedback);
+                        ? InterpreterOps.CompareNumbers(Operation.GreaterThanOrEqual, lhs._num, acc._num, ref Unsafe.Add(ref code, pc + 1 + S))
+                        : Relational<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
                 }
                 case Bytecode.TestInstanceOf:
-                {
-                    JSValue obj = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
-                    acc = InterpreterOps.InstanceOf(isolate, st.FeedbackVector, slot, obj, acc);
+                    acc = TestInstanceOf<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 2 * S;
                     continue;
-                }
                 case Bytecode.TestIn:
-                {
-                    JSValue name = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
-                    acc = KeyedHasIC.Has(isolate, st.FeedbackVector, slot, acc, name);
+                    acc = TestIn<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 2 * S;
                     continue;
-                }
                 case Bytecode.ToNumber:
-                    acc = InterpreterOps.ToNumberOrNumeric(isolate, acc, st.FeedbackVector, Unsigned<TS>(ref code, pc + 1), numeric: false);
-                    pc += 1 + S;
-                    continue;
                 case Bytecode.ToNumeric:
-                    acc = InterpreterOps.ToNumberOrNumeric(isolate, acc, st.FeedbackVector, Unsigned<TS>(ref code, pc + 1), numeric: true);
+                    if (acc._obj == NumberTag.Instance)
+                    {
+                        InterpreterOps.ToNumberFeedbackForNumber(st.FeedbackVector, Unsigned<TS>(ref code, pc + 1), acc._num);
+                    }
+                    else
+                    {
+                        acc = ToNumberOrNumeric<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    }
                     pc += 1 + S;
                     continue;
                 case Bytecode.ToBoolean:
-                    acc = JSValue.FromBoolean(InterpreterOps.ToBoolean(acc));
+                    acc = JSValue.FromBoolean(ToBoolean(acc));
                     pc += 1;
                     continue;
                 case Bytecode.CreateArrayLiteral:
-                {
-                    JSValue description = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1)];
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
-                    int flags = Byte(ref code, pc + 1 + 2 * S);
-                    acc = RuntimeLiterals.CreateArrayLiteral(isolate, st.FeedbackVector, slot, description.UncheckedAs<ArrayBoilerplateDescription>(),
-                        CreateArrayLiteralFlags.DecodeFlags((byte)flags));
+                    acc = CreateArrayLiteral<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + 2 * S;
                     continue;
-                }
                 case Bytecode.CreateEmptyArrayLiteral:
-                    acc = RuntimeLiterals.CreateEmptyArrayLiteral(isolate, st.FeedbackVector, Unsigned<TS>(ref code, pc + 1));
+                    acc = CreateEmptyArrayLiteral<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + S;
                     continue;
                 case Bytecode.CreateObjectLiteral:
-                {
-                    JSValue description = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1)];
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
-                    int flags = Byte(ref code, pc + 1 + 2 * S);
-                    acc = RuntimeLiterals.CreateObjectLiteral(isolate, st.FeedbackVector, slot, description.UncheckedAs<ObjectBoilerplateDescription>(),
-                        CreateObjectLiteralFlags.DecodeFlags((byte)flags));
+                    acc = CreateObjectLiteral<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + 2 * S;
                     continue;
-                }
                 case Bytecode.CreateEmptyObjectLiteral:
-                    acc = RuntimeLiterals.CreateEmptyObjectLiteral(isolate, st.Context.NativeContext);
+                    acc = CreateEmptyObjectLiteral(st.Isolate, ref st);
                     pc += 1;
                     continue;
                 case Bytecode.CreateClosure:
-                {
-                    var shared = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1)].UncheckedAs<SharedFunctionInfo>();
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
-                    FeedbackCell cell = JSFunctionFeedback.GetClosureFeedbackCellArray(st.Function).Get(slot);
-                    acc = RuntimeClosures.NewClosure(isolate, shared, st.Context, cell);
+                    acc = CreateClosure<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + 2 * S;
                     continue;
-                }
                 case Bytecode.CreateFunctionContext:
                 case Bytecode.CreateFunctionContextWithCells:
                 case Bytecode.CreateEvalContext:
-                {
-                    var scopeInfo = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1)].UncheckedAs<ScopeInfo>();
-                    acc = RuntimeScopes.NewFunctionContext(isolate, st.Context, scopeInfo,
-                        (Bytecode)Unsafe.Add(ref code, pc) == Bytecode.CreateEvalContext);
+                    acc = CreateFunctionContext<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 2 * S;
                     continue;
-                }
 
                 // ---- Arguments allocation --------------------------------------------------------------------------------------
                 case Bytecode.CreateMappedArguments:
-                    acc = InterpreterArguments.NewSloppyArguments(isolate, st.Function, st.Context, st.Fp, st.Argc);
+                    acc = CreateMappedArguments(st.Isolate, ref st);
                     pc += 1;
                     continue;
                 case Bytecode.CreateUnmappedArguments:
-                    acc = InterpreterArguments.NewStrictArguments(isolate, st.Function, st.Fp, st.Argc);
+                    acc = CreateUnmappedArguments(st.Isolate, ref st);
                     pc += 1;
                     continue;
 
@@ -858,10 +864,9 @@ public static partial class InterpreterExecution
                     // The budget interrupt (V8: UpdateInterruptBudget on the backward
                     // jump, with the stack/interrupt check folded in).
                     FeedbackCell cell = st.Function.RawFeedbackCell;
-                    if ((cell.InterruptBudget -= relative) < 0 || isolate.StackGuard.HasPendingInterrupts)
+                    if ((cell.InterruptBudget -= relative) < 0 || st.Isolate.StackGuard.HasPendingInterrupts)
                     {
-                        st.FeedbackVector = InterpreterTiering.OnBudgetInterrupt(isolate, st.Function, withStackCheck: true);
-                        Unsafe.Add(ref fpSlot, InterpreterRuntime.kFeedbackVectorOffset) = st.FeedbackVector is null ? default(JSValue) : st.FeedbackVector;
+                        JumpLoopInterrupt(st.Isolate, ref st, ref fpSlot, pc);
                     }
                     pc -= relative;
                     // OSR to baseline code when the SharedFunctionInfo has some and the
@@ -886,40 +891,41 @@ public static partial class InterpreterExecution
                     pc += Unsigned<TS>(ref code, pc + 1);
                     continue;
                 case Bytecode.JumpIfToBooleanTrue:
-                    pc += InterpreterOps.ToBoolean(acc) ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
+                    pc += ToBoolean(acc) ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
                     continue;
                 case Bytecode.JumpIfToBooleanFalse:
-                    pc += !InterpreterOps.ToBoolean(acc) ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
+                    pc += !ToBoolean(acc) ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
                     continue;
                 case Bytecode.JumpIfTrue:
-                    pc += acc.IsTrue ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
+                    pc += ReferenceEquals(acc._obj, Oddball.True) ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
                     continue;
                 case Bytecode.JumpIfFalse:
-                    pc += acc.IsFalse ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
+                    pc += ReferenceEquals(acc._obj, Oddball.False) ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
                     continue;
                 case Bytecode.JumpIfNull:
-                    pc += acc.IsNull ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
+                    pc += ReferenceEquals(acc._obj, Oddball.Null) ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
                     continue;
                 case Bytecode.JumpIfNotNull:
-                    pc += !acc.IsNull ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
+                    pc += !ReferenceEquals(acc._obj, Oddball.Null) ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
                     continue;
                 case Bytecode.JumpIfUndefined:
-                    pc += acc.IsUndefined ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
+                    pc += acc._obj is null ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
                     continue;
                 case Bytecode.JumpIfNotUndefined:
-                    pc += !acc.IsUndefined ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
+                    pc += acc._obj is not null ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
                     continue;
                 case Bytecode.JumpIfUndefinedOrNull:
-                    pc += acc.IsNullOrUndefined ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
+                    pc += acc._obj is null || ReferenceEquals(acc._obj, Oddball.Null) ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
                     continue;
                 case Bytecode.JumpIfJSReceiver:
-                    pc += acc.IsJSReceiver ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
+                    pc += acc._obj is not null && acc._obj.InstanceType >= InstanceTypeChecks.FirstJSReceiver ? Unsigned<TS>(ref code, pc + 1) : 1 + S;
                     continue;
                 case Bytecode.JumpIfForInDone:
                 {
                     JSValue index = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + S));
                     JSValue cacheLength = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + 2 * S));
-                    pc += index.IsIdenticalTo(cacheLength) ? Unsigned<TS>(ref code, pc + 1) : 1 + 3 * S;
+                    // Both are numbers (ForInPrepare / ForInStep).
+                    pc += index._num == cacheLength._num ? Unsigned<TS>(ref code, pc + 1) : 1 + 3 * S;
                     continue;
                 }
                 case Bytecode.SwitchOnSmiNoFeedback:
@@ -941,42 +947,18 @@ public static partial class InterpreterExecution
 
                 // ---- for-in / for-of ------------------------------------------------------------------------------------------------------
                 case Bytecode.ForInEnumerate:
-                    acc = RuntimeForIn.ForInEnumerate(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)).As<JSReceiver>());
+                    acc = ForInEnumerate<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + S;
                     continue;
                 case Bytecode.ForInPrepare:
-                {
-                    int output = Signed<TS>(ref code, pc + 1);
-                    int slot = Unsigned<TS>(ref code, pc + 1 + S);
-                    RuntimeForIn.ForInPrepare(isolate, acc.Object, st.FeedbackVector, slot, out JSValue cacheArray, out int cacheLength);
-                    Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + output) = acc;
-                    Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + output - 1) = cacheArray;
-                    Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + output - 2) = JSValue.FromInt(cacheLength);
+                    ForInPrepare<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     acc = JSValue.Zero;
                     pc += 1 + 2 * S;
                     continue;
-                }
                 case Bytecode.ForInNext:
-                {
-                    JSValue receiver = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
-                    int index = (int)Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1 + S))._num;
-                    int pairOperand = Signed<TS>(ref code, pc + 1 + 2 * S);
-                    JSValue cacheType = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + pairOperand);
-                    JSValue cacheArray = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + pairOperand - 1);
-                    int slot = Unsigned<TS>(ref code, pc + 1 + 3 * S);
-                    JSValue key = cacheArray.UncheckedAs<FixedArray>()[index];
-                    if (receiver.HeapObjectOrNull is JSReceiver r && ReferenceEquals(r.Map, cacheType.HeapObjectOrNull))
-                    {
-                        // Enum cache in use for {receiver}, the {key} is definitely valid.
-                        acc = key;
-                    }
-                    else
-                    {
-                        acc = RuntimeForIn.ForInNextSlow(isolate, st.FeedbackVector, slot, receiver, key, cacheType);
-                    }
+                    acc = ForInNext<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 4 * S;
                     continue;
-                }
                 case Bytecode.ForInStep:
                 {
                     ref JSValue index = ref Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
@@ -985,33 +967,26 @@ public static partial class InterpreterExecution
                     continue;
                 }
                 case Bytecode.Throw:
-                {
                     // Runtime_Throw: Isolate::Throw creates the message, then the
                     // exception unwinds to the handler of this frame (dispatched
                     // directly when there is one) or leaves the frame.
-                    JSMessageObject? message = CreateMessageForThrow(isolate, acc);
-                    if (TryDispatchToHandler(isolate, ref st, acc, message))
-                    {
-                        pc = st.Pc;
-                        acc = st.Accumulator;
-                        continue;
-                    }
-                    throw new JavaScriptException(acc, message);
-                }
+                    ThrowAccumulator(st.Isolate, ref st, pc, acc);
+                    pc = st.Pc;
+                    acc = st.Accumulator;
+                    continue;
                 case Bytecode.Return:
                 {
                     // UpdateInterruptBudgetOnReturn: the weight is the current bytecode offset.
                     FeedbackCell cell = st.Function.RawFeedbackCell;
-                    if ((cell.InterruptBudget -= pc + 1) < 0) InterpreterTiering.OnBudgetInterrupt(isolate, st.Function, withStackCheck: false);
+                    if ((cell.InterruptBudget -= pc + 1) < 0) InterpreterTiering.OnBudgetInterrupt(st.Isolate, st.Function, withStackCheck: false);
                     if ((typeof(TS) != typeof(SingleScale)))
                     {
                         st.Done = true;
                         st.Accumulator = acc;
                     }
-                    else if (frame.InlineCall)
+                    else if (InterpreterInlineCalls.TryReturnInline(st.Isolate, ref st, acc))
                     {
-                        // Return to a caller running in this loop (InterpreterInlineCalls).
-                        st.Accumulator = InterpreterInlineCalls.Return(isolate, ref st, acc);
+                        // Returned to a caller running in this loop (InterpreterInlineCalls).
                         goto reload;
                     }
                     return acc;
@@ -1021,7 +996,7 @@ public static partial class InterpreterExecution
                     // The rare bytecodes (LoopCold): they are out of this method so the
                     // JIT's inlining budget goes to the frequent handlers.
                     st.Accumulator = acc;
-                    int next = LoopCold<TS>(isolate, ref st, pc);
+                    int next = LoopCold<TS>(st.Isolate, ref st, pc);
                     acc = st.Accumulator;
                     if (next >= 0)
                     {
@@ -1050,6 +1025,7 @@ public static partial class InterpreterExecution
         ref JSValue fpSlot = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), st.Fp);
         ref byte code = ref MemoryMarshal.GetArrayDataReference(st.Bytecode.Bytecodes);
         ref InterpreterFrameRecord frame = ref isolate.InterpreterFrames[st.FrameIndex];
+        frame.Pc = pc;
         JSValue acc = st.Accumulator;
         switch ((Bytecode)Unsafe.Add(ref code, pc))
         {

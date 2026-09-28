@@ -4,6 +4,8 @@
 // operator (a struct type argument) so the handler does no operator dispatch;
 // anything else takes InterpreterOps.Bitwise.
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using V8Sharp.Common;
 using BOF = V8Sharp.Interpreter.BinaryOperationFeedback;
 
@@ -77,6 +79,41 @@ internal static class InterpreterBitwise
             }
         }
         return InterpreterOps.Bitwise(isolate, TOp.Operation, lhs, rhs, ref feedback);
+    }
+
+    /// <summary>
+    /// The number case of <see cref="WithSmi"/> for the dispatch loop: the
+    /// result, or undefined (never a bitwise result) when the left operand is
+    /// not a number that is an int32.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static JSValue TryWithSmi<TOp>(JSValue lhs, int rhs, ref byte feedback) where TOp : struct, IInt32BitwiseOp
+    {
+        if (lhs._obj != NumberTag.Instance) return default;
+        double ld = lhs._num;
+        int l = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(ld)) : (int)ld;
+        if (l != ld) return default;
+        double result = TOp.Apply(l, rhs);
+        bool smi = InSmiRange(l) && result <= JSValue.SmiMaxValue && result >= JSValue.SmiMinValue &&
+                   (l != 0 || !double.IsNegative(ld));
+        InterpreterOps.UpdateBinaryFeedback(ref feedback, smi ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
+        return JSValue.FromNumber(result);
+    }
+
+    /// <summary>The number case of <see cref="Binary"/> for the dispatch loop (undefined when it does not apply).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static JSValue TryBinary<TOp>(JSValue lhs, JSValue rhs, ref byte feedback) where TOp : struct, IInt32BitwiseOp
+    {
+        if (lhs._obj != NumberTag.Instance || rhs._obj != NumberTag.Instance) return default;
+        double ld = lhs._num, rd = rhs._num;
+        int l = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(ld)) : (int)ld;
+        int r = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(rd)) : (int)rd;
+        if (l != ld || r != rd) return default;
+        double result = TOp.Apply(l, r);
+        bool smi = InSmiRange(l) && InSmiRange(r) && result <= JSValue.SmiMaxValue && result >= JSValue.SmiMinValue &&
+                   (l != 0 || !double.IsNegative(ld)) && (r != 0 || !double.IsNegative(rd));
+        InterpreterOps.UpdateBinaryFeedback(ref feedback, smi ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
+        return JSValue.FromNumber(result);
     }
 
     /// <summary>A bitwise operator with a Smi immediate right operand (BitwiseAndSmi ...).</summary>

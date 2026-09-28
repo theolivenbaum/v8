@@ -33,19 +33,32 @@ public sealed class LoadIC : IC
             {
                 JSValue[] slots = vector.Slots;
                 var r = Unsafe.As<JSReceiver>(o);
-                if (ReferenceEquals(slots[slot]._obj, r.Map) && slots[slot + 1]._obj is LoadHandler handler)
+                Map map = r.Map;
+                HeapObject? feedback = slots[slot]._obj;
+                HeapObject? found = null;
+                if (ReferenceEquals(feedback, map))
                 {
-                    // The monomorphic hits of AccessorAssembler::HandleLoadICHandlerCase:
-                    // an own field, and a constant on the prototype chain (methods).
-                    if (handler.HandlerKind == LoadHandler.Kind.kField && handler.Holder is null)
+                    found = slots[slot + 1]._obj;
+                }
+                else if (feedback is FixedArray polymorphic)
+                {
+                    // AccessorAssembler::HandlePolymorphicCase: the (map, handler) pairs.
+                    JSValue[] data = polymorphic.Data;
+                    for (int i = 0; i + 1 < data.Length; i += 2)
                     {
-                        return r._fields[handler.FieldIndex];
+                        if (ReferenceEquals(data[i]._obj, map))
+                        {
+                            found = data[i + 1]._obj;
+                            break;
+                        }
                     }
-                    if (handler.HandlerKind == LoadHandler.Kind.kConstantFromPrototype && !handler.LookupOnLookupStartObject &&
-                        handler.IsValid)
-                    {
-                        return handler.Data;
-                    }
+                }
+                if (found is LoadHandler handler)
+                {
+                    // The hits of AccessorAssembler::HandleLoadICHandlerCase handled
+                    // here: an own field, and a constant on the prototype chain (methods).
+                    if (handler.OwnFieldIndex >= 0) return r._fields[handler.OwnFieldIndex];
+                    if (handler.IsPrototypeConstant && handler.IsValid) return handler.Data;
                 }
             }
         }

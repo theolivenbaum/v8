@@ -77,7 +77,9 @@ namespace V8Sharp
         InterpreterFrameRecord[]? _interpreterFrames;
 
         /// <summary>The frame records of the live frames; index 0 is the outermost.</summary>
-        public InterpreterFrameRecord[] InterpreterFrames => _interpreterFrames ??= new InterpreterFrameRecord[kMaxInterpreterFrames];
+        // Pinned (the pinned object heap) like the register stack: see Isolate.RegisterStack.
+        public InterpreterFrameRecord[] InterpreterFrames =>
+            _interpreterFrames ??= GC.AllocateArray<InterpreterFrameRecord>(kMaxInterpreterFrames, pinned: true);
 
         /// <summary>The number of live frame records.</summary>
         public int InterpreterFrameDepth;
@@ -112,6 +114,21 @@ namespace V8Sharp
             InterpreterFrameRecord[] frames = _interpreterFrames!;
             for (int i = InterpreterFrameDepth - 1; i >= depth; i--) frames[i] = default;
             InterpreterFrameDepth = depth;
+        }
+
+        /// <summary>
+        /// Clears the records above the live frames. InterpreterInlineCalls.PopFrame
+        /// leaves Function and Bytecode in a popped record (deviations.md,
+        /// Interpreter), which would keep a dead closure reachable across an
+        /// explicit collection (gc(), WeakRef tests); CollectGarbage drops them.
+        /// </summary>
+        internal void ClearStaleFrameRecords()
+        {
+            InterpreterFrameRecord[]? frames = _interpreterFrames;
+            if (frames is null) return;
+            // Popped records need not be contiguous (PopFramesTo clears its
+            // records), so clear the whole tail; this runs only on explicit GCs.
+            frames.AsSpan(InterpreterFrameDepth).Clear();
         }
     }
 }
