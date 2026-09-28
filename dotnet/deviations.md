@@ -243,9 +243,47 @@ Bootstrapper
   from scratch with Genesis, in V8's order.
 - Not installed yet: Intl, Temporal, ArrayBuffer/SharedArrayBuffer/Atomics,
   typed arrays, DataView, DisposableStack, shared structs, extras and
-  extensions, RegExpMatchInfo.
+  extensions. The RegExpMatchInfo of a native context is created on first use
+  (`RegExpMatchInfo.Get`), not by InitializeGlobal.
 - The error stack getter and setter are JSFunctions created eagerly per native
   context (`NativeContext.ErrorStackGetterFun`/`ErrorStackSetterFun`), not
   FunctionTemplateInfo roots instantiated lazily.
 - The empty function uses the bootstrapping ScopeInfo.
 - `V8_FUNCTION_ARGUMENTS_CALLER_ARE_OWN_PROPS` is off, as in V8's default build.
+
+## String and RegExp builtins
+
+- Strings are UTF-16 only, so the one-byte fast paths of the builtins (and
+  String::IsOneByteRepresentationUnderneath for choosing irregexp's LATIN1
+  code) decide by content: `JSRegExp.IsOneByteSubject` scans the subject
+  (vectorized) and remembers the answer for the last two subjects per thread.
+- Results are built flat where V8 builds cons strings (StringRepeat, padStart/
+  padEnd, replaceAll, the global replace paths append into an
+  IncrementalStringBuilder instead of a ReplacementStringBuilder parts array);
+  the strings are equal, only the representation differs.
+- `StringSearch` (string-search.h) uses the vectorized
+  `MemoryExtensions.IndexOf`/`LastIndexOf` instead of V8's linear/BMH/BM
+  strategies; the positions found are the same.
+- The regexp compilation cache is a per-isolate dictionary by (source, flags),
+  cleared at 4096 entries, instead of V8's generational CompilationCache table.
+- The results caches (regexp::ResultsCache, ResultsCache_MatchGlobalAtom) and
+  the case-mapping caches are per isolate / per thread and are never cleared
+  by GC. Cached arrays are shared copy-on-write, as in V8.
+- RegExpMatchInfo::ReserveCaptures grows the match info in place instead of
+  allocating a larger one and storing it on the native context.
+- PrototypeCheckAssembler: the constness check (map identity plus const
+  descriptors) additionally compares the property values with the native
+  context's originals, so a store that bypassed constness tracking cannot
+  keep a modified prototype on the fast path. The identity fallback reads
+  the value through the descriptor's field index.
+- The experimental-engine flags of V8Sharp.RegExp are process-wide statics;
+  JSRegExp.Compile copies the isolate's flags into them before compiling. The
+  tiering flags (--regexp-tier-up, --regexp-interpret-all, --jitless) are
+  snapshotted per compiled regexp.
+- The global exec loop (GlobalExecRunner, RegExpExecInternal_Batched) asks the
+  engine for a batch of matches in every tier; V8's interpreter does one match
+  per call. V8Sharp.RegExp fills the batch in all tiers, so results are the
+  same.
+- localeCompare, normalize, toLocaleUpperCase/LowerCase follow V8's
+  !V8_INTL_SUPPORT paths (code-unit order, form validation only, unibrow
+  case mapping of code units). The oracle has ICU; its results differ there.

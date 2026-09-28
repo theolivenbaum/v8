@@ -354,6 +354,21 @@ public sealed partial class JSRegExp
     }
 
     /// <summary>
+    /// The boilerplate copy of ConstructorBuiltinsAssembler::CreateRegExpLiteral:
+    /// a fresh regexp from the initial map sharing the boilerplate's data and
+    /// flags (RegExpBoilerplateDescription), with lastIndex 0. The bytecode's
+    /// flags operand is V8's JSRegExp::Flags, which has RegExpFlags' layout.
+    /// </summary>
+    public static JSRegExp CreateFromBoilerplate(Isolate isolate, RegExpData data, RegExpFlags flags)
+    {
+        var regexp = (JSRegExp)isolate.Factory.NewJSObjectFromMap(isolate.NativeContext.RegExpFunction.InitialMap);
+        regexp.Data = data;
+        regexp.Flags = flags;
+        regexp.LastIndex = JSValue.FromInt(kInitialLastIndexValue);
+        return regexp;
+    }
+
+    /// <summary>
     /// JSRegExp::Initialize(isolate, regexp, source, flags_string): parses the
     /// flags (SyntaxError "Invalid flags supplied to RegExp constructor") and
     /// compiles. This is what RegExpInitializeAndCompile and the
