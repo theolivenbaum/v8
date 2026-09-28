@@ -583,7 +583,7 @@ public static class MessageFormatter
         "Cannot perform % on a detached ArrayBuffer", // TypedArrayDetachedErrorOperation
         "Cannot perform % out-of-bounds of the ArrayBuffer", // TypedArrayOOBErrorOperation
         "Cannot perform % on a detached or out-of-bounds ArrayBuffer", // TypedArrayValidateErrorOperation
-        "Cannot perform % on a detached or out-of-bounds or immutable ArrayBufferCannot perform % on a detached or out-of-bounds ArrayBuffer", // TypedArrayValidateWriteErrorOperation
+        "Cannot perform % on a detached or out-of-bounds or immutable ArrayBuffer", // TypedArrayValidateWriteErrorOperation (the --js-immutable-arraybuffer text; JSTypedArray.ValidateErrorMessage picks TypedArrayValidateErrorOperation without the flag)
         "Cannot perform % on an immutable ArrayBuffer", // TypedArrayImmutableBufferErrorOperation
         "Do not use %; %", // DoNotUse
         "Object template has duplicate property '%'", // DuplicateTemplateProperty

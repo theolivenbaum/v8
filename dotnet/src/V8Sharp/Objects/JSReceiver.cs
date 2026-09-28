@@ -33,6 +33,8 @@ public abstract partial class JSReceiver
                     continue;
                 case LookupIterator.StateKind.ACCESS_CHECK:
                     if (it.HasAccess()) continue;
+                    // JSObject::GetPropertyAttributesWithFailedAccessCheck.
+                    it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
                     return false;
                 case LookupIterator.StateKind.TYPED_ARRAY_INDEX_NOT_FOUND:
                     // TypedArray out-of-bounds access.
@@ -101,7 +103,7 @@ public abstract partial class JSReceiver
     /// running JavaScript (accessors and proxies read as undefined; the
     /// engine's own AccessorInfo "special data properties" are evaluated).
     /// </summary>
-    public static JSValue GetDataProperty(ref LookupIterator it)
+    public static JSValue GetDataProperty(ref LookupIterator it, bool allowAllocation = true)
     {
         for (;; it.Next())
         {
@@ -122,7 +124,7 @@ public abstract partial class JSReceiver
                 {
                     // Special handling for AccessorInfo, which behaves like a data
                     // property.
-                    if (it.GetAccessors() is AccessorInfo info && info.HasNoSideEffect)
+                    if (allowAllocation && it.GetAccessors() is AccessorInfo info && info.HasNoSideEffect)
                     {
                         try
                         {
@@ -150,12 +152,12 @@ public abstract partial class JSReceiver
     }
 
     /// <summary>JSReceiver::GetDataProperty(isolate, object, name).</summary>
-    public static JSValue GetDataProperty(Isolate isolate, JSReceiver obj, Name name)
+    public static JSValue GetDataProperty(Isolate isolate, JSReceiver obj, Name name, bool allowAllocation = true)
     {
         var key = new PropertyKey(isolate, name);
         var it = new LookupIterator(isolate, obj, key, obj, LookupIterator.Configuration.PROTOTYPE_CHAIN_SKIP_INTERCEPTOR);
         if (!it.IsFound) return JSValue.Undefined;
-        return GetDataProperty(ref it);
+        return GetDataProperty(ref it, allowAllocation);
     }
 
     /// <summary>JSReceiver::GetProperty(isolate, receiver, name).</summary>
@@ -194,6 +196,11 @@ public abstract partial class JSReceiver
             switch (it.State)
             {
                 case LookupIterator.StateKind.ACCESS_CHECK:
+                    if (!it.HasAccess())
+                    {
+                        isolate.ReportFailedAccessCheck(it.GetReceiver().As<JSObject>());
+                        return false;
+                    }
                     continue;
                 case LookupIterator.StateKind.DATA:
                     if (isDefine)
@@ -255,6 +262,8 @@ public abstract partial class JSReceiver
 
         var from = (JSObject)sourceReceiver;
         if (from.Elements != FixedArray.Empty && from.Elements.Length != 0) return false;
+        // V8's typed arrays have ByteArray elements, never empty_fixed_array.
+        if (ElementsKinds.IsTypedArrayOrRabGsabTypedArrayElementsKind(map.ElementsKind)) return false;
 
         bool stable = true;
 
@@ -282,6 +291,12 @@ public abstract partial class JSReceiver
                         continue;
                     }
                 }
+                // CopyDataProperties step 4.c: an excluded key is skipped before its
+                // value is read, so an excluded getter is not called
+                // (mjsunit/regress/regress-41488094). No element indexes get here, so
+                // the exclusion check cannot yield false negatives for type mismatch.
+                if (!useSet && excludedProperties.Length != 0 && HasExcludedProperty(excludedProperties, nextKey)) continue;
+
                 JSValue propValue;
                 // Directly decode from the descriptor array if |from| did not change
                 // shape.
@@ -322,10 +337,6 @@ public abstract partial class JSReceiver
                 }
                 else
                 {
-                    // No element indexes should get here or the exclusion check may
-                    // yield false negatives for type mismatch.
-                    if (excludedProperties.Length != 0 && HasExcludedProperty(excludedProperties, nextKey)) continue;
-
                     // 4a ii 2. Perform ? CreateDataProperty(target, nextKey, propValue).
                     CreateDataProperty(isolate, target, nextKey, propValue, ShouldThrow.ThrowOnError);
                 }
@@ -472,7 +483,7 @@ public abstract partial class JSReceiver
         {
             if (receiver.Map.GetConstructor() is JSFunction constructor)
             {
-                JSString name = JSFunction.GetDebugName(isolate, constructor);
+                JSString name = JSFunction.GetDebugName(isolate, constructor, allowAllocation: false);
                 if (name.Length != 0 && !JSString.Equals(name, ReadOnlyRoots.Object_string))
                 {
                     return (constructor, name);
@@ -486,7 +497,7 @@ public abstract partial class JSReceiver
 
             var itToStringTag = new LookupIterator(isolate, receiver, ReadOnlyRoots.to_string_tag_symbol, current,
                 LookupIterator.Configuration.OWN_SKIP_INTERCEPTOR);
-            JSValue maybeToStringTag = GetDataProperty(ref itToStringTag);
+            JSValue maybeToStringTag = GetDataProperty(ref itToStringTag, allowAllocation: false);
             if (maybeToStringTag.HeapObjectOrNull is JSString tag) return (null, tag);
 
             // Consider the following example:
@@ -503,7 +514,7 @@ public abstract partial class JSReceiver
             {
                 var itConstructor = new LookupIterator(isolate, receiver, ReadOnlyRoots.constructor_string, current,
                     LookupIterator.Configuration.OWN_SKIP_INTERCEPTOR);
-                JSValue maybeConstructor = GetDataProperty(ref itConstructor);
+                JSValue maybeConstructor = GetDataProperty(ref itConstructor, allowAllocation: false);
                 if (maybeConstructor.HeapObjectOrNull is JSFunction constructor)
                 {
                     JSString name = SharedFunctionInfo.DebugName(isolate, constructor.Shared);
@@ -587,6 +598,8 @@ public abstract partial class JSReceiver
                     continue;
                 case LookupIterator.StateKind.ACCESS_CHECK:
                     if (it.HasAccess()) continue;
+                    // JSObject::GetPropertyAttributesWithFailedAccessCheck.
+                    it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
                     return PropertyAttributes.ABSENT;
                 case LookupIterator.StateKind.TYPED_ARRAY_INDEX_NOT_FOUND:
                     return PropertyAttributes.ABSENT;
@@ -674,6 +687,7 @@ public abstract partial class JSReceiver
                     return ObjectOps.ReturnFailure(isolate, ShouldThrow.ThrowOnError, MessageTemplate.WasmObjectsAreOpaque);
                 case LookupIterator.StateKind.ACCESS_CHECK:
                     if (it.HasAccess()) continue;
+                    isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
                     return false;
                 case LookupIterator.StateKind.INTERCEPTOR:
                     continue;
@@ -833,7 +847,11 @@ public abstract partial class JSReceiver
         var it = new LookupIterator(isolate, obj, key, LookupIterator.Configuration.OWN);
 
         // Deal with access checks first.
-        while (it.State == LookupIterator.StateKind.ACCESS_CHECK) it.Next();
+        if (it.State == LookupIterator.StateKind.ACCESS_CHECK)
+        {
+            if (!it.HasAccess()) isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
+            it.Next();
+        }
 
         // 1. Let current be O.[[GetOwnProperty]](P).
         var current = new PropertyDescriptor();
@@ -1139,8 +1157,12 @@ public abstract partial class JSReceiver
             return JSProxy.GetOwnPropertyDescriptor(isolate, proxy, it.GetName(), ref desc);
         }
 
-        // Skip access checks (they always succeed) before the property itself.
-        while (it.State == LookupIterator.StateKind.ACCESS_CHECK) it.Next();
+        // Request to deal with access checks through GetPropertyAttributes if needed.
+        if (it.State == LookupIterator.StateKind.ACCESS_CHECK)
+        {
+            if (!it.HasAccess()) it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
+            it.Next();
+        }
 
         // 2. If O does not have an own property with key P, return undefined.
         PropertyAttributes attrs = JSObject.GetPropertyAttributes(ref it);

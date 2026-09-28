@@ -11,6 +11,24 @@ public static class BuiltinsApi
     public static void Register()
     {
         BuiltinRegistry.Register(Builtin.HandleApiCallOrConstruct, HandleApiCallOrConstruct);
+        BuiltinRegistry.Register(Builtin.HandleApiCallAsFunctionDelegate, HandleApiCallAsFunctionDelegate);
+    }
+
+    /// <summary>
+    /// Builtins::HandleApiCallAsFunctionDelegate
+    /// (HandleApiCallAsFunctionOrConstructorDelegate, not a construct call):
+    /// a call of a callable non-function API object, which is the receiver.
+    /// The callback comes from the instance call handler of the API function
+    /// that constructed the object.
+    /// </summary>
+    public static JSValue HandleApiCallAsFunctionDelegate(Isolate isolate, in BuiltinArguments args)
+    {
+        var obj = (JSObject)args.Receiver.Object;
+        var constructor = (JSFunction)obj.Map.GetConstructor()!;
+        FunctionTemplateInfo templ = constructor.Shared.GetApiFunctionData().InstanceCallHandler!;
+        var callArgs = new BuiltinArguments(args.Target, JSValue.Undefined, obj, args.Arguments);
+        JSValue result = templ.Callback(isolate, in callArgs);
+        return result;
     }
 
     /// <summary>

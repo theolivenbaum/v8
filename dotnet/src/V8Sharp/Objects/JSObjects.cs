@@ -352,7 +352,13 @@ public struct PrototypeIterator
 
     public readonly T GetCurrent<T>() where T : JSReceiver => (T)_object!;
 
-    public readonly bool HasAccess() => true;
+    /// <summary>PrototypeIterator::HasAccess: Isolate::MayAccess for access-checked objects.</summary>
+    public readonly bool HasAccess()
+    {
+        if (_object is not JSObject obj || !obj.Map.IsAccessCheckNeeded) return true;
+        Context? context = _isolate.Context;
+        return context is null || _isolate.MayAccess(context.NativeContext, obj);
+    }
 
     public void Advance()
     {
@@ -378,6 +384,18 @@ public struct PrototypeIterator
     /// <summary>Returns false iff a call to JSProxy::GetPrototype throws (here: throws).</summary>
     public bool AdvanceFollowingProxies()
     {
+        if (!HasAccess())
+        {
+            // Abort the lookup if we do not have access to the current object.
+            _object = null;
+            _isAtEnd = true;
+            return true;
+        }
+        return AdvanceFollowingProxiesIgnoringAccessChecks();
+    }
+
+    public bool AdvanceFollowingProxiesIgnoringAccessChecks()
+    {
         if (_object is JSProxy proxy)
         {
             // Due to possible __proto__ recursion limit the number of Proxies
@@ -390,14 +408,13 @@ public struct PrototypeIterator
             }
             JSReceiver? proto = JSProxy.GetPrototype(_isolate, proxy);
             _object = proto;
-            _isAtEnd = proto is null;
+            _isAtEnd = _whereToEnd == WhereToEnd.END_AT_NON_HIDDEN || proto is null;
             return true;
         }
         AdvanceIgnoringProxies();
         return true;
     }
 
-    public bool AdvanceFollowingProxiesIgnoringAccessChecks() => AdvanceFollowingProxies();
 }
 
 /// <summary>Deterministic identity-hash generator (V8's Isolate::GenerateIdentityHash).</summary>

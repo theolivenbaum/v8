@@ -3,6 +3,7 @@
 // the oracle.
 using V8Sharp.Builtins;
 using V8Sharp.Codegen;
+using V8Sharp.D8;
 using V8Sharp.Common;
 using V8Sharp.Init;
 using V8Sharp.Objects;
@@ -26,10 +27,14 @@ public sealed class V8SharpEngine : IJsEngine
     {
         foreach (var f in flags)
         {
+            // d8's --no-can-block is Isolate::SetAllowAtomicsWait(false).
+            if (f is "--no-can-block") { AllowAtomicsWait = false; continue; }
             // d8 ignores flags it does not know.
             try { _flags.SetFlagsFromCommandLine([f]); } catch (Exception) { }
         }
     }
+
+    internal bool AllowAtomicsWait { get; private set; } = true;
 
     public IJsIsolate CreateIsolate(IJsHost host) => new V8SharpJsIsolate(this, host, _flags.Clone());
 }
@@ -57,6 +62,15 @@ sealed class V8SharpJsIsolate : IJsIsolate
     {
         Host = host;
         Isolate = VIsolate.New(flags);
+        Isolate.AllowAtomicsWait = engine.AllowAtomicsWait;
+        // d8's Shell::HostCreateShadowRealmContext: a plain new context in the
+        // initiator's origin (same security token).
+        Isolate.HostCreateShadowRealmContextCallback = static (isolate, initiator) =>
+        {
+            NativeContext context = Bootstrapper.CreateEnvironment(isolate);
+            context.SecurityToken = initiator.SecurityToken;
+            return context;
+        };
         Isolate.PromiseRejectCallback = OnPromiseReject;
         var main = new V8SharpRealm(this, Isolate.InitialNativeContext!);
         _realms.Add(main);
@@ -98,7 +112,18 @@ sealed class V8SharpJsIsolate : IJsIsolate
     public bool PumpMessageLoop()
     {
         if (Terminating || !Isolate.HasPendingTasks) return false;
-        using (Enter()) return Isolate.RunPendingTasks();
+        using (Enter())
+        {
+            try
+            {
+                return Isolate.RunPendingTasks();
+            }
+            catch (TerminationException)
+            {
+                // A task's callbacks called quit() or d8.terminate().
+                return false;
+            }
+        }
     }
 
     void OnPromiseReject(JSPromise promise, JSValue value, PromiseRejectEvent e)
@@ -209,8 +234,35 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
         return Compiler.RunScript(Isolate, function);
     });
 
-    public Completion RunModule(string source, string name) =>
-        new(CompletionKind.Throw, Exception: new JsExceptionInfo("V8Sharp: ES modules are not supported yet"));
+    /// <summary>The realm's module map and callbacks (d8's ModuleEmbedderData), created with the realm.</summary>
+    readonly ModuleLoader _moduleLoader = new(owner.Isolate, context, new HostModuleSourceProvider(owner.Host));
+
+    public Completion RunModule(string source, string name) => Execute(() =>
+    {
+        (_, JSPromise promise) = _moduleLoader.StartModule(name, new ModuleSourceText(name, source));
+        VExecution.PerformMicrotaskCheckpoint(Isolate);
+        // A module's evaluation returns a promise (top-level await); d8 reports
+        // its rejection as an uncaught exception.
+        if (promise.Status == PromiseState.kRejected) Isolate.ReThrow(promise.Result);
+        return JSValue.Undefined;
+    });
+
+    /// <summary>Module resolution and reading through the embedding shell (IJsHost.LoadModule).</summary>
+    sealed class HostModuleSourceProvider(IJsHost host) : IModuleSourceProvider
+    {
+        public ModuleSourceText Load(string specifier, string referrer, ModuleType type)
+        {
+            try
+            {
+                ModuleSource m = host.LoadModule(specifier, referrer, type switch { ModuleType.kJSON => "json", ModuleType.kText => "text", _ => null });
+                return new ModuleSourceText(m.Name, m.Source);
+            }
+            catch (JsHostError e)
+            {
+                throw new ModuleLoadException(e.Message, e.ErrorType);
+            }
+        }
+    }
 
     public Completion Call(object function, object? receiver, params object?[] args) => Execute(() =>
     {
@@ -279,10 +331,12 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
         }
     }
 
-    // Deviation: V8Sharp has no detached global proxies yet; Realm.detachGlobal
-    // and Realm.navigate leave the old global reachable.
     public void DetachGlobal()
     {
+        using (owner.Enter())
+        {
+            Isolate.DetachGlobal(Context);
+        }
     }
 
     public void Dispose()

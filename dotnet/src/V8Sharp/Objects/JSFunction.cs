@@ -84,6 +84,31 @@ public sealed partial class Script : HeapObject
             : [];
     }
 
+    /// <summary>
+    /// Script::GetEvalPosition: the eval position, translated from the negated
+    /// bytecode offset an indirect eval or dynamic function stored.
+    /// </summary>
+    public int GetEvalPosition()
+    {
+        int position = EvalFromPosition;
+        if (position < 0)
+        {
+            // Due to laziness, the position may not have been translated from code
+            // offset yet, which would be encoded as negative integer. In that case,
+            // translate and set the position.
+            if (EvalFromShared?.FunctionData is Interpreter.BytecodeArray bytecode)
+            {
+                position = bytecode.SourcePosition(-position);
+            }
+            else
+            {
+                position = 0;
+            }
+            EvalFromPosition = position;
+        }
+        return position;
+    }
+
     public Script GetEvalOrigin()
     {
         Script originScript = this;
@@ -275,6 +300,8 @@ public sealed class SharedFunctionInfo : HeapObject
         {
             scopeInfo.SetFunctionName(_sharedName);
         }
+        JSString inferred = InferredName();
+        if (inferred.Length != 0 && scopeInfo.HasInferredFunctionName) scopeInfo.SetInferredFunctionName(inferred);
         NameOrScopeInfo = scopeInfo;
     }
 
@@ -1064,7 +1091,7 @@ public sealed class JSFunction(Map map, SharedFunctionInfo shared, Context conte
     }
 
     /// <summary>JSFunction::GetDebugName.</summary>
-    public static JSString GetDebugName(Isolate isolate, JSFunction function)
+    public static JSString GetDebugName(Isolate isolate, JSFunction function, bool allowAllocation = true)
     {
         // Below we use the same fast-path that we already established for
         // Function.prototype.bind(), where we avoid a slow "name" property
@@ -1074,7 +1101,7 @@ public sealed class JSFunction(Map map, SharedFunctionInfo shared, Context conte
         // it must be the FunctionNameGetter).
         if (!Accessors.UseFastFunctionNameLookup(isolate, function.Map))
         {
-            JSValue name = JSReceiver.GetDataProperty(isolate, function, ReadOnlyRoots.name_string);
+            JSValue name = JSReceiver.GetDataProperty(isolate, function, ReadOnlyRoots.name_string, allowAllocation);
             if (name.HeapObjectOrNull is JSString s) return s;
         }
         return SharedFunctionInfo.DebugName(isolate, function.Shared);

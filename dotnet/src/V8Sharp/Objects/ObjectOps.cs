@@ -741,7 +741,8 @@ public static class ObjectOps
             else if (x.HeapObjectOrNull is JSReceiver xr)
             {
                 if (y.IsJSReceiver) return x.IsIdenticalTo(y);
-                if (IsUndetectable(y)) return IsUndetectable(x);
+                // V8: null and undefined are undetectable oddballs.
+                if (IsUndetectableOrNullish(y)) return IsUndetectable(x);
                 if (y.IsBoolean)
                 {
                     y = JSValue.FromNumber(y.IsTrue ? 1 : 0);
@@ -1046,7 +1047,9 @@ public static class ObjectOps
                 case LookupIterator.StateKind.INTERCEPTOR:
                     continue;
                 case LookupIterator.StateKind.ACCESS_CHECK:
-                    continue;
+                    if (it.HasAccess()) continue;
+                    // JSObject::GetPropertyWithFailedAccessCheck (no interceptors).
+                    return it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
                 case LookupIterator.StateKind.MODULE_NAMESPACE:
                     continue;
                 case LookupIterator.StateKind.ACCESSOR:
@@ -1627,7 +1630,10 @@ public static class ObjectOps
             switch (it.State)
             {
                 case LookupIterator.StateKind.ACCESS_CHECK:
-                    continue;
+                    if (it.HasAccess()) continue;
+                    // JSObject::SetPropertyWithFailedAccessCheck (no interceptors).
+                    it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
+                    return true;
 
                 case LookupIterator.StateKind.JSPROXY:
                 {
@@ -1769,7 +1775,9 @@ public static class ObjectOps
             switch (ownLookup.State)
             {
                 case LookupIterator.StateKind.ACCESS_CHECK:
-                    continue;
+                    if (ownLookup.HasAccess()) continue;
+                    isolate.ReportFailedAccessCheck(ownLookup.GetHolder<JSObject>());
+                    return true;
 
                 case LookupIterator.StateKind.ACCESSOR:
                     if (ownLookup.GetAccessors() is AccessorInfo)

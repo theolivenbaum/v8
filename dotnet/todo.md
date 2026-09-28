@@ -110,7 +110,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Tests: object-unittest, test-field-type-tracking, dictionary-unittest,
       hashcode-unittest, test-orderedhashtable (OrderedHashMap/Set),
       test-strings (non-JS), elements-kind-unittest, test-transitions.
-      Missing: interceptors and access checks, shared/Atomics elements,
+      Missing: interceptors (access checks: global proxies only), shared/Atomics elements,
       SmallOrderedHashTable, the JS-running tests of those files
       (StoreToConstantField_*, HoleyHeapNumber, the JS parts of test-strings)
 - [~] Isolate, Factory, roots, StringTable, MessageTemplate, error creation,
@@ -156,22 +156,56 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       harness compiles direct evals of string literals itself); block
       coverage is ported but has no golden coverage (only the oracle can
       check it).
-- [ ] feedback vectors and ICs (load/store/keyed/global/call/binary op/compare)
-- [ ] interpreter dispatch loop, generators, async functions
-- [ ] runtime functions (`%` intrinsics used by bytecode and by mjsunit)
+- [x] feedback vectors and ICs (src/ic, Objects/Feedback*.cs): FeedbackVector,
+      FeedbackNexus, closure feedback cells, lazy feedback allocation;
+      LoadIC/StoreIC/KeyedLoadIC/KeyedStoreIC/LoadGlobalIC/StoreGlobalIC/
+      DefineNamedOwnIC/DefineKeyedOwnIC/StoreInArrayLiteralIC/HasIC with
+      monomorphic, polymorphic and megamorphic (stub cache) states and C#
+      handler objects; element handlers with validity cells and
+      ElementsTransitionAndStore; typed array element loads; call, construct
+      (AllocationSite for Array), instanceof, binary-op and compare feedback;
+      allocation mementos (JSArray.AllocationMementoSite) with
+      DigestTransitionFeedback. Tests: tests/V8Sharp.Tests/IC. Open:
+      CloneObjectIC fast case (%HaveSameMap after spread), LoadSuperIC
+      handlers, typed array element stores in the IC, pretenuring.
+- [x] interpreter dispatch loop (Interpreter/InterpreterLoop.cs, one loop per
+      operand scale, rare bytecodes in LoopCold), frames on the register
+      stack in V8's layout with bytecode-to-bytecode calls and constructs in
+      the caller's loop (InterpreterInlineCalls), exceptions and handler
+      tables, generators, async functions, async generators and for-await
+      (InterpreterAsync, Builtins.Async.cs, port of builtins-async-*-gen.cc),
+      disposable stacks (using / await using), stack traces through
+      interpreter frames incl. async frames (CaptureAsyncStackTrace).
+      Tests: tests/V8Sharp.Tests/Interpreter. Open: baseline tier (in
+      progress elsewhere), debugger hooks.
+- [x] runtime functions (Runtime/, RuntimeTable): every function the
+      bytecode generator emits, plus the mjsunit test natives (%Prepare/
+      Optimize* answer as --jitless V8, elements-kind queries, protectors,
+      %HasCowElements, %NormalizeElements, %HasFixed*Elements ...). Open:
+      %GetFeedback, %RuntimeEvaluateREPL, block coverage (%DebugToggleBlock
+      Coverage, %DebugCollectCoverage), %ShareObject/shared structs, the
+      runtime.cc IsEnabledForFuzzing allowlist in the parser (until then the
+      compiler does not pass --fuzzing to the parser).
 - [~] builtins: Object, Function, Reflect, Proxy, global functions (URI
       coding, escape/unescape, isNaN/isFinite, parseInt/parseFloat, eval),
       Error (+ AggregateError, SuppressedError, captureStackTrace, isError,
       CallSite methods), Boolean, Symbol: ported (Builtins/Builtins.{Object,
       Function,Reflect,Proxy,Global,Error,Boolean,Symbol}*.cs; tests in
       tests/V8Sharp.Tests/Builtins, URI/parse functions and the intrinsics'
-      shapes checked against the oracle). Waiting for the interpreter: the
-      mjsunit/test262 runs of built-ins/{Object,Function,Reflect,Proxy,Error,
-      Boolean,Symbol,...}; `new Function` and indirect eval call
-      Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler), which the
-      compiler port must register. The proxy trap stubs (ProxyGetProperty ...)
-      and CallProxy/ConstructProxy are not registered: callers use JSProxy.
-      Still to do: generators (interpreter port)
+      shapes checked against the oracle). ShadowRealm (builtins-shadow-realm.cc,
+      InitializeGlobal_harmony_shadow_realm, behind the experimental
+      --harmony-shadow-realm that test262 turns on; Builtins.ShadowRealm.cs):
+      constructor, evaluate, importValue (rejects until there is a host
+      dynamic import), CallSite boundary checks; hosts set
+      Isolate.HostCreateShadowRealmContextCallback as d8 does (the runner
+      does; d8sharp should too). `new Function` and indirect eval call
+      Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler). The proxy
+      trap stubs (ProxyGetProperty ...) and CallProxy/ConstructProxy are not
+      registered: callers use JSProxy. test262 (v8sharp, 2026-09-28):
+      built-ins/{Object,Function,Reflect,Proxy,Error,NativeErrors,Boolean,
+      Symbol,global functions}/** 100% except the interpreter/module cases
+      listed under "Interpreter failures seen by the builtins conformance
+      pass".
 - [~] Map, Set, WeakMap, WeakSet, WeakRef, FinalizationRegistry, Promise,
       Iterator, DisposableStack builtins and the microtask queue
       (Builtins/Builtins.{Collections,Set,WeakRefs,Promise*,Iterator*,
@@ -213,25 +247,27 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       d8 Realm microtask-queue/onerror tests (runner d8 shim) and
       iterator-join (%ArrayBufferDetach). Missing: the `IteratorHelpers`
       forwarding shim in Builtins.Iterator.cs (remove once no caller uses it)
-- [~] Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
+- [x] Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
       builtins and the array iterators (Builtins/Builtins.{Array,ArrayBuffer,
       TypedArray,DataView,Atomics}*.cs; Objects/JSArrayBuffer.cs,
       JSTypedArray.cs, Elements.Typed.cs; Heap/Factory.TypedArrays.cs). Every
-      builtin Genesis installs for these areas is registered except
-      Array.fromAsync (needs async functions and promises). Array.prototype.sort
+      builtin Genesis installs for these areas is registered, including
+      Array.fromAsync (array-from-async.tq's promise-driven state machine,
+      Builtins.Array.FromAsync.cs). Array.prototype.sort
       is the PowerSort of third_party/v8/builtins/array-sort.tq (the oracle's
       V8 14.7 still sorts with TimSort, so comparison traces are checked
       against the tree's algorithm, not the oracle); typed array sort, join
       with the cycle stack, base64/hex (with V8's simdutf truncation
       behaviour), resizable/growable buffers, transfer/detach, Float16.
       Atomics.wait blocks on a process-wide FutexEmulation; Atomics.waitAsync
-      returns the synchronous results but throws NotImplementedException when
-      it would suspend. 69 xUnit tests (tests/V8Sharp.Tests/Builtins/{Array,
-      TypedArray,DataView}*.cs), expectations from the oracle. Missing: the
-      test262/mjsunit runs of built-ins/{Array,TypedArray*,ArrayBuffer,
-      DataView,Atomics}/** (wait for the interpreter), Array.fromAsync,
-      Atomics.waitAsync suspension, runtime functions (%ArrayBufferDetach,
-      %TypedArrayGetLength, ...) for mjsunit
+      suspends with async waiters resolved from the isolate's foreground task
+      runner (notify, delayed timeout tasks). Runtime functions:
+      Runtime/Runtime.TypedArray.cs (runtime-typedarray.cc, runtime-futex.cc,
+      %HasFixed*Elements). 69 xUnit tests (tests/V8Sharp.Tests/Builtins/{Array,
+      TypedArray,DataView}*.cs), expectations from the oracle. test262
+      (v8sharp, 2026-09-28): built-ins/{Array,ArrayBuffer,TypedArray,
+      TypedArrayConstructors,DataView,Atomics,SharedArrayBuffer,Uint8Array}/**
+      100%.
 - [~] Number, Math, BigInt, JSON, Date builtins (Builtins/Builtins.{Number,
       Math,BigInt,Json,Date}*.cs, Json/, Date/, Objects/BigInt*.cs): every
       builtin of builtins-number.cc/number.tq (toString(radix), toFixed,
@@ -251,8 +287,9 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Date.parse over the mjsunit date strings plus extra formats, the Date
       string formats and getters/setters (also run under TZ=America/New_York,
       Europe/London, Asia/Kolkata, America/Sao_Paulo), 770 JSON texts through
-      parse+stringify. Waiting for the interpreter: the test262/mjsunit runs
-      of built-ins/{Number,Math,BigInt,JSON,Date}. JSON revivers, replacer
+      parse+stringify. test262 (v8sharp, 2026-09-28): built-ins/{Number,Math,
+      BigInt,JSON,Date}/** 100% (Temporal's Date.prototype.toTemporalInstant
+      skipped). JSON revivers, replacer
       functions and toJSON are checked against the oracle with API functions.
       Not ported: FastJsonStringifier and JSDataObjectBuilder (see
       deviations.md, JSON), the typed-array fast path of IterableForEach.
@@ -266,12 +303,46 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       IsUnmodifiedRegExp), the batched global exec, CompiledReplacement,
       RegExpExecMultiple, the results caches (split, string split, multiple
       indices, global atom), RegExpSyntaxValidator for the parser. 40 xUnit
-      tests (tests/V8Sharp.Tests/Builtins). Missing: the test262/mjsunit
-      runs (wait for the interpreter), the runtime dispatch entries (the
-      interpreter owns the table; Runtime* expose typed static methods),
+      tests (tests/V8Sharp.Tests/Builtins). test262 (v8sharp, 2026-09-28):
+      built-ins/{String,RegExp,StringIteratorPrototype,
+      RegExpStringIteratorPrototype}/** and annexB/built-ins/** 100%; the
+      ICU-emulating case folding passes 9 tests V8's no-ICU build fails
+      (listed as PASS in expectations/test262.v8sharp.txt). Missing:
       Intl-dependent behaviour (V8Sharp is the non-ICU build).
-- [ ] modules (import/export, dynamic import, top-level await)
-- [ ] eval / new Function / with
+- [x] modules (Objects/Module.cs: module.cc, source-text-module.cc,
+      synthetic-module.cc; Runtime/RuntimeModules.cs): instantiate/link,
+      evaluate with top-level await and async module evaluation, namespaces,
+      import.meta, dynamic import, import attributes (JSON and text modules
+      in the d8sharp loader, V8Sharp.D8/ModuleLoader.cs). test262
+      language/module-code, language/import, language/expressions/dynamic-
+      import pass except import defer and source phase imports (not
+      ported: JSDeferredModuleNamespace and module sources).
+- [x] eval / new Function / with (Compiler.GetFunctionFromEval with the eval
+      origin, CreateDynamicFunction, lookup slots, sourceURL comments).
+- [x] d8sharp shell (src/V8Sharp.D8): print/write/read/load/quit, Realm,
+      d8.file/d8.test basics, performance.now, modules (.mjs), the message
+      loop; TestRunner engine V8SharpEngine and the Bench host.
+
+### Builtin failures seen by the interpreter port
+
+Failures the mjsunit/test262 runs show in code owned by other ports
+(checked with d8sharp against the oracle):
+
+- `Object.keys`/`JSON.stringify` of a typed array after a typed array of the
+  same map was enumerated returns no keys (mjsunit object-keys-typedarray,
+  json-stringify-typedarray): `BuiltinsObject.HasNoElements` treats the
+  typed array's empty `Elements` as "no elements" (V8 checks for
+  empty_fixed_array; typed arrays have a ByteArray).
+- `new Array(0)` is packed (V8: holey; allocation-site-info,
+  regress-crbug-245480).
+- The typed array species protectors are not invalidated
+  (protector-cell/*-species, typedarray-prototype-constructor-*).
+- `console` is not installed on the global object (the TestRunner shim wraps
+  it only when present).
+- The TestRunner's `print` is JavaScript in d8-shim.js, so it shows up in
+  stack traces (stack-trace-cpp-function-template-*; d8sharp is correct).
+- Atomics.waitAsync suspension, Array.fromAsync, ShadowRealm, Worker, the
+  d8 serializer and profiler hooks are not implemented.
 
 ## Conformance progress (V8Sharp engine)
 
@@ -282,6 +353,9 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 | 2026-09-28 | test262 | 82005 | 94901 | 86.4% | --no-sparkplug and --always-sparkplug: identical results (0 differences) |
 | 2026-09-28 | mjsunit | 6767 | 7581 | 89.3% | --no-sparkplug (the interpreter only) |
 | 2026-09-28 | mjsunit | 6822 | 7582 | 90.0% | --always-sparkplug: +60 (opt-proto-seq tests call %CompileBaseline, which needs Sparkplug), -6: element-read-only, ic-lookup-on-receiver, regress-4296, regress-crbug-1003732, -1259950, -662907 fail in the interpreter too with --no-lazy-feedback-allocation (IC bugs that eager feedback exposes) |
+| 2026-09-28 | test262 built-ins+annexB+staging (no Temporal) | 39189 | 39268 | 99.8% | builtins conformance pass, after merging the interpreter branch (was 98.1%, 760 unexpected). Left: modules, `accessor`, two realm cases (see "Interpreter failures seen by the builtins conformance pass") |
+| 2026-09-28 | test262 | 82412 | 85669 | 96.2% | Temporal marked SKIP in test262.v8sharp.txt (11448 skipped with the status file's); expectations regenerated |
+| 2026-09-28 | mjsunit | 6953 | 7597 | 91.5% | builtins conformance pass (6926 in the full run, +27 on rerunning its failures after access checks landed); expectations file mjsunit.v8sharp.txt generated |
 
 Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 
@@ -294,6 +368,15 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | EarleyBoyer | 791 | 4711 | 36484 |
 | RegExp | 780 | 1759 | 4595 |
 | NavierStokes | 632 | 1441 | 27465 |
+| 2026-09-28 | test262 | 84670 | 94901 | 89.2% | interpreter port complete (async, modules, eval); 98.8% without Temporal (9210). Remaining: import defer and source phase imports (not ported), ShadowRealm (124), Array.fromAsync, Atomics.waitAsync; expectations: tools/V8Sharp.TestRunner/expectations/test262.v8sharp.txt |
+| 2026-09-28 | mjsunit | 7074 | 7597 | 93.1% | clusters: Worker and d8 host features, optimization-status asserts, import defer (43), ShadowRealm/Wasm/shared structs; expectations: mjsunit.v8sharp.txt |
+
+Octane (interpreter only, 2 runs, loaded 4-core container, 2026-09-28):
+Richards 257 / 1265 (v8 --jitless), DeltaBlue 240 / 1409, Crypto 218 / 1111,
+RayTrace 645 / 2771, EarleyBoyer 806 / 3996, NavierStokes 549 / 1078
+(20-23% of jitless V8, NavierStokes 51%). The 2x target needs the baseline
+tier; the interpreter profile is dominated by the dispatch loop (~70%) and
+frame push/pop (~15%).
 
 Performance with the baseline tier (Octane, 2026-09-28, 4-core container
 shared with other jobs, mean of 2 runs; V8Sharp.Bench):
@@ -319,6 +402,53 @@ and GC (object = JSObject + JSValue[] fields) and by runtime paths
       (`src/objects/js-temporal-objects.cc`, `builtins-temporal.cc`) over the
       Rust crate temporal_rs (`third_party/rust/temporal_capi`, not in this
       checkout). Needs a C# implementation of the temporal_rs surface V8 uses.
+
+### Interpreter failures seen by the builtins conformance pass
+
+Failures in test262 built-ins/annexB/staging and mjsunit whose cause is in the
+interpreter, compiler, ICs, modules or d8sharp rather than the builtins
+(2026-09-28, after merging the interpreter branch). Test ids, then the cause.
+
+- test262 `flags: [module]` tests and module-only features:
+  built-ins/Proxy/preventExtensions/trap-is-undefined-target-is-proxy,
+  built-ins/ShadowRealm/prototype/importValue/* (8; need module loading and
+  HostImportModuleDynamically for the ShadowRealm), staging/sm/module/*,
+  staging/explicit-resource-management/await-using-in-top-level-module,
+  staging/source-phase-imports/*, staging/top-level-await/tla-hang-entry,
+  built-ins/AbstractModuleSource/* (%AbstractModuleSource% needs source-phase
+  imports): ES modules are not supported by the runner's v8sharp engine yet.
+- staging/decorators/{private,public}-auto-accessor: the parser does not
+  accept `accessor` class elements.
+- built-ins/Function/internals/Construct/derived-return-val-realm: the
+  TypeError for a derived constructor returning a non-object must come from
+  the callee's realm (it comes from the caller's).
+- staging/sm/global/adding-global-var-nonextensible-error: a `var` declared
+  by eval on a non-extensible global must throw TypeError
+  (DeclareEvalVar/DeclareGlobals path).
+- mjsunit/disallow-codegen-from-strings: direct eval ignores
+  --disallow-code-generation-from-strings.
+- mjsunit/stack-traces-custom (and CallSite.getMethodName users): the
+  inferred name `o.h1` is lost after compilation, so frames print
+  `Object.h1`; sloppy-mode receivers of top-level calls are not converted
+  (getMethodName returns null).
+- mjsunit/call-intrinsic-fuzzing, natives-builtins,
+  regress/regress-crbug-754177: the parser rejects %-calls with the wrong
+  arity where V8 (with fuzzing flags) is lenient.
+- mjsunit/json-stringify-recursive, messages, array-tostring-stack-overflow
+  and regress tests that expect a RangeError from deep recursion or
+  --stack-size: stack overflow handling of the interpreter.
+- Allocation-site elements-kind feedback (elements-kind,
+  filter-element-kinds, opt/osr-elements-kind,
+  regress/regress-trap-allocation-memento,
+  array-prototype-map-elements-kinds): no AllocationSite/AllocationMemento
+  tracking in literal creation (deviation).
+- d8 host features the runner/d8sharp lack: Worker, d8.dom, FastCAPI,
+  console.* specifics, os.*, async_hooks, writeFile, performance.mark,
+  per-realm microtask queues, `print` as a C++ API function
+  (stack-trace-cpp-function-template-*), multi-mapped mock allocator
+  (regress/regress-crbug-1041232).
+- ArrayBuffers of 2^31 bytes or more fail to allocate (byte[] backing
+  store; deviation), e.g. array-buffer-limit style tests.
 
 ## Phase 2: the fast tiers
 

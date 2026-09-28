@@ -148,17 +148,18 @@ public static class BaselineCalls
 
         vector.InvocationCount++;
 
+        if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
         var state = new InterpreterState
         {
             Function = function,
             Bytecode = bytecode,
-            Constants = bytecode.ConstantPoolValues ?? InterpreterRuntime.MaterializeConstantPool(isolate, bytecode),
             FeedbackVector = vector,
             Context = context,
             Accumulator = JSValue.Undefined,
             Pc = 0,
             Fp = fp,
             FrameIndex = depth,
+            BaseFrameIndex = depth,
             Argc = argc,
         };
         try

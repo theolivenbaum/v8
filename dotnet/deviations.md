@@ -225,6 +225,70 @@ for now, to be revisited when the reason goes away.
 - `%CompileBaseline` on a non-user function, or when Sparkplug is disabled,
   throws an InvalidOperationException (V8: CHECK failure).
 
+## Interpreter execution, ICs, runtime, compiler and modules
+
+- Dispatch: one C# loop specialized per operand scale
+  (`InterpreterExecution.Loop<TS>`) instead of generated handlers; the rare
+  bytecodes sit in `LoopCold<TS>` so the JIT's inlining budget goes to the
+  frequent ones. Wide/ExtraWide run one bytecode in the scaled loop.
+- Frames: the register file, receiver, arguments and fixed slots live on the
+  isolate's `RegisterStack` (a `JSValue[]`) in V8's layout, not on the machine
+  stack; each frame also has an `InterpreterFrameRecord` the stack walker
+  reads. The argument count slot (fp - 4) is not written by inline calls
+  (nothing reads it).
+- Calls: a call or `new` from bytecode to an ordinary compiled bytecode
+  function runs in the caller's dispatch loop (`InterpreterInlineCalls`)
+  without a .NET frame; generators, async functions, class and derived
+  constructors, builtins and wide-operand calls take the ordinary path through
+  `Execution`/`InterpreterExecution.Invoke`.
+- Stack limit: V8's limit is on the machine stack; V8Sharp limits the
+  register stack to `--stack-size` KB / 8 slots and reserves 16 slots for the
+  construct stub, which puts the RangeError at about the recursion depth V8
+  reaches (12593 vs 12456 plain calls, 4844 vs 4790 constructs). The .NET
+  stack is checked with `TryEnsureSufficientExecutionStack` on ordinary entries.
+- Exceptions are .NET exceptions (`JavaScriptException`); a frame's handler is
+  found in an exception filter, so frames without a handler do not catch and
+  rethrow. `Throw`/`ReThrow` dispatch to a handler in the same frame without a
+  .NET exception. Termination is `TerminationException`, never catchable.
+- Feedback: the embedded binary/compare feedback bytes of this tree's
+  bytecode are updated in place in the bytecode array; call counts are bumped
+  in place. No ContextCells (the cell and no-cell context slot bytecodes are
+  the same load/store; --jitless V8 does not use them either).
+- ICs: handlers are C# objects (`LoadHandler`/`StoreHandler`) instead of Smi
+  handlers and code; the megamorphic stub cache holds them. `LoadSuperIC` is
+  the generic path. `CloneObjectIC` always takes the slow path. No
+  allocation-site pretenuring feedback.
+- Runtime: `%` functions are delegates in `RuntimeTable`; functions only an
+  optimizing tier or the debugger uses are not registered (their calls throw
+  "runtime function %X is not implemented"). Tier queries (%IsTurbofanEnabled,
+  %GetOptimizationStatus ...) answer as --jitless V8 does.
+- Compiler: source positions are collected eagerly (no lazy source
+  positions); there is no compilation cache and no preparse data (inner
+  functions are reparsed); every lazy function has UncompiledData without
+  preparse data. `DefineClass` builds the class sequentially from the class
+  boilerplate stand-in. The template object cache is per SharedFunctionInfo.
+- Async functions and generators follow builtins-async-*-gen.cc; the debugger
+  parts (Runtime_DebugAsyncFunctionSuspended's debug events, async stack
+  trace annotations for the inspector) are not ported.
+- Modules: the SourceTextModuleInfo parts, regular exports/imports and
+  requested modules are typed arrays instead of FixedArrays; the embedder API
+  (ResolveModuleCallback, SyntheticModuleEvaluationSteps, the dynamic import
+  and import.meta callbacks) are delegates. Not ported: source phase imports
+  and `import defer` (JSDeferredModuleNamespace), both behind harmony flags;
+  WebAssembly, bytes modules and bundles in the d8 loader.
+- Parser flags: `--fuzzing` is not passed to the parser, which lacks
+  runtime.cc's IsEnabledForFuzzing allowlist (it would drop every intrinsic).
+- Stack traces: async frames are captured as CallSiteInfos with the source
+  position already resolved from the generator's suspend offset (V8 stores the
+  bytecode offset and resolves lazily).
+- `FastAssign` (Objects/JSReceiver.cs) checks the excluded keys of
+  CopyDataProperties before reading a value rather than after, so an excluded
+  getter is not called; this matches what V8 does (regress-41488094).
+- Test natives: `%ConstructThinString` returns a cons string with the same
+  contents (V8Sharp has no thin strings), `%DetachGlobal`-like realm operations are no-ops in the
+  TestRunner engine, and `RunModule` checks a rejected top-level promise once
+  after a microtask checkpoint, like the oracle engine.
+
 ## V8Sharp engine: objects and execution
 
 Heap and object model
@@ -250,7 +314,11 @@ Heap and object model
   `HeapObject.InstanceType` stays the generic type.
 - The string table is a `Dictionary` keyed by content, not V8's open-addressed
   table with forwarding indices.
-- No allocation mementos or allocation sites feedback on literals.
+- Allocation mementos: an array created from an AllocationSite (literal copies,
+  empty array literals, `new Array` with construct feedback) keeps the site in
+  `JSArray.AllocationMementoSite` for its whole life; V8's memento sits behind
+  a young object and is gone once the object is promoted, so V8Sharp feeds
+  later elements-kind transitions of old arrays back into the site as well.
 
 Weakness (no GC hooks)
 - Transition targets, `FieldType.Class` maps, prototype-user registries, the
@@ -270,8 +338,14 @@ Execution
 - The `Builtin` enum includes the Torque builtins; implementations are
   registered by id in `BuiltinRegistry`. Calling an unregistered builtin throws
   `NotImplementedException`.
-- Interceptors, access checks, API templates beyond `FunctionTemplateInfo` and
+- Interceptors and API templates beyond `FunctionTemplateInfo` and
   signatures are not ported (no embedder API).
+- Access checks (`Isolate::MayAccess`, `ReportFailedAccessCheck`,
+  `DetachGlobal`) are ported for global proxies only: with no embedder API
+  there is no `AccessCheckInfo`, so an access is allowed exactly when the
+  security tokens match and a failed check always throws TypeError kNoAccess
+  (V8's behaviour without a FailedAccessCheckCallback). `DetachGlobal` does
+  not create V8's `global_proxy_for_api` copy.
 - `ElementsAccessor` uses virtual dispatch instead of CRTP; shared-array and
   Atomics entry points are not ported.
 - `KeyAccumulator` does not use the prototype-info enum cache.
@@ -281,9 +355,8 @@ Execution
 Bootstrapper
 - No snapshot: `Bootstrapper.CreateEnvironment` builds every native context
   from scratch with Genesis, in V8's order.
-- Not installed yet: Intl, Temporal, ArrayBuffer/SharedArrayBuffer/Atomics,
-  typed arrays, DataView, DisposableStack, shared structs, extras and
-  extensions. The RegExpMatchInfo of a native context is created on first use
+- Not installed: Intl, Temporal, shared structs, extras and the extensions
+  other than gc and externalize-string. The RegExpMatchInfo of a native context is created on first use
   (`RegExpMatchInfo.Get`), not by InitializeGlobal.
 - The error stack getter and setter are JSFunctions created eagerly per native
   context (`NativeContext.ErrorStackGetterFun`/`ErrorStackSetterFun`), not
@@ -364,11 +437,22 @@ Bootstrapper
   first use per isolate.
 - Uri (src/strings/uri.cc): one UTF-16 buffer instead of V8's one-byte and
   two-byte buffers; the strings produced are the same.
-- CallSite methods: no ShadowRealm boundary checks (ShadowRealm is not
-  ported). getScriptHash computes the SHA-256 on each call (V8 caches it on
+- CallSite methods: the ShadowRealm boundary check reads
+  `NativeContext.IsShadowRealm` (V8: the context's shadow_realm_scope_info).
+  getScriptHash computes the SHA-256 on each call (V8 caches it on
   the script) and never returns "" for opaque origins (not modelled).
   getThis returns undefined for a receiver that is still the hole.
 - Error.isError has no API-wrapper (DOMException) case.
+- %GetUndetectable builds the instance of an ObjectTemplate with a call
+  handler as V8 does (callable map, API function constructor, called through
+  CALL_AS_FUNCTION_DELEGATE), but its prototype is Object.prototype instead of
+  the template function's own prototype object.
+- ShadowRealm: a ShadowRealm's native context is marked with
+  `NativeContext.IsShadowRealm` instead of V8's shadow_realm_scope_info.
+  importValue has no host module loader behind it
+  (V8Sharp has no dynamic import yet), so the inner promise always rejects
+  with V8's kUnsupported error (what V8 does without a host callback) and the
+  ExportGetter (ShadowRealmImportValueFulfilled) is not created.
 - The global parseInt/parseFloat are Number.parseInt/parseFloat (one
   function, as in V8); their builtins (NumberParseInt, NumberParseFloat) are
   registered by the global functions' area.
@@ -428,12 +512,20 @@ Bootstrapper
   test262.status) is not modelled. simdutf is not in the checkout; the model
   is fitted to the oracle.
 - Atomics: element operations use `Interlocked`/`Volatile` on the managed
-  array (8- and 16-bit read-modify-write as compare-exchange loops). The
-  isolate always allows Atomics.wait (V8's default; there is no
-  allow_atomics_wait setting). FutexEmulation keeps synchronous waiters only:
-  Atomics.waitAsync returns its synchronous results ("not-equal", immediate
-  "timed-out") and throws NotImplementedException where it would suspend.
-- Array.fromAsync is not registered (needs async functions and promises).
+  array (8- and 16-bit read-modify-write as compare-exchange loops).
+  `Isolate.AllowAtomicsWait` (d8's --no-can-block, %SetAllowAtomicsWait) is
+  V8's allow_atomics_wait. FutexEmulation keeps one managed wait list for sync
+  and async waiters; a woken async waiter's promise is resolved by a task per
+  waiter (V8 batches the waiters of an isolate into one
+  ResolveAsyncWaiterPromisesTask; the order is the same), and timeouts are
+  delayed tasks on the isolate's foreground runner
+  (`Isolate.PostNonNestableDelayedTask`, which `RunPendingTasks` waits for
+  when nothing else is pending, as d8's message loop does). Waiters of dead
+  isolates or contexts are not cleaned up (no IsolateDeinit hook).
+- Array.fromAsync keeps its resume state in a synthetic function context
+  like array-from-async.tq, but the state machine loop is a C# switch over
+  the labels; each await point is PromiseResolve + PerformPromiseThenImpl
+  with the root-function closures, as in V8.
 
 ## Builtins: Number, Math, BigInt, JSON, Date
 
@@ -546,8 +638,8 @@ Date
   to move to the promise (MoveMessageToPromise): the message travels with the
   JavaScriptException. Debug events and async stack tagging are not ported.
 - **Promise constructor**: V8 checks Builtins::AllowDynamicFunction for the
-  executor's context (access checks); V8Sharp has no access checks, so the
-  check is omitted.
+  executor's context through the embedder's code-generation callback;
+  V8Sharp has no such callback, so the check is omitted.
 - **Collection constructors**: V8's GotoIfInitialAddFunctionModified checks
   the prototype map and the constness of the add function's descriptor;
   V8Sharp checks the prototype map and the current property value, which is

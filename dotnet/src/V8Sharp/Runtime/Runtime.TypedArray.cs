@@ -1,0 +1,106 @@
+// Port of src/runtime/runtime-typedarray.cc (the functions RegisterTest does
+// not cover: copy, set, sort, buffer, growable length), runtime-futex.cc and
+// the typed-array queries of runtime-test.cc (%HasFixed<Type>Elements).
+using V8Sharp.Builtins;
+
+namespace V8Sharp.Runtime;
+
+public static class RuntimeTypedArray
+{
+    /// <summary>Runtime_TypedArrayCopyElements / Runtime_TypedArraySet.</summary>
+    public static JSValue TypedArrayCopyElements(Isolate isolate, JSTypedArray target, JSValue source, double length, double offset)
+    {
+        TypedArrayElementsOps.CopyElementsHandle(isolate, source, target, (ulong)length, (ulong)offset);
+        return JSValue.Undefined;
+    }
+
+    /// <summary>Runtime_TypedArrayGetBuffer.</summary>
+    public static JSValue TypedArrayGetBuffer(JSTypedArray holder) => holder.Buffer;
+
+    /// <summary>Runtime_GrowableSharedArrayBufferByteLength.</summary>
+    public static JSValue GrowableSharedArrayBufferByteLength(JSArrayBuffer arrayBuffer) =>
+        JSValue.FromNumber(arrayBuffer.GetBackingStore()?.ByteLength ?? 0);
+
+    /// <summary>Runtime_TypedArraySortFast.</summary>
+    public static JSValue TypedArraySortFast(JSTypedArray array) => BuiltinsTypedArray.TypedArraySortFast(array);
+
+    /// <summary>Runtime_HasFixed&lt;Type&gt;Elements.</summary>
+    public static JSValue HasFixedElements(JSValue obj, ElementsKind kind)
+    {
+        if (obj.HeapObjectOrNull is not JSObject o) return JSValue.False;
+        ElementsKind k = o.GetElementsKind();
+        if (ElementsKinds.IsRabGsabTypedArrayElementsKind(k)) k = ElementsKinds.GetCorrespondingNonRabGsabElementsKind(k);
+        return JSValue.FromBoolean(k == kind);
+    }
+}
+
+/// <summary>src/runtime/runtime-futex.cc.</summary>
+public static class RuntimeFutex
+{
+    static BackingStore Location(JSTypedArray sta, JSValue indexArg, out long addr)
+    {
+        ulong index = (ulong)indexArg.Number;
+        if (sta.WasDetached || !sta.Buffer.IsShared || index >= sta.GetLength() || sta.Type != ExternalArrayType.kExternalInt32Array)
+        {
+            throw new InvalidOperationException("CHECK failed: %AtomicsNum*ForTesting argument");
+        }
+        addr = (long)((index << 2) + sta.ByteOffset);
+        return sta.Buffer.GetBackingStore()!;
+    }
+
+    /// <summary>Runtime_AtomicsNumWaitersForTesting.</summary>
+    public static JSValue AtomicsNumWaitersForTesting(JSTypedArray sta, JSValue index)
+    {
+        BackingStore store = Location(sta, index, out long addr);
+        return JSValue.FromInt(FutexEmulation.NumWaitersForTesting(store, addr, asyncOnly: false));
+    }
+
+    /// <summary>Runtime_AtomicsNumUnresolvedAsyncPromisesForTesting.</summary>
+    public static JSValue AtomicsNumUnresolvedAsyncPromisesForTesting(JSTypedArray sta, JSValue index)
+    {
+        BackingStore store = Location(sta, index, out long addr);
+        return JSValue.FromInt(FutexEmulation.NumUnresolvedAsyncPromisesForTesting(store, addr));
+    }
+
+    /// <summary>Runtime_SetAllowAtomicsWait.</summary>
+    public static JSValue SetAllowAtomicsWait(Isolate isolate, JSValue set)
+    {
+        isolate.AllowAtomicsWait = set.IsTrue;
+        return JSValue.Undefined;
+    }
+}
+
+public static partial class RuntimeTable
+{
+    static void RegisterTypedArray()
+    {
+        Register(FunctionId.GrowableSharedArrayBufferByteLength,
+            static (i, a) => RuntimeTypedArray.GrowableSharedArrayBufferByteLength(a[0].As<JSArrayBuffer>()));
+        Register(FunctionId.TypedArrayCopyElements,
+            static (i, a) => RuntimeTypedArray.TypedArrayCopyElements(i, a[0].As<JSTypedArray>(), a[1], a[2].Number, 0));
+        Register(FunctionId.TypedArrayGetBuffer, static (i, a) => RuntimeTypedArray.TypedArrayGetBuffer(a[0].As<JSTypedArray>()));
+        Register(FunctionId.TypedArraySet,
+            static (i, a) => RuntimeTypedArray.TypedArrayCopyElements(i, a[0].As<JSTypedArray>(), a[1], a[2].Number, a[3].Number));
+        Register(FunctionId.TypedArraySortFast, static (i, a) => RuntimeTypedArray.TypedArraySortFast(a[0].As<JSTypedArray>()));
+        Register(FunctionId.AtomicsNumWaitersForTesting,
+            static (i, a) => RuntimeFutex.AtomicsNumWaitersForTesting(a[0].As<JSTypedArray>(), a[1]));
+        Register(FunctionId.AtomicsNumUnresolvedAsyncPromisesForTesting,
+            static (i, a) => RuntimeFutex.AtomicsNumUnresolvedAsyncPromisesForTesting(a[0].As<JSTypedArray>(), a[1]));
+        Register(FunctionId.SetAllowAtomicsWait, static (i, a) => RuntimeFutex.SetAllowAtomicsWait(i, a[0]));
+        Register(FunctionId.HasFixedInt8Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.INT8_ELEMENTS));
+        Register(FunctionId.HasFixedUint8Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.UINT8_ELEMENTS));
+        Register(FunctionId.HasFixedInt16Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.INT16_ELEMENTS));
+        Register(FunctionId.HasFixedUint16Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.UINT16_ELEMENTS));
+        Register(FunctionId.HasFixedInt32Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.INT32_ELEMENTS));
+        Register(FunctionId.HasFixedUint32Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.UINT32_ELEMENTS));
+        Register(FunctionId.HasFixedFloat16Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.FLOAT16_ELEMENTS));
+        Register(FunctionId.HasFixedFloat32Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.FLOAT32_ELEMENTS));
+        Register(FunctionId.HasFixedFloat64Elements, static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.FLOAT64_ELEMENTS));
+        Register(FunctionId.HasFixedUint8ClampedElements,
+            static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.UINT8_CLAMPED_ELEMENTS));
+        Register(FunctionId.HasFixedBigInt64Elements,
+            static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.BIGINT64_ELEMENTS));
+        Register(FunctionId.HasFixedBigUint64Elements,
+            static (i, a) => RuntimeTypedArray.HasFixedElements(a[0], ElementsKind.BIGUINT64_ELEMENTS));
+    }
+}

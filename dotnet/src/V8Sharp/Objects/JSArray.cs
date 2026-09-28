@@ -39,6 +39,12 @@ public sealed class JSArray(Map map) : JSObject(map)
     /// <summary>The length property (a number in uint32 range).</summary>
     public JSValue Length = JSValue.Zero;
 
+    /// <summary>
+    /// The AllocationMemento's site: V8 places a memento behind an array
+    /// created from an AllocationSite; V8Sharp keeps the site on the array.
+    /// </summary>
+    public AllocationSite? AllocationMementoSite;
+
     /// <summary>JSArray::HasArrayPrototype.</summary>
     public bool HasArrayPrototype(Isolate isolate) => ReferenceEquals(Map.Prototype, isolate.NativeContext.InitialArrayPrototype);
 

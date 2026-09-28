@@ -179,7 +179,7 @@ public sealed class BaselineCompiler
     static readonly FieldInfo s_stFp = typeof(InterpreterState).GetField(nameof(InterpreterState.Fp))!;
     static readonly FieldInfo s_stFrameIndex = typeof(InterpreterState).GetField(nameof(InterpreterState.FrameIndex))!;
     static readonly FieldInfo s_stFunction = typeof(InterpreterState).GetField(nameof(InterpreterState.Function))!;
-    static readonly FieldInfo s_stConstants = typeof(InterpreterState).GetField(nameof(InterpreterState.Constants))!;
+    static readonly FieldInfo s_constantPoolValues = typeof(BytecodeArray).GetField(nameof(BytecodeArray.ConstantPoolValues))!;
     static readonly FieldInfo s_stBytecode = typeof(InterpreterState).GetField(nameof(InterpreterState.Bytecode))!;
     static readonly FieldInfo s_stAccumulator = typeof(InterpreterState).GetField(nameof(InterpreterState.Accumulator))!;
     static readonly FieldInfo s_stContext = typeof(InterpreterState).GetField(nameof(InterpreterState.Context))!;
@@ -216,8 +216,10 @@ public sealed class BaselineCompiler
         il.Emit(OpCodes.Ldarg_1);
         il.Emit(OpCodes.Ldfld, s_stFunction);
         il.Emit(OpCodes.Stloc, _masm.Function);
+        // (The entry materialized the constant pool.)
         il.Emit(OpCodes.Ldarg_1);
-        il.Emit(OpCodes.Ldfld, s_stConstants);
+        il.Emit(OpCodes.Ldfld, s_stBytecode);
+        il.Emit(OpCodes.Ldfld, s_constantPoolValues);
         il.Emit(OpCodes.Stloc, _masm.Constants);
         il.Emit(OpCodes.Ldarg_1);
         il.Emit(OpCodes.Ldfld, s_stBytecode);

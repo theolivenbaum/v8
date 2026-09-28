@@ -65,6 +65,20 @@ public sealed class ExpectationsFile
         return null;
     }
 
+    /// <summary>
+    /// The reason of a glob line whose reason starts with <c>SKIP</c> and that
+    /// covers <paramref name="id"/>: such tests are not run on this engine
+    /// (a feature the engine does not implement at all), or null.
+    /// </summary>
+    public string? SkipReasonFor(string id)
+    {
+        foreach (var p in Patterns)
+        {
+            if (p.Reason.StartsWith("SKIP", StringComparison.Ordinal) && p.Regex.IsMatch(id)) return p.Reason;
+        }
+        return null;
+    }
+
     /// <summary>Whether the file expects <paramref name="id"/> to have an unexpected outcome.</summary>
     public bool IsKnownFailure(string id) => Failing.ContainsKey(id) || MatchingPattern(id) is not null;
 

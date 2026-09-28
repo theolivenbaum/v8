@@ -478,6 +478,15 @@ public sealed class KeyAccumulator(Isolate isolate, KeyCollectionMode mode, Prop
     /// <summary>KeyAccumulator::CollectOwnKeys: true to continue with the prototype, false to stop.</summary>
     bool CollectOwnKeys(JSObject obj)
     {
+        // Check access rights if required.
+        if (obj.Map.IsAccessCheckNeeded && _isolate.Context is not null && !_isolate.MayAccess(_isolate.NativeContext, obj))
+        {
+            // The cross-origin spec says that [[Enumerate]] shall return an empty
+            // iterator when it doesn't have access, whereas [[OwnPropertyKeys]]
+            // shall return allowlisted properties (access-check interceptors,
+            // which V8Sharp has none of).
+            return false;
+        }
         if ((_filter & PropertyFilter.PRIVATE_NAMES_ONLY) != 0)
         {
             CollectPrivateNames(obj);

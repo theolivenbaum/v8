@@ -1097,7 +1097,9 @@ public partial class JSObject
                     continue;  // {AddDataProperty} will throw if no other case is hit.
 
                 case LookupIterator.StateKind.ACCESS_CHECK:
-                    continue;
+                    if (it.HasAccess()) continue;
+                    it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
+                    return true;
 
                 // Interceptors are not ported (no embedder API); the lookup never
                 // stops at INTERCEPTOR.
@@ -1515,6 +1517,12 @@ public partial class JSObject
             return PreventExtensionsWithTransition(isolate, obj, PropertyAttributes.NONE, shouldThrow);
         }
 
+        if (FailsAccessCheck(isolate, obj))
+        {
+            isolate.ReportFailedAccessCheck(obj);
+            return false;
+        }
+
         if (!obj.Map.IsExtensible) return true;
 
         if (obj is JSGlobalProxy)
@@ -1547,9 +1555,14 @@ public partial class JSObject
         return true;
     }
 
+    /// <summary>IsAccessCheckNeeded(object) &amp;&amp; !isolate->MayAccess(isolate->native_context(), object).</summary>
+    internal static bool FailsAccessCheck(Isolate isolate, JSObject obj) =>
+        obj.Map.IsAccessCheckNeeded && isolate.Context is not null && !isolate.MayAccess(isolate.NativeContext, obj);
+
     /// <summary>JSObject::IsExtensible.</summary>
     public static bool IsExtensible(Isolate isolate, JSObject obj)
     {
+        if (FailsAccessCheck(isolate, obj)) return true;
         if (obj is JSGlobalProxy)
         {
             var iter = new PrototypeIterator(isolate, obj);
@@ -1634,6 +1647,12 @@ public partial class JSObject
         // Sealing/freezing sloppy arguments or namespace objects should be handled
         // elsewhere.
         Debug.Assert(!obj.HasSloppyArgumentsElements);
+
+        if (FailsAccessCheck(isolate, obj))
+        {
+            isolate.ReportFailedAccessCheck(obj);
+            return false;
+        }
 
         if (attrs == PropertyAttributes.NONE && !obj.Map.IsExtensible) return true;
 
@@ -1854,7 +1873,15 @@ public partial class JSObject
     {
         it.UpdateProtector();
 
-        while (it.State == LookupIterator.StateKind.ACCESS_CHECK) it.Next();
+        if (it.State == LookupIterator.StateKind.ACCESS_CHECK)
+        {
+            if (!it.HasAccess())
+            {
+                it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
+                return JSValue.Undefined;
+            }
+            it.Next();
+        }
 
         var obj = (JSObject)it.GetReceiver().Object;
         // Ignore accessors on typed arrays.
@@ -2202,6 +2229,12 @@ public partial class JSObject
         JSObject realReceiver = obj;
         if (fromJavaScript)
         {
+            if (FailsAccessCheck(isolate, obj))
+            {
+                isolate.ReportFailedAccessCheck(obj);
+                return false;
+            }
+
             // Find the first object in the chain whose prototype object is not
             // hidden.
             var iter = new PrototypeIterator(isolate, realReceiver, WhereToStart.StartAtPrototype,
@@ -2439,10 +2472,14 @@ public partial class JSObject
 
     /// <summary>
     /// JSObject::UpdateAllocationSite. V8 finds the site through the
-    /// AllocationMemento behind a young array; V8Sharp has no mementos, so
-    /// there is no site to update.
+    /// AllocationMemento behind a young array; V8Sharp keeps it on the array
+    /// (<see cref="JSArray.AllocationMementoSite"/>).
     /// </summary>
-    public static bool UpdateAllocationSite(Isolate isolate, JSObject obj, ElementsKind toKind) => false;
+    public static bool UpdateAllocationSite(Isolate isolate, JSObject obj, ElementsKind toKind, bool checkOnly = false)
+    {
+        if (obj is not JSArray { AllocationMementoSite: { } site }) return false;
+        return AllocationSite.DigestTransitionFeedback(isolate, site, toKind, checkOnly);
+    }
 
     /// <summary>JSObject::TransitionElementsKind.</summary>
     public static void TransitionElementsKind(Isolate isolate, JSObject obj, ElementsKind toKind)

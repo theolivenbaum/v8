@@ -406,8 +406,10 @@ public static class BuiltinsAtomics
         }
 
         // 9. If mode is sync and AgentCanSuspend() is false, throw a TypeError exception.
-        // V8Sharp's isolates always allow Atomics.wait (V8's default for
-        // Isolate::CreateParams::allow_atomics_wait, and d8's main thread).
+        if (!isAsync && !isolate.AllowAtomicsWait)
+        {
+            isolate.ThrowTypeError(MessageTemplate.AtomicsOperationNotAllowed, Str(isolate, "Atomics.wait"));
+        }
 
         JSArrayBuffer arrayBuffer = sta.Buffer;
         int size = is64 ? 8 : 4;
@@ -441,9 +443,16 @@ public static class BuiltinsAtomics
             JSReceiver.CreateDataProperty(isolate, result, new PropertyKey(isolate, valueKey), Str(isolate, "timed-out"), ShouldThrow.ThrowOnError);
             return result;
         }
-        // TODO(v8sharp): the asynchronous case needs a promise resolved from
-        // FutexEmulation::NotifyAsyncWaiter through the embedder's task runner.
-        throw new NotImplementedException("V8Sharp: Atomics.waitAsync that suspends is not implemented");
+        JSPromise promiseCapability = PromiseBuiltins.NewJSPromise(isolate);
+        FutexEmulation.AddAsyncWaiter(isolate, store, addr, promiseCapability,
+            double.IsPositiveInfinity(relTimeoutMs) ? -1 : relTimeoutMs);
+        // 26. Perform ! CreateDataPropertyOrThrow(resultObject, "async", true).
+        // 27. Perform ! CreateDataPropertyOrThrow(resultObject, "value",
+        // promiseCapability.[[Promise]]).
+        // 28. Return resultObject.
+        JSReceiver.CreateDataProperty(isolate, result, new PropertyKey(isolate, asyncKey), JSValue.True, ShouldThrow.ThrowOnError);
+        JSReceiver.CreateDataProperty(isolate, result, new PropertyKey(isolate, valueKey), promiseCapability, ShouldThrow.ThrowOnError);
+        return result;
     }
 
     /// <summary>ES #sec-atomics.wait.</summary>
@@ -488,10 +497,20 @@ public static class FutexEmulation
         public readonly BackingStore Store = store;
         public readonly long Address = address;
         public bool Waiting = true;
+
+        // FutexWaitListNode::AsyncState of an Atomics.waitAsync waiter.
+        public Isolate? AsyncIsolate;
+        public NativeContext? AsyncNativeContext;
+        public JSPromise? AsyncPromise;
+        public bool IsAsync => AsyncIsolate is not null;
     }
 
     static readonly object s_mutex = new();
     static readonly List<Waiter> s_waitList = [];
+
+    // FutexWaitList::isolate_promises_to_resolve_: woken async waiters whose
+    // promise-resolving task has not run yet.
+    static readonly List<Waiter> s_toResolve = [];
 
     internal static long LoadValue(BackingStore store, long addr, bool is64)
     {
@@ -542,10 +561,91 @@ public static class FutexEmulation
         }
     }
 
+    /// <summary>
+    /// The kAsync case of FutexEmulation::WaitAsync (the caller has compared
+    /// the value): adds a waiter node for <paramref name="promise"/> and posts
+    /// the AsyncWaiterTimeoutTask when <paramref name="relTimeoutMs"/> is not
+    /// negative (infinite).
+    /// </summary>
+    internal static void AddAsyncWaiter(Isolate isolate, BackingStore store, long addr, JSPromise promise, double relTimeoutMs)
+    {
+        var node = new Waiter(store, addr)
+        {
+            AsyncIsolate = isolate,
+            AsyncNativeContext = isolate.NativeContext,
+            AsyncPromise = promise,
+        };
+        lock (s_mutex) s_waitList.Add(node);
+        if (relTimeoutMs >= 0)
+        {
+            isolate.PostNonNestableDelayedTask(_ => HandleAsyncWaiterTimeout(node), relTimeoutMs / 1000);
+        }
+    }
+
+    /// <summary>FutexEmulation::HandleAsyncWaiterTimeout: resolves with "timed-out" if still waiting.</summary>
+    static void HandleAsyncWaiterTimeout(Waiter node)
+    {
+        lock (s_mutex)
+        {
+            if (!node.Waiting) return;
+            node.Waiting = false;
+            s_waitList.Remove(node);
+        }
+        ResolveAsyncWaiterPromise(node, "timed-out");
+    }
+
+    /// <summary>FutexEmulation::ResolveAsyncWaiterPromise: resolves in the waiter's native context.</summary>
+    static void ResolveAsyncWaiterPromise(Waiter node, string resultString)
+    {
+        lock (s_mutex) s_toResolve.Remove(node);
+        Isolate isolate = node.AsyncIsolate!;
+        Context? saved = isolate.Context;
+        isolate.Context = node.AsyncNativeContext;
+        try
+        {
+            PromiseBuiltins.ResolvePromise(isolate, node.AsyncPromise!, isolate.Factory.NewStringFromAsciiChecked(resultString));
+        }
+        finally
+        {
+            isolate.Context = saved;
+        }
+    }
+
+    /// <summary>FutexEmulation::NumUnresolvedAsyncPromisesForTesting.</summary>
+    internal static int NumUnresolvedAsyncPromisesForTesting(BackingStore store, long addr)
+    {
+        int count = 0;
+        lock (s_mutex)
+        {
+            foreach (Waiter node in s_toResolve)
+            {
+                if (ReferenceEquals(node.Store, store) && node.Address == addr) count++;
+            }
+        }
+        return count;
+    }
+
+    /// <summary>FutexEmulation::NumWaitersForTesting / NumAsyncWaitersForTesting.</summary>
+    internal static int NumWaitersForTesting(BackingStore store, long addr, bool asyncOnly)
+    {
+        int count = 0;
+        lock (s_mutex)
+        {
+            foreach (Waiter waiter in s_waitList)
+            {
+                if (!waiter.Waiting || !ReferenceEquals(waiter.Store, store) || waiter.Address != addr) continue;
+                if (asyncOnly && !waiter.IsAsync) continue;
+                count++;
+            }
+        }
+        return count;
+    }
+
     /// <summary>FutexEmulation::Wake: wakes up to <paramref name="numWaitersToWake"/> waiters; returns the count.</summary>
     internal static int Wake(BackingStore store, long addr, uint numWaitersToWake)
     {
         int wokenCount = 0;
+        List<Waiter> woken = [];
         lock (s_mutex)
         {
             foreach (Waiter waiter in s_waitList)
@@ -553,10 +653,22 @@ public static class FutexEmulation
                 if (numWaitersToWake == 0) break;
                 if (!waiter.Waiting || !ReferenceEquals(waiter.Store, store) || waiter.Address != addr) continue;
                 waiter.Waiting = false;
+                if (waiter.IsAsync) woken.Add(waiter);
                 wokenCount++;
                 if (numWaitersToWake != uint.MaxValue) numWaitersToWake--;
             }
+            foreach (Waiter node in woken)
+            {
+                s_waitList.Remove(node);
+                s_toResolve.Add(node);
+            }
             if (wokenCount > 0) Monitor.PulseAll(s_mutex);
+        }
+        // NotifyAsyncWaiter: resolve each woken async waiter's promise with "ok"
+        // in a task on its isolate's foreground task runner.
+        foreach (Waiter node in woken)
+        {
+            node.AsyncIsolate!.PostNonNestableTask(_ => ResolveAsyncWaiterPromise(node, "ok"));
         }
         return wokenCount;
     }

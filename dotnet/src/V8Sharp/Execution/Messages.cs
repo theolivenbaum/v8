@@ -138,16 +138,20 @@ public static class MessageFormatter
         {
             argStrings[i] = ObjectOps.NoSideEffectsToString(isolate, args[i]).ToCString();
         }
-        string result;
+        long total = 0;
+        foreach (string a in argStrings) total += a.Length;
+        if (total > JSString.kMaxLength) return isolate.Factory.InternalizeString("<error>");
         try
         {
-            result = Common.MessageFormatter.Format(index, argStrings);
+            string result = Common.MessageFormatter.Format(index, argStrings);
+            // A message over String::kMaxLength fails in V8's builder, which
+            // Format turns into "<error>" as well.
+            return isolate.Factory.NewStringFromUtf16(result);
         }
         catch (JavaScriptException)
         {
             return isolate.Factory.InternalizeString("<error>");
         }
-        return isolate.Factory.NewStringFromUtf16(result);
     }
 }
 
@@ -165,6 +169,69 @@ public static class ErrorUtils
     public enum StackTraceCollection { Enabled, Disabled }
 
     public enum ToStringMessageSource { PreferOriginalMessage, CurrentMessageProperty }
+
+    /// <summary>
+    /// ErrorUtils::ShadowRealmConstructTypeErrorCopy: a TypeError of the
+    /// current realm for an error that crossed a ShadowRealm boundary, reusing
+    /// the original's formatted stack when it has one.
+    /// </summary>
+    public static JSObject ShadowRealmConstructTypeErrorCopy(Isolate isolate, JSValue original, MessageTemplate index,
+        ReadOnlySpan<JSValue> args)
+    {
+        JSString msg = MessageFormatter.Format(isolate, index, args);
+        JSValue options = JSValue.Undefined;
+
+        JSValue errorStack = JSValue.Undefined;
+        StackTraceCollection collection = StackTraceCollection.Enabled;
+        if (original.HeapObjectOrNull is JSObject maybeErrorObject)
+        {
+            try
+            {
+                errorStack = GetFormattedStack(isolate, maybeErrorObject);
+            }
+            catch (JavaScriptException e)
+            {
+                // Return a new side-effect-free TypeError to be loud about inner error.
+                JSString str = ObjectOps.NoSideEffectsToString(isolate, e.Value);
+                return isolate.Factory.NewTypeError(MessageTemplate.ShadowRealmErrorStackThrows, str);
+            }
+            if (errorStack.IsNullOrUndefined)
+            {
+                // If the error stack property is null or undefined, create a new error.
+                collection = StackTraceCollection.Enabled;
+            }
+            else if (!errorStack.IsJSReceiver)
+            {
+                // If the error stack property is found (must be a formatted string, not
+                // an unformatted FixedArray), set collection to disabled and reuse the
+                // existing stack. If the `Error.prepareStackTrace` returned a primitive,
+                // use it as the stack as well.
+                collection = StackTraceCollection.Disabled;
+            }
+            else
+            {
+                // The error stack property is an arbitrary value. Return a new TypeError
+                // about the non-string value.
+                JSString str = ObjectOps.NoSideEffectsToString(isolate, errorStack);
+                return isolate.Factory.NewTypeError(MessageTemplate.ShadowRealmErrorStackNonString, str);
+            }
+        }
+
+        JSFunction constructor = isolate.NativeContext.TypeErrorFunction;
+        JSObject newError = Construct(isolate, constructor, constructor, msg, options, FrameSkipMode.SKIP_NONE,
+            JSValue.Undefined, collection);
+
+        // If collection is disabled, reuse the existing stack string from the
+        // original error object.
+        if (collection == StackTraceCollection.Disabled)
+        {
+            // Error stack symbol is a private symbol and set it on an error object
+            // created from built-in error constructor should not throw.
+            ObjectOps.SetProperty(isolate, newError, ReadOnlyRoots.error_stack_symbol, errorStack, StoreOrigin.MaybeKeyed,
+                ShouldThrow.ThrowOnError);
+        }
+        return newError;
+    }
 
     /// <summary>ErrorUtils::Construct for the Error constructors: skips frames up to new.target.</summary>
     public static JSObject Construct(Isolate isolate, JSFunction target, JSValue newTarget, JSValue message, JSValue options)

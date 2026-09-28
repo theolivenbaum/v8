@@ -16,4 +16,11 @@ public sealed class FunctionTemplateInfo(BuiltinFunction callback) : HeapObject(
 
     /// <summary>FunctionTemplateInfo::accept_any_receiver.</summary>
     public bool AcceptAnyReceiver = true;
+
+    /// <summary>
+    /// FunctionTemplateInfo::GetInstanceCallHandler: the call handler of the
+    /// instances (ObjectTemplate::SetCallAsFunctionHandler), which makes them
+    /// callable through the call_as_function delegate.
+    /// </summary>
+    public FunctionTemplateInfo? InstanceCallHandler;
 }

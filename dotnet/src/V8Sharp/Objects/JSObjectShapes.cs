@@ -202,11 +202,11 @@ public sealed class JSRegExpStringIterator(Map map) : JSObject(map)
 /// </summary>
 public sealed class JSModuleNamespace(Map map) : JSObject(map)
 {
-    /// <summary>The module's exports (V8: module()->exports()); TODO(merge): the Module type of the module system.</summary>
-    public ObjectHashTable Exports = ObjectHashTable.New(0);
+    /// <summary>The module.</summary>
+    public Module Module = null!;
 
-    /// <summary>The module (TODO(merge): V8Sharp's Module when the module system is ported).</summary>
-    public object? Module;
+    /// <summary>The module's exports (module()->exports()).</summary>
+    public ObjectHashTable Exports => Module.Exports;
 
     /// <summary>JSModuleNamespace::HasExport.</summary>
     public bool HasExport(Isolate isolate, JSString name) => !Exports.Lookup(isolate, name).IsTheHole;
@@ -321,17 +321,43 @@ public sealed class AllocationSite() : HeapObject(InstanceType.AllocationSiteTyp
     /// <summary>AllocationSite::ShouldTrack: only more-general transitions of array sites are tracked.</summary>
     public static bool ShouldTrack(ElementsKind from, ElementsKind to) => ElementsKinds.IsMoreGeneralElementsKindTransition(from, to);
 
-    /// <summary>AllocationSite::DigestTransitionFeedback.</summary>
-    public static bool DigestTransitionFeedback(Isolate isolate, AllocationSite site, ElementsKind toKind)
+    /// <summary>AllocationSite::kMaximumArrayBytesToPretransition.</summary>
+    public const uint kMaximumArrayBytesToPretransition = 8 * 1024;
+
+    /// <summary>AllocationSite::ShouldTrack(boilerplate elements kind).</summary>
+    public static bool ShouldTrack(ElementsKind boilerplateElementsKind) => ElementsKinds.IsSmiElementsKind(boilerplateElementsKind);
+
+    /// <summary>AllocationSite::CanTrack.</summary>
+    public static bool CanTrack(InstanceType type) => type == InstanceType.JSArrayType;
+
+    /// <summary>AllocationSite::DigestTransitionFeedback (kUpdate, or kCheckOnly when <paramref name="checkOnly"/>).</summary>
+    public static bool DigestTransitionFeedback(Isolate isolate, AllocationSite site, ElementsKind toKind, bool checkOnly = false)
     {
-        ElementsKind kind = site.ElementsKind;
-        if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
-        if (ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind))
+        if (site.Boilerplate is JSArray boilerplate)
         {
+            // The site points to an array literal: transition its boilerplate.
+            ElementsKind kind = boilerplate.GetElementsKind();
+            // if kind is holey ensure that to_kind is as well.
+            if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
+            if (!ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind)) return false;
+            // If the array is huge, it's not likely to be defined in a local
+            // function, so we shouldn't make new instances of it very often.
+            if (!ObjectOps.ToArrayLength(boilerplate.Length, out uint length) || length > kMaximumArrayBytesToPretransition) return false;
+            if (checkOnly) return true;
+            JSObject.TransitionElementsKind(isolate, boilerplate, toKind);
+            site.ElementsKind = boilerplate.GetElementsKind();
+            return true;
+        }
+        {
+            // The AllocationSite is for a constructed Array.
+            ElementsKind kind = site.ElementsKind;
+            // if kind is holey ensure that to_kind is as well.
+            if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
+            if (!ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind)) return false;
+            if (checkOnly) return true;
             site.ElementsKind = toKind;
             return true;
         }
-        return false;
     }
 }
 
@@ -392,13 +418,57 @@ public sealed partial class JSWrappedFunction
     public static JSValue Call(Isolate isolate, JSWrappedFunction function, JSValue receiver, ReadOnlySpan<JSValue> args)
     {
         isolate.StackGuard.StackCheck(isolate);
+        // The CallWrappedFunction builtin runs in the wrapped function's context
+        // (the caller realm), so its TypeErrors come from that realm.
+        Context? saved = isolate.Context;
+        isolate.Context = function.Context;
+        try
+        {
+            return CallInCallerRealm(isolate, function, receiver, args);
+        }
+        finally
+        {
+            isolate.Context = saved;
+        }
+    }
+
+    /// <summary>
+    /// CodeStubAssembler::GetFunctionRealm, which CallWrappedFunction uses: a
+    /// revoked proxy throws kProxyRevoked for 'apply' (the runtime version has
+    /// no trap name).
+    /// </summary>
+    static NativeContext GetFunctionRealm(Isolate isolate, JSReceiver target)
+    {
+        JSReceiver current = target;
+        while (true)
+        {
+            if (current is JSProxy proxy)
+            {
+                if (proxy.IsRevoked)
+                {
+                    isolate.ThrowTypeError(MessageTemplate.ProxyRevoked, isolate.Factory.NewStringFromAsciiChecked("apply"));
+                }
+                current = proxy.Target.As<JSReceiver>();
+                continue;
+            }
+            if (current is JSBoundFunction bound)
+            {
+                current = bound.BoundTargetFunction;
+                continue;
+            }
+            return JSReceiver.GetFunctionRealm(isolate, current);
+        }
+    }
+
+    static JSValue CallInCallerRealm(Isolate isolate, JSWrappedFunction function, JSValue receiver, ReadOnlySpan<JSValue> args)
+    {
 
         // 1. Let target be F.[[WrappedTargetFunction]].
         JSReceiver target = function.WrappedTargetFunction;
         // 4. Let callerRealm be ? GetFunctionRealm(F).
         NativeContext callerContext = function.Context;
         // 3. Let targetRealm be ? GetFunctionRealm(target).
-        NativeContext targetContext = JSReceiver.GetFunctionRealm(isolate, target);
+        NativeContext targetContext = GetFunctionRealm(isolate, target);
         // 5. NOTE: Any exception objects produced after this point are associated
         // with callerRealm.
 
@@ -426,7 +496,7 @@ public sealed partial class JSWrappedFunction
             // 11. Else,
             // 11a. Throw a TypeError exception.
             JSString str = ObjectOps.NoSideEffectsToString(isolate, e.Value);
-            isolate.Throw(isolate.Factory.NewTypeError(MessageTemplate.CallWrappedFunctionThrew, str));
+            isolate.Throw(ErrorUtils.ShadowRealmConstructTypeErrorCopy(isolate, e.Value, MessageTemplate.CallWrappedFunctionThrew, [str]));
             return default;
         }
 

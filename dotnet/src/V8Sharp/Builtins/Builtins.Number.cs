@@ -34,10 +34,10 @@ public static class BuiltinsNumber
     public const int kMaxFractionDigits = 100;
 
     // Buffer sizes of src/numbers/conversions.h.
-    const int kDoubleToFixedMaxChars = kMaxFractionDigits + 21 + 1 + 1;
-    const int kDoubleToExponentialMaxChars = kMaxFractionDigits + 1 + 1 + 1 + 1 + 3;
-    const int kDoubleToPrecisionMaxChars = kMaxFractionDigits + 1 + 1 + 1 + 1 + 1 + 3 + 1;
-    const int kDoubleToRadixMaxChars = 2200;
+    const int kDoubleToFixedMaxChars = Conversions.kDoubleToFixedMaxChars;
+    const int kDoubleToExponentialMaxChars = Conversions.kDoubleToExponentialMaxChars;
+    const int kDoubleToPrecisionMaxChars = Conversions.kDoubleToPrecisionMaxChars;
+    const int kDoubleToRadixMaxChars = Conversions.kDoubleToRadixMaxChars;
 
     /// <summary>
     /// CodeStubAssembler::ToThisValue for PrimitiveType::kNumber: the number,

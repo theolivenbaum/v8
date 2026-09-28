@@ -631,11 +631,8 @@ public static class TypedArrayElementsOps
         if (count == 0) return;
         ReadOnlySpan<byte> sourceData = source.DataSpan(start, count);
         Span<byte> destData = destination.DataSpan(0, count);
-        if (ReferenceEquals(source.Buffer.BackingStoreBuffer, destination.Buffer.BackingStoreBuffer) &&
-            sourceData.Overlaps(destData))
-        {
-            sourceData = sourceData.ToArray();
-        }
+        // CopyBetweenBackingStoresImpl copies element by element, front to
+        // back, also when a species constructor made the views overlap.
         CopyBetweenBackingStores(destination.Kind, source.Kind, sourceData, destData, (int)count);
     }
 

@@ -124,43 +124,29 @@ public static partial class InterpreterExecution
         frame.IsConstructor = isConstruct;
         frame.IsBaseline = false;
 
-        FeedbackVector? feedbackVector = function.RawFeedbackCell.Value as FeedbackVector;
         // BaselineOrInterpreterEntry: a function whose SharedFunctionInfo has
         // baseline code runs it (Runtime_InstallBaselineCode gives it the
         // feedback vector baseline code needs).
         Baseline.BaselineCode? baselineCode = function.Shared.BaselineCode;
-        if (baselineCode is not null && feedbackVector is null)
-        {
-            feedbackVector = Baseline.BaselineExecution.InstallBaselineCode(isolate, function);
-        }
-        if (feedbackVector is null)
-        {
-            // JSFunction::InitializeFeedbackCell on first entry (V8 does it when
-            // the function is compiled / its code installed).
-            if (function.RawFeedbackCell.Value is not ClosureFeedbackCellArray)
-            {
-                JSFunctionFeedback.InitializeFeedbackCell(isolate, function, false);
-                feedbackVector = function.RawFeedbackCell.Value as FeedbackVector;
-            }
-        }
-        else
-        {
-            feedbackVector.InvocationCount++;
-        }
+        FeedbackVector? feedbackVector = baselineCode is not null && function.RawFeedbackCell.Value is not FeedbackVector
+            ? Baseline.BaselineExecution.InstallBaselineCode(isolate, function)
+            : FeedbackVectorOnEntry(isolate, function);
         Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset) =
             feedbackVector is null ? JSValue.Undefined : feedbackVector;
 
+        // The loop reads the constants through the bytecode (ConstantPoolValues).
+        if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
         var state = new InterpreterState
         {
             Function = function,
             Bytecode = bytecode,
-            Constants = bytecode.ConstantPoolValues ?? InterpreterRuntime.MaterializeConstantPool(isolate, bytecode),
             FeedbackVector = feedbackVector,
             Context = context,
             Accumulator = JSValue.Undefined,
             Pc = 0,
             Fp = fp,
             FrameIndex = depth,
+            BaseFrameIndex = depth,
             Argc = argc,
         };
         try
@@ -176,35 +162,61 @@ public static partial class InterpreterExecution
     }
 
     /// <summary>
+    /// The feedback vector of a function being entered: JSFunction::InitializeFeedbackCell
+    /// on first entry (V8 does it when the function is compiled / its code
+    /// installed), and the invocation count.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static FeedbackVector? FeedbackVectorOnEntry(Isolate isolate, JSFunction function)
+    {
+        if (function.RawFeedbackCell.Value is FeedbackVector feedbackVector)
+        {
+            feedbackVector.InvocationCount++;
+            return feedbackVector;
+        }
+        return InitializeFeedbackOnEntry(isolate, function);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static FeedbackVector? InitializeFeedbackOnEntry(Isolate isolate, JSFunction function)
+    {
+        if (function.RawFeedbackCell.Value is ClosureFeedbackCellArray) return null;
+        JSFunctionFeedback.InitializeFeedbackCell(isolate, function, false);
+        return function.RawFeedbackCell.Value as FeedbackVector;
+    }
+
+    /// <summary>
     /// Runs the dispatch loop, catching exceptions and dispatching them to the
-    /// frame's handler table (Isolate::UnwindAndFindHandler for this frame).
+    /// handler tables of its frames (Isolate::UnwindAndFindHandler for this
+    /// frame and the calls it runs inline, InterpreterInlineCalls).
     /// </summary>
     internal static JSValue Run(Isolate isolate, ref InterpreterState state)
     {
-        JSValue result;
         while (true)
         {
             try
             {
-                result = Loop<SingleScale>(isolate, ref state);
-                break;
+                JSValue result = Loop<SingleScale>(isolate, ref state);
+                if (!state.OsrToBaseline) return result;
+
+                // InterpreterOnStackReplacement_ToBaseline: JumpLoop found baseline
+                // code; the frame continues in it at the loop header (state.Pc).
+                state.OsrToBaseline = false;
+                Baseline.BaselineCode code = state.Function.Shared.BaselineCode!;
+                if (state.FrameIndex == state.BaseFrameIndex) return Baseline.BaselineExecution.Run(isolate, ref state, code);
+                // An inline frame (InterpreterInlineCalls): it finishes in baseline
+                // code, then its caller continues in this loop.
+                JSValue value = Baseline.BaselineExecution.Run(isolate, ref state, code);
+                state.Accumulator = InterpreterInlineCalls.Return(isolate, ref state, value);
             }
-            // The filter only looks for a handler: an exception this frame does
+            // The filter only looks for a handler: an exception these frames do
             // not handle keeps propagating without a catch-and-rethrow, which
             // would run every outer frame's handler nested on the .NET stack.
-            catch (JavaScriptException e) when (HasHandler(isolate, ref state))
+            catch (JavaScriptException e) when (InterpreterInlineCalls.AnyFrameHasHandler(isolate, ref state))
             {
-                TryDispatchToHandler(isolate, ref state, e.Value, e.MessageObject);
+                InterpreterInlineCalls.UnwindToHandler(isolate, ref state, e.Value, e.MessageObject);
             }
         }
-        if (state.OsrToBaseline)
-        {
-            // InterpreterOnStackReplacement_ToBaseline: JumpLoop found baseline
-            // code; the frame continues in it at the loop header (state.Pc).
-            state.OsrToBaseline = false;
-            return Baseline.BaselineExecution.Run(isolate, ref state, state.Function.Shared.BaselineCode!);
-        }
-        return result;
     }
 
     /// <summary>Whether this frame's handler table covers the current bytecode offset.</summary>
@@ -250,7 +262,11 @@ public static partial class InterpreterExecution
         // Frames above this one are gone (their finally blocks popped them), and
         // so is any stack space reserved above this frame's register file.
         isolate.InterpreterFrameDepth = state.FrameIndex + 1;
-        isolate.RegisterStackTop = state.Fp + state.Bytecode.RegisterCount;
+        // Released slots are cleared: the register stack above its top is
+        // always undefined (InterpreterInlineCalls relies on it).
+        int top = state.Fp + state.Bytecode.RegisterCount;
+        if (isolate.RegisterStackTop > top) isolate.ReleaseRegisters(top);
+        else isolate.RegisterStackTop = top;
         return true;
     }
 

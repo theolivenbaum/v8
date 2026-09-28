@@ -475,7 +475,10 @@ public sealed class JsonStringifier
         if (Map.IsCustomElementsReceiverMap(obj.Map)) return false;
         if (!obj.HasFastProperties) return false;
         FixedArrayBase elements = obj.Elements;
-        return elements.Length == 0;
+        // empty_fixed_array or empty_slow_element_dictionary: a typed array's
+        // empty byte array does not mean it has no elements.
+        return ReferenceEquals(elements, FixedArray.Empty) ||
+               ReferenceEquals(elements, ReadOnlyRoots.empty_slow_element_dictionary);
     }
 
     Result SerializeJSArray(JSArray obj, JSValue key)

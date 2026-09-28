@@ -157,6 +157,12 @@ public sealed class LoadHandler : HeapObject
         new(Kind.kElement, allowOutOfBounds: allowOutOfBounds, isJSArray: isJSArray, allowHandlingHole: allowHandlingHole,
             elementsKind: elementsKind);
 
+    /// <summary>LoadHandler::TransitionAndLoadElement: transition a JSArray to <paramref name="kindAfterTransition"/>, then load.</summary>
+    public static LoadHandler TransitionAndLoadElement(Isolate isolate, ElementsKind kindAfterTransition, bool allowOutOfBounds,
+        bool allowHandlingHole) =>
+        new(Kind.kElementWithTransition, allowOutOfBounds: allowOutOfBounds, isJSArray: true, allowHandlingHole: allowHandlingHole,
+            elementsKind: kindAfterTransition);
+
     /// <summary>LoadHandler::LoadIndexedString.</summary>
     public static LoadHandler LoadIndexedString(Isolate isolate, bool allowOutOfBounds) =>
         new(Kind.kIndexedString, allowOutOfBounds: allowOutOfBounds);
@@ -304,8 +310,9 @@ public sealed class StoreHandler : HeapObject
 
     /// <summary>StoreHandler for element stores (StoreElementTransition / the element store builtins).</summary>
     public static StoreHandler StoreElement(Isolate isolate, ElementsKind elementsKind, Map? transitionMap,
-        KeyedAccessStoreMode storeMode) =>
-        new(Kind.kElement, elementsKind: elementsKind, elementsTransitionMap: transitionMap, storeMode: storeMode);
+        KeyedAccessStoreMode storeMode, Cell? validityCell = null) =>
+        new(Kind.kElement, elementsKind: elementsKind, elementsTransitionMap: transitionMap, storeMode: storeMode,
+            validityCell: validityCell);
 
     public bool IsValid { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => ValidityCell is null || !ValidityCell.Value.IsIdenticalTo(Cell.kPrototypeChainInvalid); }
 
