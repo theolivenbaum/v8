@@ -347,6 +347,9 @@ public readonly struct TransitionsAccessor
 
     TransitionArray Transitions => (TransitionArray)_rawTransitions!;
 
+    /// <summary>TestTransitionsAccessor::transitions (the full transition array).</summary>
+    internal TransitionArray TransitionArrayForTesting => Transitions;
+
     static Map? GetSimpleTransition(Map map) => map.RawTransitions as Map;
 
     static Name GetSimpleTransitionKey(Map transition) =>
