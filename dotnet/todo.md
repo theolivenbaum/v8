@@ -360,12 +360,42 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | 2026-09-28 | test262 | 85199 | 85891 | 99.2% | engine conformance pass; left: import defer (180), dynamic-import/catch (128, modules), decorators (34, not in V8 either), bytes imports, ShadowRealm importValue, RegExp legacy accessors; expectations regenerated |
 | 2026-09-28 | mjsunit | 7259 | 7597 | 95.6% | engine conformance pass (Sparkplug off by default: opt-proto-seq/* fail); see "Engine-side conformance: what is left"; expectations regenerated |
 
-Octane (interpreter only, 2 runs, loaded 4-core container, 2026-09-28):
-Richards 257 / 1265 (v8 --jitless), DeltaBlue 240 / 1409, Crypto 218 / 1111,
-RayTrace 645 / 2771, EarleyBoyer 806 / 3996, NavierStokes 549 / 1078
-(20-23% of jitless V8, NavierStokes 51%). The 2x target needs the baseline
-tier; the interpreter profile is dominated by the dispatch loop (~70%) and
-frame push/pop (~15%).
+Octane, interpreter only, after the interpreter performance pass
+(2026-09-28, 4-core container shared with a test262 run; mean of 4 runs,
+RegExp 2; orig and new interleaved with V8 --jitless. "orig" is the
+interpreter at f584ccaf; both V8Sharp columns run `--engine v8sharp`, which
+keeps compiled regexps; `v8sharp:jitless` also interprets regexps and scores
+RegExp about 20% lower):
+
+| benchmark | orig | now | V8 --jitless | now / jitless |
+|---|---|---|---|---|
+| Richards | 339 | 450 | 1361 | 33% |
+| DeltaBlue | 322 | 361 | 1420 | 25% |
+| Crypto | 239 | 434 | 1069 | 41% |
+| RayTrace | 697 | 1026 | 3182 | 32% |
+| EarleyBoyer | 935 | 1401 | 4799 | 29% |
+| RegExp | 840 | 821 | 1959 | 42% |
+| Splay | 1185 | 1516 | 2465 | 61% |
+| NavierStokes | 619 | 1080 | 1462 | 74% |
+| geomean | 566 | 779 | 1965 | 40% |
+
+The pass (deviations.md, Interpreter): a dispatch loop small enough for
+RyuJIT to enregister acc/pc/fp, with cold bytecodes in NoInlining handlers;
+SaveBytecodeOffset instead of a per-bytecode pc store; inline monomorphic and
+polymorphic named/keyed loads and stores, global cells, Smi/number
+arithmetic, comparisons and int32 bitwise ops; unchanged reference stores
+skipped (write barriers); register stack and frame records on the pinned
+object heap (gen-0 GCs 3.3 ms to 0.4 ms); shallow literal cloning with copy
+constructors; CSA-style instanceof/OrdinaryHasInstance; f.call/f.apply
+entered without a builtin frame. Micro (tools/V8Sharp.Bench micro:all,
+v8sharp / jitless, calls per second): ArithLoop 53/412, CallLoop 61/274,
+PropertyLoad 175/351, ObjectLiteral 66/218, ArrayPush 21/227.
+
+What is left before 2x of jitless: per-call cost (~55 ns vs ~12 ns: frame
+record and register writes with GC barriers, argument copying), builtin
+calls through CallBuiltin (Array.prototype.push ~200 ns), object
+allocation (JSObject + JSValue[] fields, GC), and JIT warm-up (libclrjit is
+20-25% of a short Octane run; ReadyToRun or a longer run would cut it).
 
 Performance with the baseline tier (Octane, 2026-09-28, 4-core container
 shared with other jobs, mean of 2 runs; V8Sharp.Bench):
