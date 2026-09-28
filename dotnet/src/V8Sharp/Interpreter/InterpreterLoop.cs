@@ -516,7 +516,7 @@ public static partial class InterpreterExecution
                     ref byte feedback = ref Unsafe.Add(ref code, pc + 1 + S);
                     if (lhs.IsNumber && acc.IsNumber)
                     {
-                        acc = InterpreterOps.AddNumbers(lhs.Number, acc.Number, ref feedback);
+                        acc = InterpreterOps.AddNumbers(isolate, lhs.Number, acc.Number, ref feedback);
                     }
                     else
                     {
@@ -618,7 +618,7 @@ public static partial class InterpreterExecution
                     int imm = Signed<TS>(ref code, pc + 1);
                     if (acc.IsNumber)
                     {
-                        acc = InterpreterOps.AddNumbers(acc.Number, imm, ref feedback);
+                        acc = InterpreterOps.AddNumbers(isolate, acc.Number, imm, ref feedback);
                     }
                     else
                     {

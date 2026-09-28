@@ -32,6 +32,7 @@ public static partial class RuntimeTable
         RegisterTest();
         RegisterIntrinsics();
         RegisterRegExpAndStrings();
+        RegisterOperators();
 
         // %_Foo uses Foo's entry when it is not an interpreter intrinsic.
         ReadOnlySpan<RuntimeFunction> all = Runtime.AllFunctions;
@@ -341,5 +342,25 @@ public static partial class RuntimeTable
         Register(FunctionId.StringIsWellFormed, static (i, a) =>
             JSValue.FromBoolean(RuntimeStrings.StringIsWellFormed(a[0].As<JSString>())));
         Register(FunctionId.StringToWellFormed, static (i, a) => RuntimeStrings.StringToWellFormed(i, a[0].As<JSString>()));
+    }
+
+    /// <summary>runtime-operators.cc.</summary>
+    static void RegisterOperators()
+    {
+        Register(FunctionId.Add, static (i, a) => Interpreter.InterpreterOps.Add(i, a[0], a[1]));
+        Register(FunctionId.StrictEqual, static (i, a) => JSValue.FromBoolean(ObjectOps.StrictEquals(a[0], a[1])));
+        Register(FunctionId.StrictNotEqual, static (i, a) => JSValue.FromBoolean(!ObjectOps.StrictEquals(a[0], a[1])));
+        Register(FunctionId.ReferenceEqual, static (i, a) => JSValue.FromBoolean(a[0].IsIdenticalTo(a[1])));
+        Register(FunctionId.LessThan, static (i, a) => Relational(i, Operation.LessThan, a[0], a[1]));
+        Register(FunctionId.GreaterThan, static (i, a) => Relational(i, Operation.GreaterThan, a[0], a[1]));
+        Register(FunctionId.LessThanOrEqual, static (i, a) => Relational(i, Operation.LessThanOrEqual, a[0], a[1]));
+        Register(FunctionId.GreaterThanOrEqual, static (i, a) => Relational(i, Operation.GreaterThanOrEqual, a[0], a[1]));
+    }
+
+    /// <summary>Object::LessThan and friends: false when the comparison is undefined (NaN).</summary>
+    static JSValue Relational(Isolate isolate, Operation op, JSValue x, JSValue y)
+    {
+        ComparisonResult result = ObjectOps.Compare(isolate, x, y);
+        return JSValue.FromBoolean(result != ComparisonResult.Undefined && EngineGlobals.ComparisonResultToBool(op, result));
     }
 }

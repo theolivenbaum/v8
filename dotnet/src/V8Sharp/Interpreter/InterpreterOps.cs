@@ -66,12 +66,41 @@ public static class InterpreterOps
     // ---- Number fast paths -------------------------------------------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static JSValue AddNumbers(double lhs, double rhs, ref byte feedback)
+    public static JSValue AddNumbers(Isolate isolate, double lhs, double rhs, ref byte feedback)
     {
         double result = lhs + rhs;
         UpdateBinaryFeedback(ref feedback,
-            IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
+            IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall
+            : AddNumberFeedback(isolate, lhs, rhs, result));
         return JSValue.FromNumber(result);
+    }
+
+    /// <summary>
+    /// The non-Smi feedback of BinaryOpAssembler::Generate_AddWithFeedback:
+    /// kAdditiveSafeInteger when --additive-safe-int-feedback is on and the
+    /// inputs and the result are additive safe integers (Smis always are),
+    /// else kNumber.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static BOF.TypeIndex AddNumberFeedback(Isolate isolate, double lhs, double rhs, double result) =>
+        isolate.Flags.additive_safe_int_feedback && IsAdditiveSafeInteger(lhs) && IsAdditiveSafeInteger(rhs) &&
+        IsAdditiveSafeInteger(result)
+            ? BOF.TypeIndex.AdditiveSafeInteger
+            : BOF.TypeIndex.Number;
+
+    // kMinAdditiveSafeIntegerFeedback and kAdditiveSafeIntegerFeedbackBitLength (globals.h).
+    const long kMinAdditiveSafeIntegerFeedback = -(1L << 50);
+    const int kAdditiveSafeIntegerFeedbackBitLength = 51;
+
+    /// <summary>CodeStubAssembler::IsAdditiveSafeInteger (TryFloat64ToAdditiveSafeInteger).</summary>
+    static bool IsAdditiveSafeInteger(double value)
+    {
+        if (!(value >= long.MinValue && value < 9.2233720368547758E18)) return false;
+        long valueInt64 = (long)value;
+        if ((double)valueInt64 != value) return false;
+        // -0.0 is not an integer here.
+        if (valueInt64 == 0 && BitConverter.DoubleToInt64Bits(value) != 0) return false;
+        return (ulong)(valueInt64 - kMinAdditiveSafeIntegerFeedback) >> kAdditiveSafeIntegerFeedbackBitLength == 0;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -112,9 +141,13 @@ public static class InterpreterOps
         {
             double l = lhs.Number, r = rhs.Number;
             double result = NumberBinary(op, l, r);
+            // The smiFunction feedback of the Generate_*WithFeedback helpers:
+            // only Divide reports kSignedSmallInputs, and Exponentiate on Smis
+            // always reports kNumber.
             UpdateBinaryFeedback(ref feedback,
-                IsSmiDouble(l) && IsSmiDouble(r) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall
-                : IsSmiDouble(l) && IsSmiDouble(r) ? BOF.TypeIndex.SignedSmallInputs
+                !IsSmiDouble(l) || !IsSmiDouble(r) || op == Operation.Exponentiate ? BOF.TypeIndex.Number
+                : IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall
+                : op == Operation.Divide ? BOF.TypeIndex.SignedSmallInputs
                 : BOF.TypeIndex.Number);
             return JSValue.FromNumber(result);
         }
@@ -373,11 +406,14 @@ public static class InterpreterOps
 
     static JSValue UnarySlow(Isolate isolate, Operation op, JSValue value, ref byte feedback)
     {
-        UpdateBinaryFeedback(ref feedback, BinaryIndex(FeedbackForOperand(value) switch
+        // UnaryOpWithFeedback: BigInts report kBigInt, oddballs
+        // kNumberOrOddball, everything else (converted by ToNumeric) kAny.
+        UpdateBinaryFeedback(ref feedback, value.HeapObjectOrNull switch
         {
-            BOF.Type.String => BOF.Type.Any,
-            var t => t,
-        }));
+            BigInt => BOF.TypeIndex.BigInt,
+            null or Oddball => BOF.TypeIndex.NumberOrOddball,
+            _ => BOF.TypeIndex.Any,
+        });
         JSValue numeric = ObjectOps.ToNumeric(isolate, value);
         if (numeric.IsNumber)
         {
@@ -480,7 +516,10 @@ public static class InterpreterOps
     /// <summary>The relational comparisons for non-number operands.</summary>
     public static JSValue Relational(Isolate isolate, Operation op, JSValue lhs, JSValue rhs, ref byte feedback)
     {
-        RecordCompareFeedback(lhs, rhs, ref feedback);
+        // CodeStubAssembler::RelationalComparison reports kString for two
+        // strings, internalized or not.
+        if (lhs.IsString && rhs.IsString) UpdateCompareFeedback(ref feedback, COF.TypeIndex.String);
+        else RecordCompareFeedback(lhs, rhs, ref feedback);
         ComparisonResult result = ObjectOps.Compare(isolate, lhs, rhs);
         if (result == ComparisonResult.Undefined) return JSValue.False;
         return JSValue.FromBoolean(EngineGlobals.ComparisonResultToBool(op, result));
