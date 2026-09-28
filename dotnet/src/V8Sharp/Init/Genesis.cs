@@ -22,6 +22,19 @@ sealed partial class Genesis
 
     public NativeContext Result => _nativeContext;
 
+    /// <summary>
+    /// Genesis::InstallSpecialObjects, which Bootstrapper::InstallExtensions
+    /// runs on every new context: Error.stackTraceLimit. (Wasm and the
+    /// memory corruption API are not ported.)
+    /// </summary>
+    public static void InstallSpecialObjects(Isolate isolate, NativeContext nativeContext)
+    {
+        // Error.stackTraceLimit.
+        JSFunction error = nativeContext.ErrorFunction;
+        JSObject.AddProperty(isolate, error, ReadOnlyRoots.stackTraceLimit_string,
+            JSValue.FromInt(isolate.Flags.stack_trace_limit), PropertyAttributes.NONE);
+    }
+
     public Genesis(Isolate isolate, MicrotaskQueue? microtaskQueue)
     {
         _isolate = isolate;

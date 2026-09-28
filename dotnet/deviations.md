@@ -144,6 +144,44 @@ for now, to be revisited when the reason goes away.
   `Register.InvalidValue()`.
 - Bytecode verifier (sandbox) not ported; `Disassemble` prints offsets, not
   addresses.
+- Bytecode generator: RAII helper scopes (`ControlScope` and subclasses,
+  `RegisterAllocationScope`, `ContextScope`, `HoleCheckElisionScope`, ...)
+  are `IDisposable` classes or ref structs used with `using`; the
+  `ExpressionResultScope` kinds (effect, value, test) are one pooled class
+  recycled through a per-generator free list instead of stack objects. The
+  `BuildTryCatch`/`BuildTryFinally` lambdas are C# delegates. Same bytecode.
+- Bytecode generator: heap objects are data descriptions behind
+  `IBytecodeGeneratorHeap` (`SharedFunctionInfoDescription`,
+  `ObjectBoilerplateDescriptionData`, `ArrayBoilerplateDescriptionData`,
+  `TemplateObjectDescriptionData`, `ClassBoilerplateDescription`,
+  `FixedArrayDescription`, `CoverageInfoDescription`); V8 allocates them in
+  `AllocateDeferredConstants`/`FinalizeBytecode`. Provisional until the object
+  model implements the interface. `ClassBoilerplate::New` is not ported: the
+  class boilerplate is the class literal itself.
+- Bytecode generator: `AddToEagerLiteralsIfEager` ignores
+  `should_parallel_compile()`: V8 posts those literals to the lazy compile
+  dispatcher, which V8Sharp does not have. The parser only marks literals for
+  parallel compile under flags V8Sharp leaves off.
+- Golden bytecode tests (`GoldenBytecodeCompiler`, `GoldenFunctionResolver`):
+  generate-bytecode-expectations runs the script and fetches the global test
+  function (or the callee); the port has no interpreter yet, so the harness
+  compiles the whole script eagerly and finds the function with a small
+  static evaluator (declarations, assignments, `new C().m`, `C.prototype.m`,
+  `C.m`, calls returning functions, `arguments.callee`, the `.result`
+  completion). A direct eval of a string literal is compiled in the harness
+  against a managed ScopeInfo, eagerly, where V8 uses `--lazy-eval`; the
+  bytecode is the same for the golden snippets.
+- Constant briefs in `Disassemble` (`<ScopeInfo>`, `<ClassBoilerplate>`, long
+  `<BigInt ...>`) do not print what V8's heap printer prints (scope type,
+  truncated digits), because there is no heap object behind them.
+- Oracle comparison (`OracleBytecodeGeneratorTest`): V8 14.7 differs from this
+  tree in feedback slots (14.7 has slots where this tree embeds feedback),
+  the TDZ hole bytecodes (renamed `*TdzHole` here), `typeof x == "literal"`
+  (TypeOf + compare in 14.7, TestTypeOf here), the `yield` result intrinsic
+  (`_GeneratorYieldResult` here), cross-closure TDZ check elision (here only),
+  an unused `.result` register 14.7 reserves in scripts with lexical
+  declarations, and the Smi range of the ClearScript build (32-bit Smis). The
+  test normalizes the first two and lists the rest per function.
 
 ## V8Sharp engine: objects and execution
 
@@ -211,3 +249,50 @@ Bootstrapper
   FunctionTemplateInfo roots instantiated lazily.
 - The empty function uses the bootstrapping ScopeInfo.
 - `V8_FUNCTION_ARGUMENTS_CALLER_ARE_OWN_PROPS` is off, as in V8's default build.
+
+## Builtins: Object, Function, Reflect, Proxy, global, Error, Boolean, Symbol
+
+- Object.assign: the CSA fast path that clones the source's layout into a
+  fresh empty target through the object_assign side-step transition is not
+  ported; JSReceiver::SetOrCopyDataProperties with its FastAssign descriptor
+  walk (V8's runtime fast path) handles every source.
+- Object.values/entries: V8's CSA FastGetOwnValuesOrEntries and the runtime
+  fast path are one path here (JSReceiver::GetOwnValuesOrEntries with
+  try_fast_path for fast-mode JSObjects).
+- Object.fromEntries: the fast path checks every [key, value] pair of the
+  fast array before creating properties; V8 creates them as it goes and on a
+  bail-out restarts on the slow path with a fresh object. The result is the
+  same (the pairs are read without side effects).
+- Object.groupBy: the groups are a Dictionary keyed by the internalized
+  property key plus an insertion-ordered list (V8: an OrderedHashMap of
+  ArrayLists); the fast array path reads elements with GetElement instead of
+  the FastJSArrayForRead witness.
+- The iteration helpers these builtins need (GetIterator, IteratorStep,
+  IteratorCloseOnException, IterableToListWithSymbolLookup) are a local
+  `IteratorHelpers` class until the iterator builtins are ported.
+- CreateDynamicFunction and GlobalEval: no embedder callbacks
+  (ModifyCodeGenerationFromStrings, IsCodeLike), and Builtins::
+  AllowDynamicFunction is always true (one embedder, no differing security
+  tokens). Compilation goes through `Isolate.DynamicFunctionCompiler`
+  (Compiler::GetFunctionFromString / GetFunctionFromValidatedString).
+  Map::AsLanguageMode builds the strict derived function map each time
+  instead of caching it as a strict_function_transition_symbol transition.
+- Function.prototype.apply / Reflect.apply / Reflect.construct: the fast
+  elements of an arguments object or fast JSArray are copied into a pooled
+  buffer (V8 pushes them on the machine stack).
+- The proxy trap builtins (ProxyGetProperty, ProxySetProperty, ...,
+  CallProxy, ConstructProxy) are not registered: every caller reaches the
+  trap logic through JSProxy. The proxy_revoke_shared_fun root is created on
+  first use per isolate.
+- Uri (src/strings/uri.cc): one UTF-16 buffer instead of V8's one-byte and
+  two-byte buffers; the strings produced are the same.
+- CallSite methods: no ShadowRealm boundary checks (ShadowRealm is not
+  ported). getScriptHash computes the SHA-256 on each call (V8 caches it on
+  the script) and never returns "" for opaque origins (not modelled).
+  getThis returns undefined for a receiver that is still the hole.
+- Error.isError has no API-wrapper (DOMException) case.
+- The global parseInt/parseFloat are Number.parseInt/parseFloat (one
+  function, as in V8); their builtins (NumberParseInt, NumberParseFloat) are
+  registered by the global functions' area.
+- `Isolate.CountUsage` is a no-op (no use counters).
+

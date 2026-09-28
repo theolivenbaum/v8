@@ -116,8 +116,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [~] Isolate, Factory, roots, StringTable, MessageTemplate, error creation,
       stack traces (CallSiteInfo, Error.captureStackTrace, prepareStackTrace).
       Done: Isolate, Factory, roots, StringTable, error creation, CallSiteInfo,
-      protectors. Missing: the Error builtins (captureStackTrace,
-      prepareStackTrace callers) belong to the builtins port
+      protectors, the Error builtins (Builtins.Error.cs)
 - [x] conversions and operators (Object::ToNumber, ToPrimitive, Equals,
       StrictEquals, Compare, arithmetic helpers)
 - [~] bootstrapper/Genesis: native context, intrinsics in V8's install order.
@@ -133,15 +132,42 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       optimizer, constant array builder, handler tables, control-flow builders,
       decoder, iterators, source-position table (292 tests; 100 golden files
       round-trip). Open: embedded operation hints, feedback-kind checks.
-- [ ] bytecode generator (matches golden files)
+- [x] bytecode generator: bytecode-generator.cc, prototype-assignment-sequence-
+      builder, block-coverage-builder.h, the unoptimized compile driver
+      (`UnoptimizedCompiler.Compile`, `InterpreterCompilationJob`). All 100
+      golden files match byte for byte (557/557 snippets);
+      bytecode-generator-unittest.cc ported; oracle comparison on 72
+      mjsunit-style snippets (176 functions) matches except for listed V8
+      14.7 differences (`OracleBytecodeGeneratorTest`). Heap-facing parts sit
+      behind `IBytecodeGeneratorHeap` (constants, SharedFunctionInfo,
+      boilerplates, template objects, CoverageInfo) and `IScopeInfoProvider`.
+      Open: ClassBoilerplate::New (the generator emits a
+      `ClassBoilerplateDescription` stand-in); a heap-backed
+      `IBytecodeGeneratorHeap` and real ScopeInfo; the lazy/parallel compile
+      dispatcher (should_parallel_compile literals are compiled eagerly or not
+      at all); eval code is compiled by the engine at run time (the golden
+      harness compiles direct evals of string literals itself); block
+      coverage is ported but has no golden coverage (only the oracle can
+      check it).
 - [ ] feedback vectors and ICs (load/store/keyed/global/call/binary op/compare)
 - [ ] interpreter dispatch loop, generators, async functions
 - [ ] runtime functions (`%` intrinsics used by bytecode and by mjsunit)
-- [ ] builtins: Object, Function, Array, String, Number, Boolean, Symbol,
-      Math, JSON, Error, RegExp, Date, Map/Set/WeakMap/WeakSet/WeakRef/
-      FinalizationRegistry, Promise, generators/iterators, Proxy/Reflect,
-      ArrayBuffer/TypedArray/DataView/Atomics, BigInt, globalThis functions,
-      Iterator helpers, DisposableStack
+- [~] builtins: Object, Function, Reflect, Proxy, global functions (URI
+      coding, escape/unescape, isNaN/isFinite, parseInt/parseFloat, eval),
+      Error (+ AggregateError, SuppressedError, captureStackTrace, isError,
+      CallSite methods), Boolean, Symbol: ported (Builtins/Builtins.{Object,
+      Function,Reflect,Proxy,Global,Error,Boolean,Symbol}*.cs; tests in
+      tests/V8Sharp.Tests/Builtins, URI/parse functions and the intrinsics'
+      shapes checked against the oracle). Waiting for the interpreter: the
+      mjsunit/test262 runs of built-ins/{Object,Function,Reflect,Proxy,Error,
+      Boolean,Symbol,...}; `new Function` and indirect eval call
+      Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler), which the
+      compiler port must register. The proxy trap stubs (ProxyGetProperty ...)
+      and CallProxy/ConstructProxy are not registered: callers use JSProxy.
+      Still to do: Array, String, Number (except parseInt/parseFloat), Math,
+      JSON, RegExp, Date, Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry,
+      Promise, generators/iterators, ArrayBuffer/TypedArray/DataView/Atomics,
+      BigInt, Iterator helpers, DisposableStack
 - [ ] modules (import/export, dynamic import, top-level await)
 - [ ] eval / new Function / with
 
@@ -156,10 +182,17 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 
 ## Merge cleanups
 
-- TODO(merge) from the Ignition port: `InterpreterCommon.cs` duplicates Token,
-  LanguageMode and other shared enums; `RuntimeFunctionId` and
-  `NativeContextFields` move to the runtime/objects code; the constant pool is
-  `object[]` until heap constants exist.
+- TODO(merge) from the Ignition port: `NativeContextFields` moves to the
+  objects code (Context::Field); the constant pool is `object[]` until heap
+  constants exist. (Token, LanguageMode and the other shared enums now come
+  from V8Sharp.Parsing; runtime ids are `V8Sharp.Runtime.FunctionId`.)
+- TODO(merge) from the bytecode generator port: the object model implements
+  `IBytecodeGeneratorHeap` (replacing `DefaultBytecodeGeneratorHeap`,
+  `SharedFunctionInfoDescription`, the boilerplate `*Data` descriptions and
+  `ClassBoilerplateDescription`); `FeedbackVectorSpec.cs` moves to
+  src/objects/feedback-vector; `UnoptimizedCompilationInfo` and
+  `UnoptimizedCompiler` move to the codegen/compiler port;
+  `BytecodeGeneratorFlags` routes through the isolate's FlagList.
 - TODO(merge): Parsing's `NumberConversions` and string hashing should use
   V8Sharp.Base (`Conversions`, `StringHasher`).
 

@@ -23,10 +23,10 @@ public sealed class DefaultConstantPoolMaterializer : IConstantPoolMaterializer
 
     static readonly PrintableConstant s_theHole = new("HOLE_TYPE", null, "<the_hole_value>");
     static readonly PrintableConstant s_asyncIteratorSymbol = new("SYMBOL_TYPE", null, "<Symbol: Symbol.asyncIterator>");
-    static readonly PrintableConstant s_classFieldsSymbol = new("SYMBOL_TYPE", null, "<Symbol: class_fields_symbol>");
+    static readonly PrintableConstant s_classFieldsSymbol = new("SYMBOL_TYPE", null, "<Symbol: (class_fields_symbol)>");
     static readonly PrintableConstant s_iteratorSymbol = new("SYMBOL_TYPE", null, "<Symbol: Symbol.iterator>");
     static readonly PrintableConstant s_interpreterTrampolineSymbol =
-        new("SYMBOL_TYPE", null, "<Symbol: interpreter_trampoline_symbol>");
+        new("SYMBOL_TYPE", null, "<Symbol: (interpreter_trampoline_symbol)>");
     static readonly PrintableConstant s_emptyObjectBoilerplate =
         new("OBJECT_BOILERPLATE_DESCRIPTION_TYPE", null, "<ObjectBoilerplateDescription[0]>");
     static readonly PrintableConstant s_emptyArrayBoilerplate =
