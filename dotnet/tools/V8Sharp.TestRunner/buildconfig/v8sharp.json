@@ -28,7 +28,7 @@
   "has_webassembly": false,
   "has_wasm_interpreter": false,
   "i18n": false,
-  "temporal": false,
+  "temporal": true,
   "is_android": false,
   "is_ios": false,
   "is_linux": true,

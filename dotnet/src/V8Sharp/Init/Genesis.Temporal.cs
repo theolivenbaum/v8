@@ -338,6 +338,18 @@ sealed partial class Genesis
     }
 
     /// <summary>
+    /// Bootstrapper::InitializeLazyPartOfContext: initializes the lazily created part of a
+    /// native context that holds <paramref name="index"/> (only NATIVE_CONTEXT_FIELDS_TEMPORAL).
+    /// </summary>
+    public static void InitializeLazyPartOfContext(Isolate isolate, NativeContext nativeContext, Context.Field index)
+    {
+        if (index is >= Context.Field.JS_TEMPORAL_DURATION_FUNCTION_INDEX and <= Context.Field.TEMPORAL_OBJECT_INDEX)
+        {
+            InitializeLazyTemporalPartOfContext(isolate, nativeContext);
+        }
+    }
+
+    /// <summary>
     /// Bootstrapper::InitializeLazyPartOfContext for NATIVE_CONTEXT_FIELDS_TEMPORAL: initializes the
     /// Temporal part of a native context when one of its fields is needed first (the value of
     /// globalThis.Temporal remains unchanged).

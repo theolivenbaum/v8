@@ -44,7 +44,7 @@ public static class RelativeRounding
         int timeSign = TimeDurations.Sign(timeDuration);
         int dateSign = IsoCalendar.CompareISODate(two.Date, one.Date);
         IsoDate adjustedDate = two.Date;
-        if (timeSign == dateSign)
+        if (timeSign == -dateSign)
         {
             adjustedDate = IsoCalendar.AddDays(adjustedDate, timeSign);
             timeDuration = TimeDurations.Add24HourDays(timeDuration, -timeSign);
@@ -125,6 +125,11 @@ public static class RelativeRounding
     public static InternalDuration DifferenceZonedDateTimeWithRounding(Int128 ns1, Int128 ns2, TimeZone timeZone, Calendar calendar,
         Unit largestUnit, long increment, Unit smallestUnit, RoundingMode mode)
     {
+        if (!Units.IsDateUnit(largestUnit))
+        {
+            // DifferenceInstant.
+            return new InternalDuration(default, TimeDurations.Round(ns2 - ns1, increment, smallestUnit, mode));
+        }
         InternalDuration diff = DifferenceZonedDateTime(ns1, ns2, timeZone, calendar, largestUnit);
         if (smallestUnit == Unit.Nanosecond && increment == 1) return diff;
         IsoDateTime dateTime = timeZone.GetISODateTimeFor(ns1);
@@ -201,6 +206,24 @@ public static class RelativeRounding
         var endDateTime = new IsoDateTime(end, isoDateTime.Time);
         Int128 startEpochNs = EpochNsFor(startDateTime, timeZone);
         Int128 endEpochNs = EpochNsFor(endDateTime, timeZone);
+        // If the destination lies beyond the end of the window (the end was constrained, e.g.
+        // Jan 31 + 1 month), move the window one increment on (proposal-temporal#3168).
+        if (sign * (destEpochNs - endEpochNs).CompareTo(Int128.Zero) > 0)
+        {
+            r1 = r2;
+            r2 = r1 + increment * sign;
+            startDuration = endDuration;
+            endDuration = unit switch
+            {
+                Unit.Year => DateDuration.Create(r2, 0, 0, 0),
+                Unit.Month => date.Adjust(0, 0, r2),
+                Unit.Week => date.Adjust(0, r2),
+                _ => date.Adjust(r2),
+            };
+            startEpochNs = endEpochNs;
+            end = IsoCalendar.DateAdd(isoDateTime.Date, endDuration, Overflow.Constrain);
+            endEpochNs = EpochNsFor(new IsoDateTime(end, isoDateTime.Time), timeZone);
+        }
         if (endEpochNs == startEpochNs) throw TemporalError.Range("Rounding over a zero-length span.");
         Int128 numerator = destEpochNs - startEpochNs;
         Int128 denominator = endEpochNs - startEpochNs;

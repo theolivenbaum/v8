@@ -1074,6 +1074,13 @@ public sealed class JSFunction(Map map, SharedFunctionInfo shared, Context conte
             JSValue maybeIndex = JSReceiver.GetDataProperty(isolate, constructor, ReadOnlyRoots.native_context_index_symbol);
             int index = maybeIndex.IsSmi ? (int)maybeIndex.Number : (int)Context.Field.OBJECT_FUNCTION_INDEX;
             JSValue maybeRealmConstructor = nativeContext.Slots[index];
+            if (maybeRealmConstructor.IsUndefined)
+            {
+                // The constructor might belong to a lazily initialized part of the
+                // context. Try to initialize it.
+                Genesis.InitializeLazyPartOfContext(isolate, nativeContext, (Context.Field)index);
+                maybeRealmConstructor = nativeContext.Slots[index];
+            }
             if (maybeRealmConstructor.HeapObjectOrNull is not JSFunction realmConstructor)
             {
                 throw new InvalidOperationException($"Context does not have a constructor at index {index}");

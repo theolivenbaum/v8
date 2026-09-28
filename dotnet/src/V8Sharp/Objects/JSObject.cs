@@ -457,7 +457,7 @@ public partial class JSObject
             case InstanceType.JSShadowRealmType:
                 return new JSShadowRealm(map);
             case >= InstanceType.JSTemporalDurationType and <= InstanceType.JSTemporalZonedDateTimeType:
-                return JSTemporalObject.AllocateForMap(map);
+                return JSTemporalObject.AllocateTemporalForMap(map);
             case InstanceType.JSExternalObjectType:
                 return new JSExternalObject(map);
             case InstanceType.JSProxyType:

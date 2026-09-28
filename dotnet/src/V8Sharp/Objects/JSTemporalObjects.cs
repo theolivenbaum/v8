@@ -10,7 +10,7 @@ namespace V8Sharp.Objects;
 public abstract class JSTemporalObject(Map map) : JSObject(map)
 {
     /// <summary>JSObject::AllocateForMap for the JS_TEMPORAL_*_TYPE instance types.</summary>
-    internal static JSObject AllocateForMap(Map map) => map.InstanceType switch
+    internal static JSObject AllocateTemporalForMap(Map map) => map.InstanceType switch
     {
         InstanceType.JSTemporalDurationType => new JSTemporalDuration(map),
         InstanceType.JSTemporalInstantType => new JSTemporalInstant(map),

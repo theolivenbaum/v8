@@ -47,22 +47,13 @@ public sealed class PlainYearMonth(IsoDate isoDate, Calendar calendar)
     public PlainYearMonth Add(Duration duration, Overflow? overflowOption)
     {
         Overflow overflow = overflowOption ?? Overflow.Constrain;
-        int sign = duration.Sign;
         PartialDate fields = CalendarFields.ToFields(Calendar, IsoDate, CalendarFieldsType.YearMonth);
         fields.Day = 1;
         IsoDate intermediateDate = CalendarFields.DateFromFields(fields, Overflow.Constrain);
-        IsoDate date;
-        if (sign < 0)
-        {
-            IsoDate nextMonth = IsoCalendar.DateAdd(intermediateDate, new DateDuration(0, 1, 0, 0), Overflow.Constrain);
-            date = IsoCalendar.AddDays(nextMonth, -1);
-        }
-        else
-        {
-            date = intermediateDate;
-        }
+        if (duration.Weeks != 0 || duration.Days != 0 || duration.TimeDuration != 0)
+            throw TemporalError.Range("Cannot add units smaller than months to a PlainYearMonth.");
         DateDuration durationToAdd = duration.ToDateDurationWithoutTime();
-        IsoDate addedDate = IsoCalendar.DateAdd(date, durationToAdd, overflow);
+        IsoDate addedDate = IsoCalendar.DateAdd(intermediateDate, durationToAdd, overflow);
         PartialDate addedDateFields = CalendarFields.ToFields(Calendar, addedDate, CalendarFieldsType.YearMonth);
         return Create(CalendarFields.YearMonthFromFields(addedDateFields, overflow), Calendar);
     }
@@ -136,11 +127,8 @@ public sealed class PlainMonthDay(IsoDate isoDate, Calendar calendar)
     {
         ParsedIso result = IsoParser.Parse(s, IsoGoal.MonthDay);
         Calendar calendar = PlainDate.ResolveCalendar(result.Calendar);
-        if (result.Year is null) return Create(new IsoDate(1972, result.Month, result.Day), calendar);
-        var isoDate = new IsoDate(result.Year.Value, result.Month, result.Day);
-        if (!IsoCalendar.ISODateWithinLimits(isoDate)) throw TemporalError.Range("Date out of range.");
-        PartialDate fields = CalendarFields.ToFields(calendar, isoDate, CalendarFieldsType.MonthDay);
-        return Create(CalendarFields.MonthDayFromFields(fields, Overflow.Constrain), calendar);
+        // The ISO 8601 calendar ignores the year: the reference year is 1972.
+        return Create(new IsoDate(1972, result.Month, result.Day), calendar);
     }
 
     public bool Equals(PlainMonthDay other) => IsoDate == other.IsoDate && Calendar == other.Calendar;
