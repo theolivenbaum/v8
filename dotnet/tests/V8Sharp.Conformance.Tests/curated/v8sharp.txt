@@ -2,3 +2,28 @@
 # One test per line as <suite>/<name>[@strict], e.g. mjsunit/array-sort or
 # test262/built-ins/Array/prototype/map/create-species@strict.
 # Add a test here once the engine passes it; never remove one that regresses.
+
+# Builtins conformance pass (2026-09-28): regressions of the bugs it fixed.
+test262/built-ins/TypedArray/prototype/slice/speciesctor-return-same-buffer-with-offset
+test262/built-ins/TypedArray/prototype/slice/speciesctor-get-ctor-inherited
+test262/built-ins/TypedArray/prototype/copyWithin/coerced-values-end-detached
+test262/built-ins/TypedArray/prototype/map/speciesctor-destination-backed-by-immutable-buffer
+test262/built-ins/Proxy/getPrototypeOf/trap-is-missing-target-is-proxy
+test262/built-ins/Atomics/wait/cannot-suspend-throws
+test262/built-ins/Atomics/waitAsync/returns-result-object-value-is-promise-resolves-to-ok
+test262/built-ins/ShadowRealm/prototype/evaluate/wrapped-function-throws-typeerror-from-caller-realm
+test262/built-ins/Array/fromAsync/asyncitems-arraylike-promise
+test262/annexB/built-ins/String/prototype/match/custom-matcher-emulates-undefined
+test262/staging/sm/Number/toExponential-values
+test262/staging/sm/object/values-entries-typedarray
+mjsunit/double-equals
+mjsunit/json-stringify-typedarray
+mjsunit/regress/regress-4815
+mjsunit/regress/regress-5275-1
+mjsunit/regress/regress-41488094
+mjsunit/es6/array-of
+mjsunit/es6/proxies-apply
+mjsunit/iterable-foreach
+mjsunit/harmony/shadowrealm-evaluate
+mjsunit/harmony/shadowrealm-callsite-throw
+mjsunit/regexp-lookahead-experimental

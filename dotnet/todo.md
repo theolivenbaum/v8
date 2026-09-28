@@ -165,13 +165,20 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       CallSite methods), Boolean, Symbol: ported (Builtins/Builtins.{Object,
       Function,Reflect,Proxy,Global,Error,Boolean,Symbol}*.cs; tests in
       tests/V8Sharp.Tests/Builtins, URI/parse functions and the intrinsics'
-      shapes checked against the oracle). Waiting for the interpreter: the
-      mjsunit/test262 runs of built-ins/{Object,Function,Reflect,Proxy,Error,
-      Boolean,Symbol,...}; `new Function` and indirect eval call
-      Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler), which the
-      compiler port must register. The proxy trap stubs (ProxyGetProperty ...)
-      and CallProxy/ConstructProxy are not registered: callers use JSProxy.
-      Still to do: generators (interpreter port)
+      shapes checked against the oracle). ShadowRealm (builtins-shadow-realm.cc,
+      InitializeGlobal_harmony_shadow_realm, behind the experimental
+      --harmony-shadow-realm that test262 turns on; Builtins.ShadowRealm.cs):
+      constructor, evaluate, importValue (rejects until there is a host
+      dynamic import), CallSite boundary checks; hosts set
+      Isolate.HostCreateShadowRealmContextCallback as d8 does (the runner
+      does; d8sharp should too). `new Function` and indirect eval call
+      Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler). The proxy
+      trap stubs (ProxyGetProperty ...) and CallProxy/ConstructProxy are not
+      registered: callers use JSProxy. test262 (v8sharp, 2026-09-28):
+      built-ins/{Object,Function,Reflect,Proxy,Error,NativeErrors,Boolean,
+      Symbol,global functions}/** 100% except the interpreter/module cases
+      listed under "Interpreter failures seen by the builtins conformance
+      pass".
 - [~] Map, Set, WeakMap, WeakSet, WeakRef, FinalizationRegistry, Promise,
       Iterator, DisposableStack builtins and the microtask queue
       (Builtins/Builtins.{Collections,Set,WeakRefs,Promise*,Iterator*,
@@ -213,25 +220,27 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       d8 Realm microtask-queue/onerror tests (runner d8 shim) and
       iterator-join (%ArrayBufferDetach). Missing: the `IteratorHelpers`
       forwarding shim in Builtins.Iterator.cs (remove once no caller uses it)
-- [~] Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
+- [x] Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
       builtins and the array iterators (Builtins/Builtins.{Array,ArrayBuffer,
       TypedArray,DataView,Atomics}*.cs; Objects/JSArrayBuffer.cs,
       JSTypedArray.cs, Elements.Typed.cs; Heap/Factory.TypedArrays.cs). Every
-      builtin Genesis installs for these areas is registered except
-      Array.fromAsync (needs async functions and promises). Array.prototype.sort
+      builtin Genesis installs for these areas is registered, including
+      Array.fromAsync (array-from-async.tq's promise-driven state machine,
+      Builtins.Array.FromAsync.cs). Array.prototype.sort
       is the PowerSort of third_party/v8/builtins/array-sort.tq (the oracle's
       V8 14.7 still sorts with TimSort, so comparison traces are checked
       against the tree's algorithm, not the oracle); typed array sort, join
       with the cycle stack, base64/hex (with V8's simdutf truncation
       behaviour), resizable/growable buffers, transfer/detach, Float16.
       Atomics.wait blocks on a process-wide FutexEmulation; Atomics.waitAsync
-      returns the synchronous results but throws NotImplementedException when
-      it would suspend. 69 xUnit tests (tests/V8Sharp.Tests/Builtins/{Array,
-      TypedArray,DataView}*.cs), expectations from the oracle. Missing: the
-      test262/mjsunit runs of built-ins/{Array,TypedArray*,ArrayBuffer,
-      DataView,Atomics}/** (wait for the interpreter), Array.fromAsync,
-      Atomics.waitAsync suspension, runtime functions (%ArrayBufferDetach,
-      %TypedArrayGetLength, ...) for mjsunit
+      suspends with async waiters resolved from the isolate's foreground task
+      runner (notify, delayed timeout tasks). Runtime functions:
+      Runtime/Runtime.TypedArray.cs (runtime-typedarray.cc, runtime-futex.cc,
+      %HasFixed*Elements). 69 xUnit tests (tests/V8Sharp.Tests/Builtins/{Array,
+      TypedArray,DataView}*.cs), expectations from the oracle. test262
+      (v8sharp, 2026-09-28): built-ins/{Array,ArrayBuffer,TypedArray,
+      TypedArrayConstructors,DataView,Atomics,SharedArrayBuffer,Uint8Array}/**
+      100%.
 - [~] Number, Math, BigInt, JSON, Date builtins (Builtins/Builtins.{Number,
       Math,BigInt,Json,Date}*.cs, Json/, Date/, Objects/BigInt*.cs): every
       builtin of builtins-number.cc/number.tq (toString(radix), toFixed,
@@ -251,8 +260,9 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Date.parse over the mjsunit date strings plus extra formats, the Date
       string formats and getters/setters (also run under TZ=America/New_York,
       Europe/London, Asia/Kolkata, America/Sao_Paulo), 770 JSON texts through
-      parse+stringify. Waiting for the interpreter: the test262/mjsunit runs
-      of built-ins/{Number,Math,BigInt,JSON,Date}. JSON revivers, replacer
+      parse+stringify. test262 (v8sharp, 2026-09-28): built-ins/{Number,Math,
+      BigInt,JSON,Date}/** 100% (Temporal's Date.prototype.toTemporalInstant
+      skipped). JSON revivers, replacer
       functions and toJSON are checked against the oracle with API functions.
       Not ported: FastJsonStringifier and JSDataObjectBuilder (see
       deviations.md, JSON), the typed-array fast path of IterableForEach.
@@ -266,9 +276,11 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       IsUnmodifiedRegExp), the batched global exec, CompiledReplacement,
       RegExpExecMultiple, the results caches (split, string split, multiple
       indices, global atom), RegExpSyntaxValidator for the parser. 40 xUnit
-      tests (tests/V8Sharp.Tests/Builtins). Missing: the test262/mjsunit
-      runs (wait for the interpreter), the runtime dispatch entries (the
-      interpreter owns the table; Runtime* expose typed static methods),
+      tests (tests/V8Sharp.Tests/Builtins). test262 (v8sharp, 2026-09-28):
+      built-ins/{String,RegExp,StringIteratorPrototype,
+      RegExpStringIteratorPrototype}/** and annexB/built-ins/** 100%; the
+      ICU-emulating case folding passes 9 tests V8's no-ICU build fails
+      (listed as PASS in expectations/test262.v8sharp.txt). Missing:
       Intl-dependent behaviour (V8Sharp is the non-ICU build).
 - [ ] modules (import/export, dynamic import, top-level await)
 - [ ] eval / new Function / with
