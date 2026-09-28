@@ -292,8 +292,13 @@ for now, to be revisited when the reason goes away.
   the same load/store; --jitless V8 does not use them either).
 - ICs: handlers are C# objects (`LoadHandler`/`StoreHandler`) instead of Smi
   handlers and code; the megamorphic stub cache holds them. `LoadSuperIC` is
-  the generic path. `CloneObjectIC` always takes the slow path. No
-  allocation-site pretenuring feedback.
+  the generic path. No allocation-site pretenuring feedback.
+- CloneObjectIC: FastCloneJSObject copies the source's field array and
+  elements into an object of the cached result map (V8 copies the in-object
+  words and the PropertyArray; V8Sharp has one field array). null and
+  undefined have no map in V8Sharp to key feedback on, so cloning them builds
+  the empty object without recording feedback (V8 records the Smi 0 handler
+  for their maps).
 - Runtime: `%` functions are delegates in `RuntimeTable`; functions only an
   optimizing tier or the debugger uses are not registered (their calls throw
   "runtime function %X is not implemented"). Tier queries (%IsTurbofanEnabled,
@@ -312,9 +317,16 @@ for now, to be revisited when the reason goes away.
 - Modules: the SourceTextModuleInfo parts, regular exports/imports and
   requested modules are typed arrays instead of FixedArrays; the embedder API
   (ResolveModuleCallback, SyntheticModuleEvaluationSteps, the dynamic import
-  and import.meta callbacks) are delegates. Not ported: source phase imports
-  and `import defer` (JSDeferredModuleNamespace), both behind harmony flags;
-  WebAssembly, bytes modules and bundles in the d8 loader.
+  and import.meta callbacks, the source phase ResolveSourceCallback) are
+  delegates; the host's dynamic import callback is the phase-taking
+  HostImportModuleWithPhaseDynamicallyCallback only. Module source objects
+  exist only for WebAssembly, which is not ported, so every source phase
+  import fails with d8's SyntaxError. The STACK_CHECK of linking and
+  evaluation also requires 32 register-stack slots (the C++ frames of
+  Module::Evaluate in V8), so that a deferred module evaluated at the
+  recursion limit fails with the RangeError as in V8
+  (modules-import-defer-stack-overflow-on-sync-eval). Not ported:
+  WebAssembly modules and the code cache in the d8 loader.
 - Parser flags: the fuzzing flags reach the parser, and
   `RuntimeFuzzing.IsEnabledForFuzzing` is runtime.cc's allowlist; the
   FOR_EACH_INTRINSIC_TEST list it needs is copied into the parsing assembly
@@ -527,10 +539,6 @@ d8 host in the TestRunner (tools/V8Sharp.TestRunner/Shell)
   the template function's own prototype object.
 - ShadowRealm: a ShadowRealm's native context is marked with
   `NativeContext.IsShadowRealm` instead of V8's shadow_realm_scope_info.
-  importValue has no host module loader behind it
-  (V8Sharp has no dynamic import yet), so the inner promise always rejects
-  with V8's kUnsupported error (what V8 does without a host callback) and the
-  ExportGetter (ShadowRealmImportValueFulfilled) is not created.
 - The global parseInt/parseFloat are Number.parseInt/parseFloat (one
   function, as in V8); their builtins (NumberParseInt, NumberParseFloat) are
   registered by the global functions' area.

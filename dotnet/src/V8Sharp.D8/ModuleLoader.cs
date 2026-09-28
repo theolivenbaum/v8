@@ -55,6 +55,9 @@ public sealed class D8ModuleSourceProvider(string workingDirectory) : IModuleSou
 
     readonly HashSet<string> _loaded = new(StringComparer.Ordinal);
 
+    /// <summary>bundle_module_files while a --bundle file runs (looked up before the file system).</summary>
+    public Dictionary<string, string>? BundleModuleFiles { get; set; }
+
     public static bool IsAbsolutePath(string path) => path.Length > 0 && path[0] == '/';
 
     /// <summary>DirName: the directory part of path, without the trailing '/'.</summary>
@@ -107,7 +110,11 @@ public sealed class D8ModuleSourceProvider(string workingDirectory) : IModuleSou
         string importedBy = referrer.Length > 0 && _loaded.Contains(referrer) ? "\n    imported by " + referrer : "";
         string? sourceText = null;
         byte[]? bytes = null;
-        if (moduleSpecifier.StartsWith(kDataURLPrefix, StringComparison.Ordinal))
+        if (BundleModuleFiles is { } bundle && bundle.TryGetValue(moduleSpecifier, out string? bundled))
+        {
+            sourceText = bundled;
+        }
+        else if (moduleSpecifier.StartsWith(kDataURLPrefix, StringComparison.Ordinal))
         {
             sourceText = moduleSpecifier[kDataURLPrefix.Length..];
         }

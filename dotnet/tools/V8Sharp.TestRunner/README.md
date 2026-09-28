@@ -95,6 +95,9 @@ implement, e.g. `built-ins/Temporal/**  # SKIP: Temporal is not ported` in
   `setTimeout`, `Realm.*`, `d8.file.*`, `d8.terminate*`, `d8.constants`,
   `performance.now`, `arguments`) come from `d8-shim.js` over one host
   dispatcher; `gc`, `%` natives and `v8GC` come from the engine's flags.
+  d8's `--bundle` (`TryExecuteBundle`: scripts, modules and module entry
+  points in one file) and `--compile-only` (v8sharp engine only) are
+  supported.
 - **Workers** (`Execution/`): V8 flags are process-global, so tests are
   grouped by (V8 flags, environment) and each group runs in a worker process
   (`--worker`) that sets the flags once and then runs its tests one at a time,

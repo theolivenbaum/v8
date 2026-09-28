@@ -31,6 +31,7 @@ public sealed class Shell
     {
         FlagList flags = FlagList.Default.Clone();
         var sources = new List<(string Kind, string Value)>();
+        bool bundle = false;
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
@@ -41,6 +42,10 @@ public sealed class Shell
             else if (arg == "--module" && i + 1 < args.Length)
             {
                 sources.Add(("module", args[++i]));
+            }
+            else if (arg == "--bundle")
+            {
+                bundle = true;
             }
             else if (arg is "--version" or "-v")
             {
@@ -68,8 +73,9 @@ public sealed class Shell
             var shell = new Shell(isolate);
             shell.Register();
             shell.InstallGlobals(isolate.NativeContext);
-            shell._moduleLoader = new ModuleLoader(isolate, isolate.NativeContext,
-                new D8ModuleSourceProvider(Directory.GetCurrentDirectory()));
+            shell._provider = new D8ModuleSourceProvider(Directory.GetCurrentDirectory());
+            shell._bundle = bundle;
+            shell._moduleLoader = new ModuleLoader(isolate, isolate.NativeContext, shell._provider);
             isolate.HostCreateShadowRealmContextCallback = ModuleLoader.HostCreateShadowRealmContext;
             int result = 0;
             try
@@ -102,6 +108,8 @@ public sealed class Shell
     const string Version = "14.7.0 (V8Sharp)";
 
     ModuleLoader _moduleLoader = null!;
+    D8ModuleSourceProvider _provider = null!;
+    bool _bundle;
 
     /// <summary>Shell::ExecuteModule.</summary>
     bool ExecuteModule(string fileName)
@@ -167,7 +175,36 @@ public sealed class Shell
             Console.Error.WriteLine("Error reading '" + path + "'");
             return false;
         }
+        if (_bundle && TryExecuteBundle(source, path, out bool success)) return success;
         return ExecuteString(source, path);
+    }
+
+    /// <summary>
+    /// TryExecuteBundle (d8 --bundle): registers the bundle's modules with the
+    /// loader, then runs its scripts and module entry points in order. Returns
+    /// false when the file is not a bundle.
+    /// </summary>
+    bool TryExecuteBundle(string content, string fileName, out bool success)
+    {
+        success = true;
+        D8Bundle? bundle = D8Bundle.TryParse(content, Directory.GetCurrentDirectory());
+        if (bundle is null) return false;
+        foreach (string warning in bundle.Warnings) Console.Out.Write(warning);
+        _provider.BundleModuleFiles = bundle.ModuleFiles;
+        try
+        {
+            // Second pass: Execution
+            foreach ((bool isScript, string contentOrName) in bundle.ExecutionOrder)
+            {
+                bool ok = isScript ? ExecuteString(contentOrName, fileName) : ExecuteModule(contentOrName);
+                if (!ok) success = false;
+            }
+        }
+        finally
+        {
+            _provider.BundleModuleFiles = null;
+        }
+        return true;  // Bundle handled successfully (even if execution failed)
     }
 
     /// <summary>Shell::ExecuteString: compiles and runs, reports an uncaught exception.</summary>

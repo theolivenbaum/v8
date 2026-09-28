@@ -165,9 +165,10 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       ElementsTransitionAndStore; typed array element loads; call, construct
       (AllocationSite for Array), instanceof, binary-op and compare feedback;
       allocation mementos (JSArray.AllocationMementoSite) with
-      DigestTransitionFeedback. Tests: tests/V8Sharp.Tests/IC. Open:
-      CloneObjectIC fast case (%HaveSameMap after spread), LoadSuperIC
-      handlers, typed array element stores in the IC, pretenuring.
+      DigestTransitionFeedback; CloneObjectIC with FastCloneJSObject and the
+      kCloneObject side-step transitions (IC/CloneObjectIC.cs). Tests:
+      tests/V8Sharp.Tests/IC. Open: LoadSuperIC handlers, typed array element
+      stores in the IC, pretenuring.
 - [x] interpreter dispatch loop (Interpreter/InterpreterLoop.cs, one loop per
       operand scale, rare bytecodes in LoopCold), frames on the register
       stack in V8's layout with bytecode-to-bytecode calls and constructs in
@@ -195,10 +196,11 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       shapes checked against the oracle). ShadowRealm (builtins-shadow-realm.cc,
       InitializeGlobal_harmony_shadow_realm, behind the experimental
       --harmony-shadow-realm that test262 turns on; Builtins.ShadowRealm.cs):
-      constructor, evaluate, importValue (rejects until there is a host
-      dynamic import), CallSite boundary checks; hosts set
-      Isolate.HostCreateShadowRealmContextCallback as d8 does (the runner
-      does; d8sharp should too). `new Function` and indirect eval call
+      constructor, evaluate, importValue (the ExportGetter
+      ShadowRealmImportValueFulfilled over the host's dynamic import),
+      CallSite boundary checks; hosts set
+      Isolate.HostCreateShadowRealmContextCallback to d8's
+      HostCreateShadowRealmContext (ModuleLoader, a module map per realm). `new Function` and indirect eval call
       Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler). The proxy
       trap stubs (ProxyGetProperty ...) and CallProxy/ConstructProxy are not
       registered: callers use JSProxy. test262 (v8sharp, 2026-09-28):
@@ -312,11 +314,15 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [x] modules (Objects/Module.cs: module.cc, source-text-module.cc,
       synthetic-module.cc; Runtime/RuntimeModules.cs): instantiate/link,
       evaluate with top-level await and async module evaluation, namespaces,
-      import.meta, dynamic import, import attributes (JSON and text modules
-      in the d8sharp loader, V8Sharp.D8/ModuleLoader.cs). test262
+      import.meta, dynamic import with phases, import attributes (JSON, text
+      and bytes modules in the d8sharp loader, V8Sharp.D8/ModuleLoader.cs),
+      import defer (JSDeferredModuleNamespace and its lookup hooks,
+      GatherAsynchronousTransitiveDependencies, ReadyForSyncExecution,
+      EvaluateForImportDefer), source phase imports (module sources exist
+      only for WebAssembly, not ported: d8's SyntaxError), d8's --bundle
+      (V8Sharp.D8/Bundle.cs, in d8sharp and the TestRunner). test262
       language/module-code, language/import, language/expressions/dynamic-
-      import pass except import defer and source phase imports (not
-      ported: JSDeferredModuleNamespace and module sources).
+      import, staging/source-phase-imports: 100%.
 - [x] eval / new Function / with (Compiler.GetFunctionFromEval with the eval
       origin, CreateDynamicFunction, lookup slots, sourceURL comments).
 - [x] d8sharp shell (src/V8Sharp.D8): print/write/read/load/quit, Realm,
@@ -436,25 +442,23 @@ for eval and Function; stack overflow through builtins and JSON.stringify
 $262.agent and per-realm microtask queues in the TestRunner host;
 FutexEmulation::IsolateDeinit; cross-origin [[Get]] of well-known symbols;
 the store IC's lookup on dictionary receivers (--no-lazy-feedback-allocation
-cases); a handful of test natives.
+cases); a handful of test natives. Fixed by the modules pass: import defer,
+source phase and bytes imports, dynamic import with phases, ShadowRealm
+importValue, d8's --bundle and --compile-only, the CloneObjectIC fast path,
+no kMaxArguments cap on spread calls, %GetPrivateMember/%SetPrivateMember by
+description (runtime-object.cc).
 
 Still failing (mjsunit clusters, v8sharp engine):
 - opt-proto-seq/* (57): %CompileBaseline needs Sparkplug, which is off by
   default for now (they pass with --sparkplug).
 - Optimization-status asserts in maglev/, turbolev/, compiler/, baseline/
   (about 60): no optimizing tier.
-- `import defer` and module bundles (about 45): not ported (modules owner).
 - ArrayBuffers of 2^31 bytes or more (25, deviation).
 - FastCAPI, d8.dom (ic-megadom*), the inspector `send`, async_hooks,
   code coverage (%DebugToggleBlockCoverage/%DebugCollectCoverage),
   %RuntimeEvaluateREPL, os, writeFile, getV8Statistics, d8.test.* interceptors,
   d8.getExtrasBindingObject (continuation-preserved embedder data), the
-  d8 `-C` working directory, Intl, WebAssembly, shared structs, ShadowRealm
-  importValue.
-- CloneObjectIC always takes the slow path, so `{...o}` never shares `o`'s map
-  (clone-ic-regressions).
-- Spread calls are capped at kMaxArguments (regress-869735,
-  regress-crbug-906043; V8 has no argument count limit there, only the stack).
+  d8 `-C` working directory, Intl, WebAssembly, shared structs.
 - `%IsSmi(%AllocateHeapNumberWithValue(1))` (call-intrinsic-fuzzing, deviation).
 
 ## Phase 2: the fast tiers
