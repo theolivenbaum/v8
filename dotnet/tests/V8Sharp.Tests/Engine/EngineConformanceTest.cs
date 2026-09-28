@@ -57,4 +57,31 @@ public class EngineConformanceTest : TestWithContext
             r.join();
             """));
     }
+
+    // test262 staging/decorators/{public,private}-auto-accessor, mjsunit/decorators/*:
+    // --js-decorators reaches the parser.
+    [Fact]
+    public void AutoAccessorsWithJsDecorators()
+    {
+        i_isolate.Flags.js_decorators = true;
+        Assert.Equal("2,3,true", RunString("""
+            class C { accessor x = 1; static accessor #y = 3; static y() { return C.#y; } }
+            var c = new C(); c.x = 2;
+            [c.x, C.y(), typeof Object.getOwnPropertyDescriptor(C.prototype, "x").get === "function"].join();
+            """));
+    }
+
+    // mjsunit/call-intrinsic-fuzzing, natives-builtins: Runtime::IsEnabledForFuzzing
+    // and CHECK_UNLESS_FUZZING.
+    [Fact]
+    public void NativesSyntaxUnderFuzzing()
+    {
+        i_isolate.Flags.allow_natives_syntax = true;
+        i_isolate.Flags.fuzzing = true;
+        Assert.Equal("undefined,undefined,undefined,true,undefined,ConcatenatedString", RunString("""
+            [String(%ConstructConsString("a", "b")), String(%ConstructConsString(1, 2, 3, 4)), String(%FooBar()),
+             %IsBeingInterpreted(1, 2, 3), String(%DeoptimizeFunction()),
+             %ConstructConsString("Concatenated", "String")].join();
+            """));
+    }
 }

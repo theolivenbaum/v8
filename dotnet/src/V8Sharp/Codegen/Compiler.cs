@@ -54,6 +54,13 @@ namespace V8Sharp.Codegen
                 // Deviation: source positions are always collected (V8 collects them lazily).
                 enable_lazy_source_positions = false,
                 use_strict = f.use_strict,
+                fuzzing = f.fuzzing,
+                allow_natives_for_differential_fuzzing = f.allow_natives_for_differential_fuzzing,
+                hole_fuzzing = f.hole_fuzzing,
+                sandbox_testing = f.sandbox_testing,
+                sandbox_fuzzing = f.sandbox_fuzzing,
+                verify_bytecode_full = f.verify_bytecode_full,
+                js_decorators = f.js_decorators,
             };
             isolate.CompilerParsingFlags = flags;
             return flags;

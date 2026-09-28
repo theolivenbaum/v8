@@ -335,10 +335,10 @@ public static partial class RuntimeTable
         Register(FunctionId.StringWrapperToPrimitiveProtector, static (i, a) => JSValue.FromBoolean(Protectors.IsStringWrapperToPrimitiveIntact(i)));
 
         // Strings, numbers and objects.
-        Register(FunctionId.ConstructConsString, static (i, a) => RuntimeTest.ConstructConsString(i, a[0], a[1]));
-        Register(FunctionId.ConstructSlicedString, static (i, a) => RuntimeTest.ConstructSlicedString(i, a[0], a[1]));
-        Register(FunctionId.ConstructInternalizedString, static (i, a) => RuntimeTest.ConstructInternalizedString(i, a[0]));
-        Register(FunctionId.ConstructThinString, static (i, a) => RuntimeTest.ConstructThinString(i, a[0]));
+        Register(FunctionId.ConstructConsString, RuntimeTest.ConstructConsString);
+        Register(FunctionId.ConstructSlicedString, RuntimeTest.ConstructSlicedString);
+        Register(FunctionId.ConstructInternalizedString, RuntimeTest.ConstructInternalizedString);
+        Register(FunctionId.ConstructThinString, RuntimeTest.ConstructThinString);
         Register(FunctionId.FlattenString, static (i, a) => RuntimeTest.FlattenString(i, a[0]));
         Register(FunctionId.StringIsFlat, static (i, a) => RuntimeTest.StringIsFlat(a[0]));
         Register(FunctionId.StringLessThan, static (i, a) => RuntimeTest.StringLessThan(i, a[0], a[1]));
@@ -349,7 +349,11 @@ public static partial class RuntimeTable
         Register(FunctionId.GetHoleNaNLower, static (i, a) => RuntimeTest.GetHoleNaNLower());
         Register(FunctionId.ConstructDouble, static (i, a) => RuntimeTest.ConstructDouble(a[0], a[1]));
         Register(FunctionId.AllocateHeapNumber, static (i, a) => JSValue.FromNumber(0));
-        Register(FunctionId.AllocateHeapNumberWithValue, static (i, a) => JSValue.FromNumber(a[0].Number));
+        Register(FunctionId.AllocateHeapNumberWithValue, static (i, a) =>
+            RuntimeTest.FailedUnlessFuzzing(i, a.Length == 1) ? JSValue.Undefined : ObjectOps.ToNumber(i, a[0]));
+        // V8_ENABLE_UNDEFINED_DOUBLE is off by default: CHECK_UNLESS_FUZZING(false).
+        Register(FunctionId.GetUndefinedNaN, static (i, a) =>
+            RuntimeTest.FailedUnlessFuzzing(i, false) ? JSValue.Undefined : JSValue.Undefined);
         Register(FunctionId.DoubleToStringWithRadix, static (i, a) => RuntimeTest.DoubleToStringWithRadix(i, a[0], a[1]));
         Register(FunctionId.StringParseInt, static (i, a) => RuntimeTest.StringParseInt(i, a[0], a[1]));
         Register(FunctionId.IsArray, static (i, a) => RuntimeTest.IsArray(a[0]));

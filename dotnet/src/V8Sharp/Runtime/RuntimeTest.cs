@@ -195,30 +195,64 @@ public static class RuntimeTest
 
     // ---- Strings (runtime-test.cc / runtime-strings.cc) -----------------------------------
 
+    /// <summary>
+    /// CHECK_UNLESS_FUZZING (runtime-test.cc): true when the check failed under
+    /// --fuzzing (the caller returns undefined); a failed check without
+    /// --fuzzing is V8's CHECK failure, a fatal error.
+    /// </summary>
+    internal static bool FailedUnlessFuzzing(Isolate isolate, bool condition)
+    {
+        if (condition) return false;
+        if (isolate.Flags.fuzzing) return true;
+        throw new InvalidOperationException("V8Sharp: runtime-test CHECK failed");
+    }
+
     /// <summary>%ConstructConsString.</summary>
-    public static JSValue ConstructConsString(Isolate isolate, JSValue left, JSValue right) =>
-        isolate.Factory.NewConsString(left.As<JSString>(), right.As<JSString>());
+    public static JSValue ConstructConsString(Isolate isolate, ReadOnlySpan<JSValue> args)
+    {
+        if (FailedUnlessFuzzing(isolate, args.Length == 2)) return JSValue.Undefined;
+        if (FailedUnlessFuzzing(isolate, args[0].IsString)) return JSValue.Undefined;
+        if (FailedUnlessFuzzing(isolate, args[1].IsString)) return JSValue.Undefined;
+        JSString left = args[0].As<JSString>(), right = args[1].As<JSString>();
+        if (FailedUnlessFuzzing(isolate, left.Length + right.Length >= ConsString.kMinLength)) return JSValue.Undefined;
+        if (FailedUnlessFuzzing(isolate, left.Length + right.Length <= JSString.kMaxLength)) return JSValue.Undefined;
+        return isolate.Factory.NewConsString(left, right);
+    }
 
     /// <summary>%ConstructSlicedString.</summary>
-    public static JSValue ConstructSlicedString(Isolate isolate, JSValue str, JSValue index)
+    public static JSValue ConstructSlicedString(Isolate isolate, ReadOnlySpan<JSValue> args)
     {
-        JSString s = str.As<JSString>();
-        return isolate.Factory.NewSubString(s, (int)index.Number, s.Length);
+        if (FailedUnlessFuzzing(isolate, args.Length == 2)) return JSValue.Undefined;
+        if (FailedUnlessFuzzing(isolate, args[0].IsString)) return JSValue.Undefined;
+        if (FailedUnlessFuzzing(isolate, args[1].IsSmi)) return JSValue.Undefined;
+        JSString s = args[0].As<JSString>();
+        uint index = unchecked((uint)(int)args[1].Number);
+        if (FailedUnlessFuzzing(isolate, index < (uint)s.Length)) return JSValue.Undefined;
+        JSString sliced = isolate.Factory.NewSubString(s, (int)index, s.Length);
+        if (FailedUnlessFuzzing(isolate, sliced is SlicedString)) return JSValue.Undefined;
+        return sliced;
     }
 
     /// <summary>%ConstructInternalizedString.</summary>
-    public static JSValue ConstructInternalizedString(Isolate isolate, JSValue str) =>
-        isolate.Factory.InternalizeString(str.As<JSString>());
+    public static JSValue ConstructInternalizedString(Isolate isolate, ReadOnlySpan<JSValue> args)
+    {
+        if (FailedUnlessFuzzing(isolate, args.Length == 1)) return JSValue.Undefined;
+        if (FailedUnlessFuzzing(isolate, args[0].IsString)) return JSValue.Undefined;
+        return isolate.Factory.InternalizeString(args[0].As<JSString>());
+    }
 
     /// <summary>
     /// %ConstructThinString. Deviation: V8Sharp has no ThinStrings (an
     /// internalized copy never forwards the original), so the string is
     /// returned as a cons string with the same contents.
     /// </summary>
-    public static JSValue ConstructThinString(Isolate isolate, JSValue str)
+    public static JSValue ConstructThinString(Isolate isolate, ReadOnlySpan<JSValue> args)
     {
-        JSString s = str.As<JSString>();
+        if (FailedUnlessFuzzing(isolate, args.Length == 1)) return JSValue.Undefined;
+        if (FailedUnlessFuzzing(isolate, args[0].IsString)) return JSValue.Undefined;
+        JSString s = args[0].As<JSString>();
         if (s is ConsString) return s;
+        if (FailedUnlessFuzzing(isolate, s.Length >= ConsString.kMinLength)) return JSValue.Undefined;
         return isolate.Factory.NewConsString(ReadOnlyRoots.empty_string, s);
     }
 
