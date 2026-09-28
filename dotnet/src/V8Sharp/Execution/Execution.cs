@@ -27,7 +27,9 @@ public static class Execution
                 return CallFunction(isolate, function, receiver, args);
             case JSBoundFunction bound:
                 return CallBoundFunction(isolate, bound, args);
-            case JSProxy proxy:
+            case JSProxy proxy when proxy.Map.IsCallable:
+                // Builtins::Call dispatches on the callable map bit: a proxy of a
+                // non-callable target is not callable.
                 return JSProxy.Call(isolate, proxy, receiver, args);
             case JSWrappedFunction wrapped:
                 return JSWrappedFunction.Call(isolate, wrapped, receiver, args);
@@ -88,7 +90,10 @@ public static class Execution
         SharedFunctionInfo shared = function.Shared;
         if (shared.HasBuiltinId && shared.BuiltinId != Builtin.CompileLazy)
         {
-            return BuiltinRegistry.Invoke(isolate, shared.BuiltinId, function, newTarget, receiver, args);
+            // Through the builtin frame record, so builtins called from builtins
+            // (Function.prototype.call, callbacks) show in stack traces as V8's
+            // builtin exit frames do.
+            return Interpreter.InterpreterCalls.CallBuiltin(isolate, function, receiver, args, newTarget);
         }
         if (!shared.IsCompiled)
         {

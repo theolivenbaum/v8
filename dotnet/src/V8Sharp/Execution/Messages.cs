@@ -138,16 +138,20 @@ public static class MessageFormatter
         {
             argStrings[i] = ObjectOps.NoSideEffectsToString(isolate, args[i]).ToCString();
         }
-        string result;
+        long total = 0;
+        foreach (string a in argStrings) total += a.Length;
+        if (total > JSString.kMaxLength) return isolate.Factory.InternalizeString("<error>");
         try
         {
-            result = Common.MessageFormatter.Format(index, argStrings);
+            string result = Common.MessageFormatter.Format(index, argStrings);
+            // A message over String::kMaxLength fails in V8's builder, which
+            // Format turns into "<error>" as well.
+            return isolate.Factory.NewStringFromUtf16(result);
         }
         catch (JavaScriptException)
         {
             return isolate.Factory.InternalizeString("<error>");
         }
-        return isolate.Factory.NewStringFromUtf16(result);
     }
 }
 

@@ -207,6 +207,21 @@ public static class InterpreterCalls
     public static JSValue CallBuiltin(Isolate isolate, JSFunction function, JSValue receiver, ReadOnlySpan<JSValue> args,
         JSValue newTarget)
     {
+        if (BuiltinRegistry.KindOf(function.Shared.BuiltinId) == BuiltinKind.ASM)
+        {
+            // ASM builtins (Function.prototype.call/apply, Reflect.apply ...) build
+            // no frame of their own in V8, so they never show in stack traces.
+            Context? outer = isolate.Context;
+            isolate.Context = function.Context;
+            try
+            {
+                return BuiltinRegistry.Invoke(isolate, function.Shared.BuiltinId, function, newTarget, receiver, args);
+            }
+            finally
+            {
+                isolate.Context = outer;
+            }
+        }
         int depth = isolate.InterpreterFrameDepth;
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
         frame.Function = function;
@@ -219,11 +234,16 @@ public static class InterpreterCalls
         frame.IsConstructor = !newTarget.IsUndefined;
         Context? saved = isolate.Context;
         isolate.Context = function.Context;
-        JSValue result = BuiltinRegistry.Invoke(isolate, function.Shared.BuiltinId, function, newTarget, receiver, args);
-        isolate.Context = saved;
-        isolate.InterpreterFrameDepth = depth;
-        isolate.InterpreterFrames[depth] = default;
-        return result;
+        try
+        {
+            return BuiltinRegistry.Invoke(isolate, function.Shared.BuiltinId, function, newTarget, receiver, args);
+        }
+        finally
+        {
+            isolate.Context = saved;
+            isolate.InterpreterFrameDepth = depth;
+            isolate.InterpreterFrames[depth] = default;
+        }
     }
 
     /// <summary>CallWithSpread: the last argument is spread (builtins-call-gen.cc CallOrConstructWithSpread).</summary>

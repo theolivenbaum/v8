@@ -19,6 +19,9 @@ public static class ElementAccess
         result = default;
         int index = (int)key;
         if (index != key || index < 0) return false;
+        // Typed arrays keep their data in the buffer (their elements are the
+        // empty byte array): they miss to the runtime.
+        if (ElementsKinds.IsTypedArrayOrRabGsabTypedArrayElementsKind(obj.Map.ElementsKind)) return false;
         FixedArrayBase elements = obj.Elements;
         int length = handler.IsJSArray ? (int)Unsafe.As<JSArray>(obj).Length._num : elements.Length;
         if (index >= length)
@@ -88,6 +91,8 @@ public static class ElementAccess
         {
             // CheckForCapacityGrow: only an append at the end of a JSArray.
             if (array is null || handler.StoreMode != KeyedAccessStoreMode.kGrowAndHandleCOW || index != length) return false;
+            // The appended index is a hole on the receiver: the prototype chain decides.
+            if (!Protectors.IsNoElementsIntact(isolate)) return false;
             if (index >= elements.Length)
             {
                 if (!ElementsAccessor.ForKind(kind).GrowCapacity(isolate, obj, (uint)index)) return false;
@@ -98,8 +103,22 @@ public static class ElementAccess
             array.Length = JSValue.FromInt(index + 1);
             return true;
         }
+        // Storing into a hole must look at the prototype chain (a setter or a
+        // read-only element there) unless the NoElements protector is intact.
+        if (ElementsKinds.IsHoleyElementsKind(kind) && !Protectors.IsNoElementsIntact(isolate) && IsHoleAt(elements, index))
+        {
+            return false;
+        }
         return WriteElement(elements, kind, index, value);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsHoleAt(FixedArrayBase elements, int index) => elements switch
+    {
+        FixedArray fixedArray => fixedArray.IsTheHole(index),
+        FixedDoubleArray doubleArray => doubleArray.IsTheHole(index),
+        _ => false,
+    };
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static bool WriteElement(FixedArrayBase elements, ElementsKind kind, int index, JSValue value)
