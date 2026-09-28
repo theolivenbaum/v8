@@ -8,6 +8,7 @@
 using V8Sharp.Ast;
 using V8Sharp.Common;
 using V8Sharp.Parsing;
+using V8Sharp.Runtime;
 using V8Sharp.Codegen;
 using V8Sharp.Interpreter;
 using ToBooleanMode = V8Sharp.Interpreter.BytecodeArrayBuilder.ToBooleanMode;
@@ -221,8 +222,8 @@ public class BytecodeArrayBuilderUnitTest
             .CallUndefinedReceiver(reg, empty, 1)
             .CallUndefinedReceiver(reg, single, 1)
             .CallUndefinedReceiver(reg, pair, 1)
-            .CallRuntime(RuntimeFunctionId.IsArray, reg)
-            .CallRuntimeForPair(RuntimeFunctionId.LoadLookupSlotForCall, reg_list, pair)
+            .CallRuntime(FunctionId.IsArray, reg)
+            .CallRuntimeForPair(FunctionId.LoadLookupSlotForCall, reg_list, pair)
             .CallJSRuntime(NativeContextFields.PROMISE_THEN_INDEX, reg_list)
             .CallWithSpread(reg, reg_list, 1);
 
@@ -440,7 +441,7 @@ public class BytecodeArrayBuilderUnitTest
         builder.SwitchOnGeneratorState(reg, gen_jump_table).Bind(gen_jump_table, 0);
 
         // Intrinsics handled by the interpreter.
-        builder.CallRuntime(RuntimeFunctionId.InlineAsyncFunctionReject, reg_list);
+        builder.CallRuntime(FunctionId.InlineAsyncFunctionReject, reg_list);
 
         // Emit debugger bytecode.
         builder.Debugger();

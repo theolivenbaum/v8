@@ -8,6 +8,7 @@
 // TODO(merge): the BytecodeGenerator port provides the compiler (parse,
 // scope analysis, generate, then pick the top-level function, the global
 // function named test_function_name, the module, or the callee).
+using V8Sharp.Runtime;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
@@ -158,14 +159,14 @@ public sealed class BytecodeExpectationsPrinter(IBytecodeExpectationsCompiler? c
             case OperandType.RuntimeId:
             {
                 stream.Append('U').Append(size_tag).Append('(');
-                RuntimeFunctionId id = bytecode_iterator.GetRuntimeIdOperand(op_index);
+                FunctionId id = bytecode_iterator.GetRuntimeIdOperand(op_index);
                 stream.Append("Runtime::k").Append(RuntimeFunctions.Name(id));
                 break;
             }
             case OperandType.IntrinsicId:
             {
                 stream.Append('U').Append(size_tag).Append('(');
-                RuntimeFunctionId id = bytecode_iterator.GetIntrinsicIdOperand(op_index);
+                FunctionId id = bytecode_iterator.GetIntrinsicIdOperand(op_index);
                 stream.Append("Runtime::k").Append(RuntimeFunctions.Name(id));
                 break;
             }

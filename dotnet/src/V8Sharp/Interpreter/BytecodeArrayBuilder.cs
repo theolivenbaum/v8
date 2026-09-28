@@ -12,6 +12,7 @@
 using V8Sharp.Ast;
 using V8Sharp.Common;
 using V8Sharp.Parsing;
+using V8Sharp.Runtime;
 using System.Runtime.CompilerServices;
 using V8Sharp.Codegen;
 
@@ -1742,7 +1743,7 @@ public sealed class BytecodeArrayBuilder
     }
 
     /// <summary>Call the runtime function with |functionId| and arguments |args|.</summary>
-    public BytecodeArrayBuilder CallRuntime(RuntimeFunctionId functionId, RegisterList args)
+    public BytecodeArrayBuilder CallRuntime(FunctionId functionId, RegisterList args)
     {
         Debug.Assert(RuntimeFunctions.ResultSize(functionId) == 1);
         Debug.Assert(Bytecodes.SizeForUnsignedOperand((uint)functionId) <= OperandSize.Short);
@@ -1760,16 +1761,16 @@ public sealed class BytecodeArrayBuilder
     }
 
     /// <summary>Call the runtime function with |functionId| with single argument |arg|.</summary>
-    public BytecodeArrayBuilder CallRuntime(RuntimeFunctionId functionId, Register arg) =>
+    public BytecodeArrayBuilder CallRuntime(FunctionId functionId, Register arg) =>
         CallRuntime(functionId, new RegisterList(arg));
 
     /// <summary>Call the runtime function with |functionId| with no arguments.</summary>
-    public BytecodeArrayBuilder CallRuntime(RuntimeFunctionId functionId) =>
+    public BytecodeArrayBuilder CallRuntime(FunctionId functionId) =>
         CallRuntime(functionId, RegisterList.Empty);
 
     /// <summary>Call the runtime function with |functionId| and arguments |args|,
     /// that returns a pair of values in |returnPair|.</summary>
-    public BytecodeArrayBuilder CallRuntimeForPair(RuntimeFunctionId functionId, RegisterList args,
+    public BytecodeArrayBuilder CallRuntimeForPair(FunctionId functionId, RegisterList args,
                                                    RegisterList returnPair)
     {
         Debug.Assert(RuntimeFunctions.ResultSize(functionId) == 2);
@@ -1780,7 +1781,7 @@ public sealed class BytecodeArrayBuilder
         return this;
     }
 
-    public BytecodeArrayBuilder CallRuntimeForPair(RuntimeFunctionId functionId, Register arg, RegisterList returnPair) =>
+    public BytecodeArrayBuilder CallRuntimeForPair(FunctionId functionId, Register arg, RegisterList returnPair) =>
         CallRuntimeForPair(functionId, new RegisterList(arg), returnPair);
 
     /// <summary>Call the JS runtime function with |contextIndex| and arguments

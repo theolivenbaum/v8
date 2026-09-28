@@ -1,5 +1,6 @@
 // Port of src/interpreter/bytecode-decoder.h/.cc. Operands are little-endian
 // (V8_TARGET_LITTLE_ENDIAN), read from spans.
+using V8Sharp.Runtime;
 using System.Buffers.Binary;
 using System.Globalization;
 using System.Runtime.CompilerServices;
@@ -64,7 +65,7 @@ public static class BytecodeDecoder
     /// <summary>Reads an embedded feedback byte (V8 reads it racily from concurrent compilers).</summary>
     public static byte RacyDecodeEmbeddedFeedback(ReadOnlySpan<byte> operandStart) => operandStart[0];
 
-    static string NameForRuntimeId(RuntimeFunctionId idx) => RuntimeFunctions.Name(idx);
+    static string NameForRuntimeId(FunctionId idx) => RuntimeFunctions.Name(idx);
 
     static string NameForNativeContextIndex(uint idx) =>
         NativeContextFields.NameForIndex((int)idx) ?? throw new UnreachableException();
@@ -195,7 +196,7 @@ public static class BytecodeDecoder
                 }
                 case OperandType.RuntimeId:
                     os.Append('[')
-                      .Append(NameForRuntimeId((RuntimeFunctionId)DecodeUnsignedOperand(operand_start, op_type, operand_scale)))
+                      .Append(NameForRuntimeId((FunctionId)DecodeUnsignedOperand(operand_start, op_type, operand_scale)))
                       .Append(']');
                     break;
                 case OperandType.AbortReason:

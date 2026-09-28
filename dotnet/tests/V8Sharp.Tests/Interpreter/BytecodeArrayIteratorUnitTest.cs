@@ -2,6 +2,7 @@
 using V8Sharp.Ast;
 using V8Sharp.Common;
 using V8Sharp.Parsing;
+using V8Sharp.Runtime;
 using V8Sharp.Interpreter;
 
 namespace V8Sharp.Tests.Interpreter;
@@ -56,9 +57,9 @@ public class BytecodeArrayIteratorUnitTest
             .LoadNamedProperty(reg_16, name, (int)load_feedback_slot)
             .BinaryOperation(Token.Add, reg_0, kFeedbackIsEmbedded)
             .StoreAccumulatorInRegister(param)
-            .CallRuntimeForPair(RuntimeFunctionId.LoadLookupSlotForCall, param, pair)
+            .CallRuntimeForPair(FunctionId.LoadLookupSlotForCall, param, pair)
             .ForInPrepare(triple, (int)forin_feedback_slot)
-            .CallRuntime(RuntimeFunctionId.LoadIC_Miss, reg_0)
+            .CallRuntime(FunctionId.LoadIC_Miss, reg_0)
             .Debugger()
             .LoadGlobal(name, (int)load_global_feedback_slot, TypeofMode.NotInside)
             .Return();
@@ -201,7 +202,7 @@ public class BytecodeArrayIteratorUnitTest
         Assert.Equal(Bytecode.CallRuntimeForPair, iterator.CurrentBytecode());
         Assert.Equal(offset, iterator.CurrentOffset());
         Assert.Equal(OperandScale.Single, iterator.CurrentOperandScale());
-        Assert.Equal(RuntimeFunctionId.LoadLookupSlotForCall, iterator.GetRuntimeIdOperand(0));
+        Assert.Equal(FunctionId.LoadLookupSlotForCall, iterator.GetRuntimeIdOperand(0));
         Assert.Equal(param.Index, iterator.GetRegisterOperand(1).Index);
         Assert.Equal(1u, iterator.GetRegisterOperandRange(1));
         Assert.Equal(1u, iterator.GetRegisterCountOperand(2));
@@ -224,7 +225,7 @@ public class BytecodeArrayIteratorUnitTest
         Assert.Equal(Bytecode.CallRuntime, iterator.CurrentBytecode());
         Assert.Equal(offset, iterator.CurrentOffset());
         Assert.Equal(OperandScale.Single, iterator.CurrentOperandScale());
-        Assert.Equal(RuntimeFunctionId.LoadIC_Miss, iterator.GetRuntimeIdOperand(0));
+        Assert.Equal(FunctionId.LoadIC_Miss, iterator.GetRuntimeIdOperand(0));
         Assert.Equal(reg_0.Index, iterator.GetRegisterOperand(1).Index);
         Assert.Equal(1u, iterator.GetRegisterCountOperand(2));
         Assert.False(iterator.Done());
