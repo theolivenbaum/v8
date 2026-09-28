@@ -250,6 +250,19 @@ public static class InterpreterCalls
     public static JSValue CallBuiltin(Isolate isolate, JSFunction function, JSValue receiver, ReadOnlySpan<JSValue> args,
         JSValue newTarget)
     {
+        Builtin id = function.Shared.BuiltinId;
+        // A leaf builtin whose fast path cannot observe its frame runs without
+        // one (BuiltinFramelessCalls.cs).
+        if (newTarget._obj is null && BuiltinRegistry.CanCallWithoutFrame(id, receiver, args))
+        {
+            return BuiltinRegistry.Invoke(isolate, id, function, newTarget, receiver, args);
+        }
+        return CallBuiltinWithFrame(isolate, function, receiver, args, newTarget);
+    }
+
+    static JSValue CallBuiltinWithFrame(Isolate isolate, JSFunction function, JSValue receiver, ReadOnlySpan<JSValue> args,
+        JSValue newTarget)
+    {
         if (BuiltinRegistry.KindOf(function.Shared.BuiltinId) == BuiltinKind.ASM)
         {
             // ASM builtins (Function.prototype.call/apply, Reflect.apply ...) build
