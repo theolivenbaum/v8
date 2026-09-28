@@ -293,6 +293,7 @@ public static class Globals
     public static bool IsAsyncGeneratorFunction(FunctionKind kind) => InRange(kind, FunctionKind.AsyncConciseGeneratorMethod, FunctionKind.AsyncGeneratorFunction);
     public static bool IsGeneratorFunction(FunctionKind kind) => InRange(kind, FunctionKind.AsyncConciseGeneratorMethod, FunctionKind.StaticConciseGeneratorMethod);
     public static bool IsAsyncFunction(FunctionKind kind) => InRange(kind, FunctionKind.AsyncArrowFunction, FunctionKind.AsyncGeneratorFunction);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsResumableFunction(FunctionKind kind) => IsGeneratorFunction(kind) || IsAsyncFunction(kind) || IsModule(kind);
 
     public static bool IsConciseMethod(FunctionKind kind)

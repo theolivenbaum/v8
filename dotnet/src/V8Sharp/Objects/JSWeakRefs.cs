@@ -413,6 +413,7 @@ namespace V8Sharp
         /// </summary>
         public void CollectGarbage()
         {
+            ClearStaleFrameRecords();
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();

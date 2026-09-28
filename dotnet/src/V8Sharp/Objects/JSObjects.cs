@@ -45,6 +45,15 @@ public abstract partial class JSReceiver : HeapObject
         }
     }
 
+    /// <summary>A field-for-field copy of <paramref name="source"/> (see JSObject.CloneShallow).</summary>
+    protected JSReceiver(JSReceiver source) : base(source.InstanceType)
+    {
+        Map = source.Map;
+        _fields = source._fields;
+        _dictionary = source._dictionary;
+        _identityHash = source._identityHash;
+    }
+
     /// <summary>Whether properties are stored in fields described by the map (not a dictionary).</summary>
     public bool HasFastProperties
     {
@@ -127,8 +136,22 @@ public partial class JSObject : JSReceiver
         Elements = map.GetInitialElements();
     }
 
-    /// <summary>A memberwise copy of this object (Factory::CopyJSObject then fixes up the storage).</summary>
-    internal JSObject CloneShallow() => (JSObject)MemberwiseClone();
+    /// <summary>A field-for-field copy of <paramref name="source"/> (see CloneShallow).</summary>
+    protected JSObject(JSObject source) : base(source) => Elements = source.Elements;
+
+    /// <summary>
+    /// A memberwise copy of this object (Factory::CopyJSObject then fixes up the
+    /// storage). Object.MemberwiseClone is a runtime call with a GC transition
+    /// (about 100 ns), so the objects literals copy (plain objects and arrays)
+    /// are copied by their copy constructors; CloneShallowTest checks that
+    /// they copy every field.
+    /// </summary>
+    internal JSObject CloneShallow()
+    {
+        if (GetType() == typeof(JSObject)) return new JSObject(this);
+        if (this is JSArray array) return new JSArray(array);
+        return (JSObject)MemberwiseClone();
+    }
 
     /// <summary>
     /// Factory::InitializeJSObjectFromMap for an existing object: resets the

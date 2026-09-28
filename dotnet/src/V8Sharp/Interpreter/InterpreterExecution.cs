@@ -138,6 +138,7 @@ public static partial class InterpreterExecution
         if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
         var state = new InterpreterState
         {
+            Isolate = isolate,
             Function = function,
             Bytecode = bytecode,
             FeedbackVector = feedbackVector,
@@ -236,7 +237,8 @@ public static partial class InterpreterExecution
     internal static bool TryDispatchToHandler(Isolate isolate, ref InterpreterState state, JSValue exception,
         JSMessageObject? message)
     {
-        // The current offset is kept in the frame record (the loop stores it before each bytecode).
+        // The current offset is kept in the frame record (the handlers store it
+        // before they call out, InterpreterExecution.SavePc).
         int pc = isolate.InterpreterFrames[state.FrameIndex].Pc;
         byte[] handlerTableBytes = state.Bytecode.HandlerTable;
         if (handlerTableBytes.Length == 0) return false;

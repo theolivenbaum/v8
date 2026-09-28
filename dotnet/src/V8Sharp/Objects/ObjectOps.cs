@@ -57,11 +57,22 @@ public static class ObjectOps
 
     /// <summary>IsCallable: the map's is_callable bit.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsCallable(in JSValue value) => value.HeapObjectOrNull is JSReceiver r && r.Map.IsCallable;
+    public static bool IsCallable(in JSValue value) => AsReceiverOrNull(value) is { } r && r.Map.IsCallable;
+
+    /// <summary>
+    /// The value as a JSReceiver, or null. The instance type range test, where
+    /// `is JSReceiver` on the abstract class is a cast helper call.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSReceiver? AsReceiverOrNull(in JSValue value)
+    {
+        HeapObject? o = value._obj;
+        return o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver ? Unsafe.As<JSReceiver>(o) : null;
+    }
 
     /// <summary>IsConstructor: the map's is_constructor bit.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsConstructor(in JSValue value) => value.HeapObjectOrNull is JSReceiver r && r.Map.IsConstructor;
+    public static bool IsConstructor(in JSValue value) => AsReceiverOrNull(value) is { } r && r.Map.IsConstructor;
 
     /// <summary>IsUndetectable (document.all-like objects).</summary>
     public static bool IsUndetectable(in JSValue value) => value.HeapObjectOrNull is JSReceiver r && r.Map.IsUndetectable;
@@ -875,7 +886,37 @@ public static class ObjectOps
         }
 
         // If {object} is not a receiver, return false.
-        if (obj.HeapObjectOrNull is not JSReceiver receiver) return false;
+        if (AsReceiverOrNull(obj) is not { } receiver) return false;
+
+        // CodeStubAssembler::OrdinaryHasInstance: for a JSFunction whose
+        // "prototype" is the function prototype accessor, the prototype comes
+        // from prototype_or_initial_map, and the chain walk loads map prototypes
+        // until it meets a receiver that needs the full [[GetPrototypeOf]].
+        if (callable.HeapObjectOrNull is JSFunction function && !function.Map.IsDictionaryMap)
+        {
+            Map functionMap = function.Map;
+            DescriptorArray descriptors = functionMap.InstanceDescriptors;
+            InternalIndex index = descriptors.Search(ReadOnlyRoots.prototype_string, functionMap);
+            JSReceiver? functionPrototype = function.PrototypeOrInitialMap switch
+            {
+                Map initialMap => initialMap.Prototype,
+                JSReceiver instancePrototype => instancePrototype,
+                _ => null,
+            };
+            if (functionPrototype is not null && index.IsFound &&
+                ReferenceEquals(descriptors.GetStrongValue(index).HeapObjectOrNull, Builtins.Accessors.FunctionPrototypeAccessor))
+            {
+                JSReceiver current = receiver;
+                while (!Map.IsSpecialReceiverMap(current.Map))
+                {
+                    JSReceiver? next = current.Map.Prototype;
+                    if (next is null) return false;
+                    if (ReferenceEquals(next, functionPrototype)) return true;
+                    current = next;
+                }
+                return JSReceiver.HasInPrototypeChain(isolate, current, functionPrototype);
+            }
+        }
 
         // Get the "prototype" of {callable}; raise an error if it's not a receiver.
         JSValue prototype = GetProperty(isolate, callable, ReadOnlyRoots.prototype_string);
@@ -892,14 +933,36 @@ public static class ObjectOps
     public static bool InstanceOf(Isolate isolate, JSValue obj, JSValue callable)
     {
         // The {callable} must be a receiver.
-        if (callable.HeapObjectOrNull is not JSReceiver callableReceiver)
+        if (AsReceiverOrNull(callable) is not { } callableReceiver)
         {
             isolate.Throw(isolate.Factory.NewTypeError(MessageTemplate.NonObjectInInstanceOfCheck));
             return false;
         }
 
         // Lookup the @@hasInstance method on {callable}.
-        JSValue instOfHandler = GetMethod(isolate, callableReceiver, ReadOnlyRoots.has_instance_symbol);
+        JSValue instOfHandler;
+        if (callableReceiver is JSFunction function && !function.Map.IsDictionaryMap &&
+            ReferenceEquals(function.Map.Prototype, function.Context.NativeContext.FunctionPrototype) &&
+            function.Map.InstanceDescriptors.Search(ReadOnlyRoots.has_instance_symbol, function.Map).IsNotFound)
+        {
+            // The lookup of an ordinary function without an own @@hasInstance
+            // whose prototype is %Function.prototype%: that property is
+            // non-writable and non-configurable, so it is the original.
+            instOfHandler = function.Context.NativeContext.FunctionHasInstance;
+        }
+        else
+        {
+            instOfHandler = GetMethod(isolate, callableReceiver, ReadOnlyRoots.has_instance_symbol);
+        }
+        if (isolate.Context is { } current && ReferenceEquals(instOfHandler._obj, current.NativeContext.FunctionHasInstance))
+        {
+            // CodeStubAssembler::InstanceOf: Function.prototype[@@hasInstance]
+            // is called directly (CallJSBuiltin), without Builtins::Call; its
+            // frame still shows in stack traces.
+            JSValue result = V8Sharp.Interpreter.InterpreterCalls.CallBuiltin(isolate, Unsafe.As<JSFunction>(instOfHandler._obj!),
+                callable, [obj], JSValue.Undefined);
+            return ReferenceEquals(result._obj, Oddball.True);
+        }
         if (!instOfHandler.IsUndefined)
         {
             // Call the {inst_of_handler} on the {callable}.

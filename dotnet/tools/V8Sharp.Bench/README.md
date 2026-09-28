@@ -18,8 +18,10 @@ Ignition only), and V8Sharp in-process: `v8sharp` (its defaults: Ignition +
 baseline IL), `v8sharp:jitless` (the interpreter only), `v8sharp:sparkplug`
 (same as `v8sharp`) and `v8sharp:always-sparkplug`. `V8SHARP_BENCH_FLAGS`
 adds V8 flags to the v8sharp runs. Suites: `octane` (all), `octane:<name>`,
-`perf:<dir>` for a directory of `test/js-perf-test`. Raw results go to
-`dotnet/artifacts/bench/`.
+`perf:<dir>` for a directory of `test/js-perf-test`, and `micro:<name>` /
+`micro:all` for the interpreter micro-benchmarks in `micro/` (property
+access, calls, closures, construction, arrays, arithmetic, string
+concatenation; calls per second). Raw results go to `dotnet/artifacts/bench/`.
 
 The yardsticks: phase 1 (interpreter) is measured against `v8:jitless`,
 the baseline IL tier against `v8:sparkplug`, the optimizing tier against

@@ -6,6 +6,8 @@
 // feedback vector for typeof and ToNumber/ToNumeric), plus the small
 // handlers helpers (TestTypeOf, super constructors, module variables).
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using V8Sharp.Base.Numbers;
 using V8Sharp.Runtime;
 using BOF = V8Sharp.Interpreter.BinaryOperationFeedback;
@@ -21,9 +23,11 @@ public static class InterpreterOps
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsSmiDouble(double d)
     {
-        int i = (int)d;
-        return i == d && i >= JSValue.SmiMinValue && i <= JSValue.SmiMaxValue &&
-               BitConverter.DoubleToInt64Bits(d) != kMinusZeroBits;
+        // cvttsd2si gives int.MinValue for NaN and out-of-range values, which
+        // fails the range check; C#'s (int) cast saturates with extra compares.
+        int i = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(d)) : (int)d;
+        return i == d && (uint)(i - JSValue.SmiMinValue) <= (uint)(JSValue.SmiMaxValue - JSValue.SmiMinValue) &&
+               (i != 0 || BitConverter.DoubleToInt64Bits(d) != kMinusZeroBits);
     }
 
     // ---- Embedded feedback ------------------------------------------------------------
@@ -42,8 +46,29 @@ public static class InterpreterOps
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void UpdateBinaryFeedbackSlow(ref byte feedback, BOF.TypeIndex type)
     {
-        var combined = BOF.CombineTypeIndex((BOF.TypeIndex)feedback, type);
-        if ((byte)combined != feedback) feedback = (byte)combined;
+        byte current = feedback;
+        byte combined = current < BOF.kNumTypeIndices
+            ? s_binaryCombine[current * (int)BOF.kNumTypeIndices + (int)type]
+            : (byte)BOF.CombineTypeIndex((BOF.TypeIndex)current, type);
+        if (combined != current) feedback = combined;
+    }
+
+    /// <summary>BOF.CombineTypeIndex for every pair of type indices (the embedded feedback of hot operations changes rarely but is combined on every run).</summary>
+    static readonly byte[] s_binaryCombine = BuildCombineTable(BOF.kNumTypeIndices,
+        static (a, b) => (byte)BOF.CombineTypeIndex((BOF.TypeIndex)a, (BOF.TypeIndex)b));
+
+    /// <summary>COF.CombineTypeIndex for every pair of type indices.</summary>
+    static readonly byte[] s_compareCombine = BuildCombineTable(COF.kNumTypeIndices,
+        static (a, b) => (byte)COF.CombineTypeIndex((COF.TypeIndex)a, (COF.TypeIndex)b));
+
+    static byte[] BuildCombineTable(uint count, Func<int, int, byte> combine)
+    {
+        var table = new byte[count * count];
+        for (int a = 0; a < count; a++)
+        {
+            for (int b = 0; b < count; b++) table[a * count + b] = combine(a, b);
+        }
+        return table;
     }
 
     /// <summary>UpdateEmbeddedFeedback for compare operations.</summary>
@@ -57,21 +82,42 @@ public static class InterpreterOps
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void UpdateCompareFeedbackSlow(ref byte feedback, COF.TypeIndex type)
     {
-        var combined = COF.CombineTypeIndex((COF.TypeIndex)feedback, type);
-        if ((byte)combined != feedback) feedback = (byte)combined;
+        byte current = feedback;
+        byte combined = current < COF.kNumTypeIndices
+            ? s_compareCombine[current * (int)COF.kNumTypeIndices + (int)type]
+            : (byte)COF.CombineTypeIndex((COF.TypeIndex)current, type);
+        if (combined != current) feedback = combined;
     }
 
     static BOF.TypeIndex BinaryIndex(BOF.Type type) => BOF.CalculateTypeIndex((uint)type);
 
     // ---- Number fast paths -------------------------------------------------------------
 
+    /// <summary>
+    /// Embedded binary feedback that no number operation can widen (Number,
+    /// NumberOrOddball, Any): the operation then skips computing its operand
+    /// types, as the result of UpdateBinaryFeedback would be the same byte.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsNumberFeedbackSaturated(byte feedback) =>
+        (uint)(feedback - (byte)BOF.TypeIndex.Number) <= 1 || feedback == (byte)BOF.TypeIndex.Any;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static JSValue AddNumbers(Isolate isolate, double lhs, double rhs, ref byte feedback)
     {
         double result = lhs + rhs;
-        UpdateBinaryFeedback(ref feedback,
-            IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall
-            : AddNumberFeedback(isolate, lhs, rhs, result));
+        if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
+        if (IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result))
+        {
+            UpdateBinaryFeedback(ref feedback, BOF.TypeIndex.SignedSmall);
+        }
+        else if (feedback != (byte)BOF.TypeIndex.AdditiveSafeInteger || !IsAdditiveSafeInteger(result) ||
+                 !IsAdditiveSafeInteger(lhs) || !IsAdditiveSafeInteger(rhs))
+        {
+            // (AdditiveSafeInteger feedback stays so while the operands and
+            // result are additive safe integers, whatever the flag says.)
+            UpdateBinaryFeedback(ref feedback, AddNumberFeedback(isolate, lhs, rhs, result));
+        }
         return JSValue.FromNumber(result);
     }
 
@@ -107,6 +153,7 @@ public static class InterpreterOps
     public static JSValue SubtractNumbers(double lhs, double rhs, ref byte feedback)
     {
         double result = lhs - rhs;
+        if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
         UpdateBinaryFeedback(ref feedback,
             IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
         return JSValue.FromNumber(result);
@@ -116,6 +163,7 @@ public static class InterpreterOps
     public static JSValue MultiplyNumbers(double lhs, double rhs, ref byte feedback)
     {
         double result = lhs * rhs;
+        if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
         UpdateBinaryFeedback(ref feedback,
             IsSmiDouble(lhs) && IsSmiDouble(rhs) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
         return JSValue.FromNumber(result);
@@ -352,31 +400,33 @@ public static class InterpreterOps
     // ---- Unary ----------------------------------------------------------------------
 
     /// <summary>Inc (Generate_IncrementWithFeedback).</summary>
-    public static JSValue Increment(Isolate isolate, JSValue value, ref byte feedback)
+    public static JSValue Increment(Isolate isolate, JSValue value, ref byte feedback) =>
+        value.IsNumber ? IncrementNumber(value.Number, ref feedback) : UnarySlow(isolate, Operation.Increment, value, ref feedback);
+
+    /// <summary>Inc of a number.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue IncrementNumber(double d, ref byte feedback)
     {
-        if (value.IsNumber)
-        {
-            double d = value.Number;
-            double result = d + 1;
-            UpdateBinaryFeedback(ref feedback,
-                IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
-            return JSValue.FromNumber(result);
-        }
-        return UnarySlow(isolate, Operation.Increment, value, ref feedback);
+        double result = d + 1;
+        if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
+        UpdateBinaryFeedback(ref feedback,
+            IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
+        return JSValue.FromNumber(result);
     }
 
     /// <summary>Dec (Generate_DecrementWithFeedback).</summary>
-    public static JSValue Decrement(Isolate isolate, JSValue value, ref byte feedback)
+    public static JSValue Decrement(Isolate isolate, JSValue value, ref byte feedback) =>
+        value.IsNumber ? DecrementNumber(value.Number, ref feedback) : UnarySlow(isolate, Operation.Decrement, value, ref feedback);
+
+    /// <summary>Dec of a number.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue DecrementNumber(double d, ref byte feedback)
     {
-        if (value.IsNumber)
-        {
-            double d = value.Number;
-            double result = d - 1;
-            UpdateBinaryFeedback(ref feedback,
-                IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
-            return JSValue.FromNumber(result);
-        }
-        return UnarySlow(isolate, Operation.Decrement, value, ref feedback);
+        double result = d - 1;
+        if (IsNumberFeedbackSaturated(feedback)) return JSValue.FromNumber(result);
+        UpdateBinaryFeedback(ref feedback,
+            IsSmiDouble(d) && IsSmiDouble(result) ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
+        return JSValue.FromNumber(result);
     }
 
     /// <summary>Negate (Generate_NegateWithFeedback).</summary>
@@ -466,20 +516,24 @@ public static class InterpreterOps
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void RecordCompareFeedback(in JSValue lhs, in JSValue rhs, ref byte feedback)
     {
+        if (feedback == (byte)COF.TypeIndex.Any) return;
         COF.Type type = CompareFeedbackFor(lhs) | CompareFeedbackFor(rhs);
         UpdateCompareFeedback(ref feedback, COF.CalculateTypeIndex((uint)type));
+    }
+
+    /// <summary>TestEqual / TestEqualStrict of two numbers, with feedback.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue EqualNumbers(double l, double r, ref byte feedback)
+    {
+        UpdateCompareFeedback(ref feedback,
+            IsSmiDouble(l) && IsSmiDouble(r) ? COF.TypeIndex.SignedSmall : COF.TypeIndex.Number);
+        return JSValue.FromBoolean(l == r);
     }
 
     /// <summary>TestEqualStrict with feedback.</summary>
     public static JSValue StrictEqual(JSValue lhs, JSValue rhs, ref byte feedback)
     {
-        if (lhs.IsNumber && rhs.IsNumber)
-        {
-            double l = lhs.Number, r = rhs.Number;
-            UpdateCompareFeedback(ref feedback,
-                IsSmiDouble(l) && IsSmiDouble(r) ? COF.TypeIndex.SignedSmall : COF.TypeIndex.Number);
-            return JSValue.FromBoolean(l == r);
-        }
+        if (lhs.IsNumber && rhs.IsNumber) return EqualNumbers(lhs.Number, rhs.Number, ref feedback);
         RecordCompareFeedback(lhs, rhs, ref feedback);
         return JSValue.FromBoolean(ObjectOps.StrictEquals(lhs, rhs));
     }
@@ -487,13 +541,7 @@ public static class InterpreterOps
     /// <summary>TestEqual with feedback.</summary>
     public static JSValue Equal(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
     {
-        if (lhs.IsNumber && rhs.IsNumber)
-        {
-            double l = lhs.Number, r = rhs.Number;
-            UpdateCompareFeedback(ref feedback,
-                IsSmiDouble(l) && IsSmiDouble(r) ? COF.TypeIndex.SignedSmall : COF.TypeIndex.Number);
-            return JSValue.FromBoolean(l == r);
-        }
+        if (lhs.IsNumber && rhs.IsNumber) return EqualNumbers(lhs.Number, rhs.Number, ref feedback);
         RecordCompareFeedback(lhs, rhs, ref feedback);
         if (lhs.IsIdenticalTo(rhs) && !lhs.IsNumber) return JSValue.True;
         return JSValue.FromBoolean(ObjectOps.Equals(isolate, lhs, rhs));
@@ -562,6 +610,17 @@ public static class InterpreterOps
             return d != 0 && !double.IsNaN(d);
         }
         return ObjectOps.BooleanValue(value);
+    }
+
+    /// <summary>The feedback of ToNumber / ToNumeric on a number (which converts to itself).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void ToNumberFeedbackForNumber(FeedbackVector? fv, int slot, double value)
+    {
+        if (fv is null) return;
+        ref JSValue feedback = ref fv.Slots[slot];
+        int current = feedback.IsNumber ? (int)feedback._num : 0;
+        int combined = current | (int)(IsSmiDouble(value) ? BOF.Type.SignedSmall : BOF.Type.Number);
+        if (combined != current) feedback = JSValue.FromInt(combined);
     }
 
     /// <summary>ToNumber / ToNumeric with binary-op feedback in the slot (InterpreterAssembler::ToNumberOrNumeric).</summary>
