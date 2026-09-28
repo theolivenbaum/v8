@@ -408,7 +408,7 @@ public sealed partial class Trace
             {
                 bool uniformPrefix = ParkedGrant is ParkedGrant.kParkedUniformPrefix or
                     ParkedGrant.kParkedNonEmptyUniformPrefix;
-                switch (loop.AtomicLoopKind())
+                switch (loop.GetAtomicLoopKind())
                 {
                     case AtomicLoopKind.kNone:
                         break;
@@ -627,7 +627,7 @@ public partial class ChoiceNode
     }
 }
 
-internal static class RegExpCompilerHelpers
+internal static partial class RegExpCompilerHelpers
 {
     public static bool ShortCutEmitCharacterPair(RegExpMacroAssembler macroAssembler, bool oneByte, int c1, int c2,
         Label? onFailure)

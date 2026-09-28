@@ -911,7 +911,7 @@ internal sealed class RegExpParserImpl
                     }
                     else
                     {
-                        // Everything except \x0A, \x0D,   and  .
+                        // Everything except \x0A, \x0D, \u2028 and \u2029.
                         CharacterRange.AddClassEscape(StandardCharacterSet.kNotLineTerminator, ranges, false);
                     }
                     var cc = new RegExpClassRanges(ranges);

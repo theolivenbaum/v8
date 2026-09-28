@@ -159,15 +159,16 @@ public sealed partial class BoyerMoorePositionInfo
     public const int kMapSize = 128;
     public const int kMask = kMapSize - 1;
 
-    readonly bool[] _map = new bool[kMapSize];
+    // std::bitset<kMapSize> in V8.
+    UInt128 _map;
     int _mapCount;  // Number of set bits in the map.
     ContainedInLattice _w = ContainedInLattice.kNotYet;  // The \w character class.
 
-    public bool At(int i) => _map[i];
+    public bool At(int i) => ((_map >> i) & UInt128.One) != UInt128.Zero;
     public int MapCount => _mapCount;
     public bool IsNonWord => _w == ContainedInLattice.kLatticeOut;
     public bool IsWord => _w == ContainedInLattice.kLatticeIn;
-    public bool[] RawBitset => _map;
+    public UInt128 RawBitset => _map;
 
     internal static ContainedInLattice Combine(ContainedInLattice a, ContainedInLattice b) =>
         (ContainedInLattice)((int)a | (int)b);
