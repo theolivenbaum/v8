@@ -40,7 +40,7 @@ public static class Bootstrapper
     /// </summary>
     public static NativeContext CreateEnvironment(Isolate isolate, MicrotaskQueue? microtaskQueue = null)
     {
-        BuiltinsApi.Register();
+        BuiltinRegistry.RegisterAll();
         bool wasActive = isolate.BootstrapperActive;
         isolate.BootstrapperActive = true;
         try

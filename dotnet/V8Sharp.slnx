@@ -18,5 +18,6 @@
   <Folder Name="/tools/">
     <Project Path="tools/V8Sharp.TestRunner/V8Sharp.TestRunner.csproj" />
     <Project Path="tools/V8Sharp.Bench/V8Sharp.Bench.csproj" />
+    <Project Path="tools/V8Sharp.RegExp.Bench/V8Sharp.RegExp.Bench.csproj" />
   </Folder>
 </Solution>
