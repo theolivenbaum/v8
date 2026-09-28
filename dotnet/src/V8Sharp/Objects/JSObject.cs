@@ -2439,10 +2439,14 @@ public partial class JSObject
 
     /// <summary>
     /// JSObject::UpdateAllocationSite. V8 finds the site through the
-    /// AllocationMemento behind a young array; V8Sharp has no mementos, so
-    /// there is no site to update.
+    /// AllocationMemento behind a young array; V8Sharp keeps it on the array
+    /// (<see cref="JSArray.AllocationMementoSite"/>).
     /// </summary>
-    public static bool UpdateAllocationSite(Isolate isolate, JSObject obj, ElementsKind toKind) => false;
+    public static bool UpdateAllocationSite(Isolate isolate, JSObject obj, ElementsKind toKind, bool checkOnly = false)
+    {
+        if (obj is not JSArray { AllocationMementoSite: { } site }) return false;
+        return AllocationSite.DigestTransitionFeedback(isolate, site, toKind, checkOnly);
+    }
 
     /// <summary>JSObject::TransitionElementsKind.</summary>
     public static void TransitionElementsKind(Isolate isolate, JSObject obj, ElementsKind toKind)

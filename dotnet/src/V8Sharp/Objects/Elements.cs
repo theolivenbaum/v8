@@ -156,7 +156,7 @@ public abstract class ElementsAccessor
         if (newCapacity > FixedArrayBase.kMaxLength) return false;
         FixedArrayBase elements = ConvertElementsWithCapacity(isolate, obj, oldElements, Kind, newCapacity);
         // Transition through the allocation site as well if present.
-        if (JSObject.UpdateAllocationSite(isolate, obj, Kind)) return false;
+        if (JSObject.UpdateAllocationSite(isolate, obj, Kind, checkOnly: true)) return false;
         obj.Elements = elements;
         return true;
     }

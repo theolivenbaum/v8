@@ -321,17 +321,43 @@ public sealed class AllocationSite() : HeapObject(InstanceType.AllocationSiteTyp
     /// <summary>AllocationSite::ShouldTrack: only more-general transitions of array sites are tracked.</summary>
     public static bool ShouldTrack(ElementsKind from, ElementsKind to) => ElementsKinds.IsMoreGeneralElementsKindTransition(from, to);
 
-    /// <summary>AllocationSite::DigestTransitionFeedback.</summary>
-    public static bool DigestTransitionFeedback(Isolate isolate, AllocationSite site, ElementsKind toKind)
+    /// <summary>AllocationSite::kMaximumArrayBytesToPretransition.</summary>
+    public const uint kMaximumArrayBytesToPretransition = 8 * 1024;
+
+    /// <summary>AllocationSite::ShouldTrack(boilerplate elements kind).</summary>
+    public static bool ShouldTrack(ElementsKind boilerplateElementsKind) => ElementsKinds.IsSmiElementsKind(boilerplateElementsKind);
+
+    /// <summary>AllocationSite::CanTrack.</summary>
+    public static bool CanTrack(InstanceType type) => type == InstanceType.JSArrayType;
+
+    /// <summary>AllocationSite::DigestTransitionFeedback (kUpdate, or kCheckOnly when <paramref name="checkOnly"/>).</summary>
+    public static bool DigestTransitionFeedback(Isolate isolate, AllocationSite site, ElementsKind toKind, bool checkOnly = false)
     {
-        ElementsKind kind = site.ElementsKind;
-        if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
-        if (ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind))
+        if (site.Boilerplate is JSArray boilerplate)
         {
+            // The site points to an array literal: transition its boilerplate.
+            ElementsKind kind = boilerplate.GetElementsKind();
+            // if kind is holey ensure that to_kind is as well.
+            if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
+            if (!ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind)) return false;
+            // If the array is huge, it's not likely to be defined in a local
+            // function, so we shouldn't make new instances of it very often.
+            if (!ObjectOps.ToArrayLength(boilerplate.Length, out uint length) || length > kMaximumArrayBytesToPretransition) return false;
+            if (checkOnly) return true;
+            JSObject.TransitionElementsKind(isolate, boilerplate, toKind);
+            site.ElementsKind = boilerplate.GetElementsKind();
+            return true;
+        }
+        {
+            // The AllocationSite is for a constructed Array.
+            ElementsKind kind = site.ElementsKind;
+            // if kind is holey ensure that to_kind is as well.
+            if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
+            if (!ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind)) return false;
+            if (checkOnly) return true;
             site.ElementsKind = toKind;
             return true;
         }
-        return false;
     }
 }
 

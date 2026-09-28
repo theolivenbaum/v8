@@ -388,6 +388,23 @@ public static class InterpreterCalls
         return implicitReceiver;
     }
 
+    /// <summary>
+    /// The allocation-site part of ArrayConstructorImpl (builtins-array.cc /
+    /// ArrayConstructorImpl): the array starts in the site's elements kind and
+    /// keeps a memento while the site tracks it. V8 allocates with the site's
+    /// kind directly; V8Sharp transitions the array the Array builtin made.
+    /// </summary>
+    static void ApplyArrayAllocationSite(Isolate isolate, JSArray array, AllocationSite site)
+    {
+        ElementsKind kind = array.GetElementsKind();
+        if (!ElementsKinds.IsFastElementsKind(kind)) return;
+        ElementsKind toKind = site.ElementsKind;
+        if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
+        if (ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind)) JSObject.TransitionElementsKind(isolate, array, toKind);
+        // If we don't care to track arrays of this kind, don't keep a memento.
+        if (AllocationSite.ShouldTrack(site.ElementsKind)) array.AllocationMementoSite = site;
+    }
+
     /// <summary>Builtins::Construct for everything but bytecode functions.</summary>
     public static JSValue ConstructGeneric(Isolate isolate, JSValue constructor, JSValue newTarget, ReadOnlySpan<JSValue> args,
         AllocationSite? site = null)
@@ -398,7 +415,9 @@ public static class InterpreterCalls
             if (shared.HasBuiltinId && shared.BuiltinId != Builtin.CompileLazy)
             {
                 // JSBuiltinsConstructStub: the builtin creates its own receiver.
-                return CallBuiltin(isolate, function, JSValue.TheHole, args, newTarget);
+                JSValue result = CallBuiltin(isolate, function, JSValue.TheHole, args, newTarget);
+                if (site is not null && result.HeapObjectOrNull is JSArray array) ApplyArrayAllocationSite(isolate, array, site);
+                return result;
             }
             if (!shared.IsCompiled && !shared.HasBuiltinId)
             {

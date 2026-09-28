@@ -214,8 +214,8 @@ for now, to be revisited when the reason goes away.
   the same load/store; --jitless V8 does not use them either).
 - ICs: handlers are C# objects (`LoadHandler`/`StoreHandler`) instead of Smi
   handlers and code; the megamorphic stub cache holds them. `LoadSuperIC` is
-  the generic path. `CloneObjectIC` always takes the slow path. No allocation
-  mementos / allocation-site pretenuring feedback.
+  the generic path. `CloneObjectIC` always takes the slow path. No
+  allocation-site pretenuring feedback.
 - Runtime: `%` functions are delegates in `RuntimeTable`; functions only an
   optimizing tier or the debugger uses are not registered (their calls throw
   "runtime function %X is not implemented"). Tier queries (%IsTurbofanEnabled,
@@ -270,7 +270,11 @@ Heap and object model
   `HeapObject.InstanceType` stays the generic type.
 - The string table is a `Dictionary` keyed by content, not V8's open-addressed
   table with forwarding indices.
-- No allocation mementos or allocation sites feedback on literals.
+- Allocation mementos: an array created from an AllocationSite (literal copies,
+  empty array literals, `new Array` with construct feedback) keeps the site in
+  `JSArray.AllocationMementoSite` for its whole life; V8's memento sits behind
+  a young object and is gone once the object is promoted, so V8Sharp feeds
+  later elements-kind transitions of old arrays back into the site as well.
 
 Weakness (no GC hooks)
 - Transition targets, `FieldType.Class` maps, prototype-user registries, the

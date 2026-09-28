@@ -1231,8 +1231,7 @@ public sealed class KeyedStoreIC : IC
                 Cell? validityCell = receiverMapsAndHandlers[i].Handler._obj is StoreHandler oldHandler ? oldHandler.ValidityCell : null;
                 if (transition is not null)
                 {
-                    // ElementsTransitionAndStore: V8Sharp performs the transition in the
-                    // runtime (the fast path does not apply to transitioning handlers).
+                    // ElementsTransitionAndStore (ElementAccess.TryStoreFastElement).
                     handler = StoreHandler.StoreElement(_isolate, receiverMap.ElementsKind, transition, storeMode,
                         validityCell ?? Map.GetOrCreatePrototypeChainValidityCell(receiverMap, _isolate));
                 }

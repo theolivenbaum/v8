@@ -93,9 +93,22 @@ public static class ElementAccess
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryStoreFastElement(Isolate isolate, JSObject obj, double key, StoreHandler handler, JSValue value)
     {
-        if (handler.ElementsTransitionMap is not null || !handler.IsValid) return false;
+        if (!handler.IsValid) return false;
         int index = (int)key;
         if (index != key || index < 0) return false;
+        if (handler.ElementsTransitionMap is Map transition)
+        {
+            // ElementsTransitionAndStore: the pessimistic transition to the most
+            // general kind among the polymorphic receiver maps, then the store.
+            // JSObject.TransitionElementsKind also feeds the transition back to
+            // the allocation site (V8's CSA bails out to the runtime for that).
+            if (!ElementsKinds.IsFastElementsKind(obj.Map.ElementsKind) ||
+                !ElementsKinds.IsFastElementsKind(transition.ElementsKind) || obj.Elements.IsCowArray)
+            {
+                return false;
+            }
+            JSObject.TransitionElementsKind(isolate, obj, transition.ElementsKind);
+        }
         ElementsKind kind = obj.Map.ElementsKind;
         if (!ElementsKinds.IsFastElementsKind(kind)) return false;
 
