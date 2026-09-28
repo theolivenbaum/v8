@@ -129,6 +129,13 @@ namespace V8Sharp
             // Popped records need not be contiguous (PopFramesTo clears its
             // records), so clear the whole tail; this runs only on explicit GCs.
             frames.AsSpan(InterpreterFrameDepth).Clear();
+            // The same for the values popped inline frames left above the stack top.
+            int top = RegisterStackTop;
+            if (RegisterStackDirtyEnd > top)
+            {
+                RegisterStack.AsSpan(top, RegisterStackDirtyEnd - top).Clear();
+                RegisterStackDirtyEnd = top;
+            }
         }
     }
 }

@@ -108,14 +108,14 @@ internal static class InterpreterInlineCalls
             {
                 // Holes (holey arrays with intact protectors) read as undefined.
                 JSValue value = data[i];
-                if (!ReferenceEquals(value._obj, Oddball.TheHole)) Unsafe.Add(ref window, i) = value;
+                Unsafe.Add(ref window, i) = ReferenceEquals(value._obj, Oddball.TheHole) ? default : value;
             }
         }
         else if (elements is FixedDoubleArray doubles)
         {
             for (int i = 0; i < length; i++)
             {
-                if (!doubles.IsTheHole(i)) Unsafe.Add(ref window, i) = JSValue.FromNumber(doubles.GetScalar(i));
+                Unsafe.Add(ref window, i) = doubles.IsTheHole(i) ? default : JSValue.FromNumber(doubles.GetScalar(i));
             }
         }
         isolate.RegisterStackTop = windowStart + length;
@@ -191,33 +191,37 @@ internal static class InterpreterInlineCalls
 
         ref JSValue stack0 = ref MemoryMarshal.GetArrayDataReference(stack);
         ref JSValue fpRef = ref Unsafe.Add(ref stack0, fp);
-        Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset) = receiver;
+        // The trampoline fills the register file with undefined. The stack
+        // above its top is undefined except below RegisterStackDirtyEnd, where
+        // frames returned from inline left their values (PopFrame).
+        int dirtyEnd = isolate.RegisterStackDirtyEnd;
+        if (fp < dirtyEnd) MemoryMarshal.CreateSpan(ref fpRef, (end < dirtyEnd ? end : dirtyEnd) - fp).Clear();
+        Debug.Assert(MemoryMarshal.CreateSpan(ref fpRef, registerCount).IndexOfAnyExcept(default(JSValue)) < 0);
+
+        // Reference stores cost a GC write barrier each. The parameters and
+        // fixed slots may still hold the previous frame's values at this depth
+        // (often the same closure, context and feedback vector, the same
+        // receiver, number arguments): StoreSlot skips an unchanged reference.
+        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset), receiver);
         if (argsStart >= 0)
         {
             ref JSValue src = ref Unsafe.Add(ref stack0, argsStart);
-            for (int i = 0; i < argc; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = Unsafe.Add(ref src, i);
+            for (int i = 0; i < argc; i++) StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i), Unsafe.Add(ref src, i));
         }
         else
         {
-            Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset) = arg0;
-            Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - 1) = arg1;
+            StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset), arg0);
+            StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - 1), arg1);
         }
         // Missing arguments are undefined (V8's argument adaption).
-        for (int i = argc; i < paramSlots; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = default;
+        for (int i = argc; i < paramSlots; i++) StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i), default);
 
-        // Reference stores cost a GC write barrier each: the ones whose value
-        // is often unchanged (a call between functions of the same context, a
-        // call of the same function at the same depth) compare first.
         Context context = function.Context;
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
-        Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset) = context;
-        Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset) = function;
+        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset), context);
+        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset), function);
         // The argument count slot (fp - 4) is not read in V8Sharp: frames keep
         // the count in their record, so it is not written (a reference store).
-
-        // The trampoline fills the register file with undefined: the register
-        // stack above its top is always clear (released slots are cleared).
-        Debug.Assert(MemoryMarshal.CreateSpan(ref fpRef, registerCount).IndexOfAnyExcept(default(JSValue)) < 0);
         if (isConstruct)
         {
             Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
@@ -225,8 +229,8 @@ internal static class InterpreterInlineCalls
         }
 
         FeedbackVector? feedbackVector = InterpreterExecution.FeedbackVectorOnEntry(isolate, function);
-        Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset) =
-            feedbackVector is null ? JSValue.Undefined : feedbackVector;
+        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset),
+            feedbackVector is null ? JSValue.Undefined : feedbackVector);
 
         int depth = isolate.InterpreterFrameDepth;
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
@@ -253,6 +257,17 @@ internal static class InterpreterInlineCalls
         st.Fp = fp;
         st.FrameIndex = depth;
         st.Argc = argc;
+    }
+
+    /// <summary>
+    /// A register stack store that skips the reference part when the slot
+    /// already holds the same object or tag (InterpreterExecution.StoreRegister).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static void StoreSlot(ref JSValue slot, JSValue value)
+    {
+        if (!ReferenceEquals(slot._obj, value._obj)) Unsafe.AsRef(in slot._obj) = value._obj;
+        Unsafe.AsRef(in slot._num) = value._num;
     }
 
     /// <summary>
@@ -321,7 +336,11 @@ internal static class InterpreterInlineCalls
         record.ReturnPc = 0;
         record.RegisterStart = 0;
         isolate.InterpreterFrameDepth = st.FrameIndex;
-        isolate.ReleaseRegisters(start);
+        // The frame's slots are not cleared: they stay below
+        // RegisterStackDirtyEnd for the next call at this depth (PushFrameCore).
+        int top = isolate.RegisterStackTop;
+        if (top > isolate.RegisterStackDirtyEnd) isolate.RegisterStackDirtyEnd = top;
+        isolate.RegisterStackTop = start;
         JSValue[] stack = isolate.RegisterStack;
 
         int callerIndex = st.FrameIndex - 1;

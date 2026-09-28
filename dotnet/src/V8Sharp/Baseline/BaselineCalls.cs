@@ -170,7 +170,7 @@ public static class BaselineCalls
         finally
         {
             isolate.PopFramesTo(depth);
-            isolate.ReleaseRegisters(start);
+            isolate.ReleaseRegistersAndDirty(start);
             isolate.Context = savedContext;
         }
     }

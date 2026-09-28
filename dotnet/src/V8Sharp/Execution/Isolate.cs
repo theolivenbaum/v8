@@ -227,6 +227,31 @@ public sealed partial class Isolate
         RegisterStackTop = start;
     }
 
+    /// <summary>
+    /// Every register stack slot at or above max(RegisterStackTop,
+    /// RegisterStackDirtyEnd) is undefined. Below the mark, slots above the top
+    /// may still hold the values of frames the dispatch loop returned from
+    /// (InterpreterInlineCalls.PopFrame does not clear them): the next call at
+    /// the same depth then finds its closure, context, feedback vector and
+    /// often its receiver and argument tags already in place and skips those
+    /// stores and their GC write barriers. Whoever allocates a register file
+    /// in that range clears it (V8's trampoline fills it with undefined).
+    /// </summary>
+    public int RegisterStackDirtyEnd;
+
+    /// <summary>
+    /// Releases register slots down to <paramref name="start"/> and clears the
+    /// dirty range above them: the stack at or above <paramref name="start"/>
+    /// is then entirely undefined.
+    /// </summary>
+    public void ReleaseRegistersAndDirty(int start)
+    {
+        int end = Math.Max(RegisterStackTop, RegisterStackDirtyEnd);
+        if (end > start) RegisterStack.AsSpan(start, end - start).Clear();
+        RegisterStackTop = start;
+        if (RegisterStackDirtyEnd > start) RegisterStackDirtyEnd = start;
+    }
+
     // --- lazy compilation ------------------------------------------------------
 
     /// <summary>Compiler::Compile for a lazy function: true when the function is (now) compiled.</summary>

@@ -157,7 +157,8 @@ public static partial class InterpreterExecution
         finally
         {
             isolate.PopFramesTo(depth);
-            isolate.ReleaseRegisters(start);
+            // Also the values inline frames of this loop left above the top.
+            isolate.ReleaseRegistersAndDirty(start);
             isolate.Context = savedContext;
         }
     }
