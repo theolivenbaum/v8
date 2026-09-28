@@ -59,6 +59,13 @@ public sealed class LoadIC : IC
                     // here: an own field, and a constant on the prototype chain (methods).
                     if (handler.OwnFieldIndex >= 0) return Unsafe.As<JSObject>(r).FieldAt(handler.OwnFieldIndex);
                     if (handler.IsPrototypeConstant && handler.IsValid) return handler.Data;
+                    if (handler.PrototypeFieldIndex >= 0 && handler.IsValid)
+                    {
+                        // HandleLoadICProtoHandler for a field of the holder: the
+                        // validity cell guards the chain, so the holder's map too.
+                        JSValue value = Unsafe.As<JSObject>(handler.Holder!).FieldAt(handler.PrototypeFieldIndex);
+                        if (!ReferenceEquals(value._obj, Oddball.Uninitialized)) return value;
+                    }
                 }
             }
         }

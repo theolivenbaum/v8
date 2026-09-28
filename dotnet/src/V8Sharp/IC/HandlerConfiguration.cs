@@ -89,6 +89,13 @@ public sealed class LoadHandler : HeapObject
     public readonly bool IsPrototypeConstant;
 
     /// <summary>
+    /// The field index of a kField handler for a holder on the prototype chain
+    /// that needs no lookup on the start object, else -1 (methods of prototypes
+    /// that were dictionary-mode are fields, not constants).
+    /// </summary>
+    public readonly int PrototypeFieldIndex;
+
+    /// <summary>
     /// A kElement handler for a fast elements kind: 1 for Smi and object
     /// elements (a FixedArray), 2 for double elements, else 0. The interpreter's
     /// GetKeyedProperty loads in-bounds non-hole elements of these inline.
@@ -111,6 +118,7 @@ public sealed class LoadHandler : HeapObject
         ElementsKind = elementsKind;
         OwnFieldIndex = kind == Kind.kField && holder is null ? fieldIndex : -1;
         IsPrototypeConstant = kind == Kind.kConstantFromPrototype && !lookupOnLookupStartObject;
+        PrototypeFieldIndex = kind == Kind.kField && holder is not null && !lookupOnLookupStartObject ? fieldIndex : -1;
         FastElementsMode = kind == Kind.kElement && ElementsKinds.IsFastElementsKind(elementsKind)
             ? ElementsKinds.IsDoubleElementsKind(elementsKind) ? (byte)2 : (byte)1
             : (byte)0;
