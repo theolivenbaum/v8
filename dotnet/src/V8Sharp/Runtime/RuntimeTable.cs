@@ -33,6 +33,7 @@ public static partial class RuntimeTable
         RegisterIntrinsics();
         RegisterTypedArray();
         RegisterDisposableStack();
+        RegisterBuiltinsTest();
 
         // %_Foo uses Foo's entry when it is not an interpreter intrinsic.
         ReadOnlySpan<RuntimeFunction> all = Runtime.AllFunctions;

@@ -327,6 +327,15 @@ Bootstrapper
   the script) and never returns "" for opaque origins (not modelled).
   getThis returns undefined for a receiver that is still the hole.
 - Error.isError has no API-wrapper (DOMException) case.
+- %GetUndetectable builds the instance of an ObjectTemplate with a call
+  handler as V8 does (callable map, API function constructor, called through
+  CALL_AS_FUNCTION_DELEGATE), but its prototype is Object.prototype instead of
+  the template function's own prototype object.
+- ShadowRealm: the realm's native context does not get V8's
+  shadow_realm_scope_info. importValue has no host module loader behind it
+  (V8Sharp has no dynamic import yet), so the inner promise always rejects
+  with V8's kUnsupported error (what V8 does without a host callback) and the
+  ExportGetter (ShadowRealmImportValueFulfilled) is not created.
 - The global parseInt/parseFloat are Number.parseInt/parseFloat (one
   function, as in V8); their builtins (NumberParseInt, NumberParseFloat) are
   registered by the global functions' area.
@@ -386,11 +395,16 @@ Bootstrapper
   test262.status) is not modelled. simdutf is not in the checkout; the model
   is fitted to the oracle.
 - Atomics: element operations use `Interlocked`/`Volatile` on the managed
-  array (8- and 16-bit read-modify-write as compare-exchange loops). The
-  isolate always allows Atomics.wait (V8's default; there is no
-  allow_atomics_wait setting). FutexEmulation keeps synchronous waiters only:
-  Atomics.waitAsync returns its synchronous results ("not-equal", immediate
-  "timed-out") and throws NotImplementedException where it would suspend.
+  array (8- and 16-bit read-modify-write as compare-exchange loops).
+  `Isolate.AllowAtomicsWait` (d8's --no-can-block, %SetAllowAtomicsWait) is
+  V8's allow_atomics_wait. FutexEmulation keeps one managed wait list for sync
+  and async waiters; a woken async waiter's promise is resolved by a task per
+  waiter (V8 batches the waiters of an isolate into one
+  ResolveAsyncWaiterPromisesTask; the order is the same), and timeouts are
+  delayed tasks on the isolate's foreground runner
+  (`Isolate.PostNonNestableDelayedTask`, which `RunPendingTasks` waits for
+  when nothing else is pending, as d8's message loop does). Waiters of dead
+  isolates or contexts are not cleaned up (no IsolateDeinit hook).
 - Array.fromAsync is not registered (needs async functions and promises).
 
 ## Builtins: Number, Math, BigInt, JSON, Date
