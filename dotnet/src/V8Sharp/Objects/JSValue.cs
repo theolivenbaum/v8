@@ -105,7 +105,20 @@ public readonly struct JSValue : IEquatable<JSValue>
     /// <summary>True for heap objects (anything that is neither undefined nor a number).</summary>
     public bool IsHeapObject => _obj is not null && !ReferenceEquals(_obj, NumberTag.Instance);
 
-    public bool IsString => _obj is JSString;
+    // An instance-type range check: `is JSString` of an abstract class is a
+    // call to the runtime's cast helper.
+    public bool IsString
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _obj is { } o && o.InstanceType <= InstanceTypeChecks.LastString;
+    }
+
+    /// <summary>The string, or null for anything else (a cheap `is JSString`).</summary>
+    public JSString? StringOrNull
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _obj is { } o && o.InstanceType <= InstanceTypeChecks.LastString ? Unsafe.As<JSString>(o) : null;
+    }
     public bool IsSymbol => _obj is Symbol;
     public bool IsName => _obj is Name;
     public bool IsBigInt => _obj is BigInt;

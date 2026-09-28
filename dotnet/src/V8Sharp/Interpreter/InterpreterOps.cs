@@ -248,16 +248,10 @@ public static class InterpreterOps
     /// <summary>Add with feedback for everything but two numbers (strings, BigInts, objects).</summary>
     public static JSValue AddSlow(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
     {
-        if (lhs.HeapObjectOrNull is JSString ls && rhs.HeapObjectOrNull is JSString rs)
+        if (lhs.StringOrNull is JSString ls && rhs.StringOrNull is JSString rs)
         {
             UpdateBinaryFeedback(ref feedback, BOF.TypeIndex.String);
             return StringAdd(isolate, ls, rs);
-        }
-        if (lhs.HeapObjectOrNull is BigInt lb && rhs.HeapObjectOrNull is BigInt rb)
-        {
-            UpdateBinaryFeedback(ref feedback,
-                BigIntOperations.FitsInInt64(lb) && BigIntOperations.FitsInInt64(rb) ? BOF.TypeIndex.BigInt64 : BOF.TypeIndex.BigInt);
-            return BigIntOperations.Add(isolate, lb, rb);
         }
         bool lhsOddballOrNumber = lhs.IsNumber || lhs.IsOddball || lhs.IsUndefined;
         bool rhsOddballOrNumber = rhs.IsNumber || rhs.IsOddball || rhs.IsUndefined;
@@ -284,7 +278,7 @@ public static class InterpreterOps
     public static JSValue Add(Isolate isolate, JSValue lhs, JSValue rhs)
     {
         if (lhs.IsNumber && rhs.IsNumber) return JSValue.FromNumber(lhs.Number + rhs.Number);
-        if (lhs.HeapObjectOrNull is JSString ls0 && rhs.HeapObjectOrNull is JSString rs0) return StringAdd(isolate, ls0, rs0);
+        if (lhs.StringOrNull is JSString ls0 && rhs.StringOrNull is JSString rs0) return StringAdd(isolate, ls0, rs0);
         JSValue l = ObjectOps.ToPrimitive(isolate, lhs);
         JSValue r = ObjectOps.ToPrimitive(isolate, rhs);
         if (l.IsString || r.IsString)
@@ -319,7 +313,7 @@ public static class InterpreterOps
     {
         JSValue result;
         BOF.TypeIndex type;
-        if (lhs.HeapObjectOrNull is JSString ls && rhs.HeapObjectOrNull is JSString rs)
+        if (lhs.StringOrNull is JSString ls && rhs.StringOrNull is JSString rs)
         {
             result = isolate.Factory.InternalizeString(StringAdd(isolate, ls, rs).As<JSString>());
             type = BOF.TypeIndex.String;
@@ -329,7 +323,7 @@ public static class InterpreterOps
             byte dummy = 0;
             result = AddSlow(isolate, lhs, rhs, ref dummy);
             type = (BOF.TypeIndex)dummy;
-            if (result.HeapObjectOrNull is JSString s) result = isolate.Factory.InternalizeString(s);
+            if (result.StringOrNull is JSString s) result = isolate.Factory.InternalizeString(s);
         }
         if (fv is not null)
         {

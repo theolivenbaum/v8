@@ -97,7 +97,7 @@ public static class BuiltinFastPaths
                 case Builtin.StringPrototypeCharCodeAt:
                 case Builtin.StringPrototypeCharAt:
                 case Builtin.StringPrototypeCodePointAt:
-                    if (receiver._obj is JSString s)
+                    if (receiver.StringOrNull is JSString s)
                     {
                         // GenerateStringAt with a Smi position.
                         int index = (int)x;

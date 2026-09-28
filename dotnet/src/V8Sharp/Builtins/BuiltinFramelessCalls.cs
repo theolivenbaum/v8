@@ -95,7 +95,7 @@ public static partial class BuiltinRegistry
             case FramelessCondition.PrimitiveArguments:
                 break;
             case FramelessCondition.StringReceiver:
-                if (receiver._obj is not JSString) return false;
+                if (!receiver.IsString) return false;
                 break;
             case FramelessCondition.PackedArrayReceiverAnySearch:
             case FramelessCondition.PackedArrayReceiver:
@@ -125,6 +125,6 @@ public static partial class BuiltinRegistry
     static bool IsPrimitiveWithoutSideEffects(JSValue value)
     {
         HeapObject? o = value._obj;
-        return o is null || ReferenceEquals(o, NumberTag.Instance) || o is JSString || o is Oddball;
+        return o is null || ReferenceEquals(o, NumberTag.Instance) || o.IsString || o is Oddball;
     }
 }

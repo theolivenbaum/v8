@@ -494,7 +494,7 @@ public static class ObjectOps
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static JSString ToString(Isolate isolate, JSValue input)
     {
-        if (input.HeapObjectOrNull is JSString s) return s;
+        if (input.StringOrNull is JSString s) return s;
         return ConvertToString(isolate, input);
     }
 
@@ -521,7 +521,7 @@ public static class ObjectOps
             input = JSReceiver.ToPrimitive(isolate, (JSReceiver)obj, ToPrimitiveHint.String);
             // The previous isString() check happened in Object::ToString and thus we
             // put it at the end of the loop in this helper.
-            if (input.HeapObjectOrNull is JSString str) return str;
+            if (input.StringOrNull is JSString str) return str;
         }
     }
 
@@ -653,16 +653,16 @@ public static class ObjectOps
         // ES6 section 7.2.11 Abstract Relational Comparison step 3 and 4.
         x = ToPrimitive(isolate, x, ToPrimitiveHint.Number);
         y = ToPrimitive(isolate, y, ToPrimitiveHint.Number);
-        if (x.HeapObjectOrNull is JSString xs && y.HeapObjectOrNull is JSString ys)
+        if (x.StringOrNull is JSString xs && y.StringOrNull is JSString ys)
         {
             // ES6 section 7.2.11 Abstract Relational Comparison step 5.
             return JSString.Compare(xs, ys);
         }
-        if (x.HeapObjectOrNull is BigInt xb && y.HeapObjectOrNull is JSString ys2)
+        if (x.HeapObjectOrNull is BigInt xb && y.StringOrNull is JSString ys2)
         {
             return BigInt.CompareToString(isolate, xb, ys2);
         }
-        if (x.HeapObjectOrNull is JSString xs2 && y.HeapObjectOrNull is BigInt yb)
+        if (x.StringOrNull is JSString xs2 && y.HeapObjectOrNull is BigInt yb)
         {
             return Reverse(BigInt.CompareToString(isolate, yb, xs2));
         }
@@ -689,7 +689,7 @@ public static class ObjectOps
             {
                 if (y.IsNumber) return StrictNumberEquals(x.Number, y.Number);
                 if (y.IsBoolean) return StrictNumberEquals(x.Number, y.IsTrue ? 1 : 0);
-                if (y.HeapObjectOrNull is JSString ys) return StrictNumberEquals(x.Number, JSString.ToNumber(ys));
+                if (y.StringOrNull is JSString ys) return StrictNumberEquals(x.Number, JSString.ToNumber(ys));
                 if (y.HeapObjectOrNull is BigInt yb) return BigInt.EqualToNumber(yb, x);
                 if (y.HeapObjectOrNull is JSReceiver yr)
                 {
@@ -700,9 +700,9 @@ public static class ObjectOps
                     return false;
                 }
             }
-            else if (x.HeapObjectOrNull is JSString xs)
+            else if (x.StringOrNull is JSString xs)
             {
-                if (y.HeapObjectOrNull is JSString ys) return JSString.Equals(xs, ys);
+                if (y.StringOrNull is JSString ys) return JSString.Equals(xs, ys);
                 if (y.IsNumber) return StrictNumberEquals(JSString.ToNumber(xs), y.Number);
                 if (y.IsBoolean) return StrictNumberEquals(JSString.ToNumber(xs), y.IsTrue ? 1 : 0);
                 if (y.HeapObjectOrNull is BigInt yb) return BigInt.EqualToString(isolate, yb, xs);
@@ -720,7 +720,7 @@ public static class ObjectOps
                 double xn = x.IsTrue ? 1 : 0;
                 if (y.IsOddball || y.IsUndefined) return x.IsIdenticalTo(y);
                 if (y.IsNumber) return StrictNumberEquals(xn, y.Number);
-                if (y.HeapObjectOrNull is JSString ys) return StrictNumberEquals(xn, JSString.ToNumber(ys));
+                if (y.StringOrNull is JSString ys) return StrictNumberEquals(xn, JSString.ToNumber(ys));
                 if (y.HeapObjectOrNull is BigInt yb) return BigInt.EqualToNumber(yb, JSValue.FromNumber(xn));
                 if (y.HeapObjectOrNull is JSReceiver yr)
                 {
@@ -781,7 +781,7 @@ public static class ObjectOps
             if (!that.IsNumber) return false;
             return StrictNumberEquals(obj.Number, that.Number);
         }
-        if (obj.HeapObjectOrNull is JSString s)
+        if (obj.StringOrNull is JSString s)
         {
             if (that.HeapObjectOrNull is not JSString t) return false;
             return JSString.Equals(s, t);
@@ -799,7 +799,7 @@ public static class ObjectOps
     {
         if (other.IsIdenticalTo(obj)) return true;
         if (obj.IsNumber && other.IsNumber) return SameNumberValue(obj.Number, other.Number);
-        if (obj.HeapObjectOrNull is JSString s && other.HeapObjectOrNull is JSString t) return JSString.Equals(s, t);
+        if (obj.StringOrNull is JSString s && other.StringOrNull is JSString t) return JSString.Equals(s, t);
         if (obj.HeapObjectOrNull is BigInt b && other.HeapObjectOrNull is BigInt c) return BigInt.EqualToBigInt(b, c);
         return false;
     }
@@ -815,7 +815,7 @@ public static class ObjectOps
             // +0 == -0 is true
             return thisValue == otherValue || (double.IsNaN(thisValue) && double.IsNaN(otherValue));
         }
-        if (obj.HeapObjectOrNull is JSString s && other.HeapObjectOrNull is JSString t) return JSString.Equals(s, t);
+        if (obj.StringOrNull is JSString s && other.StringOrNull is JSString t) return JSString.Equals(s, t);
         if (obj.HeapObjectOrNull is BigInt b && other.HeapObjectOrNull is BigInt c) return BigInt.EqualToBigInt(b, c);
         return false;
     }
@@ -850,7 +850,7 @@ public static class ObjectOps
     public static JSValue Add(Isolate isolate, JSValue lhs, JSValue rhs)
     {
         if (lhs.IsNumber && rhs.IsNumber) return JSValue.FromNumber(lhs.Number + rhs.Number);
-        if (lhs.HeapObjectOrNull is JSString ls && rhs.HeapObjectOrNull is JSString rs)
+        if (lhs.StringOrNull is JSString ls && rhs.StringOrNull is JSString rs)
         {
             return isolate.Factory.NewConsString(ls, rs);
         }
@@ -1620,7 +1620,7 @@ public static class ObjectOps
 
             var builder = new IncrementalStringBuilder(isolate);
             builder.AppendCStringLiteral("Symbol(");
-            if (symbol.Description.HeapObjectOrNull is JSString description)
+            if (symbol.Description.StringOrNull is JSString description)
             {
                 if (description.Length > 128)
                 {

@@ -68,7 +68,7 @@ public sealed class LoadIC : IC
                     }
                 }
             }
-            else if (o is JSString str)
+            else if (o is not null && o.IsString)
             {
                 // A String receiver: the monomorphic hits on the (native
                 // context's) String map, string.length and String.prototype
@@ -78,7 +78,7 @@ public sealed class LoadIC : IC
                 if (slots[slot]._obj is Map feedbackMap && slots[slot + 1]._obj is LoadHandler handler &&
                     ReferenceEquals(feedbackMap, isolate.Context?.NativeContext.ICPrimitiveMaps?.StringMap))
                 {
-                    if (handler.HandlerKind == LoadHandler.Kind.kStringLength) return JSValue.FromInt(str.Length);
+                    if (handler.HandlerKind == LoadHandler.Kind.kStringLength) return JSValue.FromInt(Unsafe.As<JSString>(o).Length);
                     if (handler.IsPrototypeConstant && handler.IsValid) return handler.Data;
                 }
             }
