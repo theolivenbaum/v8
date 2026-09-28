@@ -19,7 +19,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [ ] Baseline results of the oracle on mjsunit / test262 (expected-pass lists)
 - [ ] d8sharp shell: `print`, `load`, `read`, `quit`, `version`, `-e`, `--flags`,
       `%` natives, `d8.*` test helpers used by mjsunit
-- [ ] Golden bytecode test harness (`bytecode_expectations/*.golden`)
+- [x] Golden bytecode test harness (`bytecode_expectations/*.golden`): parser,
+      printer, assembler; waits for the BytecodeGenerator to compile snippets
 
 ## Phase 1: the unoptimized pipeline
 
@@ -59,8 +60,10 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [ ] conversions and operators (Object::ToNumber, ToPrimitive, Equals,
       StrictEquals, Compare, arithmetic helpers)
 - [ ] bootstrapper/Genesis: native context, intrinsics in V8's install order
-- [ ] interpreter: bytecodes, operands, array builder/writer, register
-      optimizer, constant array builder, handler tables, control-flow builders
+- [x] interpreter: bytecodes, operands, array builder/writer, register
+      optimizer, constant array builder, handler tables, control-flow builders,
+      decoder, iterators, source-position table (292 tests; 100 golden files
+      round-trip). Open: embedded operation hints, feedback-kind checks.
 - [ ] bytecode generator (matches golden files)
 - [ ] feedback vectors and ICs (load/store/keyed/global/call/binary op/compare)
 - [ ] interpreter dispatch loop, generators, async functions
@@ -91,3 +94,11 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
   `oracle-deviations` file.
 - No Smi/HeapNumber distinction in `JSValue`; `IsSmi` is computed from the
   value (architecture.md section 3).
+- `Register` default value is r0, not V8's invalid register; use
+  `Register.InvalidValue()`.
+- Bytecode verifier (sandbox) not ported; `Disassemble` prints offsets, not
+  addresses.
+- TODO(merge) from the Ignition port: `InterpreterCommon.cs` duplicates Token,
+  LanguageMode and other shared enums; `RuntimeFunctionId` and
+  `NativeContextFields` move to the runtime/objects code; the constant pool is
+  `object[]` until heap constants exist.
