@@ -485,27 +485,39 @@ public class RegExpTest
 
     const int kNativeTotalRegisters = 16;
 
-    // NativeRegExpMacroAssembler::ExecuteForTesting, run through the bytecode
-    // interpreter: `captures` receives the output registers.
-    static int ExecuteNative(byte[] code, string input, int startOffset, int[]? captures,
+    // The MacroAssemblerNative* tests run on V8's native assembler
+    // (ArchRegExpMacroAssembler, here RegExpMacroAssemblerIL) and, as a second
+    // configuration, on the bytecode generator and the interpreter.
+    static RegExpMacroAssembler NewNativeAssembler(RegExpMacroAssembler.Mode mode, int registersToSave,
+        bool native) =>
+        native ? new RegExpMacroAssemblerIL(mode, registersToSave) : new RegExpBytecodeGenerator(mode);
+
+    static object GetNativeCode(RegExpMacroAssembler m, string source) => m.GetCode(source, RegExpFlags.None);
+
+    // NativeRegExpMacroAssembler::ExecuteForTesting: `captures` receives the
+    // output registers.
+    static int ExecuteNative(object code, string input, int startOffset, int[]? captures,
         int totalRegisters = kNativeTotalRegisters)
     {
+        if (code is RegExpILCode native) return native.Execute(input, startOffset, captures ?? []);
         // V8 passes a null capture array of size 0 to the native code; the
         // interpreter requires at least the two match registers.
-        return IrregexpInterpreter.MatchInternal(code, input, captures ?? new int[2], totalRegisters, startOffset,
-            RegExpEngine.kNoBacktrackLimit);
+        return IrregexpInterpreter.MatchInternal((byte[])code, input, captures ?? new int[2], totalRegisters,
+            startOffset, RegExpEngine.kNoBacktrackLimit);
     }
 
     static byte[] GetCode(RegExpMacroAssembler m, string source) => (byte[])m.GetCode(source, RegExpFlags.None);
 
-    [Fact]
-    public void MacroAssemblerNativeSuccess()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MacroAssemblerNativeSuccess(bool native)
     {
-        var m = new RegExpBytecodeGenerator(RegExpMacroAssembler.Mode.LATIN1);
+        var m = NewNativeAssembler(RegExpMacroAssembler.Mode.LATIN1, 4, native);
 
         m.Succeed();
 
-        byte[] code = GetCode(m, "");
+        object code = GetNativeCode(m, "");
 
         int[] captures = [42, 37, 87, 117];
         int result = ExecuteNative(code, "foofoo", 0, captures);
@@ -539,12 +551,14 @@ public class RegExpTest
         m.Fail();
     }
 
-    [Fact]
-    public void MacroAssemblerNativeSimple()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MacroAssemblerNativeSimple(bool native)
     {
-        var m = new RegExpBytecodeGenerator(RegExpMacroAssembler.Mode.LATIN1);
+        var m = NewNativeAssembler(RegExpMacroAssembler.Mode.LATIN1, 4, native);
         EmitSimpleFoo(m);
-        byte[] code = GetCode(m, "^foo");
+        object code = GetNativeCode(m, "^foo");
 
         int[] captures = [42, 37, 87, 117];
         int result = ExecuteNative(code, "foofoo", 0, captures);
@@ -560,12 +574,14 @@ public class RegExpTest
         Assert.Equal(IrregexpInterpreter.FAILURE, result);
     }
 
-    [Fact]
-    public void MacroAssemblerNativeSimpleUC16()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MacroAssemblerNativeSimpleUC16(bool native)
     {
-        var m = new RegExpBytecodeGenerator(RegExpMacroAssembler.Mode.UC16);
+        var m = NewNativeAssembler(RegExpMacroAssembler.Mode.UC16, 4, native);
         EmitSimpleFoo(m);
-        byte[] code = GetCode(m, "^foo");
+        object code = GetNativeCode(m, "^foo");
 
         int[] captures = [42, 37, 87, 117];
         // input_data = {'f', 'o', 'o', 'f', 'o', 0x2603}
@@ -582,10 +598,12 @@ public class RegExpTest
         Assert.Equal(IrregexpInterpreter.FAILURE, result);
     }
 
-    [Fact]
-    public void MacroAssemblerNativeBacktrack()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MacroAssemblerNativeBacktrack(bool native)
     {
-        var m = new RegExpBytecodeGenerator(RegExpMacroAssembler.Mode.LATIN1);
+        var m = NewNativeAssembler(RegExpMacroAssembler.Mode.LATIN1, 0, native);
 
         Label fail = new();
         Label backtrack = new();
@@ -598,7 +616,7 @@ public class RegExpTest
         m.BindJumpTarget(backtrack);
         m.Fail();
 
-        byte[] code = GetCode(m, "..........");
+        object code = GetNativeCode(m, "..........");
 
         int result = ExecuteNative(code, "foofoo", 0, null);
 
@@ -623,12 +641,14 @@ public class RegExpTest
         m.Fail();
     }
 
-    [Fact]
-    public void MacroAssemblerNativeBackReferenceLATIN1()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MacroAssemblerNativeBackReferenceLATIN1(bool native)
     {
-        var m = new RegExpBytecodeGenerator(RegExpMacroAssembler.Mode.LATIN1);
+        var m = NewNativeAssembler(RegExpMacroAssembler.Mode.LATIN1, 4, native);
         EmitBackReference(m);
-        byte[] code = GetCode(m, "^(..)..\u0001");
+        object code = GetNativeCode(m, "^(..)..\u0001");
 
         int[] output = new int[4];
         int result = ExecuteNative(code, "fooofo", 0, output);
@@ -640,12 +660,14 @@ public class RegExpTest
         Assert.Equal(-1, output[3]);
     }
 
-    [Fact]
-    public void MacroAssemblerNativeBackReferenceUC16()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MacroAssemblerNativeBackReferenceUC16(bool native)
     {
-        var m = new RegExpBytecodeGenerator(RegExpMacroAssembler.Mode.UC16);
+        var m = NewNativeAssembler(RegExpMacroAssembler.Mode.UC16, 4, native);
         EmitBackReference(m);
-        byte[] code = GetCode(m, "^(..)..\u0001");
+        object code = GetNativeCode(m, "^(..)..\u0001");
 
         int[] output = new int[4];
         int result = ExecuteNative(code, "f\u2028oof\u2028", 0, output);
@@ -657,10 +679,12 @@ public class RegExpTest
         Assert.Equal(-1, output[3]);
     }
 
-    [Fact]
-    public void MacroAssemblernativeAtStart()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MacroAssemblernativeAtStart(bool native)
     {
-        var m = new RegExpBytecodeGenerator(RegExpMacroAssembler.Mode.LATIN1);
+        var m = NewNativeAssembler(RegExpMacroAssembler.Mode.LATIN1, 0, native);
 
         Label notAtStart = new(), newline = new(), fail = new();
         m.CheckNotAtStart(0, notAtStart);
@@ -683,7 +707,7 @@ public class RegExpTest
         m.CheckNotCharacter('b', fail);
         m.Succeed();
 
-        byte[] code = GetCode(m, "(^f|ob)");
+        object code = GetNativeCode(m, "(^f|ob)");
 
         int result = ExecuteNative(code, "foobar", 0, null);
 
@@ -694,10 +718,12 @@ public class RegExpTest
         Assert.Equal(IrregexpInterpreter.SUCCESS, result);
     }
 
-    [Fact]
-    public void MacroAssemblerNativeBackRefNoCase()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MacroAssemblerNativeBackRefNoCase(bool native)
     {
-        var m = new RegExpBytecodeGenerator(RegExpMacroAssembler.Mode.LATIN1);
+        var m = NewNativeAssembler(RegExpMacroAssembler.Mode.LATIN1, 4, native);
 
         Label fail = new(), succ = new();
 
@@ -721,7 +747,7 @@ public class RegExpTest
         m.WriteCurrentPositionToRegister(1, 0);
         m.Succeed();
 
-        byte[] code = GetCode(m, "^(abc)\u0001\u0001(?!\u0001)...(?!\u0001)");
+        object code = GetNativeCode(m, "^(abc)\u0001\u0001(?!\u0001)...(?!\u0001)");
 
         int[] output = new int[4];
         int result = ExecuteNative(code, "aBcAbCABCxYzab", 0, output);
@@ -733,10 +759,12 @@ public class RegExpTest
         Assert.Equal(3, output[3]);
     }
 
-    [Fact]
-    public void MacroAssemblerNativeRegisters()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MacroAssemblerNativeRegisters(bool native)
     {
-        var m = new RegExpBytecodeGenerator(RegExpMacroAssembler.Mode.LATIN1);
+        var m = NewNativeAssembler(RegExpMacroAssembler.Mode.LATIN1, 6, native);
 
         const int out1 = 0, out2 = 1, out3 = 2, out4 = 3, out5 = 4, sp = 6, loopCnt = 7;
         var fail = new Label();
@@ -799,7 +827,7 @@ public class RegExpTest
         m.BindJumpTarget(fail);
         m.Fail();
 
-        byte[] code = GetCode(m, "<loop test>");
+        object code = GetNativeCode(m, "<loop test>");
 
         // String long enough for test (content doesn't matter).
         int[] output = new int[6];
@@ -814,17 +842,19 @@ public class RegExpTest
         Assert.Equal(-1, output[5]);
     }
 
-    [Fact]
-    public void MacroAssemblerStackOverflow()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MacroAssemblerStackOverflow(bool native)
     {
-        var m = new RegExpBytecodeGenerator(RegExpMacroAssembler.Mode.LATIN1);
+        var m = NewNativeAssembler(RegExpMacroAssembler.Mode.LATIN1, 0, native);
 
         var loop = new Label();
         m.Bind(loop);
         m.PushBacktrack(loop);
         m.GoTo(loop);
 
-        byte[] code = GetCode(m, "<stack overflow test>");
+        object code = GetNativeCode(m, "<stack overflow test>");
 
         // String long enough for test (content doesn't matter).
         int result = ExecuteNative(code, "dummy", 0, null);
@@ -832,10 +862,12 @@ public class RegExpTest
         Assert.Equal(IrregexpInterpreter.EXCEPTION, result);
     }
 
-    [Fact]
-    public void MacroAssemblerNativeLotsOfRegisters()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MacroAssemblerNativeLotsOfRegisters(bool native)
     {
-        var m = new RegExpBytecodeGenerator(RegExpMacroAssembler.Mode.LATIN1);
+        var m = NewNativeAssembler(RegExpMacroAssembler.Mode.LATIN1, 2, native);
 
         // At least 2048, to ensure the allocated space for registers
         // span one full page.
@@ -850,7 +882,7 @@ public class RegExpTest
         m.PopRegister(1);
         m.Succeed();
 
-        byte[] code = GetCode(m, "<huge register space test>");
+        object code = GetNativeCode(m, "<huge register space test>");
 
         int[] captures = new int[2];
         int result = ExecuteNative(code, "sample text", 0, captures, largeNumber + 1);
@@ -1717,14 +1749,28 @@ public class RegExpTest
     [Fact]
     public void UnicodePropertyEscapeCodeSize()
     {
-        CompiledRegExp re = RegExpEngine.Compile("\\p{L}\\p{L}\\p{L}", RegExpFlags.Unicode).RegExp!;
+        // FlagScope<bool> f(&v8_flags.regexp_tier_up, false).
+        CompiledRegExp re = RegExpEngine.Compile("\\p{L}\\p{L}\\p{L}", RegExpFlags.Unicode,
+            RegExpEngine.kNoBacktrackLimit, RegExpTierPolicy.NativeOnly).RegExp!;
         int[] regs = new int[re.RegistersPerMatch];
         re.Exec("\u200b", 0, regs);
 
         const int kMaxSize = 200 * 1024;
-        Assert.NotNull(re.Bytecode);
-        // On x64, excessive inlining produced >250KB.
-        Assert.True(re.Bytecode!.Length < kMaxSize);
+        const bool kIsNotLatin1 = false;
+        if (re.GetBytecode(kIsNotLatin1) is { } bytecode)
+        {
+            // On x64, excessive inlining produced >250KB.
+            Assert.True(bytecode.Length < kMaxSize);
+        }
+        else if (re.GetNativeCode(kIsNotLatin1) is { } code)
+        {
+            // On x64, excessive inlining produced >360KB.
+            Assert.True(code.ILSize < kMaxSize);
+        }
+        else
+        {
+            Assert.Fail("UNREACHABLE");
+        }
     }
 
     [Fact(Skip = "Engine-level: needs isolate interrupts (RequestInterrupt) and native irregexp.")]

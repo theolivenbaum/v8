@@ -46,7 +46,19 @@ public class DifferentialTests
     }
 
     internal sealed record Mismatch(string File, string Pattern, string Flags, string Subject, string Oracle,
-        string Ours, string? KnownReason);
+        string Ours, string? KnownReason, string Tier);
+
+    // Every triple runs on each tier: native code (IL, V8's default
+    // --regexp-tier-up --regexp-tier-up-ticks=0), the bytecode interpreter
+    // (--regexp-interpret-all), and a two-tier pipeline that interprets the
+    // first execution and tiers up for the next ones (global and sticky
+    // patterns execute repeatedly).
+    static readonly (string Name, RegExpTierPolicy Policy)[] s_tiers =
+    [
+        ("native", RegExpTierPolicy.JitAll),
+        ("interpreter", RegExpTierPolicy.Interpreted),
+        ("tier-up", RegExpTierPolicy.TwoTier(1)),
+    ];
 
     // Files whose expectations changed between the oracle (V8 14.7) and this
     // tree: the port follows this tree's tests.
@@ -149,36 +161,51 @@ public class DifferentialTests
                         stats.OracleTimeouts++;
                         continue;
                     }
-                    string? ours;
-                    Volatile.Write(ref current, $"{relative}: /{Show(p.Source)}/{p.Flags} on \"{Show(subject)}\"\n");
-                    try
+                    bool skipPattern = false;
+                    bool syntaxMismatch = false;
+                    // The tier is irrelevant to the linear engine.
+                    int tierCount = forceLinear ? 1 : s_tiers.Length;
+                    for (int t = 0; t < tierCount; t++)
                     {
-                        ours = runner.RunOurs(p.Source, p.Flags, subject);
+                        (string tierName, RegExpTierPolicy tier) = s_tiers[t];
+                        string? ours;
+                        Volatile.Write(ref current,
+                            $"{relative} [{tierName}]: /{Show(p.Source)}/{p.Flags} on \"{Show(subject)}\"\n");
+                        try
+                        {
+                            ours = runner.RunOurs(p.Source, p.Flags, subject, tier);
+                        }
+                        catch (Exception e)
+                        {
+                            ours = "CRASH: " + e.GetType().Name + ": " + e.Message;
+                        }
+                        if (ours is null)
+                        {
+                            skipPattern = true;
+                            break;
+                        }
+                        if (oracle == ours)
+                        {
+                            stats.Agree++;
+                        }
+                        else
+                        {
+                            stats.Mismatches.Add(new Mismatch(relative, p.Source, p.Flags, subject, oracle, ours,
+                                KnownReason(runner, relative, p, subject, oracle), forceLinear ? "linear" : tierName));
+                            // A pattern that disagrees on syntax disagrees on every subject.
+                            if (oracle.StartsWith("E:", StringComparison.Ordinal) ||
+                                ours.StartsWith("E:", StringComparison.Ordinal))
+                            {
+                                syntaxMismatch = true;
+                            }
+                        }
                     }
-                    catch (Exception e)
-                    {
-                        ours = "CRASH: " + e.GetType().Name + ": " + e.Message;
-                    }
-                    if (ours is null)
+                    if (skipPattern)
                     {
                         stats.Skipped++;
                         break;
                     }
-                    if (oracle == ours)
-                    {
-                        stats.Agree++;
-                    }
-                    else
-                    {
-                        stats.Mismatches.Add(new Mismatch(relative, p.Source, p.Flags, subject, oracle, ours,
-                            KnownReason(runner, relative, p, subject, oracle)));
-                        // A pattern that disagrees on syntax disagrees on every subject.
-                        if (oracle.StartsWith("E:", StringComparison.Ordinal) ||
-                            ours.StartsWith("E:", StringComparison.Ordinal))
-                        {
-                            break;
-                        }
-                    }
+                    if (syntaxMismatch) break;
                 }
             }
         }
@@ -215,7 +242,7 @@ public class DifferentialTests
         foreach (Mismatch m in stats.Mismatches.OrderBy(m => m.KnownReason is not null))
         {
             if (m.KnownReason is not null) sb.Append($"[known: {m.KnownReason}] ");
-            sb.Append($"{m.File}: /{Show(m.Pattern)}/{m.Flags} on \"{Show(m.Subject)}\"\n");
+            sb.Append($"[{m.Tier}] {m.File}: /{Show(m.Pattern)}/{m.Flags} on \"{Show(m.Subject)}\"\n");
             sb.Append($"  oracle: {Show(m.Oracle)}\n");
             sb.Append($"  ours:   {Show(m.Ours)}\n");
         }
@@ -235,7 +262,7 @@ public class DifferentialTests
         List<Mismatch> unexplained = stats.Mismatches.Where(m => m.KnownReason is null).ToList();
         foreach (Mismatch m in unexplained.Take(20))
         {
-            sb.Append($"{m.File}: /{Show(m.Pattern)}/{m.Flags} on \"{Show(m.Subject)}\": oracle {Show(m.Oracle)} ours {Show(m.Ours)}\n");
+            sb.Append($"[{m.Tier}] {m.File}: /{Show(m.Pattern)}/{m.Flags} on \"{Show(m.Subject)}\": oracle {Show(m.Oracle)} ours {Show(m.Ours)}\n");
         }
         Assert.True(unexplained.Count == 0, $"{name}: {unexplained.Count} unexplained mismatches of {compared}\n{sb}");
     }

@@ -103,7 +103,7 @@ internal sealed class DifferentialRunner : IDisposable
     /// </summary>
     public bool ForceLinear { get; set; }
 
-    public string? RunOurs(string pattern, string flagsString, string subject)
+    public string? RunOurs(string pattern, string flagsString, string subject, RegExpTierPolicy? tier = null)
     {
         RegExpFlags? maybeFlags = RegExpFlagsExtensions.FromString(flagsString);
         // The 'l' flag needs --enable-experimental-regexp-engine in V8.
@@ -118,7 +118,7 @@ internal sealed class DifferentialRunner : IDisposable
             if (!linear.Succeeded) return null;
             return Execute(linear.RegExp!, pattern, flags, subject);
         }
-        RegExpCompileResult result = RegExpEngine.Compile(pattern, flags, OurBacktrackLimit);
+        RegExpCompileResult result = RegExpEngine.Compile(pattern, flags, OurBacktrackLimit, tier);
         if (!result.Succeeded)
         {
             return "E:Invalid regular expression: /" + pattern + "/" + flags.ToFlagString() + ": " +
