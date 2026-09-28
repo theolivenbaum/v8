@@ -3,12 +3,21 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>V8Sharp.TestRunner</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- Workers run V8 on a thread with a large stack; keep the GC out of the way. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="../../src/V8Sharp/V8Sharp.csproj" />
     <ProjectReference Include="../../src/V8Sharp.D8/V8Sharp.D8.csproj" />
     <ProjectReference Include="../../src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Shell/d8-shim.js" LogicalName="V8Sharp.TestRunner.Shell.d8-shim.js" />
+    <None Include="buildconfig/*.json" CopyToOutputDirectory="PreserveNewest" LinkBase="buildconfig" />
+    <InternalsVisibleTo Include="V8Sharp.Conformance.Tests" />
   </ItemGroup>
 
 </Project>
