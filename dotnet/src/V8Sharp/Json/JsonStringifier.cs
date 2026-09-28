@@ -834,8 +834,13 @@ public sealed class JsonStringifier
                 }
                 // A lone leading or trailing surrogate.
                 AppendCStringLiteral("\\u");
-                Span<char> hex = stackalloc char[8];
-                AppendChars(Conversions.DoubleToRadixStringView(c, 16, hex));
+                // A surrogate is always four lowercase hex digits (V8 uses
+                // DoubleToRadixCString(c, 16) here, which gives the same text).
+                const string HexDigits = "0123456789abcdef";
+                AppendCharacter(HexDigits[c >> 12]);
+                AppendCharacter(HexDigits[(c >> 8) & 0xF]);
+                AppendCharacter(HexDigits[(c >> 4) & 0xF]);
+                AppendCharacter(HexDigits[c & 0xF]);
             }
             else
             {
