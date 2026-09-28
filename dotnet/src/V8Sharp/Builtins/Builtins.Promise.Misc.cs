@@ -241,10 +241,9 @@ public static partial class PromiseBuiltins
         // 7. Return obj.
         // AllocatePromiseWithResolversResult.
         JSObject result = isolate.Factory.NewJSObjectFromMap(isolate.NativeContext.PromiseWithresolversResultMap);
-        JSValue[] fields = result.RawFields;
-        fields[0] = capability.Promise;
-        fields[1] = capability.Resolve;
-        fields[2] = capability.Reject;
+        result.InObjectPropertyRef(0) = capability.Promise;
+        result.InObjectPropertyRef(1) = capability.Resolve;
+        result.InObjectPropertyRef(2) = capability.Reject;
         return result;
     }
 }

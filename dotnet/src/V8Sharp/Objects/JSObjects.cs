@@ -20,8 +20,10 @@ public abstract partial class JSReceiver : HeapObject
     public Map Map;
 
     /// <summary>
-    /// Fast-mode field storage: in-object fields first, then out-of-object
-    /// fields (architecture.md section 5). Indexed by FieldIndex.PropertyIndex.
+    /// V8's PropertyArray: the out-of-object fast-mode fields. Ordinary objects
+    /// keep their in-object fields in object slots (JSObjects.InObject.cs);
+    /// other JSObject subclasses keep them at the start of this array
+    /// (architecture.md section 5). Indexed through FieldIndex.StorageIndex.
     /// </summary>
     internal JSValue[] _fields = EmptyFields;
 
@@ -73,9 +75,6 @@ public abstract partial class JSReceiver : HeapObject
 
     /// <summary>JSReceiver::SetProperties for dictionary storage.</summary>
     public void SetProperties(NameDictionary dictionary) => _dictionary = dictionary;
-
-    /// <summary>The raw fast-mode fields (V8's in-object fields plus PropertyArray).</summary>
-    public JSValue[] RawFields => _fields;
 
     /// <summary>JSReceiver::GetIdentityHash: the hash, or undefined if none was created.</summary>
     public JSValue GetIdentityHash() =>
@@ -132,7 +131,20 @@ public partial class JSObject : JSReceiver
     public JSObject(Map map) : base(map)
     {
         int inobject = map.GetInObjectProperties();
-        if (!map.IsDictionaryMap && inobject > 0) _fields = new JSValue[inobject];
+        if (inobject > 0)
+        {
+            // Ordinary objects with in-object properties are allocated with
+            // slots (NewWithInObjectSlots); only the other subclasses get here.
+            if (map.HasInObjectSlots) throw new InvalidOperationException("JSObject: map needs in-object slots");
+            if (!map.IsDictionaryMap) _fields = new JSValue[inobject];
+        }
+        Elements = map.GetInitialElements();
+    }
+
+    /// <summary>The base constructor of the classes with in-object slots.</summary>
+    private protected JSObject(Map map, bool inObjectSlots) : base(map)
+    {
+        Debug.Assert(inObjectSlots && map.HasInObjectSlots);
         Elements = map.GetInitialElements();
     }
 
@@ -148,10 +160,13 @@ public partial class JSObject : JSReceiver
     /// </summary>
     internal JSObject CloneShallow()
     {
-        if (GetType() == typeof(JSObject)) return new JSObject(this);
         if (this is JSArray array) return new JSArray(array);
-        return (JSObject)MemberwiseClone();
+        return CloneShallowCore();
     }
+
+    /// <summary>The class-specific part of CloneShallow (the classes with in-object slots override it).</summary>
+    internal virtual JSObject CloneShallowCore() =>
+        GetType() == typeof(JSObject) ? new JSObject(this) : (JSObject)MemberwiseClone();
 
     /// <summary>
     /// Factory::InitializeJSObjectFromMap for an existing object: resets the
@@ -160,7 +175,16 @@ public partial class JSObject : JSReceiver
     internal static void InitializeFromMap(JSObject obj, Map map)
     {
         int inobject = map.GetInObjectProperties();
-        obj._fields = !map.IsDictionaryMap && inobject > 0 ? new JSValue[inobject] : EmptyFields;
+        if (map.HasInObjectSlots)
+        {
+            if (inobject > obj.InObjectSlotCapacity) throw new InvalidOperationException("InitializeFromMap: instance too small");
+            obj.ClearInObjectSlots(obj.InObjectSlotCapacity, default);
+            obj._fields = EmptyFields;
+        }
+        else
+        {
+            obj._fields = !map.IsDictionaryMap && inobject > 0 ? new JSValue[inobject] : EmptyFields;
+        }
         obj._dictionary = map.IsDictionaryMap ? NameDictionary.New(NameDictionary.kInitialCapacity) : null;
         obj.Elements = map.GetInitialElements();
     }
@@ -220,11 +244,11 @@ public partial class JSObject : JSReceiver
 
     /// <summary>JSObject::RawFastPropertyAt.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public JSValue RawFastPropertyAt(FieldIndex index) => _fields[index.PropertyIndex];
+    public JSValue RawFastPropertyAt(FieldIndex index) => FieldAt(index.StorageIndex);
 
     /// <summary>JSObject::FastPropertyAtPut.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void FastPropertyAtPut(FieldIndex index, JSValue value) => _fields[index.PropertyIndex] = value;
+    public void FastPropertyAtPut(FieldIndex index, JSValue value) => FieldAt(index.StorageIndex) = value;
 
     /// <summary>
     /// JSObject::FastPropertyAt: numbers are unboxed values in V8Sharp, so no
@@ -268,14 +292,47 @@ public partial class JSObject : JSReceiver
         return obj.PropertyDictionary.ValueAt(dictIndex);
     }
 
-    /// <summary>Ensures the field storage can hold <paramref name="numberOfFields"/> fields.</summary>
-    internal void EnsureFieldCapacity(int numberOfFields)
+    /// <summary>
+    /// Grows the PropertyArray to at least <paramref name="length"/> entries
+    /// (V8 grows it by JSObject::kFieldsAdded when a transition runs out of space).
+    /// </summary>
+    internal void EnsurePropertyArrayLength(int length)
     {
-        if (_fields.Length >= numberOfFields) return;
-        int newLength = Math.Max(numberOfFields, _fields.Length + kFieldsAdded);
+        if (_fields.Length >= length) return;
+        int newLength = Math.Max(length, _fields.Length + kFieldsAdded);
         var newFields = new JSValue[newLength];
         _fields.AsSpan().CopyTo(newFields);
         _fields = newFields;
+    }
+
+    /// <summary>
+    /// The PropertyArray length <paramref name="map"/> needs for
+    /// <paramref name="numberOfFields"/> fields (in-object ones included).
+    /// </summary>
+    internal static int PropertyArrayLengthFor(Map map, int numberOfFields) =>
+        map.HasInObjectSlots ? Math.Max(0, numberOfFields - map.GetInObjectProperties()) : numberOfFields;
+
+    /// <summary>The length of the PropertyArray V8 would have (the out-of-object part).</summary>
+    public int OutOfObjectPropertyArrayLength =>
+        !HasFastProperties ? 0 : Map.HasInObjectSlots ? _fields.Length : Math.Max(0, _fields.Length - Map.GetInObjectProperties());
+
+    /// <summary>
+    /// Installs fast-mode fields laid out by property index (in-object fields
+    /// first, V8's field order) as the storage of <paramref name="map"/>.
+    /// </summary>
+    internal void SetFieldsByPropertyIndex(Map map, JSValue[] fields)
+    {
+        if (!map.HasInObjectSlots)
+        {
+            _fields = fields;
+            return;
+        }
+        int inobject = map.GetInObjectProperties();
+        Debug.Assert(inobject <= InObjectSlotCapacity);
+        int n = Math.Min(inobject, fields.Length);
+        for (int i = 0; i < n; i++) InObjectSlot(i) = fields[i];
+        for (int i = n; i < inobject; i++) InObjectSlot(i) = default;
+        _fields = fields.Length > inobject ? fields.AsSpan(inobject).ToArray() : EmptyFields;
     }
 }
 

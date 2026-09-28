@@ -39,12 +39,8 @@ public abstract class TestWithContext : IDisposable
     protected JSString MakeName(string prefix, uint index) =>
         factory.InternalizeString(prefix + index.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
-    /// <summary>
-    /// The length of V8's out-of-object PropertyArray. V8Sharp keeps in-object
-    /// and out-of-object fields in one array (architecture.md section 5).
-    /// </summary>
-    protected static int PropertyArrayLength(JSObject obj) =>
-        obj.HasFastProperties ? Math.Max(0, obj.RawFields.Length - obj.Map.GetInObjectProperties()) : 0;
+    /// <summary>The length of V8's out-of-object PropertyArray.</summary>
+    protected static int PropertyArrayLength(JSObject obj) => obj.OutOfObjectPropertyArrayLength;
 
     /// <summary>The EQUALS helper of the object tests: identity or Object::Equals.</summary>
     protected bool EQUALS(JSValue left, JSValue right) =>

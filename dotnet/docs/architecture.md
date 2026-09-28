@@ -95,7 +95,7 @@ HeapObject                 abstract; readonly InstanceType field (switchable)
  │  FeedbackCell, ClosureFeedbackCellArray, AccessorPair, PropertyCell ...
  └─ JSReceiver             Map map
      ├─ JSProxy
-     └─ JSObject           JSValue[] properties (fast), Elements elements
+     └─ JSObject           in-object slots (JSObjectInObjectN), PropertyArray, Elements
          ├─ JSFunction     SharedFunctionInfo, Context, FeedbackCell, code (tier entry)
          ├─ JSArray, JSPrimitiveWrapper, JSDate, JSRegExp, JSError-like (plain JSObject),
          ├─ JSArrayBuffer, JSTypedArray, JSDataView, JSMap/Set/WeakMap/WeakSet,
@@ -121,10 +121,23 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   undetectable, has named interceptor...), `ElementsKind`, a
   `DescriptorArray` (keys in insertion order + `PropertyDetails`), and
   transitions to child maps.
-- Fast-mode properties live in `JSObject.PropertyArray` (`JSValue[]`),
-  indexed by the descriptor's field index. (V8's in-object vs out-of-object
-  split is a layout optimisation; there is only the one backing array, but
-  `FieldIndex` is kept so inline caches store (map, index) pairs as V8 does.)
+- Fast-mode properties are laid out as in V8: the map's
+  `GetInObjectProperties()` fields live in the object, the rest in a
+  PropertyArray (`JSValue[]`) that grows by `kFieldsAdded`. In-object counts
+  come from the instance size (`JSFunction::CalculateExpectedNofProperties`
+  plus slack for constructors, the literal's property count for object
+  literals) and in-object slack tracking (`Map::InobjectSlackTrackingStep`,
+  `MapUpdater::CompleteInobjectSlackTracking`) shrinks them after seven
+  constructions. A CLR object has a fixed size, so ordinary objects are
+  allocated from a small chain of classes (`JSObjectInObject4` ...
+  `JSObjectInObject256`) whose `[InlineArray]` segments are the slots, the
+  smallest that holds the map's in-object count; a larger class derives from
+  the smaller ones, so slot i is the same field in every object that has it
+  (`JSObject.InObjectSlot`, span indexing, no `unsafe`). Other JSObject
+  subclasses (arrays, functions, ...) keep their in-object fields at the
+  front of the PropertyArray. `FieldIndex` encodes V8's (in-object, index)
+  split plus `StorageIndex`, the physical location, which is what inline
+  caches store with the map (`JSObject.FieldAt`).
 - Adding a property follows/creates a transition; deleting (except the last
   added) or too many properties normalises to dictionary mode
   (`NameDictionary`, which keeps enumeration order), with V8's thresholds

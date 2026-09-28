@@ -48,7 +48,7 @@ public static class BuiltinsJson
         JSString flat = JSString.Flatten(isolate, jsonString);
         JsonParser.CheckRawJson(isolate, flat);
         var result = (JSRawJson)isolate.Factory.NewJSObjectFromMap(isolate.NativeContext.JSRawJsonMap);
-        result.RawFields[JSRawJson.kRawJsonInitialIndex] = flat;
+        result.InObjectPropertyRef(JSRawJson.kRawJsonInitialIndex) = flat;
         JSObject.SetIntegrityLevel(isolate, result, JSReceiver.IntegrityLevel.FROZEN, ShouldThrow.ThrowOnError);
         return result;
     }

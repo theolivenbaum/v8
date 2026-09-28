@@ -61,7 +61,7 @@ public sealed class StoreIC : IC
         {
             case StoreHandler.Kind.kField:
                 if (!FitsField(handler, value)) return false;
-                obj._fields[handler.FieldIndex] = handler.Representation.IsDouble ? CanonicalizeDouble(value) : value;
+                obj.FieldAt(handler.FieldIndex) = handler.Representation.IsDouble ? CanonicalizeDouble(value) : value;
                 return true;
             case StoreHandler.Kind.kTransitionToField:
                 return TryStoreTransition(obj, handler, value);
@@ -95,8 +95,9 @@ public sealed class StoreIC : IC
         if (transition.IsDeprecated || !handler.IsValid) return false;
         if (!FitsField(handler, value)) return false;
         int index = handler.FieldIndex;
-        if (index >= obj._fields.Length) obj.EnsureFieldCapacity(index + transition.UnusedPropertyFields() + 1);
-        obj._fields[index] = handler.Representation.IsDouble ? CanonicalizeDouble(value) : value;
+        int arrayIndex = index - JSObject.kPropertyArrayStorageBase;
+        if (arrayIndex >= obj._fields.Length) obj.EnsurePropertyArrayLength(arrayIndex + transition.UnusedPropertyFields() + 1);
+        obj.FieldAt(index) = handler.Representation.IsDouble ? CanonicalizeDouble(value) : value;
         obj.Map = transition;
         return true;
     }
@@ -178,7 +179,7 @@ public sealed class StoreIC : IC
             {
                 if (receiver._obj is not JSObject o) return false;
                 // A const field store succeeds only when the value does not change.
-                JSValue current = o._fields[handler.FieldIndex];
+                JSValue current = o.FieldAt(handler.FieldIndex);
                 if (current.IsNumber && value.IsNumber)
                 {
                     return BitConverter.DoubleToInt64Bits(current._num) == BitConverter.DoubleToInt64Bits(value._num);

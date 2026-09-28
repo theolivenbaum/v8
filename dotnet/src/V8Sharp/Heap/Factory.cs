@@ -375,6 +375,7 @@ public sealed partial class Factory(Isolate isolate)
         if (source.HasFastProperties)
         {
             // Array.Clone is a runtime call, like MemberwiseClone.
+            // (In-object slots were copied with the object.)
             clone._fields = source._fields.Length == 0 ? source._fields : source._fields.AsSpan().ToArray();
         }
         else

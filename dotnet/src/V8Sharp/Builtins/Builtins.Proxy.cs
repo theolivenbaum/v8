@@ -85,9 +85,8 @@ public static class BuiltinsProxy
     {
         Map map = isolate.NativeContext.ProxyRevocableResultMap;
         JSObject result = isolate.Factory.NewJSObjectFromMap(map);
-        JSValue[] fields = result.RawFields;
-        fields[0] = proxy;
-        fields[1] = revoke;
+        result.InObjectPropertyRef(0) = proxy;
+        result.InObjectPropertyRef(1) = revoke;
         return result;
     }
 

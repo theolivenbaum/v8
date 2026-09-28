@@ -33,7 +33,25 @@ public sealed class Map : HeapObject
     // ---- Fields ---------------------------------------------------------------
 
     /// <summary>The instance type of this map's instances (map->instance_type()).</summary>
-    public new InstanceType InstanceType;
+    public new InstanceType InstanceType
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _instanceType;
+        set
+        {
+            _instanceType = value;
+            HasInObjectSlots = JSObject.UsesInObjectSlots(value);
+        }
+    }
+
+    InstanceType _instanceType;
+
+    /// <summary>
+    /// Whether instances keep their in-object properties in object slots
+    /// (ordinary objects, JSObjects.InObject.cs) rather than at the start of
+    /// the PropertyArray. Derived from the instance type.
+    /// </summary>
+    public bool HasInObjectSlots { get; private set; }
 
     int _instanceSizeInWords;
     int _inobjectPropertiesStartOrConstructorFunctionIndex;

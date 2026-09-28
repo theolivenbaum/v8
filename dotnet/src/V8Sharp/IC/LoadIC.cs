@@ -57,7 +57,7 @@ public sealed class LoadIC : IC
                 {
                     // The hits of AccessorAssembler::HandleLoadICHandlerCase handled
                     // here: an own field, and a constant on the prototype chain (methods).
-                    if (handler.OwnFieldIndex >= 0) return r._fields[handler.OwnFieldIndex];
+                    if (handler.OwnFieldIndex >= 0) return Unsafe.As<JSObject>(r).FieldAt(handler.OwnFieldIndex);
                     if (handler.IsPrototypeConstant && handler.IsValid) return handler.Data;
                 }
             }
@@ -171,8 +171,8 @@ public sealed class LoadIC : IC
         {
             case LoadHandler.Kind.kField:
             {
-                JSReceiver target = holder ?? receiver.As<JSReceiver>();
-                result = target._fields[handler.FieldIndex];
+                JSObject target = (JSObject)(holder ?? receiver.As<JSReceiver>());
+                result = target.FieldAt(handler.FieldIndex);
                 if (ReferenceEquals(result.HeapObjectOrNull, Oddball.Uninitialized)) return false;
                 return true;
             }
@@ -530,7 +530,7 @@ public sealed class LoadIC : IC
                             data: value);
                     }
                 }
-                return LoadHandler.LoadFromPrototype(_isolate, map, holder, LoadHandler.Kind.kField, field.PropertyIndex);
+                return LoadHandler.LoadFromPrototype(_isolate, map, holder, LoadHandler.Kind.kField, field.StorageIndex);
             }
 
             case LookupIterator.StateKind.TYPED_ARRAY_INDEX_NOT_FOUND:
@@ -732,7 +732,7 @@ public sealed class KeyedLoadIC : IC
                 if (details.Kind == PropertyKind.Data && details.Location == PropertyLocation.Field)
                 {
                     FieldIndex index = FieldIndex.ForDetails(map, details);
-                    JSValue value = jsObject._fields[index.PropertyIndex];
+                    JSValue value = jsObject.RawFastPropertyAt(index);
                     if (!ReferenceEquals(value.HeapObjectOrNull, Oddball.Uninitialized)) return value;
                 }
             }

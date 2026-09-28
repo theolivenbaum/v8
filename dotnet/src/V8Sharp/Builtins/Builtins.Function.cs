@@ -303,7 +303,7 @@ public static class BuiltinsFunction
         if (ReferenceEquals(map, nativeContext.SloppyArgumentsMap) || ReferenceEquals(map, nativeContext.StrictArgumentsMap))
         {
             // Try to extract the elements from a JSArgumentsObject with standard map.
-            JSValue lengthValue = obj.RawFields[JSArgumentsObject.kLengthIndex];
+            JSValue lengthValue = obj.InObjectPropertyRef(JSArgumentsObject.kLengthIndex);
             if (obj.Elements is not FixedArray argumentsElements || !lengthValue.IsSmi ||
                 (int)lengthValue.Number != argumentsElements.Length)
             {

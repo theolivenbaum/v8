@@ -405,7 +405,7 @@ public sealed class JsonStringifier
                 {
                     // Fast path: the object returned by JSON.rawJSON has its initial map
                     // intact.
-                    rawJson = (JSString)rawJsonObj.RawFields[JSRawJson.kRawJsonInitialIndex].Object;
+                    rawJson = (JSString)rawJsonObj.InObjectPropertyRef(JSRawJson.kRawJsonInitialIndex).Object;
                 }
                 else
                 {

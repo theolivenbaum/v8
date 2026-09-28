@@ -109,7 +109,7 @@ public static partial class IteratorBuiltins
         if (fastIteratorResultMap is not null && ReferenceEquals(iterResult.Map, fastIteratorResultMap))
         {
             // Fast iterator result case.
-            done = ((JSObject)iterResult).RawFields[kIteratorResultDoneIndex];
+            done = ((JSObject)iterResult).InObjectPropertyRef(kIteratorResultDoneIndex);
         }
         else
         {
@@ -124,7 +124,7 @@ public static partial class IteratorBuiltins
         if (fastIteratorResultMap is not null && ReferenceEquals(result.Map, fastIteratorResultMap))
         {
             // Fast iterator result case.
-            return ((JSObject)result).RawFields[kIteratorResultValueIndex];
+            return ((JSObject)result).InObjectPropertyRef(kIteratorResultValueIndex);
         }
         return JSReceiver.GetProperty(isolate, result, ReadOnlyRoots.value_string);
     }
@@ -161,9 +161,8 @@ public static partial class IteratorBuiltins
     public static JSObject CreateIterResultObject(Isolate isolate, JSValue value, bool done)
     {
         JSObject result = isolate.Factory.NewJSObjectFromMap(isolate.NativeContext.IteratorResultMap);
-        JSValue[] fields = result.RawFields;
-        fields[kIteratorResultValueIndex] = value;
-        fields[kIteratorResultDoneIndex] = JSValue.FromBoolean(done);
+        result.InObjectPropertyRef(kIteratorResultValueIndex) = value;
+        result.InObjectPropertyRef(kIteratorResultDoneIndex) = JSValue.FromBoolean(done);
         return result;
     }
 

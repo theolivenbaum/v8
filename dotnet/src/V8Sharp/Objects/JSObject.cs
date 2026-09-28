@@ -467,7 +467,7 @@ public partial class JSObject
                 {
                     throw new InvalidOperationException("AllocateForMap: functions are created by Factory.NewFunction");
                 }
-                return new JSObject(map);
+                return map.HasInObjectSlots ? NewWithInObjectSlots(map) : new JSObject(map);
         }
     }
 
@@ -732,9 +732,8 @@ public partial class JSObject
     // - First check whether the instance needs to be rewritten. If not, simply
     //   change the map.
     // - Otherwise, build the new field storage and copy every field into the
-    //   slot its new descriptor names. V8Sharp keeps in-object and out-of-object
-    //   fields in one array indexed by field index (architecture.md section 5),
-    //   and numbers are unboxed, so no HeapNumber boxes are allocated.
+    //   slot its new descriptor names. Numbers are unboxed, so no HeapNumber
+    //   boxes are allocated.
     static void MigrateFastToFast(Isolate isolate, JSObject obj, Map newMap)
     {
         Map oldMap = obj.Map;
@@ -759,12 +758,13 @@ public partial class JSObject
             // Make room for the new field (V8 grows the PropertyArray by
             // UnusedPropertyFields() + 1 when it has run out of space).
             FieldIndex index = FieldIndex.ForDetails(newMap, details);
-            if (index.PropertyIndex >= obj._fields.Length)
+            int arrayIndex = index.StorageIndex - kPropertyArrayStorageBase;
+            if (arrayIndex >= obj._fields.Length)
             {
-                obj.EnsureFieldCapacity(index.PropertyIndex + newMap.UnusedPropertyFields() + 1);
+                obj.EnsurePropertyArrayLength(arrayIndex + newMap.UnusedPropertyFields() + 1);
             }
             // Properly initialize newly added property.
-            obj._fields[index.PropertyIndex] = details.Representation.IsDouble
+            obj.FieldAt(index.StorageIndex) = details.Representation.IsDouble
                 ? JSValue.FromNumber(FixedDoubleArray.HoleNaN)
                 : JSValue.FromObject(Oddball.Uninitialized);
             obj.Map = newMap;
@@ -779,7 +779,10 @@ public partial class JSObject
         // converted to doubles.
         if (!oldMap.InstancesNeedRewriting(newMap, numberOfFields, inobject, unused, out _))
         {
-            if (obj._fields.Length < numberOfFields) obj.EnsureFieldCapacity(numberOfFields + unused);
+            if (obj._fields.Length < PropertyArrayLengthFor(newMap, numberOfFields))
+            {
+                obj.EnsurePropertyArrayLength(PropertyArrayLengthFor(newMap, numberOfFields + unused));
+            }
             obj.Map = newMap;
             return;
         }
@@ -841,7 +844,7 @@ public partial class JSObject
                 : JSValue.FromObject(Oddball.Uninitialized);
         }
 
-        obj._fields = newFields;
+        obj.SetFieldsByPropertyIndex(newMap, newFields);
         obj.Map = newMap;
     }
 
@@ -899,8 +902,16 @@ public partial class JSObject
         // Ensure that in-object space of slow-mode object does not contain random
         // garbage.
         int inobjectProperties = newMap.GetInObjectProperties();
-        obj._fields = inobjectProperties == 0 ? EmptyFields : new JSValue[inobjectProperties];
-        for (int i = 0; i < inobjectProperties; i++) obj._fields[i] = JSValue.Zero;
+        if (newMap.HasInObjectSlots)
+        {
+            obj.ClearInObjectSlots(obj.InObjectSlotCapacity, JSValue.Zero);
+            obj._fields = EmptyFields;
+        }
+        else
+        {
+            obj._fields = inobjectProperties == 0 ? EmptyFields : new JSValue[inobjectProperties];
+            for (int i = 0; i < inobjectProperties; i++) obj._fields[i] = JSValue.Zero;
+        }
     }
 
     /// <summary>JSObject::SetMapAndElements.</summary>
@@ -1009,7 +1020,7 @@ public partial class JSObject
             if (!details.Representation.IsDouble) continue;
             storage[details.FieldIndex] = JSValue.FromNumber(FixedDoubleArray.HoleNaN);
         }
-        obj._fields = storage;
+        obj.SetFieldsByPropertyIndex(map, storage);
         obj.Map = map;
     }
 
@@ -1243,7 +1254,7 @@ public partial class JSObject
             newMap.SetInObjectUnusedPropertyFields(inobjectProps);
             obj.Map = newMap;
             obj._dictionary = null;
-            obj._fields = inobjectProps == 0 ? EmptyFields : new JSValue[inobjectProps];
+            obj.SetFieldsByPropertyIndex(newMap, inobjectProps == 0 ? EmptyFields : new JSValue[inobjectProps]);
             return;
         }
 
@@ -1314,7 +1325,7 @@ public partial class JSObject
         // Transform the object.
         obj.Map = newMap;
         obj._dictionary = null;
-        obj._fields = fields;
+        obj.SetFieldsByPropertyIndex(newMap, fields);
     }
 
     /// <summary>JSObject::RequireSlowElements.</summary>

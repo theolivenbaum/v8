@@ -89,9 +89,8 @@ public static class InterpreterRuntime
     public static JSObject NewJSIteratorResult(Isolate isolate, JSValue value, bool done)
     {
         JSObject result = isolate.Factory.NewJSObjectFromMap(isolate.NativeContext.IteratorResultMap);
-        result.EnsureFieldCapacity(2);
-        result._fields[0] = value;
-        result._fields[1] = JSValue.FromBoolean(done);
+        result.InObjectPropertyRef(0) = value;
+        result.InObjectPropertyRef(1) = JSValue.FromBoolean(done);
         return result;
     }
 }

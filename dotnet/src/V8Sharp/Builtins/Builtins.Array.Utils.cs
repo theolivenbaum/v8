@@ -130,8 +130,8 @@ public static class ArrayBuiltinsUtils
     public static JSObject CreateIterResultObject(Isolate isolate, JSValue value, bool done)
     {
         JSObject result = isolate.Factory.NewJSObjectFromMap(isolate.NativeContext.IteratorResultMap);
-        result.RawFields[0] = value;
-        result.RawFields[1] = JSValue.FromBoolean(done);
+        result.InObjectPropertyRef(0) = value;
+        result.InObjectPropertyRef(1) = JSValue.FromBoolean(done);
         return result;
     }
 

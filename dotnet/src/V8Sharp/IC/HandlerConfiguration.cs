@@ -47,7 +47,7 @@ public sealed class LoadHandler : HeapObject
 
     public readonly Kind HandlerKind;
 
-    /// <summary>kField: the field's property index in the holder's field storage.</summary>
+    /// <summary>kField: the field's FieldIndex.StorageIndex in the holder (JSObject.FieldAt).</summary>
     public readonly int FieldIndex;
 
     /// <summary>The holder for prototype-chain handlers, or null when it is the lookup start object.</summary>
@@ -138,7 +138,7 @@ public sealed class LoadHandler : HeapObject
     public static LoadHandler LoadNormal(Isolate isolate) => s_normal;
 
     /// <summary>LoadHandler::LoadField (own fast field).</summary>
-    public static LoadHandler LoadField(Isolate isolate, FieldIndex fieldIndex) => new(Kind.kField, fieldIndex.PropertyIndex);
+    public static LoadHandler LoadField(Isolate isolate, FieldIndex fieldIndex) => new(Kind.kField, fieldIndex.StorageIndex);
 
     /// <summary>LoadHandler::LoadNativeDataProperty (own AccessorInfo).</summary>
     public static LoadHandler LoadNativeDataProperty(Isolate isolate, AccessorInfo info) =>
@@ -231,7 +231,7 @@ public sealed class StoreHandler : HeapObject
 
     public readonly Kind HandlerKind;
 
-    /// <summary>kField / kTransitionToField: the property index of the field.</summary>
+    /// <summary>kField / kTransitionToField: the field's FieldIndex.StorageIndex (JSObject.FieldAt).</summary>
     public readonly int FieldIndex;
 
     /// <summary>kField / kTransitionToField: the field representation the value must fit.</summary>
@@ -300,7 +300,7 @@ public sealed class StoreHandler : HeapObject
     /// <summary>StoreHandler::StoreField.</summary>
     public static StoreHandler StoreField(Isolate isolate, FieldIndex fieldIndex, Representation representation,
         HeapObject fieldType, bool isConst) =>
-        new(isConst ? Kind.kConstField : Kind.kField, fieldIndex.PropertyIndex, representation,
+        new(isConst ? Kind.kConstField : Kind.kField, fieldIndex.StorageIndex, representation,
             V8Sharp.Objects.FieldType.IsClass(fieldType) ? V8Sharp.Objects.FieldType.AsClass(fieldType) : null);
 
     /// <summary>StoreHandler::StoreTransition for a transition that adds a field.</summary>
@@ -308,7 +308,7 @@ public sealed class StoreHandler : HeapObject
         Representation representation, HeapObject fieldType)
     {
         Cell? validityCell = Map.GetOrCreatePrototypeChainValidityCell(receiverMap, isolate);
-        return new StoreHandler(Kind.kTransitionToField, fieldIndex.PropertyIndex, representation,
+        return new StoreHandler(Kind.kTransitionToField, fieldIndex.StorageIndex, representation,
             V8Sharp.Objects.FieldType.IsClass(fieldType) ? V8Sharp.Objects.FieldType.AsClass(fieldType) : null,
             transitionMap, validityCell: validityCell);
     }

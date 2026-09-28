@@ -175,20 +175,20 @@ public struct PropertyDescriptor
         {
             // Fast case for regular accessor properties.
             JSObject result = factory.NewJSObjectFromMap(nc.AccessorPropertyDescriptorMap);
-            result.RawFields[0] = Get;
-            result.RawFields[1] = Set;
-            result.RawFields[2] = JSValue.FromBoolean(Enumerable);
-            result.RawFields[3] = JSValue.FromBoolean(Configurable);
+            result.InObjectPropertyRef(0) = Get;
+            result.InObjectPropertyRef(1) = Set;
+            result.InObjectPropertyRef(2) = JSValue.FromBoolean(Enumerable);
+            result.InObjectPropertyRef(3) = JSValue.FromBoolean(Configurable);
             return result;
         }
         if (IsRegularDataProperty())
         {
             // Fast case for regular data properties.
             JSObject result = factory.NewJSObjectFromMap(nc.DataPropertyDescriptorMap);
-            result.RawFields[0] = Value;
-            result.RawFields[1] = JSValue.FromBoolean(Writable);
-            result.RawFields[2] = JSValue.FromBoolean(Enumerable);
-            result.RawFields[3] = JSValue.FromBoolean(Configurable);
+            result.InObjectPropertyRef(0) = Value;
+            result.InObjectPropertyRef(1) = JSValue.FromBoolean(Writable);
+            result.InObjectPropertyRef(2) = JSValue.FromBoolean(Enumerable);
+            result.InObjectPropertyRef(3) = JSValue.FromBoolean(Configurable);
             return result;
         }
         JSObject obj = factory.NewJSObject(nc.ObjectFunction);

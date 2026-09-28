@@ -167,8 +167,8 @@ public sealed partial class Factory
     {
         Map map = _isolate.NativeContext.SetUnit8ArrayResultMap;
         JSObject result = NewJSObjectFromMap(map);
-        result.RawFields[0] = read;
-        result.RawFields[1] = written;
+        result.InObjectPropertyRef(0) = read;
+        result.InObjectPropertyRef(1) = written;
         return result;
     }
 }

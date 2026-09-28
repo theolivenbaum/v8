@@ -195,7 +195,7 @@ public static class JSRegExpResultIndices
         // The groups field is the first in-object field (after the length accessor).
         if (reData.TypeTag != RegExpKind.Irregexp || !reData.HasCaptureNameMap)
         {
-            indices.RawFields[0] = JSValue.Undefined;
+            indices.InObjectPropertyRef(0) = JSValue.Undefined;
             return indices;
         }
 
@@ -221,7 +221,7 @@ public static class JSRegExpResultIndices
                     PropertyDetails.Empty());
             }
         }
-        indices.RawFields[0] = groupNames;
+        indices.InObjectPropertyRef(0) = groupNames;
         return indices;
     }
 }
@@ -270,9 +270,9 @@ public sealed partial class JSRegExp
     public JSValue LastIndex
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => RawFields[kLastIndexFieldIndex];
+        get => _fields[kLastIndexFieldIndex];
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        set => RawFields[kLastIndexFieldIndex] = value;
+        set => _fields[kLastIndexFieldIndex] = value;
     }
 
     /// <summary>JSRegExp::RegistersForCaptureCount.</summary>

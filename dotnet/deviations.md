@@ -337,12 +337,21 @@ Heap and object model
 - Read-only roots are process-wide static objects (`ReadOnlyRoots`), shared by
   every isolate, instead of a per-isolate read-only space. Accessor infos
   (`Accessors`) are shared the same way.
-- Objects keep their fields in one `JSValue[]` rather than V8's in-object slots
-  plus a PropertyArray. `FieldIndex` still encodes V8's (in-object, offset)
-  split so `LoadByFieldIndex` and the descriptor encodings match. Header and
-  instance sizes are approximated from `JSObject.GetHeaderSize`, and builtin
-  function instance sizes are recomputed from the header size plus in-object
-  count (`Bootstrapper.CreateFunctionForBuiltinWithPrototype`).
+- In-object properties (Objects/JSObjects.InObject.cs): a CLR object cannot
+  be sized per allocation, so ordinary objects (the instance types
+  `JSObject.UsesInObjectSlots` lists: JS_OBJECT_TYPE, API objects, errors,
+  the special prototype types) are allocated from a chain of classes with
+  `[InlineArray]` slot segments (4, 8, 12, 16, 32, 64, 128, 256 slots), the
+  smallest covering the map's in-object property count. After in-object slack
+  tracking shrinks a map, objects allocated earlier keep their larger class
+  (V8 turns the tail into filler). The other JSObject subclasses (arrays,
+  functions, regexps, arguments objects, collections ...) keep the map's
+  in-object fields at the start of the PropertyArray `JSValue[]`; the map's
+  counts, `FieldIndex` and slack tracking are V8's for every object.
+  `FieldIndex.StorageIndex` is the physical location the IC handlers cache.
+  Header and instance sizes are approximated from `JSObject.GetHeaderSize`,
+  and builtin function instance sizes are recomputed from the header size
+  plus in-object count (`Bootstrapper.CreateFunctionForBuiltinWithPrototype`).
 - The identity hash lives in a dedicated field on JSReceiver, not in
   `properties_or_hash`.
 - No Smi/HeapNumber distinction: numbers are unboxed. A non-Smi number does not

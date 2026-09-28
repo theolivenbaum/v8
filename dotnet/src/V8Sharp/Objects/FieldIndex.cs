@@ -4,10 +4,8 @@ using System.Runtime.CompilerServices;
 namespace V8Sharp.Objects;
 
 /// <summary>
-/// V8's FieldIndex: where a fast-mode field lives. V8Sharp keeps all fields of
-/// an object in one array (architecture.md section 5), so the index is the
-/// property index; <see cref="IsInObject"/> is kept because inline caches and
-/// LoadByFieldIndex encode it, as V8 does.
+/// V8's FieldIndex: where a fast-mode field lives, in-object (an object slot)
+/// or in the PropertyArray (architecture.md section 5).
 /// </summary>
 public readonly struct FieldIndex : IEquatable<FieldIndex>
 {
@@ -15,14 +13,28 @@ public readonly struct FieldIndex : IEquatable<FieldIndex>
 
     readonly int _propertyIndex;
     readonly int _inObjectPropertyCount;
+    readonly int _storageIndex;
     readonly Encoding _encoding;
 
-    FieldIndex(int propertyIndex, int inObjectPropertyCount, Encoding encoding)
+    FieldIndex(int propertyIndex, Map map, Encoding encoding)
     {
         _propertyIndex = propertyIndex;
-        _inObjectPropertyCount = inObjectPropertyCount;
+        _inObjectPropertyCount = map.GetInObjectProperties();
         _encoding = encoding;
+        // Ordinary objects hold in-object fields in object slots; the other
+        // JSObject subclasses hold them at the start of the PropertyArray
+        // (JSObjects.InObject.cs, deviations.md).
+        _storageIndex = map.HasInObjectSlots
+            ? propertyIndex < _inObjectPropertyCount ? propertyIndex : JSObject.kPropertyArrayStorageBase + propertyIndex - _inObjectPropertyCount
+            : JSObject.kPropertyArrayStorageBase + propertyIndex;
     }
+
+    /// <summary>
+    /// Where the field is in a V8Sharp object: an in-object slot index below
+    /// JSObject.kPropertyArrayStorageBase, else that base plus the index in the
+    /// PropertyArray (JSObject.FieldAt). The IC handlers cache it.
+    /// </summary>
+    public int StorageIndex => _storageIndex;
 
     /// <summary>Zero-based from the first in-object property; overflows to out-of-object properties.</summary>
     public int PropertyIndex => _propertyIndex;
@@ -49,14 +61,14 @@ public readonly struct FieldIndex : IEquatable<FieldIndex>
     };
 
     public static FieldIndex ForPropertyIndex(Map map, int propertyIndex, Representation representation) =>
-        new(propertyIndex, map.GetInObjectProperties(), FieldEncodingFor(representation));
+        new(propertyIndex, map, FieldEncodingFor(representation));
 
     public static FieldIndex ForPropertyIndex(Map map, int propertyIndex) =>
-        new(propertyIndex, map.GetInObjectProperties(), Encoding.Tagged);
+        new(propertyIndex, map, Encoding.Tagged);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FieldIndex ForDetails(Map map, PropertyDetails details) =>
-        new(details.FieldIndex, map.GetInObjectProperties(), FieldEncodingFor(details.Representation));
+        new(details.FieldIndex, map, FieldEncodingFor(details.Representation));
 
     public static FieldIndex ForDescriptor(Map map, InternalIndex descriptor) =>
         ForDetails(map, map.InstanceDescriptors.GetDetails(descriptor));
@@ -74,7 +86,8 @@ public readonly struct FieldIndex : IEquatable<FieldIndex>
     }
 
     public bool Equals(FieldIndex other) =>
-        _propertyIndex == other._propertyIndex && _inObjectPropertyCount == other._inObjectPropertyCount && _encoding == other._encoding;
+        _propertyIndex == other._propertyIndex && _inObjectPropertyCount == other._inObjectPropertyCount &&
+        _encoding == other._encoding && _storageIndex == other._storageIndex;
     public override bool Equals(object? obj) => obj is FieldIndex f && Equals(f);
     public override int GetHashCode() => HashCode.Combine(_propertyIndex, _inObjectPropertyCount, _encoding);
     public static bool operator ==(FieldIndex a, FieldIndex b) => a.Equals(b);

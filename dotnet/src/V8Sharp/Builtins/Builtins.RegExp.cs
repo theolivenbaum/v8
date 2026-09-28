@@ -493,7 +493,7 @@ public static partial class BuiltinsRegExp
             RegExpData data = regexp.Data!;
             if (data.HasCaptureNameMap)
             {
-                result.RawFields[kRegExpResultGroupsIndex] = ConstructNamedCaptureGroupsObject(isolate, data, resultElements.Data);
+                result.InObjectPropertyRef(kRegExpResultGroupsIndex) = ConstructNamedCaptureGroupsObject(isolate, data, resultElements.Data);
             }
         }
 
@@ -501,7 +501,7 @@ public static partial class BuiltinsRegExp
         // capture groups are processed.
         if (hasIndices)
         {
-            result.RawFields[kRegExpResultIndicesIndex] = JSRegExpResultIndices.BuildIndices(isolate, matchInfo, regexp.Data!);
+            result.InObjectPropertyRef(kRegExpResultIndicesIndex) = JSRegExpResultIndices.BuildIndices(isolate, matchInfo, regexp.Data!);
         }
         return result;
     }
@@ -524,7 +524,8 @@ public static partial class BuiltinsRegExp
         elements = new FixedArray(length);
         result.Elements = elements;
         result.Length = JSValue.FromInt(length);
-        JSValue[] fields = result.RawFields;
+        // Arrays keep their in-object fields in the PropertyArray (JSObjects.InObject.cs).
+        JSValue[] fields = result._fields;
         fields[kRegExpResultIndexIndex] = JSValue.FromInt(index);
         fields[kRegExpResultInputIndex] = input;
         fields[kRegExpResultGroupsIndex] = JSValue.Undefined;

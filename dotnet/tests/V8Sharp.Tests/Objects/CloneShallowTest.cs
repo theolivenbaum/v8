@@ -33,13 +33,35 @@ public class CloneShallowTest : TestWithContext
     }
 
     [Fact]
+    public void InObjectLayoutIsContiguous() => Assert.True(InObjectLayout.IsContiguous);
+
+    [Fact]
+    public void CloneShallowCopiesInObjectSlots()
+    {
+        foreach (int count in new[] { 1, 4, 5, 9, 13, 20, 40, 100, 200 })
+        {
+            Map map = Map.Create(i_isolate, count);
+            JSObject obj = i_isolate.Factory.NewJSObjectFromMap(map);
+            Assert.True(obj.InObjectSlotCapacity >= count);
+            for (int i = 0; i < count; i++) obj.InObjectPropertyRef(i) = JSValue.FromInt(i);
+            JSObject clone = obj.CloneShallow();
+            Assert.Equal(obj.GetType(), clone.GetType());
+            for (int i = 0; i < count; i++) Assert.Equal(i, clone.InObjectPropertyRef(i).Number);
+        }
+    }
+
+    [Fact]
     public void CloneShallowCopiesAllFields()
     {
         JSObject obj = i_isolate.Factory.NewJSObject(i_isolate.NativeContext.ObjectFunction);
         JSObject objClone = obj.CloneShallow();
-        Assert.Equal(typeof(JSObject), objClone.GetType());
+        Assert.Equal(obj.GetType(), objClone.GetType());
         Assert.NotSame(obj, objClone);
-        foreach (FieldInfo f in AllFields(typeof(JSObject))) Assert.Equal(f.GetValue(obj), f.GetValue(objClone));
+        foreach (FieldInfo f in AllFields(obj.GetType()))
+        {
+            if (f.FieldType.Name.StartsWith("InObjectSlots", StringComparison.Ordinal)) continue;  // CloneShallowCopiesInObjectSlots
+            Assert.Equal(f.GetValue(obj), f.GetValue(objClone));
+        }
 
         JSArray array = i_isolate.Factory.NewJSArray(ElementsKind.PACKED_SMI_ELEMENTS, 0, 4);
         array.AllocationMementoSite = new AllocationSite();

@@ -276,7 +276,7 @@ public static partial class BuiltinsRegExp
         // Return -1 if no match was found.
         if (execResult.IsNull) return JSValue.FromInt(-1);
         // Return the index of the match.
-        if (IsRegExpResult(isolate, execResult)) return ((JSObject)execResult.Object).RawFields[kRegExpResultIndexIndex];
+        if (IsRegExpResult(isolate, execResult)) return ((JSObject)execResult.Object).InObjectPropertyRef(kRegExpResultIndexIndex);
         return ObjectOps.GetProperty(isolate, execResult, ReadOnlyRoots.index_string);
     }
 

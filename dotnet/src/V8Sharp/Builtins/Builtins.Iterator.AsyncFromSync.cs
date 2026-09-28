@@ -225,8 +225,8 @@ public static class AsyncFromSyncIteratorBuiltins
         if (ReferenceEquals(result.Map, nativeContext.IteratorResultMap))
         {
             var fast = (JSObject)result;
-            doneValue = fast.RawFields[IteratorBuiltins.kIteratorResultDoneIndex];
-            value = fast.RawFields[IteratorBuiltins.kIteratorResultValueIndex];
+            doneValue = fast.InObjectPropertyRef(IteratorBuiltins.kIteratorResultDoneIndex);
+            value = fast.InObjectPropertyRef(IteratorBuiltins.kIteratorResultValueIndex);
         }
         else
         {

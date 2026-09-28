@@ -354,7 +354,7 @@ public static partial class InterpreterExecution
                         {
                             if (handler.OwnFieldIndex >= 0)
                             {
-                                acc = Unsafe.As<JSReceiver>(o)._fields[handler.OwnFieldIndex];
+                                acc = Unsafe.As<JSObject>(o).FieldAt(handler.OwnFieldIndex);
                                 pc += 1 + 3 * S;
                                 continue;
                             }
