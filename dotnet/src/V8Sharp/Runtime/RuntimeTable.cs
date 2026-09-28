@@ -152,6 +152,19 @@ public static partial class RuntimeTable
         Register(FunctionId.DeleteProperty,
             static (i, a) => RuntimeObject.DeleteProperty(i, a[0], a[1], (LanguageMode)(int)a[2].Number));
         Register(FunctionId.HasProperty, static (i, a) => RuntimeObject.HasProperty(i, a[1], a[0]));
+        // Runtime_CreateDataProperty.
+        Register(FunctionId.CreateDataProperty, static (i, a) =>
+        {
+            var key = new PropertyKey(i, a[1]);
+            JSReceiver.CreateDataProperty(i, a[0].As<JSReceiver>(), key, a[2], ShouldThrow.ThrowOnError);
+            return a[2];
+        });
+        // Runtime_StoreInArrayLiteralIC_Slow (ic.cc).
+        Register(FunctionId.StoreInArrayLiteralIC_Slow,
+            static (i, a) => V8Sharp.IC.KeyedStoreIC.StoreOwnElement(i, a[1].As<JSArray>(), a[2], a[0]));
+        // Runtime_FunctionGetInferredName (runtime-debug.cc).
+        Register(FunctionId.FunctionGetInferredName, static (i, a) =>
+            a[0].HeapObjectOrNull is JSFunction f ? f.Shared.InferredName() : ReadOnlyRoots.empty_string);
         Register(FunctionId.SetFunctionName, static (i, a) => RuntimeObject.SetFunctionName(i, a[0], a[1]));
         Register(FunctionId.InternalSetPrototype, static (i, a) => RuntimeObject.InternalSetPrototype(i, a[0], a[1]));
         Register(FunctionId.DefineAccessorPropertyUnchecked,
@@ -356,6 +369,9 @@ public static partial class RuntimeTable
         // Debug-build-only diagnostics: no-ops in release V8 as well.
         Register(FunctionId.DisassembleFunction, RuntimeTest.ReturnUndefined);
         Register(FunctionId.VerifyGetJSBuiltinState, RuntimeTest.ReturnUndefined);
+        // Runtime_GetFeedback: undefined in V8_JITLESS builds (no feedback to print),
+        // which is what the tier queries answer as.
+        Register(FunctionId.GetFeedback, RuntimeTest.ReturnUndefined);
         Register(FunctionId.DebugPrint, static (i, a) => RuntimeTest.DebugPrint(i, a));
         Register(FunctionId.Is64Bit, static (i, a) => RuntimeTest.Is64Bit(i));
         Register(FunctionId.StringMaxLength, static (i, a) => RuntimeTest.StringMaxLength(i));

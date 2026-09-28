@@ -1025,7 +1025,7 @@ public sealed class KeyedStoreIC : IC
     bool MayHaveTypedArrayInPrototypeChain(JSObject obj) => StoreIC.MayHaveTypedArrayInPrototypeChain(_isolate, obj);
 
     /// <summary>StoreOwnElement (ic.cc).</summary>
-    static JSValue StoreOwnElement(Isolate isolate, JSArray array, JSValue index, JSValue value)
+    internal static JSValue StoreOwnElement(Isolate isolate, JSArray array, JSValue index, JSValue value)
     {
         var key = new PropertyKey(isolate, index);
         var it = new LookupIterator(isolate, array, key, LookupIterator.Configuration.OWN);

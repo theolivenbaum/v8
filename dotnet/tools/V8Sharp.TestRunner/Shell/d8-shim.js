@@ -89,7 +89,15 @@
   set(Realm, 'current', fn('current', () => host('realmCurrent')));
   set(Realm, 'owner', fn('owner', (o) => host('realmOwner', o)));
   set(Realm, 'global', fn('global', (i) => host('realmGlobal', i)));
-  set(Realm, 'create', fn('create', () => host('realmCreate', false)));
+  set(Realm, 'create', fn('create', (...a) => {
+    // Shell::RealmCreate reads realm_options.create_own_microtask_queue.
+    let ownQueue = false;
+    const opts = a[0];
+    if (a.length > 0 && ((typeof opts === 'object' && opts !== null) || typeof opts === 'function')) {
+      ownQueue = !!opts.create_own_microtask_queue;
+    }
+    return host('realmCreate', false, ownQueue);
+  }));
   set(Realm, 'createAllowCrossRealmAccess', fn('createAllowCrossRealmAccess', () => host('realmCreate', true)));
   set(Realm, 'navigate', fn('navigate', (i) => host('realmNavigate', i, false)));
   set(Realm, 'navigateSameOrigin', fn('navigateSameOrigin', (i) => host('realmNavigate', i, true)));
@@ -109,8 +117,47 @@
 
   const performance = {};
   set(performance, 'now', fn('now', () => host('performanceNow')));
-  set(performance, 'mark', fn('mark', (name) => ({ entryType: 'mark', name: `${name}`, startTime: host('performanceNow'), duration: 0 })));
-  set(performance, 'measure', fn('measure', (name) => ({ entryType: 'measure', name: `${name}`, startTime: 0, duration: host('performanceNow') })));
+  // Shell::PerformanceMark / PerformanceMeasure.
+  const performanceEntry = (entryType, name, startTime, duration) => {
+    const entry = {};
+    ObjectDefineProperty(entry, 'entryType', { value: entryType, enumerable: true, configurable: true });
+    ObjectDefineProperty(entry, 'name', { value: name, enumerable: true, configurable: true });
+    ObjectDefineProperty(entry, 'startTime', { value: startTime, enumerable: true, configurable: true });
+    ObjectDefineProperty(entry, 'duration', { value: duration, enumerable: true, configurable: true });
+    return entry;
+  };
+  const lookupPerformanceMark = (name) => {
+    const t = host('performanceMarkLookup', name);
+    if (t === undefined) throw new ErrorCtor('Invalid performance.mark "' + name + '" does not exist');
+    return t;
+  };
+  set(performance, 'mark', fn('mark', (...a) => {
+    if (a.length < 1 || typeof a[0] !== 'string') throw new ErrorCtor("Invalid 'name' argument");
+    return performanceEntry('mark', a[0], host('performanceMark', a[0]), 0);
+  }));
+  set(performance, 'measure', fn('measure', (...a) => {
+    if (a.length < 1 || typeof a[0] !== 'string') throw new ErrorCtor("Invalid 'name' argument");
+    let start = 0;
+    let end = host('performanceNow');
+    const startMark = a[1];
+    if (typeof startMark === 'string') {
+      start = lookupPerformanceMark(startMark);
+      if (a.length === 3) {
+        if (typeof a[2] !== 'string') throw new ErrorCtor('Expect string as end mark.');
+        end = lookupPerformanceMark(a[2]);
+      }
+    } else if (startMark === undefined) {
+    } else if ((typeof startMark !== 'object' || startMark === null) && typeof startMark !== 'function') {
+      throw new ErrorCtor("Invalid 'startMark' argument: Not an Object");
+    } else if (a.length > 2) {
+      throw new ErrorCtor('Too many arguments');
+    } else {
+      const t = startMark.startTime;
+      if (typeof t !== 'number') throw new ErrorCtor("Invalid 'startMark' argument: No numeric 'startTime' field");
+      start = t;
+    }
+    return performanceEntry('measure', a[0], start, end - start);
+  }));
   set(performance, 'measureMemory', unsupported('measureMemory'));
   set(global, 'performance', performance);
 
@@ -143,15 +190,31 @@
         case 'function': {
           if (typeof arg0 !== 'function') return undefined;
           // Shell::FunctionAndArgumentsToString: ( function_to_string )( params )
-          let source = '(' + ReflectApply(FunctionToString, arg0, []) + ')(';
+          // String::Concat returns an empty handle past String::kMaxLength.
+          const concat = (x, y) => {
+            try {
+              return x + y;
+            } catch (e) {
+              throw new ErrorCtor('String limit exceeded');
+            }
+          };
+          let source = concat('(', ReflectApply(FunctionToString, arg0, []));
+          source = concat(source, ')(');
           if (workerArguments !== undefined) {
             if (!ArrayIsArray(workerArguments)) throw new ErrorCtor("'arguments' must be an array");
             for (let i = 0; i < workerArguments.length; i++) {
-              if (i > 0) source += ',';
-              source += JSONStringify(workerArguments[i]);
+              if (i > 0) source = concat(source, ',');
+              const argument = workerArguments[i];
+              let argumentString;
+              try {
+                argumentString = JSONStringify(argument);
+              } catch (e) {
+                throw new ErrorCtor('Failed to convert argument to string');
+              }
+              source = concat(source, argumentString);
             }
           }
-          return source + ')';
+          return concat(source, ')');
         }
         case 'file':
           if (typeof arg0 !== 'string') return undefined;

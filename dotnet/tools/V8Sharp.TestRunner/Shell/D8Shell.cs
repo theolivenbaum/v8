@@ -42,6 +42,7 @@ public sealed partial class D8Shell : IJsHost
     readonly SemaphoreSlim _taskSignal = new(0);
     readonly List<(object Promise, object? Value, RealmState Realm)> _unhandled = [];
     readonly Dictionary<string, string> _sources = new(StringComparer.Ordinal);
+    readonly Dictionary<string, double> _performanceMarks = new(StringComparer.Ordinal);
 
     volatile bool _timedOut;
     int? _quitCode;
@@ -461,6 +462,15 @@ public sealed partial class D8Shell : IJsHost
             }
             case "performanceNow":
                 return _clock.Elapsed.TotalMilliseconds;
+            case "performanceMark":
+            {
+                // PerIsolateData::performance_mark_map_.
+                double timestamp = _clock.Elapsed.TotalMilliseconds;
+                _performanceMarks[(string)A(0)!] = timestamp;
+                return timestamp;
+            }
+            case "performanceMarkLookup":
+                return _performanceMarks.TryGetValue((string)A(0)!, out double markTime) ? markTime : JsUndefined.Value;
             case "realmCurrent":
                 return (double)_realmCurrent;
             case "realmOwner":
@@ -470,7 +480,7 @@ public sealed partial class D8Shell : IJsHost
             case "realmCreate":
             {
                 bool allowCrossRealm = A(0) is true;
-                var realm = _isolate!.CreateRealm(allowCrossRealm ? CurrentRealm.Realm : null);
+                var realm = _isolate!.CreateRealm(allowCrossRealm ? CurrentRealm.Realm : null, ownMicrotaskQueue: A(1) is true);
                 _realms.Add(Install(realm, isMain: false));
                 return (double)(_realms.Count - 1);
             }

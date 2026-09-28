@@ -51,6 +51,9 @@ public sealed class V8SharpHandle(JSValue value)
 
 sealed class V8SharpJsIsolate : IJsIsolate
 {
+    /// <summary>Nesting depth of script executions (v8's CallDepthScope for the microtask policy).</summary>
+    internal int ExecuteDepth;
+
     internal readonly VIsolate Isolate;
     internal readonly IJsHost Host;
     readonly List<V8SharpRealm> _realms = [];
@@ -79,12 +82,13 @@ sealed class V8SharpJsIsolate : IJsIsolate
 
     internal VIsolate.IsolateScope Enter() => Isolate.Enter();
 
-    public IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith)
+    public IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith, bool ownMicrotaskQueue = false)
     {
         NativeContext context;
         using (Enter())
         {
-            context = Bootstrapper.CreateEnvironment(Isolate);
+            // d8 creates the queue with v8::MicrotaskQueue::New (kExplicit): nothing flushes it.
+            context = Bootstrapper.CreateEnvironment(Isolate, ownMicrotaskQueue ? new MicrotaskQueue(Isolate) : null);
         }
         if (shareSecurityTokenWith is V8SharpRealm from) context.SecurityToken = from.Context.SecurityToken;
         var realm = new V8SharpRealm(this, context);
@@ -185,10 +189,14 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
         using (owner.Enter())
         using (Isolate.EnterContext(Context))
         {
+            owner.ExecuteDepth++;
             try
             {
                 JSValue result = action();
-                VExecution.PerformMicrotaskCheckpoint(Isolate);
+                // v8::MicrotasksPolicy::kAuto: the checkpoint runs when the call
+                // depth returns to zero, so a nested Realm.eval does not run the
+                // microtasks its script queued.
+                if (owner.ExecuteDepth == 1) VExecution.PerformMicrotaskCheckpoint(Isolate);
                 return Completion.Of(ToHost(result));
             }
             catch (TerminationException)
@@ -208,6 +216,10 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
                 string text = "V8Sharp internal error: " + e.GetType().Name + ": " + e.Message;
                 if (Environment.GetEnvironmentVariable("V8SHARP_DEBUG_ERRORS") is not null) text += "\n" + e;
                 return new Completion(CompletionKind.Throw, Exception: new JsExceptionInfo(text));
+            }
+            finally
+            {
+                owner.ExecuteDepth--;
             }
         }
     }

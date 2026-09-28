@@ -95,7 +95,8 @@ public interface IJsIsolate : IDisposable
     /// realm's security token (d8's Realm.createAllowCrossRealmAccess);
     /// otherwise it keeps its own, so cross-realm access to its global proxy
     /// fails with "no access" (Realm.create).</summary>
-    IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith);
+    /// <param name="ownMicrotaskQueue">Realm.create({create_own_microtask_queue: true}): the context gets a MicrotaskQueue of its own.</param>
+    IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith, bool ownMicrotaskQueue = false);
 
     /// <summary>v8::Isolate::TerminateExecution. Thread-safe; used by the
     /// watchdog and by <c>quit()</c>.</summary>

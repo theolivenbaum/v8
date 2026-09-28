@@ -119,7 +119,7 @@ public interface IJsEngine {
 }
 public interface IJsIsolate : IDisposable {
     IJsRealm MainRealm { get; }
-    IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith);  // Realm.create / createAllowCrossRealmAccess
+    IJsRealm CreateRealm(IJsRealm? shareSecurityTokenWith, bool ownMicrotaskQueue = false);  // Realm.create / createAllowCrossRealmAccess
     void TerminateExecution();                // thread-safe (watchdog, quit())
     void CancelTerminateExecution();
     void CollectGarbage();
