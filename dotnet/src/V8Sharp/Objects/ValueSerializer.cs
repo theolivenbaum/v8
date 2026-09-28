@@ -384,7 +384,8 @@ public sealed class ValueSerializer
         // Eliminate callable and exotic objects, which should not be serialized.
         InstanceType instanceType = receiver.Map.InstanceType;
         if (receiver.Map.IsCallable || receiver is JSProxy || instanceType is InstanceType.JSGlobalObjectType or
-                InstanceType.JSGlobalProxyType or InstanceType.JSModuleNamespaceType)
+                InstanceType.JSGlobalProxyType or InstanceType.JSModuleNamespaceType or
+                InstanceType.JSDeferredModuleNamespaceType)
         {
             ThrowDataCloneError(MessageTemplate.DataCloneError, receiver);
             return;

@@ -104,6 +104,9 @@ public static class RuntimeForIn
                     return it.GetName();
                 }
                 case LookupIterator.StateKind.MODULE_NAMESPACE:
+                    // It triggers evaluation, because this access is like calling
+                    // [[GetOwnProperty]] on deferred namespace object.
+                    JSDeferredModuleNamespace.MaybeEvaluate(ref it);
                     continue;
                 case LookupIterator.StateKind.STRING_LOOKUP_START_OBJECT:
                     throw new UnreachableException();

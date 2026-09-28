@@ -9,7 +9,8 @@
 // InitializeCallSiteBuiltins and InstallABunchOfRandomThings.
 // ArrayBuffer, SharedArrayBuffer, Atomics, TypedArrays and DataView are in
 // Genesis.TypedArrays.cs, DisposableStack in Genesis.DisposableStack.cs.
-// Not ported yet (see todo.md): Intl, Temporal, shared structs, extras
+// Temporal is in Genesis.Temporal.cs.
+// Not ported yet (see todo.md): Intl, shared structs, extras
 // bindings, extensions and API global templates.
 namespace V8Sharp.Init;
 
@@ -96,6 +97,7 @@ sealed partial class Genesis
     void InitializeExperimentalGlobal()
     {
         // FOREACH_SHIPPED_FEATURE_FLAG
+        InitializeGlobal_harmony_temporal();
         InitializeGlobal_js_iterator_join();
         InitializeGlobal_js_iterator_sequencing();
         InitializeGlobal_js_joint_iteration();

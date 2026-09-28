@@ -12,9 +12,11 @@
 // the SourceTextModuleInfo parts in FixedArrays; V8Sharp keeps them in typed
 // arrays of the same shape and order. The embedder API (v8::Module::
 // InstantiateModule's ResolveModuleCallback, SyntheticModuleEvaluationSteps)
-// is a pair of delegates. Not ported: source phase imports and import defer
-// (JSDeferredModuleNamespace, both behind harmony flags), the module status
-// tracing and the esm_* counters.
+// is a set of delegates. Also: import defer (JSDeferredModuleNamespace,
+// GatherAsynchronousTransitiveDependencies, ReadyForSyncExecution and
+// v8::Module::EvaluateForImportDefer of src/api/api.cc) and source phase
+// imports (the module source objects the embedder returns). Not ported: the
+// module status tracing and the esm_* counters.
 using V8Sharp.Ast;
 using V8Sharp.Interpreter;
 
@@ -27,6 +29,14 @@ namespace V8Sharp.Objects
 /// <paramref name="referrer"/>, or throws a JavaScriptException.
 /// </summary>
 public delegate Module ResolveModuleCallback(Isolate isolate, JSString specifier, FixedArray importAttributes, Module referrer);
+
+/// <summary>
+/// The embedder's module source resolution (v8::Module::ResolveSourceCallback):
+/// returns the module source object of a source phase import, or throws a
+/// JavaScriptException.
+/// </summary>
+public delegate JSReceiver ResolveSourceCallback(Isolate isolate, JSString specifier, FixedArray importAttributes,
+    Module referrer);
 
 /// <summary>v8::Module::SyntheticModuleEvaluationSteps: sets the exports and returns a promise.</summary>
 public delegate JSPromise SyntheticModuleEvaluationSteps(Isolate isolate, SyntheticModule module);
@@ -54,6 +64,8 @@ public abstract class Module(InstanceType type) : HeapObject(type)
     public Status ModuleStatus = Status.kUnlinked;
     /// <summary>The Cell holding the namespace object, or null.</summary>
     public Cell? ModuleNamespaceCell;
+    /// <summary>The Cell holding the deferred namespace object (import defer), or null.</summary>
+    public Cell? DeferredModuleNamespaceCell;
     /// <summary>The exception in the case the status is kErrored (the hole otherwise).</summary>
     public JSValue Exception = JSValue.TheHole;
     /// <summary>The top level promise capability of this module (only for cycle roots).</summary>
@@ -91,6 +103,29 @@ public abstract class Module(InstanceType type) : HeapObject(type)
         return Exception;
     }
 
+    /// <summary>
+    /// The register stack the C++ frames of module linking and evaluation
+    /// (Module::Evaluate, SourceTextModule::Evaluate with its TryCatch,
+    /// InnerModuleEvaluation) take on V8's machine stack.
+    /// </summary>
+    const int kModuleFrameSlots = 32;
+
+    /// <summary>
+    /// STACK_CHECK of the module code. V8 checks the machine stack, which the
+    /// C++ frames of linking and evaluation use; V8Sharp runs them on the .NET
+    /// stack and limits JavaScript recursion on the register stack, so it also
+    /// requires kModuleFrameSlots of register stack (deviations.md, Stack
+    /// limit), which makes a deferred module evaluated at the recursion limit
+    /// fail with the RangeError as in V8.
+    /// </summary>
+    internal static void StackCheck(Isolate isolate)
+    {
+        if (StackGuard.HasOverflowed() || isolate.RegisterStackTop + kModuleFrameSlots > isolate.RegisterStackLimit)
+        {
+            isolate.StackOverflow();
+        }
+    }
+
     /// <summary>Module::ResetGraph.</summary>
     public static void ResetGraph(Isolate isolate, Module module)
     {
@@ -114,6 +149,7 @@ public abstract class Module(InstanceType type) : HeapObject(type)
         // The namespace cells could have been created during ResolveExport for
         // 'export * as ns', reset them here.
         module.ModuleNamespaceCell = null;
+        module.DeferredModuleNamespaceCell = null;
         int exportCount = module is SourceTextModule stm ? stm.RegularExports.Length : ((SyntheticModule)module).ExportNames.Length;
         ObjectHashTable exports = ObjectHashTable.New(exportCount);
         if (module is SourceTextModule sourceTextModule) SourceTextModule.Reset(isolate, sourceTextModule);
@@ -139,11 +175,12 @@ public abstract class Module(InstanceType type) : HeapObject(type)
     /// Module::Instantiate (ModuleDeclarationInstantiation). Throws the
     /// JavaScriptException of a failed resolution or link after resetting the graph.
     /// </summary>
-    public static void Instantiate(Isolate isolate, Module module, ResolveModuleCallback callback)
+    public static void Instantiate(Isolate isolate, Module module, ResolveModuleCallback callback,
+        ResolveSourceCallback? sourceCallback = null)
     {
         try
         {
-            PrepareInstantiate(isolate, module, callback);
+            PrepareInstantiate(isolate, module, callback, sourceCallback);
         }
         catch (Exception e) when (e is JavaScriptException or TerminationException)
         {
@@ -168,17 +205,18 @@ public abstract class Module(InstanceType type) : HeapObject(type)
     }
 
     /// <summary>Module::PrepareInstantiate.</summary>
-    internal static void PrepareInstantiate(Isolate isolate, Module module, ResolveModuleCallback callback)
+    internal static void PrepareInstantiate(Isolate isolate, Module module, ResolveModuleCallback callback,
+        ResolveSourceCallback? sourceCallback)
     {
         Debug.Assert(module.ModuleStatus != Status.kEvaluating);
         Debug.Assert(module.ModuleStatus != Status.kLinking);
         if (module.ModuleStatus >= Status.kPreLinking) return;
         module.SetStatus(Status.kPreLinking);
-        if (StackGuard.HasOverflowed()) isolate.StackOverflow();
+        StackCheck(isolate);
 
         if (module is SourceTextModule sourceTextModule)
         {
-            SourceTextModule.PrepareInstantiate(isolate, sourceTextModule, callback);
+            SourceTextModule.PrepareInstantiate(isolate, sourceTextModule, callback, sourceCallback);
         }
         else
         {
@@ -192,7 +230,7 @@ public abstract class Module(InstanceType type) : HeapObject(type)
         Debug.Assert(module.ModuleStatus != Status.kEvaluating);
         if (module.ModuleStatus >= Status.kLinking) return;
         Debug.Assert(module.ModuleStatus == Status.kPreLinking);
-        if (StackGuard.HasOverflowed()) isolate.StackOverflow();
+        StackCheck(isolate);
 
         if (module is SourceTextModule sourceTextModule)
         {
@@ -254,18 +292,30 @@ public abstract class Module(InstanceType type) : HeapObject(type)
     }
 
     /// <summary>Module::GetModuleNamespaceCell.</summary>
-    internal static Cell GetModuleNamespaceCell(Isolate isolate, Module module)
+    internal static Cell GetModuleNamespaceCell(Isolate isolate, Module module,
+        ModuleImportPhase phase = ModuleImportPhase.kEvaluation)
     {
-        if (module.ModuleNamespaceCell is { } existing) return existing;
+        Debug.Assert(phase is ModuleImportPhase.kEvaluation or ModuleImportPhase.kDefer);
+        Cell? maybeCell = phase == ModuleImportPhase.kEvaluation ? module.ModuleNamespaceCell : module.DeferredModuleNamespaceCell;
+        if (maybeCell is not null) return maybeCell;
         var cell = new Cell(JSValue.Undefined);
-        module.ModuleNamespaceCell = cell;
+        if (phase == ModuleImportPhase.kEvaluation)
+        {
+            module.ModuleNamespaceCell = cell;
+        }
+        else
+        {
+            module.DeferredModuleNamespaceCell = cell;
+        }
         return cell;
     }
 
     /// <summary>Module::GetModuleNamespace: the namespace object, created on first use.</summary>
-    public static JSModuleNamespace GetModuleNamespace(Isolate isolate, Module module)
+    public static JSModuleNamespace GetModuleNamespace(Isolate isolate, Module module,
+        ModuleImportPhase phase = ModuleImportPhase.kEvaluation)
     {
-        Cell nsCell = GetModuleNamespaceCell(isolate, module);
+        Debug.Assert(phase is ModuleImportPhase.kEvaluation or ModuleImportPhase.kDefer);
+        Cell nsCell = GetModuleNamespaceCell(isolate, module, phase);
         if (nsCell.Value.HeapObjectOrNull is JSModuleNamespace cur) return cur;
 
         // Collect the export names.
@@ -287,9 +337,19 @@ public abstract class Module(InstanceType type) : HeapObject(type)
         names.Sort(static (a, b) => (int)JSString.Compare(a, b));
 
         // Create the namespace object (initially empty).
-        var ns = (JSModuleNamespace)isolate.Factory.NewJSObjectFromMap(isolate.NativeContext.JSModuleNamespaceMap);
-        // The @@toStringTag in-object field.
-        ns.FastPropertyAtPut(FieldIndex.ForPropertyIndex(ns.Map, 0), ReadOnlyRoots.Module_string);
+        // (Factory::NewJSModuleNamespace / NewJSDeferredModuleNamespace, with the
+        // @@toStringTag in-object field.)
+        JSModuleNamespace ns;
+        if (phase == ModuleImportPhase.kEvaluation)
+        {
+            ns = (JSModuleNamespace)isolate.Factory.NewJSObjectFromMap(isolate.NativeContext.JSModuleNamespaceMap);
+            ns.FastPropertyAtPut(FieldIndex.ForPropertyIndex(ns.Map, 0), ReadOnlyRoots.Module_string);
+        }
+        else
+        {
+            ns = (JSModuleNamespace)isolate.Factory.NewJSObjectFromMap(isolate.NativeContext.JSDeferredModuleNamespaceMap);
+            ns.FastPropertyAtPut(FieldIndex.ForPropertyIndex(ns.Map, 0), ReadOnlyRoots.Deferred_Module_string);
+        }
         ns.Module = module;
         nsCell.Value = ns;
 
@@ -343,6 +403,39 @@ public abstract class Module(InstanceType type) : HeapObject(type)
             }
         } while (worklist.Count > 0);
         return false;
+    }
+
+    /// <summary>
+    /// v8::Module::EvaluateForImportDefer (src/api/api.cc): evaluates the
+    /// asynchronous transitive dependencies of a module imported with
+    /// `import.defer()`; the promise settles once they are evaluated.
+    /// </summary>
+    public static JSPromise EvaluateForImportDefer(Isolate isolate, Module module)
+    {
+        var evaluationList = new List<SourceTextModule>();
+        var seenModules = new HashSet<Module>(ReferenceEqualityComparer.Instance);
+        var evaluationSet = new HashSet<Module>(ReferenceEqualityComparer.Instance);
+        if (module is SourceTextModule)
+        {
+            SourceTextModule.GatherAsynchronousTransitiveDependencies(isolate, module, evaluationSet, evaluationList,
+                seenModules);
+        }
+
+        if (evaluationList.Count == 0)
+        {
+            JSModuleNamespace moduleNamespace = GetModuleNamespace(isolate, module, ModuleImportPhase.kDefer);
+            JSPromise moduleResolver = PromiseBuiltins.NewJSPromise(isolate);
+            PromiseBuiltins.ResolvePromise(isolate, moduleResolver, moduleNamespace);
+            return moduleResolver;
+        }
+
+        var promises = new JSPromise[evaluationList.Count];
+        for (int i = 0; i < evaluationList.Count; i++) promises[i] = Evaluate(isolate, evaluationList[i]);
+
+        // TODO(caiolima): The call to native Promise "then" is yet to be approved
+        // on https://github.com/tc39/proposal-defer-import-eval/pull/77. Revisit it
+        // after a decision is made.
+        return PromiseBuiltins.PerformPromiseAll(isolate, promises);
     }
 
     /// <summary>Module::ResolveSet: per module, the export names being resolved (cycle detection).</summary>
@@ -678,9 +771,17 @@ public sealed class SourceTextModule() : Module(InstanceType.SourceTextModuleTyp
         MessageLocation loc, bool mustResolve, ResolveSet resolveSet)
     {
         ModuleRequest moduleRequest = module.Info.ModuleRequests[moduleRequestIndex];
-        if (moduleRequest.Phase == ModuleImportPhase.kSource)
+        ModuleImportPhase phase = moduleRequest.Phase;
+        if (phase == ModuleImportPhase.kSource)
         {
-            throw new NotSupportedException("V8Sharp: source phase imports are not supported");
+            // https://tc39.es/proposal-source-phase-imports/#sec-source-text-module-record-initialize-environment
+            // InitializeEnvironment
+            // 7.c. Else if in.[[ImportName]] is source, then
+            // 7.c.i. Let moduleSourceObject be ? importedModule.GetModuleSource().
+            // 7.c.ii. Perform ! env.CreateImmutableBinding(in.[[LocalName]], true).
+            // 7.c.iii. Perform ! env.InitializeBinding(in.[[LocalName]],
+            //          moduleSourceObject).
+            return new Cell(module.RequestedModules[moduleRequestIndex]!);
         }
         var requestedModule = (Module)module.RequestedModules[moduleRequestIndex]!;
         JSString moduleSpecifier = moduleRequest.Specifier;
@@ -692,7 +793,7 @@ public sealed class SourceTextModule() : Module(InstanceType.SourceTextModuleTyp
         // b. If in.[[ImportName]] is namespace-object, then
         //   i. Let namespace be GetModuleNamespace(importedModule,
         //   in.[[ModuleRequest]].[[Phase]]).
-        return GetModuleNamespaceCell(isolate, requestedModule);
+        return GetModuleNamespaceCell(isolate, requestedModule, phase);
     }
 
     /// <summary>SourceTextModule::ResolveExportUsingStarExports.</summary>
@@ -740,7 +841,8 @@ public sealed class SourceTextModule() : Module(InstanceType.SourceTextModuleTyp
     }
 
     /// <summary>SourceTextModule::PrepareInstantiate.</summary>
-    internal static void PrepareInstantiate(Isolate isolate, SourceTextModule module, ResolveModuleCallback callback)
+    internal static void PrepareInstantiate(Isolate isolate, SourceTextModule module, ResolveModuleCallback callback,
+        ResolveSourceCallback? sourceCallback)
     {
         // Obtain requested modules.
         SourceTextModuleInfo moduleInfo = module.Info;
@@ -749,17 +851,29 @@ public sealed class SourceTextModule() : Module(InstanceType.SourceTextModuleTyp
         for (int i = 0; i < moduleRequests.Length; ++i)
         {
             ModuleRequest moduleRequest = moduleRequests[i];
-            if (moduleRequest.Phase == ModuleImportPhase.kSource)
+            switch (moduleRequest.Phase)
             {
-                throw new NotSupportedException("V8Sharp: source phase imports are not supported");
+                case ModuleImportPhase.kDefer:
+                case ModuleImportPhase.kEvaluation:
+                    requestedModules[i] = callback(isolate, moduleRequest.Specifier, moduleRequest.ImportAttributes, module);
+                    break;
+                case ModuleImportPhase.kSource:
+                    Debug.Assert(isolate.Flags.js_source_phase_imports);
+                    if (sourceCallback is null)
+                    {
+                        throw new InvalidOperationException("V8Sharp: a source phase import without a ResolveSourceCallback");
+                    }
+                    requestedModules[i] = sourceCallback(isolate, moduleRequest.Specifier, moduleRequest.ImportAttributes,
+                        module);
+                    break;
             }
-            requestedModules[i] = callback(isolate, moduleRequest.Specifier, moduleRequest.ImportAttributes, module);
         }
 
         // Recurse.
         for (int i = 0; i < requestedModules.Length; ++i)
         {
-            Module.PrepareInstantiate(isolate, (Module)requestedModules[i]!, callback);
+            if (moduleRequests[i].Phase == ModuleImportPhase.kSource) continue;
+            Module.PrepareInstantiate(isolate, (Module)requestedModules[i]!, callback, sourceCallback);
         }
 
         // Set up local exports.
@@ -875,9 +989,11 @@ public sealed class SourceTextModule() : Module(InstanceType.SourceTextModuleTyp
         dfsIndex++;
 
         // Recurse.
+        ModuleRequest[] moduleRequests = module.Info.ModuleRequests;
         HeapObject?[] requestedModules = module.RequestedModules;
         for (int i = 0; i < requestedModules.Length; ++i)
         {
+            if (moduleRequests[i].Phase == ModuleImportPhase.kSource) continue;
             var requestedModule = (Module)requestedModules[i]!;
             Module.FinishInstantiate(isolate, requestedModule, stack, ref dfsIndex);
 
@@ -1032,8 +1148,15 @@ public sealed class SourceTextModule() : Module(InstanceType.SourceTextModuleTyp
     /// <summary>SourceTextModule::GetModuleNamespace (for [module_request] of [module]).</summary>
     public static JSModuleNamespace GetModuleNamespace(Isolate isolate, SourceTextModule module, int moduleRequestIndex)
     {
+        ModuleRequest moduleRequest = module.Info.ModuleRequests[moduleRequestIndex];
+        // Source phase imports store a JSReceiver (not a Module) in
+        // requested_modules.
+        if (moduleRequest.Phase == ModuleImportPhase.kSource)
+        {
+            throw new InvalidOperationException("V8Sharp: GetModuleNamespace of a source phase import");
+        }
         var requestedModule = (Module)module.RequestedModules[moduleRequestIndex]!;
-        return Module.GetModuleNamespace(isolate, requestedModule);
+        return Module.GetModuleNamespace(isolate, requestedModule, moduleRequest.Phase);
     }
 
     /// <summary>SourceTextModule::GetImportMeta: created on first use and passed to the embedder.</summary>
@@ -1340,7 +1463,7 @@ public sealed class SourceTextModule() : Module(InstanceType.SourceTextModuleTyp
     static void InnerModuleEvaluation(Isolate isolate, SourceTextModule module, List<SourceTextModule> stack,
         ref int dfsIndex)
     {
-        if (StackGuard.HasOverflowed()) isolate.StackOverflow();
+        StackCheck(isolate);
         Status moduleStatus = module.ModuleStatus;
         // InnerModuleEvaluation(module, stack, index)
 
@@ -1379,13 +1502,29 @@ public sealed class SourceTextModule() : Module(InstanceType.SourceTextModuleTyp
         // There's an evaluation set to perform optimized check if a module is already
         // in evaluation_list. It's necessary to keep evaluation order as it's seen to
         // be spec compliant.
+        ModuleRequest[] moduleRequests = module.Info.ModuleRequests;
         HeapObject?[] requestedModules = module.RequestedModules;
         var evaluationSet = new HashSet<Module>(ReferenceEqualityComparer.Instance);
         var evaluationList = new List<Module>(requestedModules.Length);
+        HashSet<Module>? seenModules = null;
         for (int i = 0; i < requestedModules.Length; ++i)
         {
+            ModuleImportPhase phase = moduleRequests[i].Phase;
+            if (phase == ModuleImportPhase.kSource) continue;
+
             var requestedModule = (Module)requestedModules[i]!;
-            if (evaluationSet.Add(requestedModule)) evaluationList.Add(requestedModule);
+            if (phase == ModuleImportPhase.kDefer)
+            {
+                seenModules ??= new HashSet<Module>(ReferenceEqualityComparer.Instance);
+                var asyncEvaluationList = new List<SourceTextModule>();
+                GatherAsynchronousTransitiveDependencies(isolate, requestedModule, evaluationSet, asyncEvaluationList,
+                    seenModules);
+                foreach (SourceTextModule asyncModule in asyncEvaluationList) evaluationList.Add(asyncModule);
+            }
+            else if (evaluationSet.Add(requestedModule))
+            {
+                evaluationList.Add(requestedModule);
+            }
         }
 
         // 11. For each ModuleRequest Record required of module.[[RequestedModules]],
@@ -1470,6 +1609,73 @@ public sealed class SourceTextModule() : Module(InstanceType.SourceTextModuleTyp
         MaybeTransitionComponent(isolate, module, stack, Status.kEvaluated);
     }
 
+    /// <summary>SourceTextModule::IsModuleSCCEvaluated (https://tc39.es/proposal-defer-import-eval/#sec-IsModuleSCCEvaluated).</summary>
+    static bool IsModuleSCCEvaluated(SourceTextModule module)
+    {
+        // It's necessary to check if [[CycleRoot]] is not empty here because:
+        //   1. A module starts with its [[CycleRoot]] as `TheHole` and it's set
+        //   once the cycle is detected, or when the module finishes its evaluation
+        //   without errors.
+        //   2. GatherAsynchronousTransitiveDependencies can be called with a module
+        //   where it's `[[CycleRoot]]` is not set yet, and since it depends on
+        //   `IsModuleSCCEvaluated`, we need such guard. A later call from
+        //   `ReadyForSyncExecution` for the same module will have its `[[CycleRoot]]`
+        //   set, unless its evaluation errored.
+        if (module.CycleRoot is { } cycleRoot)
+        {
+            return cycleRoot.ModuleStatus is Status.kEvaluated or Status.kErrored;
+        }
+        return module.ModuleStatus is Status.kEvaluated or Status.kErrored;
+    }
+
+    /// <summary>
+    /// SourceTextModule::GatherAsynchronousTransitiveDependencies
+    /// (https://tc39.es/proposal-defer-import-eval/#sec-GatherAsynchronousTransitiveDependencies).
+    /// </summary>
+    public static void GatherAsynchronousTransitiveDependencies(Isolate isolate, Module module, HashSet<Module> evaluationSet,
+        List<SourceTextModule> evaluationList, HashSet<Module> seenSet)
+    {
+        if (!seenSet.Add(module)) return;
+        if (module is not SourceTextModule sourceTextModule) return;
+
+        if (sourceTextModule.ModuleStatus == Status.kEvaluating || IsModuleSCCEvaluated(sourceTextModule)) return;
+
+        if (sourceTextModule.HasToplevelAwait)
+        {
+            if (evaluationSet.Add(sourceTextModule)) evaluationList.Add(sourceTextModule);
+            return;
+        }
+
+        ModuleRequest[] moduleRequests = sourceTextModule.Info.ModuleRequests;
+        HeapObject?[] requestedModules = sourceTextModule.RequestedModules;
+        for (int i = 0; i < requestedModules.Length; ++i)
+        {
+            // Only process evaluation phase modules (skip source phase)
+            if (moduleRequests[i].Phase == ModuleImportPhase.kSource) continue;
+            GatherAsynchronousTransitiveDependencies(isolate, (Module)requestedModules[i]!, evaluationSet, evaluationList,
+                seenSet);
+        }
+    }
+
+    /// <summary>SourceTextModule::ReadyForSyncExecution (https://tc39.es/proposal-defer-import-eval/#sec-ReadyForSyncExecution).</summary>
+    public static bool ReadyForSyncExecution(Isolate isolate, Module module, HashSet<Module> seen)
+    {
+        if (!seen.Add(module)) return true;
+        if (module is not SourceTextModule sourceTextModule) return true;
+        if (IsModuleSCCEvaluated(sourceTextModule)) return true;
+        if (sourceTextModule.ModuleStatus is Status.kEvaluating or Status.kEvaluatingAsync) return false;
+        if (sourceTextModule.HasToplevelAwait) return false;
+
+        ModuleRequest[] moduleRequests = sourceTextModule.Info.ModuleRequests;
+        HeapObject?[] requestedModules = sourceTextModule.RequestedModules;
+        for (int i = 0; i < requestedModules.Length; ++i)
+        {
+            if (moduleRequests[i].Phase == ModuleImportPhase.kSource) continue;
+            if (!ReadyForSyncExecution(isolate, (Module)requestedModules[i]!, seen)) return false;
+        }
+        return true;
+    }
+
     /// <summary>SourceTextModule::Reset.</summary>
     internal static void Reset(Isolate isolate, SourceTextModule module)
     {
@@ -1522,8 +1728,10 @@ public sealed class SourceTextModule() : Module(InstanceType.SourceTextModuleTyp
             return;
         }
         // The module isn't what we are looking for, continue looking in the graph.
+        ModuleRequest[] requests = Info.ModuleRequests;
         for (int i = 0; i < RequestedModules.Length; ++i)
         {
+            if (requests[i].Phase != ModuleImportPhase.kEvaluation) continue;
             if (RequestedModules[i] is SourceTextModule sourceTextModule && visited.Add(sourceTextModule))
             {
                 sourceTextModule.InnerGetStalledTopLevelAwaitModule(visited, result);
@@ -1635,10 +1843,13 @@ namespace V8Sharp
         public Action<Isolate, Objects.SourceTextModule, JSObject>? HostInitializeImportMetaObjectCallback;
 
         /// <summary>
-        /// The embedder's HostImportModuleDynamicallyCallback: (referrer resource
-        /// name or null, specifier, import attributes [key, value, ...]) returns the
-        /// promise of the import.
+        /// The embedder's HostImportModuleWithPhaseDynamicallyCallback: (referrer
+        /// resource name or null, specifier, phase, import attributes [key, value,
+        /// ...]) returns the promise of the import. (V8 also has the older
+        /// HostImportModuleDynamicallyCallback without the phase; d8 sets only
+        /// this one.)
         /// </summary>
-        public Func<Isolate, JSValue, JSString, FixedArray, JSPromise>? HostImportModuleDynamicallyCallback;
+        public Func<Isolate, JSValue, JSString, V8Sharp.Ast.ModuleImportPhase, FixedArray, JSPromise>?
+            HostImportModuleWithPhaseDynamicallyCallback;
     }
 }

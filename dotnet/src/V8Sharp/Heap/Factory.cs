@@ -664,8 +664,7 @@ public sealed partial class Factory(Isolate isolate)
     public JSBoundFunction NewJSBoundFunction(JSReceiver targetFunction, JSValue boundThis, ReadOnlySpan<JSValue> boundArgs,
         JSReceiver? prototype)
     {
-        const int kMaxArguments = (1 << 16) - 2;  // Code::kMaxArguments
-        if (boundArgs.Length >= kMaxArguments)
+        if (boundArgs.Length >= Interpreter.InterpreterConstants.kMaxArguments)
         {
             _isolate.ThrowRangeError(MessageTemplate.TooManyArguments);
         }

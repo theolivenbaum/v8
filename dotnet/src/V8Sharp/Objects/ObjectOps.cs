@@ -1116,6 +1116,7 @@ public static class ObjectOps
                     if (it.GetName() is Symbol { IsWellKnownSymbol: true }) return JSValue.Undefined;
                     return it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
                 case LookupIterator.StateKind.MODULE_NAMESPACE:
+                    JSDeferredModuleNamespace.MaybeEvaluate(ref it);
                     continue;
                 case LookupIterator.StateKind.ACCESSOR:
                     return GetPropertyWithAccessor(ref it);

@@ -369,7 +369,7 @@ public static class BuiltinsFunction
     {
         JSValue receiver = args.Receiver;
         int argc = args.ArgcWithoutReceiver;
-        const int kCodeMaxArguments = (1 << 16) - 2;
+        const int kCodeMaxArguments = Interpreter.InterpreterConstants.kMaxArguments;  // Code::kMaxArguments
 
         if (receiver.HeapObjectOrNull is JSFunctionOrBoundFunctionOrWrappedFunction fn && argc < kCodeMaxArguments)
         {

@@ -334,10 +334,6 @@ public static class InterpreterCalls
         int total = fixedCount + list.Length;
         // CallOrConstructWithSpread pushes the arguments with a stack check
         // (there is no argument count limit): the RangeError is a stack overflow.
-        if (total > InterpreterConstants.kMaxArguments)
-        {
-            isolate.ThrowRangeError(MessageTemplate.TooManyArguments);
-        }
         // Runtime_VarargStackOverflow: with --superspreading the builtins of
         // SUPERSPREAD_BUILTINS take the merged argument list instead (V8Sharp's
         // builtins read their arguments from the heap array anyway).

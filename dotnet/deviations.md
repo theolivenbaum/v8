@@ -292,8 +292,13 @@ for now, to be revisited when the reason goes away.
   the same load/store; --jitless V8 does not use them either).
 - ICs: handlers are C# objects (`LoadHandler`/`StoreHandler`) instead of Smi
   handlers and code; the megamorphic stub cache holds them. `LoadSuperIC` is
-  the generic path. `CloneObjectIC` always takes the slow path. No
-  allocation-site pretenuring feedback.
+  the generic path. No allocation-site pretenuring feedback.
+- CloneObjectIC: FastCloneJSObject copies the source's field array and
+  elements into an object of the cached result map (V8 copies the in-object
+  words and the PropertyArray; V8Sharp has one field array). null and
+  undefined have no map in V8Sharp to key feedback on, so cloning them builds
+  the empty object without recording feedback (V8 records the Smi 0 handler
+  for their maps).
 - Runtime: `%` functions are delegates in `RuntimeTable`; functions only an
   optimizing tier or the debugger uses are not registered (their calls throw
   "runtime function %X is not implemented"). Tier queries (%IsTurbofanEnabled,
@@ -312,9 +317,16 @@ for now, to be revisited when the reason goes away.
 - Modules: the SourceTextModuleInfo parts, regular exports/imports and
   requested modules are typed arrays instead of FixedArrays; the embedder API
   (ResolveModuleCallback, SyntheticModuleEvaluationSteps, the dynamic import
-  and import.meta callbacks) are delegates. Not ported: source phase imports
-  and `import defer` (JSDeferredModuleNamespace), both behind harmony flags;
-  WebAssembly, bytes modules and bundles in the d8 loader.
+  and import.meta callbacks, the source phase ResolveSourceCallback) are
+  delegates; the host's dynamic import callback is the phase-taking
+  HostImportModuleWithPhaseDynamicallyCallback only. Module source objects
+  exist only for WebAssembly, which is not ported, so every source phase
+  import fails with d8's SyntaxError. The STACK_CHECK of linking and
+  evaluation also requires 32 register-stack slots (the C++ frames of
+  Module::Evaluate in V8), so that a deferred module evaluated at the
+  recursion limit fails with the RangeError as in V8
+  (modules-import-defer-stack-overflow-on-sync-eval). Not ported:
+  WebAssembly modules and the code cache in the d8 loader.
 - Parser flags: the fuzzing flags reach the parser, and
   `RuntimeFuzzing.IsEnabledForFuzzing` is runtime.cc's allowlist; the
   FOR_EACH_INTRINSIC_TEST list it needs is copied into the parsing assembly
@@ -536,10 +548,6 @@ d8 host in the TestRunner (tools/V8Sharp.TestRunner/Shell)
   the template function's own prototype object.
 - ShadowRealm: a ShadowRealm's native context is marked with
   `NativeContext.IsShadowRealm` instead of V8's shadow_realm_scope_info.
-  importValue has no host module loader behind it
-  (V8Sharp has no dynamic import yet), so the inner promise always rejects
-  with V8's kUnsupported error (what V8 does without a host callback) and the
-  ExportGetter (ShadowRealmImportValueFulfilled) is not created.
 - The global parseInt/parseFloat are Number.parseInt/parseFloat (one
   function, as in V8); their builtins (NumberParseInt, NumberParseFloat) are
   registered by the global functions' area.
@@ -748,4 +756,54 @@ Date
   Builtins.Object.cs moved to `IteratorBuiltins` (Builtins.Iterator.cs); a
   forwarding `IteratorHelpers` class remains until every caller is switched
   (TODO(merge)).
+
+## Temporal
+
+- **The engine behind the binding.** V8 implements Temporal as a binding
+  layer (`js-temporal-objects.cc`, `builtins-temporal.cc`) over the Rust
+  crate temporal_rs (`third_party/rust/temporal_capi`), which is not in this
+  checkout. The binding is ported; everything V8 hands to temporal_rs
+  ("Rest of the steps handled in Rust") is implemented in C# from the
+  Temporal specification's abstract operations in `src/V8Sharp/Temporal/`
+  (`temporal_rs::Foo` becomes `V8Sharp.Temporal.Foo`). A JSTemporal* object
+  holds the engine value directly instead of a CppGCManaged pointer, and an
+  engine error is a `TemporalError` exception that the builtins' wrapper
+  turns into the JS error ExtractRustResult would create. Where test262 and
+  an older spec text disagree, test262 wins (PlainYearMonth.prototype.add
+  rejects units below months, the rounding window of
+  proposal-temporal#3168, month-day strings ignore the year).
+- **Engine error messages.** The kTemporal messages of the binding are V8's
+  text; the messages of errors raised inside the engine are V8Sharp's own
+  (temporal_rs's texts are not available). The error types match.
+- **Calendars.** Only `iso8601` is available. V8 builds temporal_rs with
+  ICU4X's calendar data even without `V8_INTL_SUPPORT`, so it also accepts
+  `gregory`, `japanese`, `hebrew` ...; V8Sharp has no calendar data (no ICU,
+  architecture.md section 2) and throws RangeError for them. test262's
+  built-ins/Temporal uses only iso8601; the other calendars are tested in
+  intl402, which does not run without i18n.
+- **Time zone data.** V8 reads the IANA database from ICU's zoneinfo64.res
+  (compiled into the binary for no-ICU builds, js-temporal-zoneinfo64.cc)
+  through temporal_rs's provider. V8Sharp uses .NET's `TimeZoneInfo` (the
+  host's /usr/share/zoneinfo on Linux); the available identifiers are
+  TimeZoneInfo's plus the zoneinfo directory's names. Consequences: the
+  data version is the host's; offsets are TimeZoneInfo's (local mean time
+  offsets such as New York's -4:56:02 come out rounded to whole minutes, and
+  so do the transitions out of them); instants after
+  9999 reuse the rules of the same point in the 400-year Gregorian cycle and
+  instants before year 1 the offset of year 1; transitions
+  (getTimeZoneTransition, GetStartOfDay in a gap) are found by scanning the
+  offsets day by day from 1800 to 450 years ahead and bisecting, so
+  transitions less than a day apart can be merged; link names are not
+  resolved to their primary identifier for TimeZoneEquals, except the
+  aliases of UTC. UTC and offset time zones do not use the provider and are
+  exact.
+- **System time zone and clock.** As in V8 without `V8_INTL_SUPPORT`,
+  `Temporal.Now.timeZoneId()` is "UTC". The embedder's
+  `temporal_get_epoch_nanoseconds_callback` (v8::Isolate API) is not ported;
+  SystemUTCEpochNanoseconds reads `DateTime.UtcNow` (100 ns resolution).
+- **toLocaleString** is toString with default options, as in V8 without
+  `V8_INTL_SUPPORT`.
+- **Builtin registration.** The Temporal builtins are registered by
+  reflection over `TemporalBuiltins` (method name = Builtin id) instead of
+  233 explicit Register lines.
 

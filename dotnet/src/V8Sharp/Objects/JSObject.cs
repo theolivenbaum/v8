@@ -452,10 +452,14 @@ public partial class JSObject
                 return new JSAsyncDisposableStack(map);
             case InstanceType.JSModuleNamespaceType:
                 return new JSModuleNamespace(map);
+            case InstanceType.JSDeferredModuleNamespaceType:
+                return new JSDeferredModuleNamespace(map);
             case InstanceType.JSRawJsonType:
                 return new JSRawJson(map);
             case InstanceType.JSShadowRealmType:
                 return new JSShadowRealm(map);
+            case >= InstanceType.JSTemporalDurationType and <= InstanceType.JSTemporalZonedDateTimeType:
+                return JSTemporalObject.AllocateTemporalForMap(map);
             case InstanceType.JSExternalObjectType:
                 return new JSExternalObject(map);
             case InstanceType.JSProxyType:
@@ -598,6 +602,8 @@ public partial class JSObject
                 return kHeaderSize + 2 * kTagged;
             case InstanceType.JSShadowRealmType:
                 return kHeaderSize + kTagged;
+            case >= InstanceType.JSTemporalDurationType and <= InstanceType.JSTemporalZonedDateTimeType:
+                return kHeaderSize + kTagged;
             case InstanceType.JSStringIteratorType:
                 return kHeaderSize + 2 * kTagged;
             case InstanceType.JSIteratorHelperType:
@@ -611,6 +617,7 @@ public partial class JSObject
             case InstanceType.JSIteratorZipKeyedHelperType:
                 return kHeaderSize + 5 * kTagged;
             case InstanceType.JSModuleNamespaceType:
+            case InstanceType.JSDeferredModuleNamespaceType:
                 return kHeaderSize + kTagged;
             case InstanceType.JSSharedArrayType:
             case InstanceType.JSSharedStructType:

@@ -51,7 +51,7 @@ public interface IJsHost
     void OnPromiseRejection(IJsRealm realm, PromiseRejectionKind kind, object promise, object? value);
 }
 
-public sealed record ModuleSource(string Name, string Source, bool IsJson = false);
+public sealed record ModuleSource(string Name, string Source, bool IsJson = false, byte[]? Bytes = null);
 
 public enum PromiseRejectionKind { RejectedWithoutHandler, HandlerAddedAfterReject }
 
@@ -128,6 +128,13 @@ public interface IJsRealm : IDisposable
     /// <see cref="IJsHost.LoadModule"/>), then performs a microtask checkpoint.
     /// A rejected top-level-await promise is reported as a throw.</summary>
     Completion RunModule(string source, string name);
+
+    /// <summary>
+    /// d8's --compile-only: compiles the script, or fetches and compiles the
+    /// module graph, without running anything.
+    /// </summary>
+    Completion Compile(string source, string name, bool isModule) =>
+        new(CompletionKind.Throw, Exception: new JsExceptionInfo("--compile-only is not supported by this engine"));
 
     /// <summary>Calls <paramref name="function"/> with <paramref name="receiver"/>
     /// and <paramref name="args"/>, then performs a microtask checkpoint.</summary>

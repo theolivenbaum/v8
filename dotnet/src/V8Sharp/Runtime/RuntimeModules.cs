@@ -109,7 +109,7 @@ public static class RuntimeModules
     public static JSValue RunHostImportModuleDynamicallyCallback(Isolate isolate, Script? referrer, JSValue specifier,
         Ast.ModuleImportPhase phase, bool hasImportOptions, JSValue importOptionsArgument)
     {
-        if (phase != Ast.ModuleImportPhase.kEvaluation || isolate.HostImportModuleDynamicallyCallback is null)
+        if (isolate.HostImportModuleWithPhaseDynamicallyCallback is null)
         {
             JSObject exception = isolate.Factory.NewError(isolate.NativeContext.ErrorFunction, MessageTemplate.Unsupported, []);
             return NewRejectedPromise(isolate, exception);
@@ -136,7 +136,8 @@ public static class RuntimeModules
         }
 
         JSValue resourceName = referrer is null ? JSValue.Null : referrer.Name;
-        return isolate.HostImportModuleDynamicallyCallback(isolate, resourceName, specifierStr, importAttributesArray);
+        return isolate.HostImportModuleWithPhaseDynamicallyCallback(isolate, resourceName, specifierStr, phase,
+            importAttributesArray);
     }
 
     /// <summary>Isolate::GetImportAttributesFromArgument: [key1, value1, key2, value2, ...].</summary>

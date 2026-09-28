@@ -133,7 +133,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       InitializeExperimentalGlobal (Iterator.concat/zip/zipKeyed,
       Iterator.prototype.join/includes, queueMicrotask behind
       --enable-queue-microtask; Init/Genesis.{Iterator,Promise}.cs).
-      Missing: Intl, Temporal, shared structs, extras, extensions,
+      Temporal (lazily, Init/Genesis.Temporal.cs).
+      Missing: Intl, shared structs, extras, extensions,
       the TemplateLiteral map (interpreter port)
 - [x] interpreter: bytecodes, operands, array builder/writer, register
       optimizer, constant array builder, handler tables, control-flow builders,
@@ -165,9 +166,10 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       ElementsTransitionAndStore; typed array element loads; call, construct
       (AllocationSite for Array), instanceof, binary-op and compare feedback;
       allocation mementos (JSArray.AllocationMementoSite) with
-      DigestTransitionFeedback. Tests: tests/V8Sharp.Tests/IC. Open:
-      CloneObjectIC fast case (%HaveSameMap after spread), LoadSuperIC
-      handlers, typed array element stores in the IC, pretenuring.
+      DigestTransitionFeedback; CloneObjectIC with FastCloneJSObject and the
+      kCloneObject side-step transitions (IC/CloneObjectIC.cs). Tests:
+      tests/V8Sharp.Tests/IC. Open: LoadSuperIC handlers, typed array element
+      stores in the IC, pretenuring.
 - [x] interpreter dispatch loop (Interpreter/InterpreterLoop.cs, one loop per
       operand scale, rare bytecodes in LoopCold), frames on the register
       stack in V8's layout with bytecode-to-bytecode calls and constructs in
@@ -195,10 +197,11 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       shapes checked against the oracle). ShadowRealm (builtins-shadow-realm.cc,
       InitializeGlobal_harmony_shadow_realm, behind the experimental
       --harmony-shadow-realm that test262 turns on; Builtins.ShadowRealm.cs):
-      constructor, evaluate, importValue (rejects until there is a host
-      dynamic import), CallSite boundary checks; hosts set
-      Isolate.HostCreateShadowRealmContextCallback as d8 does (the runner
-      does; d8sharp should too). `new Function` and indirect eval call
+      constructor, evaluate, importValue (the ExportGetter
+      ShadowRealmImportValueFulfilled over the host's dynamic import),
+      CallSite boundary checks; hosts set
+      Isolate.HostCreateShadowRealmContextCallback to d8's
+      HostCreateShadowRealmContext (ModuleLoader, a module map per realm). `new Function` and indirect eval call
       Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler). The proxy
       trap stubs (ProxyGetProperty ...) and CallProxy/ConstructProxy are not
       registered: callers use JSProxy. test262 (v8sharp, 2026-09-28):
@@ -288,8 +291,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       string formats and getters/setters (also run under TZ=America/New_York,
       Europe/London, Asia/Kolkata, America/Sao_Paulo), 770 JSON texts through
       parse+stringify. test262 (v8sharp, 2026-09-28): built-ins/{Number,Math,
-      BigInt,JSON,Date}/** 100% (Temporal's Date.prototype.toTemporalInstant
-      skipped). JSON revivers, replacer
+      BigInt,JSON,Date}/** 100% (Date.prototype.toTemporalInstant: see
+      Temporal below). JSON revivers, replacer
       functions and toJSON are checked against the oracle with API functions.
       Not ported: FastJsonStringifier and JSDataObjectBuilder (see
       deviations.md, JSON), the typed-array fast path of IterableForEach.
@@ -312,11 +315,15 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [x] modules (Objects/Module.cs: module.cc, source-text-module.cc,
       synthetic-module.cc; Runtime/RuntimeModules.cs): instantiate/link,
       evaluate with top-level await and async module evaluation, namespaces,
-      import.meta, dynamic import, import attributes (JSON and text modules
-      in the d8sharp loader, V8Sharp.D8/ModuleLoader.cs). test262
+      import.meta, dynamic import with phases, import attributes (JSON, text
+      and bytes modules in the d8sharp loader, V8Sharp.D8/ModuleLoader.cs),
+      import defer (JSDeferredModuleNamespace and its lookup hooks,
+      GatherAsynchronousTransitiveDependencies, ReadyForSyncExecution,
+      EvaluateForImportDefer), source phase imports (module sources exist
+      only for WebAssembly, not ported: d8's SyntaxError), d8's --bundle
+      (V8Sharp.D8/Bundle.cs, in d8sharp and the TestRunner). test262
       language/module-code, language/import, language/expressions/dynamic-
-      import pass except import defer and source phase imports (not
-      ported: JSDeferredModuleNamespace and module sources).
+      import, staging/source-phase-imports: 100%.
 - [x] eval / new Function / with (Compiler.GetFunctionFromEval with the eval
       origin, CreateDynamicFunction, lookup slots, sourceURL comments).
 - [x] d8sharp shell (src/V8Sharp.D8): print/write/read/load/quit, Realm,
@@ -339,6 +346,8 @@ invalidates %TypedArray%'s one more often than V8, which only costs speed).
 | 2026-09-28 | mjsunit | 6412 | 7597 | 84.4% | first run; clusters: regress (337), harmony (199, mostly async), maglev/compiler/turbolev (168, optimization-status asserts until the tiers exist), d8 (45) |
 | 2026-09-28 | test262 | 85313 | 85891 | 99.3% | as expected, Temporal skipped (after engine conformance and interpreter perf passes) |
 | 2026-09-28 | mjsunit | 7262 | 7597 | 95.6% | as expected; remaining: opt-proto-seq (Sparkplug off), optimization-status asserts, import defer, unported d8 hooks |
+| 2026-09-28 | test262 | 85649 | 85891 | 99.7% | modules pass: import defer, source phase and bytes imports, dynamic-import/catch, ShadowRealm importValue (+336); the 242 unexpected are expected-PASS lines (ICU emulation), none failing; Temporal skipped |
+| 2026-09-28 | mjsunit | 7321 | 7597 | 96.4% | modules pass (+58): import defer, --bundle, --compile-only, clone-ic-regressions, spread without kMaxArguments, ShadowRealm importValue |
 | 2026-09-28 | test262 | 82005 | 94901 | 86.4% | --no-sparkplug and --always-sparkplug: identical results (0 differences) |
 | 2026-09-28 | mjsunit | 6767 | 7581 | 89.3% | --no-sparkplug (the interpreter only) |
 | 2026-09-28 | mjsunit | 6822 | 7582 | 90.0% | --always-sparkplug: +60 (opt-proto-seq tests call %CompileBaseline, which needs Sparkplug), -6: element-read-only, ic-lookup-on-receiver, regress-4296, regress-crbug-1003732, -1259950, -662907 fail in the interpreter too with --no-lazy-feedback-allocation (IC bugs that eager feedback exposes) |
@@ -360,6 +369,7 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | 2026-09-28 | test262 | 84670 | 94901 | 89.2% | interpreter port complete (async, modules, eval); 98.8% without Temporal (9210). Remaining: import defer and source phase imports (not ported), ShadowRealm (124), Array.fromAsync, Atomics.waitAsync; expectations: tools/V8Sharp.TestRunner/expectations/test262.v8sharp.txt |
 | 2026-09-28 | mjsunit | 7074 | 7597 | 93.1% | clusters: Worker and d8 host features, optimization-status asserts, import defer (43), ShadowRealm/Wasm/shared structs; expectations: mjsunit.v8sharp.txt |
 | 2026-09-28 | test262 | 85199 | 85891 | 99.2% | engine conformance pass; left: import defer (180), dynamic-import/catch (128, modules), decorators (34, not in V8 either), bytes imports, ShadowRealm importValue, RegExp legacy accessors; expectations regenerated |
+| 2026-09-28 | test262 | 94545 | 95123 | 99.4% | Temporal ported: built-ins/Temporal 9210/9210, staging/Temporal 4/4, Date.prototype.toTemporalInstant 16/16; Temporal SKIP globs removed (intl402 still not run without i18n); 0 newly failing elsewhere |
 | 2026-09-28 | mjsunit | 7259 | 7597 | 95.6% | engine conformance pass (Sparkplug off by default: opt-proto-seq/* fail); see "Engine-side conformance: what is left"; expectations regenerated |
 
 Octane, interpreter only, after the interpreter performance pass
@@ -419,10 +429,30 @@ Crypto, RegExp). RayTrace, Splay and EarleyBoyer are dominated by allocation
 and GC (object = JSObject + JSValue[] fields) and by runtime paths
 (instanceof's @@hasInstance lookup), which the tier does not change.
 
-- [ ] Temporal: V8 15.6 implements it as a binding layer
-      (`src/objects/js-temporal-objects.cc`, `builtins-temporal.cc`) over the
-      Rust crate temporal_rs (`third_party/rust/temporal_capi`, not in this
-      checkout). Needs a C# implementation of the temporal_rs surface V8 uses.
+- [x] Temporal (`--harmony-temporal`, shipped and on by default in this
+      revision). The binding layer is ported from
+      `src/objects/js-temporal-objects.{h,cc,tq}` and
+      `src/builtins/builtins-temporal.cc` (`Objects/JSTemporalObjects.cs`,
+      `Builtins/Builtins.Temporal*.cs`: argument processing, option reading
+      order, MessageTemplate errors, CHECK_RECEIVER names), the Genesis install
+      and the lazy `Temporal` / `Date.prototype.toTemporalInstant` accessors
+      from `bootstrapper.cc` (`Init/Genesis.Temporal.cs`, including
+      InitializeLazyPartOfContext for GetDerivedMap), and
+      Date.prototype.toTemporalInstant from builtins-date.cc. The engine V8
+      calls (the Rust crate temporal_rs, not in this checkout) is implemented
+      in C# from the Temporal specification (`Temporal/`: ISO date/time
+      records and arithmetic, exact Int128/BigInteger durations, rounding
+      modes, the relative rounding machinery, the ISO 8601 / RFC 9557
+      grammar, formatting, offset and named time zones). test262
+      (v8sharp, 2026-09-28): built-ins/Temporal 9210/9210 runs,
+      staging/Temporal 4/4, built-ins/Date/prototype/toTemporalInstant 16/16,
+      staging/sm/Date/to-temporal-instant 2/2; mjsunit's temporal tests
+      (regress-temporal-zoneinfo, regress-46*, regress-49*, harmony/builtins-harmony-*)
+      pass. Missing / deviating (deviations.md "Temporal"): calendars other
+      than iso8601 (V8 has them from ICU4X), time zone data from .NET's
+      TimeZoneInfo instead of zoneinfo64, engine error message texts,
+      toLocaleString without Intl (as V8 without V8_INTL_SUPPORT), the
+      embedder's temporal_get_epoch_nanoseconds_callback.
 
 ### Engine-side conformance: what is left (2026-09-28)
 
@@ -436,25 +466,23 @@ for eval and Function; stack overflow through builtins and JSON.stringify
 $262.agent and per-realm microtask queues in the TestRunner host;
 FutexEmulation::IsolateDeinit; cross-origin [[Get]] of well-known symbols;
 the store IC's lookup on dictionary receivers (--no-lazy-feedback-allocation
-cases); a handful of test natives.
+cases); a handful of test natives. Fixed by the modules pass: import defer,
+source phase and bytes imports, dynamic import with phases, ShadowRealm
+importValue, d8's --bundle and --compile-only, the CloneObjectIC fast path,
+no kMaxArguments cap on spread calls, %GetPrivateMember/%SetPrivateMember by
+description (runtime-object.cc).
 
 Still failing (mjsunit clusters, v8sharp engine):
 - opt-proto-seq/* (57): %CompileBaseline needs Sparkplug, which is off by
   default for now (they pass with --sparkplug).
 - Optimization-status asserts in maglev/, turbolev/, compiler/, baseline/
   (about 60): no optimizing tier.
-- `import defer` and module bundles (about 45): not ported (modules owner).
 - ArrayBuffers of 2^31 bytes or more (25, deviation).
 - FastCAPI, d8.dom (ic-megadom*), the inspector `send`, async_hooks,
   code coverage (%DebugToggleBlockCoverage/%DebugCollectCoverage),
   %RuntimeEvaluateREPL, os, writeFile, getV8Statistics, d8.test.* interceptors,
   d8.getExtrasBindingObject (continuation-preserved embedder data), the
-  d8 `-C` working directory, Intl, WebAssembly, shared structs, ShadowRealm
-  importValue.
-- CloneObjectIC always takes the slow path, so `{...o}` never shares `o`'s map
-  (clone-ic-regressions).
-- Spread calls are capped at kMaxArguments (regress-869735,
-  regress-crbug-906043; V8 has no argument count limit there, only the stack).
+  d8 `-C` working directory, Intl, WebAssembly, shared structs.
 - `%IsSmi(%AllocateHeapNumberWithValue(1))` (call-intrinsic-fuzzing, deviation).
 
 ## Phase 2: the fast tiers

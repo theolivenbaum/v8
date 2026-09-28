@@ -227,6 +227,11 @@ public sealed partial class D8Shell : IJsHost
                     return false;
                 }
                 string name = src.IsModule ? NormalizePath(src.Path!, _workingDirectory) : src.Path!;
+                if (_options.Bundle && !src.IsModule && TryExecuteBundle(text, name, out bool bundleSuccess))
+                {
+                    if (!bundleSuccess) return false;
+                    continue;
+                }
                 c = RunInCurrentRealm(text, name, src.IsModule);
             }
             if (c.Kind == CompletionKind.Terminated) return true;
@@ -237,6 +242,42 @@ public sealed partial class D8Shell : IJsHost
             }
         }
         return true;
+    }
+
+    /// <summary>bundle_module_files: normalized module name to source, while a bundle runs.</summary>
+    readonly Dictionary<string, string> _bundleModuleFiles = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// d8's TryExecuteBundle: registers the modules of a bundle (D8Bundle),
+    /// then runs its scripts and module entry points in order. Returns false
+    /// when the file is not a bundle.
+    /// </summary>
+    bool TryExecuteBundle(string content, string fileName, out bool success)
+    {
+        success = true;
+        V8Sharp.D8.D8Bundle? bundle = V8Sharp.D8.D8Bundle.TryParse(content, _workingDirectory);
+        if (bundle is null) return false;
+        foreach (string warning in bundle.Warnings) Out(warning);
+
+        _bundleModuleFiles.Clear();
+        foreach (var (name, source) in bundle.ModuleFiles) _bundleModuleFiles[name] = source;
+
+        // Second pass: Execution
+        foreach (var (isScript, contentOrName) in bundle.ExecutionOrder)
+        {
+            if (Stopped) break;
+            Completion c = isScript
+                ? RunInCurrentRealm(contentOrName, fileName, isModule: false)
+                : RunInCurrentRealm(_bundleModuleFiles[contentOrName], contentOrName, isModule: true);
+            if (c.Kind == CompletionKind.Terminated) break;
+            if (c.Kind == CompletionKind.Throw)
+            {
+                ReportException(CurrentRealm, c.Exception!);
+                success = false;
+            }
+        }
+        _bundleModuleFiles.Clear();
+        return true;  // Bundle handled successfully (even if execution failed)
     }
 
     bool Stopped => _timedOut || QuitCode is not null || _terminateRequested || _root._timedOut;
@@ -252,7 +293,8 @@ public sealed partial class D8Shell : IJsHost
         var realm = CurrentRealm;
         _sources[name] = source;
         if (isModule) _modules.Add(name);
-        var c = isModule ? realm.Realm.RunModule(source, name) : realm.Realm.RunScript(source, name);
+        var c = _options.CompileOnly ? realm.Realm.Compile(source, name, isModule)
+            : isModule ? realm.Realm.RunModule(source, name) : realm.Realm.RunScript(source, name);
         _realmCurrent = _realmSwitch;
         return c;
     }
@@ -640,6 +682,12 @@ public sealed partial class D8Shell : IJsHost
             resolved = NormalizePath(specifier, dir);
         }
         string importedBy = referrer.Length > 0 && _modules.Contains(referrer) ? "\n    imported by " + referrer : "";
+        if (_options.Bundle && _bundleModuleFiles.TryGetValue(resolved, out string? bundled))
+        {
+            _modules.Add(resolved);
+            _sources[resolved] = bundled;
+            return new ModuleSource(resolved, bundled, IsJson: type == "json");
+        }
         if (resolved.StartsWith(DataUrlPrefix, StringComparison.Ordinal))
         {
             _modules.Add(resolved);
@@ -650,6 +698,12 @@ public sealed partial class D8Shell : IJsHost
             throw new JsHostError("Error", $"d8: Reading module from {resolved} is not supported.{importedBy}");
         }
         if (!File.Exists(resolved)) throw new JsHostError("Error", $"d8: Error reading module from {resolved}{importedBy}");
+        if (type == "bytes")
+        {
+            // d8 reads a bytes module's file as raw data.
+            _modules.Add(resolved);
+            return new ModuleSource(resolved, "", Bytes: File.ReadAllBytes(resolved));
+        }
         string source = ReadText(resolved);
         _sources[resolved] = source;
         _modules.Add(resolved);

@@ -493,6 +493,11 @@ public sealed class KeyAccumulator(Isolate isolate, KeyCollectionMode mode, Prop
             return true;
         }
 
+        if (obj is JSDeferredModuleNamespace ns && ns.Module.ModuleStatus != Module.Status.kEvaluated)
+        {
+            JSDeferredModuleNamespace.EvaluateModuleSync(_isolate, ns);
+        }
+
         if (_mayHaveElements) CollectOwnElementIndices(obj);
         CollectOwnPropertyNames(obj);
         return true;
