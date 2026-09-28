@@ -62,6 +62,74 @@ internal static class InterpreterInlineCalls
     }
 
     /// <summary>
+    /// A call of Function.prototype.call (<paramref name="callTarget"/> is its
+    /// receiver) whose target can run in this loop: the target is entered with
+    /// <paramref name="thisArg"/> and the argument window after it, like
+    /// <see cref="PushFrame"/> (Function.prototype.call is an ASM builtin in V8,
+    /// with no frame of its own).
+    /// </summary>
+    public static bool TryPushFunctionCallFrame(Isolate isolate, ref InterpreterState st, JSValue callTarget, JSValue thisArg,
+        int argsStart, int argc, int returnPc)
+    {
+        if (!CanInline(callTarget, out JSFunction function)) return false;
+        PushFrame(isolate, ref st, function, thisArg, argsStart, argc, default, default, returnPc);
+        return true;
+    }
+
+    /// <summary>
+    /// A call of Function.prototype.apply (<paramref name="applyTarget"/> is its
+    /// receiver) whose target can run in this loop and whose argument list is
+    /// an unmodified arguments object or a fast array (CallWithArrayLike's fast
+    /// paths): the elements are pushed like an argument window and the target
+    /// entered like <see cref="PushFrame"/>. Function.prototype.apply is an ASM
+    /// builtin in V8, with no frame of its own. False, with nothing done, for
+    /// anything else.
+    /// </summary>
+    public static bool TryPushApplyFrame(Isolate isolate, ref InterpreterState st, JSValue applyTarget, JSValue thisArg,
+        JSValue argumentsList, int returnPc)
+    {
+        if (!CanInline(applyTarget, out JSFunction function)) return false;
+        FixedArrayBase? elements = null;
+        int length = 0;
+        if (!argumentsList.IsNullOrUndefined &&
+            !Builtins.BuiltinsFunction.TryGetFastElements(isolate, argumentsList, out elements, out length))
+        {
+            return false;
+        }
+        // The elements go into a window on the register stack below the frame
+        // (released with it), as V8 pushes them onto the machine stack.
+        int windowStart = isolate.RegisterStackTop;
+        if (windowStart + length + 64 > isolate.RegisterStackLimit) return false;
+        ref JSValue window = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), windowStart);
+        if (elements is FixedArray fixedArray)
+        {
+            JSValue[] data = fixedArray.Data;
+            for (int i = 0; i < length; i++)
+            {
+                // Holes (holey arrays with intact protectors) read as undefined.
+                JSValue value = data[i];
+                if (!ReferenceEquals(value._obj, Oddball.TheHole)) Unsafe.Add(ref window, i) = value;
+            }
+        }
+        else if (elements is FixedDoubleArray doubles)
+        {
+            for (int i = 0; i < length; i++)
+            {
+                if (!doubles.IsTheHole(i)) Unsafe.Add(ref window, i) = JSValue.FromNumber(doubles.GetScalar(i));
+            }
+        }
+        isolate.RegisterStackTop = windowStart + length;
+
+        SharedFunctionInfo shared = function.Shared;
+        if (!shared.Native && shared.LanguageMode == LanguageMode.Sloppy && !thisArg.IsJSReceiver)
+        {
+            thisArg = InterpreterCalls.ConvertReceiver(isolate, function, thisArg);
+        }
+        PushFrameCore(isolate, ref st, function, thisArg, windowStart, length, default, default, returnPc, windowStart, false, default);
+        return true;
+    }
+
+    /// <summary>
     /// The Construct bytecode for an ordinary (not derived) constructor with
     /// bytecode: collects the construct feedback, allocates the receiver
     /// (JSConstructStubGeneric) and enters the constructor like

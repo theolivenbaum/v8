@@ -72,6 +72,11 @@ public static partial class InterpreterExecution
     [MethodImpl(MethodImplOptions.NoInlining)]
     static bool TestTypeOf(JSValue value, TestTypeOfFlags.LiteralFlag literal) => InterpreterOps.TestTypeOf(value, literal);
 
+    /// <summary>Whether the callee is Function.prototype.call (of any realm).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsFunctionPrototypeCall(JSValue callee) =>
+        callee._obj is JSFunction function && function.Shared.BuiltinId == Builtin.FunctionPrototypeCall;
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void ThrowNestedPrefix() => throw new InvalidOperationException("V8Sharp: nested operand scale prefix");
 
@@ -559,10 +564,20 @@ public static partial class InterpreterExecution
         int slot = Unsigned<TS>(ref code, pc + 1 + 3 * S);
         JSValue receiver = Unsafe.Add(ref fp, first);
         InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+        if (typeof(TS) == typeof(SingleScale))
         {
-            InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, st.Fp + first + 1, count - 1, default, default, pc + 1 + 4 * S);
-            return true;
+            if (InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+            {
+                InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, st.Fp + first + 1, count - 1, default, default, pc + 1 + 4 * S);
+                return true;
+            }
+            // f.call(thisArg, ...args).
+            if (IsFunctionPrototypeCall(callee) &&
+                InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, count > 1 ? Unsafe.Add(ref fp, first + 1) : default,
+                    st.Fp + first + 2, count > 1 ? count - 2 : 0, pc + 1 + 4 * S))
+            {
+                return true;
+            }
         }
         st.Accumulator = InterpreterCalls.Call(isolate, callee, receiver, st.Fp + first + 1, count - 1,
             (Bytecode)Unsafe.Add(ref code, pc) == Bytecode.CallProperty
@@ -601,11 +616,21 @@ public static partial class InterpreterExecution
         int argOperand = Signed<TS>(ref code, pc + 1 + 2 * S);
         int slot = Unsigned<TS>(ref code, pc + 1 + 3 * S);
         InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+        if (typeof(TS) == typeof(SingleScale))
         {
-            InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
-                default, default, pc + 1 + 4 * S);
-            return true;
+            if (InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+            {
+                InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
+                    default, default, pc + 1 + 4 * S);
+                return true;
+            }
+            // f.call(thisArg).
+            if (IsFunctionPrototypeCall(callee) &&
+                InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, Reg<TS>(ref fp, ref code, pc + 1 + 2 * S), 0, 0,
+                    pc + 1 + 4 * S))
+            {
+                return true;
+            }
         }
         st.Accumulator = InterpreterCalls.Call(isolate, callee, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
             ConvertReceiverMode.NotNullOrUndefined);
@@ -624,12 +649,29 @@ public static partial class InterpreterExecution
         int arg1 = Signed<TS>(ref code, pc + 1 + 3 * S);
         int slot = Unsigned<TS>(ref code, pc + 1 + 4 * S);
         InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+        if (typeof(TS) == typeof(SingleScale))
         {
-            InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver,
-                arg1 == arg0 - 1 ? st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0 : -1, 2,
-                Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1), pc + 1 + 5 * S);
-            return true;
+            if (InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+            {
+                InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver,
+                    arg1 == arg0 - 1 ? st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0 : -1, 2,
+                    Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1), pc + 1 + 5 * S);
+                return true;
+            }
+            // f.call(thisArg, arg).
+            if (IsFunctionPrototypeCall(callee) &&
+                InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
+                    st.Fp + InterpreterRuntime.kRegisterOperandBase - arg1, 1, pc + 1 + 5 * S))
+            {
+                return true;
+            }
+            // f.apply(thisArg, arguments) (Class.create-style constructors).
+            if (ReferenceEquals(callee._obj, st.Context.NativeContext.FunctionPrototypeApply) &&
+                InterpreterInlineCalls.TryPushApplyFrame(isolate, ref st, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
+                    Unsafe.Subtract(ref fp, kRegBase + arg1), pc + 1 + 5 * S))
+            {
+                return true;
+            }
         }
         st.Accumulator = InterpreterCalls.Call2(isolate, callee, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
             Unsafe.Subtract(ref fp, kRegBase + arg1), st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0, arg1 == arg0 - 1,

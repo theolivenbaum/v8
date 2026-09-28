@@ -14,13 +14,14 @@ public static class InterpreterArguments
     {
         NativeContext nc = isolate.NativeContext;
         JSObject result = isolate.Factory.NewJSObjectFromMap(strict ? nc.StrictArgumentsMap : nc.SloppyArgumentsMap);
-        ObjectOps.SetProperty(isolate, result, ReadOnlyRoots.length_string, JSValue.FromInt(length), StoreOrigin.MaybeKeyed,
-            ShouldThrow.ThrowOnError);
-        if (!strict)
-        {
-            ObjectOps.SetProperty(isolate, result, ReadOnlyRoots.callee_string, callee, StoreOrigin.MaybeKeyed,
-                ShouldThrow.ThrowOnError);
-        }
+        // The FastNewSloppyArguments / FastNewStrictArguments builtins store
+        // length and callee into their in-object fields (the maps' first
+        // descriptors, JSSloppyArgumentsObject::kLengthIndex / kCalleeIndex)
+        // rather than through Object::SetProperty as the runtime does.
+        Debug.Assert(result.Map.InstanceDescriptors.GetKey(new InternalIndex(JSArgumentsObject.kLengthIndex)) == ReadOnlyRoots.length_string);
+        JSValue[] fields = result.RawFields;
+        fields[JSArgumentsObject.kLengthIndex] = JSValue.FromInt(length);
+        if (!strict) fields[JSArgumentsObject.kCalleeIndex] = callee;
         return result;
     }
 
