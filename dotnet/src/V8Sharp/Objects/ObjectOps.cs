@@ -157,6 +157,9 @@ public static class ObjectOps
     {
         if (representation.IsSmi) return obj.IsSmi;
         if (representation.IsDouble) return allowCoercion ? obj.IsNumber : obj.IsNumber && !obj.IsSmi;
+        // Deviation: V8 returns IsHeapObject(obj), which holds for a HeapNumber.
+        // JSValue numbers are unboxed, so a non-Smi number does not fit HeapObject
+        // and storing one generalizes the field to Tagged instead.
         if (representation.IsHeapObject) return !obj.IsNumber;
         if (representation.IsNone) return false;
         return true;
