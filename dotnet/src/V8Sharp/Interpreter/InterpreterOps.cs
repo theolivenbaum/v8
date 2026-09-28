@@ -176,11 +176,24 @@ public static class InterpreterOps
         Operation.Subtract => lhs - rhs,
         Operation.Multiply => lhs * rhs,
         Operation.Divide => lhs / rhs,
-        // C#'s % on doubles is fmod, which is what JS wants.
-        Operation.Modulus => lhs % rhs,
+        Operation.Modulus => Modulus(lhs, rhs),
         Operation.Exponentiate => InternalMath.pow(lhs, rhs),
         _ => throw new UnreachableException(),
     };
+
+    /// <summary>
+    /// The number modulus: CodeStubAssembler::SmiMod when both operands are
+    /// Smis (an integer remainder, -0 for a zero result of a negative
+    /// dividend), else Float64Mod (C#'s % on doubles is fmod, which is what
+    /// JS wants).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static double Modulus(double lhs, double rhs)
+    {
+        int a = (int)lhs, b = (int)rhs;
+        if (a == lhs && b == rhs && b > 0 && a >= 0 && (a != 0 || !double.IsNegative(lhs))) return a % b;
+        return lhs % rhs;
+    }
 
     /// <summary>Div, Mod, Exp and the other arithmetic operators with feedback.</summary>
     public static JSValue Binary(Isolate isolate, Operation op, JSValue lhs, JSValue rhs, ref byte feedback)
