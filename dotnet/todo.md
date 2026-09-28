@@ -164,10 +164,33 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler), which the
       compiler port must register. The proxy trap stubs (ProxyGetProperty ...)
       and CallProxy/ConstructProxy are not registered: callers use JSProxy.
-      Still to do: Array, Number (except parseInt/parseFloat), Math,
-      JSON, Date, Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry,
+      Still to do: Array, Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry,
       Promise, generators/iterators, ArrayBuffer/TypedArray/DataView/Atomics,
-      BigInt, Iterator helpers, DisposableStack
+      Iterator helpers, DisposableStack
+- [~] Number, Math, BigInt, JSON, Date builtins (Builtins/Builtins.{Number,
+      Math,BigInt,Json,Date}*.cs, Json/, Date/, Objects/BigInt*.cs): every
+      builtin of builtins-number.cc/number.tq (toString(radix), toFixed,
+      toExponential, toPrecision, toLocaleString without ICU, is*, valueOf,
+      the Number constructor), math.tq/builtins-math.cc (all functions,
+      hypot fast/slow paths, xorshift128+ Math.random with --random-seed,
+      Math.sumPrecise with Xsum, f16round), builtins-bigint.cc/.tq
+      (constructor, asIntN/asUintN, toString, operators with the NoThrow
+      stubs), src/objects/bigint.cc on V8Sharp.Base.BigInts (the System.Numerics
+      bridge is gone), src/json (parser with the reviver context argument,
+      stringifier, rawJSON/isRawJSON), src/date (DateCache with the offset
+      cache, dateparser, MakeDay/MakeTime/TimeClip, ToDateString) and
+      builtins-date.cc/-gen.cc. Tests (tests/V8Sharp.Tests/{Builtins,Date,
+      Json}): bigint-unittest CompareToDouble, date-unittest (DST cache,
+      legacy parser counter), json-unittest (seeded instead of fuzzed), and
+      oracle differentials: BigInt ops on random values up to 800 digits,
+      Date.parse over the mjsunit date strings plus extra formats, the Date
+      string formats and getters/setters (also run under TZ=America/New_York,
+      Europe/London, Asia/Kolkata, America/Sao_Paulo), 770 JSON texts through
+      parse+stringify. Waiting for the interpreter: the test262/mjsunit runs
+      of built-ins/{Number,Math,BigInt,JSON,Date}; JSON.parse revivers and
+      stringify replacer functions/toJSON only have builtin-function tests.
+      Not ported: FastJsonStringifier and JSDataObjectBuilder (see
+      deviations.md, JSON), the typed-array fast path of IterableForEach.
 - [~] String and RegExp builtins (Builtins/Builtins.String*.cs,
       Builtins.RegExp*.cs, Runtime/Runtime.Regexp.cs, Runtime.Strings.cs,
       Objects/JSRegExp*.cs, Strings/StringSearch.cs): every String,
@@ -213,8 +236,6 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 Stand-ins in the engine that go away when the component they wait for merges
 (each marked `TODO(merge)` at the site):
 
-- `src/V8Sharp/Objects/BigIntOps.cs`: replace the System.Numerics bridge with
-  V8Sharp.Base.BigInts.
 - `src/V8Sharp/Objects/HashTable.cs` (`Hashing`) and
   `src/V8Sharp/Strings/StringHasher.cs`: use V8Sharp.Base's hashing
   (rapidhash with the isolate's hash seed).

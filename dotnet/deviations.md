@@ -235,8 +235,6 @@ Execution
 - `KeyAccumulator` does not use the prototype-info enum cache.
 - Hash tables use local copies of V8's hashers (`Hashing.ComputeSeededHash`
   and friends) until V8Sharp.Base lands.
-- `BigInt` operations go through `System.Numerics.BigInteger`
-  (`BigIntOps.cs`) until the port of `src/bigint` lands.
 
 Bootstrapper
 - No snapshot: `Bootstrapper.CreateEnvironment` builds every native context
@@ -334,3 +332,74 @@ Bootstrapper
   registered by the global functions' area.
 - `Isolate.CountUsage` is a no-op (no use counters).
 
+## Builtins: Number, Math, BigInt, JSON, Date
+
+Number and Math
+- Math.random: V8's Genesis calls MathRandom::InitializeContext; here the
+  state object of the native context (MATH_RANDOM_STATE_INDEX) is created on
+  first use. The isolate's random number generator (seeded from
+  --random-seed or the OS) lives in a table keyed by the isolate.
+- Math.sumPrecise: IterableForEach (builtins-iterator-inl.h) is ported
+  without the typed-array fast path (no typed arrays in the object model)
+  and the JSSetIterator medium fast path; both only skip the iteration
+  protocol when its lookup chain is intact, so the generic path gives the
+  same result. Visitors are a struct interface instead of lambdas.
+- The Float64* machine operations are V8Sharp.Base's Ieee754 kernels
+  (correctly rounded, like the llvm-libc functions this tree uses); the
+  oracle (14.7, fdlibm) can differ by one ulp (see V8Sharp.Base).
+
+BigInt
+- MutableBigInt is the BigInt under construction (digits array plus a
+  length that Canonicalize trims) instead of a separate heap type; a
+  canonical 0n instance is shared (V8 allocates one per result; BigInt
+  identity is not observable).
+- MutableBigInt_AbsoluteModAndCanonicalize's cached-divisor fast path
+  (heap->cached_bigint_divisor) is not used: the modulus always takes
+  ModuloSmall/ModuloLarge (same result).
+- The isolate's bigint::Processor is kept in a table keyed by the isolate;
+  it polls TerminateExecution like V8's.
+
+JSON
+- Strings are UTF-16: the parser is V8's two-byte instantiation, and the
+  string scan uses SearchValues (V8: Highway on one-byte strings).
+- JSON.parse builds objects with CreateDataProperty in source order
+  (elements first) instead of JSDataObjectBuilder with the previous array
+  element's map as feedback, and without the recursive ParseJsonValueRecursive
+  / numeric-array fast path (one iterative parser for all inputs). Keys,
+  order, values, duplicate handling and elements kinds of arrays are the
+  same; only backing-store choices (e.g. dictionary elements) can differ.
+- JSON.parse internalizes only property keys; V8 also internalizes short
+  one-byte values within a heuristic budget. Not observable.
+- JSON.parse always passes the context argument to the reviver; V8 skips
+  collecting source text when the reviver can only access fewer than three
+  formal parameters (unobservable by such a reviver).
+- JSON.stringify: FastJsonStringifier (a side-effect-free serializer that
+  restarts in JsonStringifier when it gives up) is not ported; the output is
+  the same. JsonStringifier always keeps the cycle-detection stack (V8
+  starts without it and restarts with one when needed) and has no
+  SimplePropertyKeyCache. Output goes into one pooled UTF-16 buffer.
+- A proxy in the prototype chain counts as "may have interesting
+  properties" (the toJSON lookup is always done for it).
+
+Date
+- The time zone without ICU: V8 asks localtime_r (tm_gmtoff, tm_isdst,
+  tm_zone); V8Sharp asks TimeZoneInfo.Local, which honours TZ and reads the
+  same tz database on Linux. DaylightSavingsOffset is one hour when the
+  instant is in DST and the local offset is the current standard offset, as
+  in V8's non-ICU build (so historical offset changes, 30-minute DST and LMT
+  are not reproduced, exactly like non-ICU V8). The zone name printed by
+  toString is TimeZoneInfo's StandardName/DaylightName, which are the tz
+  abbreviations tm_zone reports ("EST", "BST", "IST"), except that UTC zones
+  print "UTC"/"GMT" (.NET says "Coordinated Universal Time") and historical
+  abbreviations (LMT, EWT) are not available.
+- The oracle has ICU: its toString prints long names ("Coordinated Universal
+  Time", "Eastern Standard Time") and it applies historical offsets, so the
+  differential tests strip the name and compare local-time results only for
+  1971..2037 outside UTC. Europe/Moscow 2011-2014 (+4) is a known difference
+  (non-ICU V8 uses the current +3, as V8's own comment in
+  DateCache::GetLocalOffsetFromOS says).
+- DateParser is the two-byte instantiation; the kLegacyDateParser use count
+  is also reported through an out parameter of DateParser.Parse (for the
+  port of DateParseLegacyUseCounter; Isolate.CountUsage is a no-op).
+- The isolate's DateCache, date cache stamp and DateTimeConfigurationChange-
+  Notification are a partial Isolate in Date/TimezoneCache.cs.
