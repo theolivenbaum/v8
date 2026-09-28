@@ -1088,9 +1088,20 @@ public static partial class IteratorBuiltins
                 Map fastIteratorResultMap = isolate.NativeContext.IteratorResultMap;
                 // v. Repeat, while innerAlive is true,
                 //    1. Let innerValue be ? IteratorStepValue(iteratorRecord).
-                // (An exception leaves the iterator done: the catch below marks the
-                // helper exhausted without closing the inner iterator.)
-                if (!IteratorStepValue(isolate, helper.UnderlyingIterator, fastIteratorResultMap, out JSValue value))
+                bool hasValue;
+                JSValue value;
+                try
+                {
+                    hasValue = IteratorStepValue(isolate, helper.UnderlyingIterator, fastIteratorResultMap, out value);
+                }
+                catch (JavaScriptException)
+                {
+                    // label DoneWithException: V8 closes the inner iterator
+                    // (IteratorCloseOnException) even though its next() threw.
+                    IteratorCloseOnException(isolate, helper.UnderlyingIterator.Object);
+                    throw;
+                }
+                if (!hasValue)
                 {
                     // 2. If innerValue is done, then
                     //    a. Set innerAlive to false.
