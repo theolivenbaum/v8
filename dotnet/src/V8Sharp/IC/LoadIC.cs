@@ -865,7 +865,7 @@ public sealed class KeyedLoadIC : IC
         return false;
     }
 
-    static bool IsOutOfBoundsAccess(JSValue receiver, ulong index)
+    internal static bool IsOutOfBoundsAccess(JSValue receiver, ulong index)
     {
         ulong length;
         switch (receiver.HeapObjectOrNull)

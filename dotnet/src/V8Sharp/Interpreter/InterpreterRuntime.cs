@@ -84,4 +84,14 @@ public static class InterpreterRuntime
             "V8Sharp: constant pool entry of type " + entry.GetType().Name + " cannot be materialized: " +
             Convert.ToString(entry, CultureInfo.InvariantCulture)),
     };
+
+    /// <summary>Factory::NewJSIteratorResult: {value, done} with the iterator result map.</summary>
+    public static JSObject NewJSIteratorResult(Isolate isolate, JSValue value, bool done)
+    {
+        JSObject result = isolate.Factory.NewJSObjectFromMap(isolate.NativeContext.IteratorResultMap);
+        result.EnsureFieldCapacity(2);
+        result._fields[0] = value;
+        result._fields[1] = JSValue.FromBoolean(done);
+        return result;
+    }
 }

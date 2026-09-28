@@ -58,6 +58,8 @@ public static partial class InterpreterExecution
         ref JSValue fpRef = ref stack[fp];
         Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset) = receiver;
         for (int i = 0; i < argc; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = arguments[i];
+        // Missing arguments are undefined (V8's argument adaption).
+        for (int i = argc; i < paramSlots; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = default;
 
         return EnterFrame(isolate, function, bytecode, fp, start, argc, newTargetOrGenerator, isConstruct);
     }
@@ -86,6 +88,8 @@ public static partial class InterpreterExecution
         Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset) = receiver;
         ref JSValue src = ref Unsafe.Add(ref stack0, argsStart);
         for (int i = 0; i < argc; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = Unsafe.Add(ref src, i);
+        // Missing arguments are undefined (V8's argument adaption).
+        for (int i = argc; i < paramSlots; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = default;
 
         return EnterFrame(isolate, function, bytecode, fp, start, argc, newTargetOrGenerator, isConstruct);
     }
@@ -102,6 +106,9 @@ public static partial class InterpreterExecution
         Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset) = context;
         Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset) = function;
         Unsafe.Add(ref fpRef, InterpreterRuntime.kArgcOffset) = JSValue.FromInt(argc);
+
+        // The trampoline fills the register file with undefined.
+        stack.AsSpan(fp, bytecode.RegisterCount).Clear();
 
         Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
         if (incoming.IsValid) Unsafe.Add(ref fpRef, incoming.Index) = newTargetOrGenerator;

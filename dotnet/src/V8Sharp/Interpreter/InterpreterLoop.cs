@@ -491,7 +491,7 @@ public static partial class InterpreterExecution
                 {
                     JSValue boilerplate = constants[Unsigned<TS>(ref code, pc + 1)];
                     int startSlot = Unsigned<TS>(ref code, pc + 1 + S);
-                    RuntimeLiterals.SetPrototypeProperties(isolate, context, acc, boilerplate,
+                    acc = RuntimeLiterals.SetPrototypeProperties(isolate, context, acc, boilerplate.As<ObjectBoilerplateDescription>(),
                         JSFunctionFeedback.GetClosureFeedbackCellArray(function), startSlot);
                     pc += 1 + 2 * S;
                     continue;
@@ -1043,7 +1043,8 @@ public static partial class InterpreterExecution
                     JSValue description = constants[Unsigned<TS>(ref code, pc + 1)];
                     int slot = Unsigned<TS>(ref code, pc + 1 + S);
                     int flags = Byte(ref code, pc + 1 + 2 * S);
-                    acc = RuntimeLiterals.CreateArrayLiteral(isolate, fv, slot, description, flags);
+                    acc = RuntimeLiterals.CreateArrayLiteral(isolate, fv, slot, description.As<ArrayBoilerplateDescription>(),
+                        CreateArrayLiteralFlags.DecodeFlags((byte)flags));
                     pc += 2 + 2 * S;
                     continue;
                 }
@@ -1060,7 +1061,8 @@ public static partial class InterpreterExecution
                     JSValue description = constants[Unsigned<TS>(ref code, pc + 1)];
                     int slot = Unsigned<TS>(ref code, pc + 1 + S);
                     int flags = Byte(ref code, pc + 1 + 2 * S);
-                    acc = RuntimeLiterals.CreateObjectLiteral(isolate, fv, slot, description, flags);
+                    acc = RuntimeLiterals.CreateObjectLiteral(isolate, fv, slot, description.As<ObjectBoilerplateDescription>(),
+                        CreateObjectLiteralFlags.DecodeFlags((byte)flags));
                     pc += 2 + 2 * S;
                     continue;
                 }
@@ -1081,7 +1083,7 @@ public static partial class InterpreterExecution
                 {
                     JSValue description = constants[Unsigned<TS>(ref code, pc + 1)];
                     int slot = Unsigned<TS>(ref code, pc + 1 + S);
-                    acc = RuntimeLiterals.GetTemplateObject(isolate, function.Shared, description, fv, slot);
+                    acc = RuntimeLiterals.GetTemplateObject(isolate, function.Shared, description.As<TemplateObjectDescription>(), fv, slot);
                     pc += 1 + 2 * S;
                     continue;
                 }
@@ -1090,7 +1092,7 @@ public static partial class InterpreterExecution
                     var shared = constants[Unsigned<TS>(ref code, pc + 1)].As<SharedFunctionInfo>();
                     int slot = Unsigned<TS>(ref code, pc + 1 + S);
                     FeedbackCell cell = JSFunctionFeedback.GetClosureFeedbackCellArray(function).Get(slot);
-                    acc = RuntimeFunctions.NewClosure(isolate, shared, context, cell);
+                    acc = RuntimeClosures.NewClosure(isolate, shared, context, cell);
                     pc += 2 + 2 * S;
                     continue;
                 }
