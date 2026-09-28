@@ -144,6 +144,44 @@ for now, to be revisited when the reason goes away.
   `Register.InvalidValue()`.
 - Bytecode verifier (sandbox) not ported; `Disassemble` prints offsets, not
   addresses.
+- Bytecode generator: RAII helper scopes (`ControlScope` and subclasses,
+  `RegisterAllocationScope`, `ContextScope`, `HoleCheckElisionScope`, ...)
+  are `IDisposable` classes or ref structs used with `using`; the
+  `ExpressionResultScope` kinds (effect, value, test) are one pooled class
+  recycled through a per-generator free list instead of stack objects. The
+  `BuildTryCatch`/`BuildTryFinally` lambdas are C# delegates. Same bytecode.
+- Bytecode generator: heap objects are data descriptions behind
+  `IBytecodeGeneratorHeap` (`SharedFunctionInfoDescription`,
+  `ObjectBoilerplateDescriptionData`, `ArrayBoilerplateDescriptionData`,
+  `TemplateObjectDescriptionData`, `ClassBoilerplateDescription`,
+  `FixedArrayDescription`, `CoverageInfoDescription`); V8 allocates them in
+  `AllocateDeferredConstants`/`FinalizeBytecode`. Provisional until the object
+  model implements the interface. `ClassBoilerplate::New` is not ported: the
+  class boilerplate is the class literal itself.
+- Bytecode generator: `AddToEagerLiteralsIfEager` ignores
+  `should_parallel_compile()`: V8 posts those literals to the lazy compile
+  dispatcher, which V8Sharp does not have. The parser only marks literals for
+  parallel compile under flags V8Sharp leaves off.
+- Golden bytecode tests (`GoldenBytecodeCompiler`, `GoldenFunctionResolver`):
+  generate-bytecode-expectations runs the script and fetches the global test
+  function (or the callee); the port has no interpreter yet, so the harness
+  compiles the whole script eagerly and finds the function with a small
+  static evaluator (declarations, assignments, `new C().m`, `C.prototype.m`,
+  `C.m`, calls returning functions, `arguments.callee`, the `.result`
+  completion). A direct eval of a string literal is compiled in the harness
+  against a managed ScopeInfo, eagerly, where V8 uses `--lazy-eval`; the
+  bytecode is the same for the golden snippets.
+- Constant briefs in `Disassemble` (`<ScopeInfo>`, `<ClassBoilerplate>`, long
+  `<BigInt ...>`) do not print what V8's heap printer prints (scope type,
+  truncated digits), because there is no heap object behind them.
+- Oracle comparison (`OracleBytecodeGeneratorTest`): V8 14.7 differs from this
+  tree in feedback slots (14.7 has slots where this tree embeds feedback),
+  the TDZ hole bytecodes (renamed `*TdzHole` here), `typeof x == "literal"`
+  (TypeOf + compare in 14.7, TestTypeOf here), the `yield` result intrinsic
+  (`_GeneratorYieldResult` here), cross-closure TDZ check elision (here only),
+  an unused `.result` register 14.7 reserves in scripts with lexical
+  declarations, and the Smi range of the ClearScript build (32-bit Smis). The
+  test normalizes the first two and lists the rest per function.
 
 ## V8Sharp engine: objects and execution
 
