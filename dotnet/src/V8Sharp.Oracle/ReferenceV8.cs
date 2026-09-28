@@ -120,6 +120,10 @@ public sealed class ReferenceV8 : IDisposable
 
     public void Dispose() => _engine.Dispose();
 
+    /// <summary>Installs the resolver that maps P/Invokes of this assembly to
+    /// the ClearScript native library (the copy ClearScript itself loads).</summary>
+    internal static void EnsureNativeResolver() => Native.EnsureResolver();
+
     static class Native
     {
         const string Lib = "ClearScriptV8";
