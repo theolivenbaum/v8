@@ -29,6 +29,11 @@ public sealed class OracleEngine : IJsEngine
         // a temporary file instead; a test that sets these flags still wins.
         ReferenceV8.SetFlags("--no-logfile-per-isolate");
         ReferenceV8.SetFlags("--logfile=+");
+        // WebAssembly's trap handler catches out-of-bounds accesses with a
+        // SIGSEGV handler, which fights the .NET runtime's own: out-of-bounds
+        // traps then crash the worker at random. Explicit bounds checks give
+        // the same semantics (V8's no_wasm_traps variant).
+        ReferenceV8.SetFlags("--no-wasm-trap-handler");
         foreach (var f in flags)
         {
             // d8's --no-can-block is Isolate::SetAllowAtomicsWait(false).
@@ -478,13 +483,13 @@ sealed class OracleRealm : IJsRealm
             if (c1 <= 0 || !int.TryParse(loc[(c1 + 1)..c2], out int ln) || !int.TryParse(loc[(c2 + 1)..], out int col)) break;
             // The shell's own name for the script (d8 prints names as given).
             string name = loc[..c1];
-            if (_isolate.ShellNames.TryGetValue(new Uri(name, UriKind.RelativeOrAbsolute) is { IsAbsoluteUri: true } u ? u.AbsoluteUri : name, out var shellName))
+            if (name.StartsWith('/') && _isolate.ShellNames.TryGetValue(new Uri(name).AbsoluteUri, out var shellName))
             {
                 name = shellName;
             }
             // ExecutionStarted is false for a compile (parse) error.
             bool isSyntax = !e.ExecutionStarted || (exception is ScriptObject so && IsCompileError(so, details));
-            int start = col - 1;
+            int start = Math.Max(0, col - 1);
             int end = start + 1;
             if (isSyntax && sourceLine is not null)
             {
@@ -527,7 +532,7 @@ sealed class OracleRealm : IJsRealm
     /// <c>^^^</c> underline of a parse error (v8::Message's end column).</summary>
     internal static int TokenLength(string line, int start)
     {
-        if (start >= line.Length) return 1;
+        if (start < 0 || start >= line.Length) return 1;
         char c = line[start];
         int i = start;
         if (char.IsLetter(c) || c is '_' or '$' or '\\' || char.IsSurrogate(c))

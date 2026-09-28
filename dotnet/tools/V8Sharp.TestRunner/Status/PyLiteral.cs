@@ -227,13 +227,20 @@ internal sealed class PyExpression
         _ => true,
     };
 
+    // While > 0, operands are parsed but not evaluated: Python's and/or
+    // short-circuit, so 'x or variant == y' needs no variant when x holds.
+    int _skip;
+
     object? Or()
     {
         var left = And();
         while (_lx.Accept("or"))
         {
+            bool done = _skip == 0 && Truthy(left);
+            if (done) _skip++;
             var right = And();
-            left = Truthy(left) ? left : right;
+            if (done) _skip--;
+            else left = right;
         }
         return left;
     }
@@ -243,8 +250,11 @@ internal sealed class PyExpression
         var left = Not();
         while (_lx.Accept("and"))
         {
+            bool done = _skip == 0 && !Truthy(left);
+            if (done) _skip++;
             var right = Not();
-            left = Truthy(left) ? right : left;
+            if (done) _skip--;
+            else left = right;
         }
         return left;
     }
@@ -262,11 +272,17 @@ internal sealed class PyExpression
         {
             if (_lx.Accept("==")) { left = PyEquals(left, Primary()); continue; }
             if (_lx.Accept("!=")) { left = !PyEquals(left, Primary()); continue; }
-            if (_lx.Accept("in")) { left = Contains(Primary(), left); continue; }
+            if (_lx.Accept("in"))
+            {
+                var container = Primary();
+                left = _skip > 0 ? null : Contains(container, left);
+                continue;
+            }
             if (_lx.Peek.Text == "not" && _lx.PeekAt(1).Text == "in")
             {
                 _lx.Next(); _lx.Next();
-                left = !Contains(Primary(), left);
+                var container = Primary();
+                left = _skip > 0 ? null : !Contains(container, left);
                 continue;
             }
             return left;
@@ -305,6 +321,7 @@ internal sealed class PyExpression
                     case "False": return false;
                     case "None": return null;
                 }
+                if (_skip > 0) return null;
                 if (_vars.TryGetValue(t.Text, out var v)) return v;
                 if (t.Text == "variant") throw new VariantExpressionException();
                 throw new KeyNotFoundException($"name '{t.Text}' is not defined");

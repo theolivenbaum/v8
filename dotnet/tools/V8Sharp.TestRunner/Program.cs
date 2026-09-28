@@ -25,6 +25,7 @@ public static class Program
           --json FILE                results file (default dotnet/artifacts/testrunner/<engine>-<suites>.json)
           --run-skipped              also run tests the status files mark SKIP
           --show-failures N          list at most N new failures (default 20)
+          --rerun-failures N         run unexpected results again N times (default 1; flaky = passes on rerun)
           --list                     list the selected tests and their d8 command lines
 
         shell runs one d8 command line in-process, like d8 itself (run from the V8 root).
@@ -101,6 +102,7 @@ public static class Program
                 case "--json": o.JsonPath = Path.GetFullPath(Next()); break;
                 case "--run-skipped": o.RunSkipped = true; break;
                 case "--show-failures": o.ShowFailures = int.Parse(Next(), CultureInfo.InvariantCulture); break;
+                case "--rerun-failures": o.RerunFailures = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                 case "--list": o.ListOnly = true; break;
                 case "-h" or "--help": Console.WriteLine(Usage); return 0;
                 default:

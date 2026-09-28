@@ -95,8 +95,26 @@ public static class Worker
                 return 3;
             }
             Write(protocol, resp);
+            RemoveLogFiles(workingDirectory);
         }
         return 0;
+    }
+
+    /// <summary>V8's per-isolate log files ("isolate-&lt;address&gt;-&lt;pid&gt;-v8.log")
+    /// that tests with --log/--prof flags write to the working directory, the
+    /// V8 root. Only this process's files are touched.</summary>
+    static void RemoveLogFiles(string workingDirectory)
+    {
+        try
+        {
+            foreach (var f in Directory.EnumerateFiles(workingDirectory, $"isolate-*-{Environment.ProcessId}-*"))
+            {
+                File.Delete(f);
+            }
+        }
+        catch (IOException)
+        {
+        }
     }
 
     static string Run(Action a)

@@ -33,7 +33,7 @@ public sealed class D8Shell : IJsHost
     readonly List<int> _realmStack = [];
     int _realmCurrent;
     int _realmSwitch;
-    object? _realmShared = JsUndefined.Value;
+    object? _realmSharedBox;
     readonly Queue<(RealmState Realm, object Callback)> _tasks = new();
     readonly List<(object Promise, object? Value, RealmState Realm)> _unhandled = [];
     readonly Dictionary<string, string> _sources = new(StringComparer.Ordinal);
@@ -439,11 +439,9 @@ public sealed class D8Shell : IJsHost
                     _ => throw new JsTermination(),
                 };
             }
-            case "realmSharedGet":
-                return _realmShared;
-            case "realmSharedSet":
-                _realmShared = A(0);
-                return JsUndefined.Value;
+            case "realmSharedBox":
+                _realmSharedBox ??= Check(_realms[0]!.Realm.RunScript("({ value: undefined })", "(d8)"), "Realm.shared");
+                return _realmSharedBox;
             case "unsupported":
                 throw new JsHostError("Error", $"{A(0)} is not supported by the V8Sharp test host");
             default:

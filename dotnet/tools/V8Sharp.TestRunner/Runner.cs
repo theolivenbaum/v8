@@ -27,6 +27,10 @@ public sealed class RunnerOptions
     public bool RunSkipped { get; set; }
     public bool ListOnly { get; set; }
     public int ShowFailures { get; set; } = 20;
+
+    /// <summary>Unexpected outcomes are run again this many times; a test that
+    /// then behaves as expected counts as passing and is marked flaky.</summary>
+    public int RerunFailures { get; set; } = 1;
     public string? Test262Root { get; set; }
     public string? JsonPath { get; set; }
     public string V8Root { get; set; } = "";
@@ -38,6 +42,9 @@ public sealed class RunnerOptions
 public sealed record TestResult(TestCase Test, string Outcome, RunOutput? Output, bool Unexpected, bool Known)
 {
     public bool Skipped => Output is null;
+
+    /// <summary>The first run was unexpected, a rerun was not.</summary>
+    public bool Flaky { get; init; }
 }
 
 public sealed class SuiteReport
@@ -238,6 +245,7 @@ public sealed class Runner(RunnerOptions options)
         var executor = new Executor(options.Engine, options.V8Root, options.Jobs, TimeSpan.FromSeconds(options.TimeoutSeconds));
         await executor.RunAsync(toRun, OnResult, cancel).ConfigureAwait(false);
         if (tty) options.Out.WriteLine();
+        await RerunFailuresAsync(executor, reportsBySuite, cancel).ConfigureAwait(false);
 
         foreach (var report in Reports)
         {
@@ -275,6 +283,43 @@ public sealed class Runner(RunnerOptions options)
         WriteJson(clock.Elapsed);
         bool anyNewFailures = Reports.Any(r => r.NewlyFailing.Count > 0);
         return options.UpdateExpectations || !anyNewFailures ? 0 : 1;
+    }
+
+    /// <summary>run-tests.py --rerun-failures-count: runs unexpected results
+    /// again (not the ones a glob line of the expectation file covers).</summary>
+    async Task RerunFailuresAsync(Executor executor, Dictionary<string, SuiteReport> reports, CancellationToken cancel)
+    {
+        for (int pass = 0; pass < options.RerunFailures; pass++)
+        {
+            var index = new Dictionary<TestCase, (SuiteReport Report, int Index)>();
+            foreach (var report in reports.Values)
+            {
+                for (int i = 0; i < report.Results.Count; i++)
+                {
+                    var r = report.Results[i];
+                    if (r.Unexpected && report.Expectations!.MatchingPattern(r.Test.Id) is null) index[r.Test] = (report, i);
+                }
+            }
+            if (index.Count == 0 || cancel.IsCancellationRequested) return;
+            options.Out.WriteLine($">>> Rerunning {index.Count} unexpected results");
+            var sync = new object();
+            int flaky = 0;
+            await executor.RunAsync([.. index.Keys], (t, output) =>
+            {
+                string outcome = t.OutProc.GetOutcome(output);
+                if (!t.ExpectedOutcomes.Contains(outcome))
+                {
+                    return;
+                }
+                lock (sync)
+                {
+                    var (report, i) = index[t];
+                    report.Results[i] = new TestResult(t, outcome, output, false, false) { Flaky = true };
+                    flaky++;
+                }
+            }, cancel).ConfigureAwait(false);
+            options.Out.WriteLine($">>> {flaky} of them behaved as expected on rerun (flaky)");
+        }
     }
 
     static string DirectoryOf(TestCase t)
@@ -378,6 +423,7 @@ public sealed class Runner(RunnerOptions options)
                 else
                 {
                     j["unexpected"] = t.Unexpected;
+                    if (t.Flaky) j["flaky"] = true;
                     j["ms"] = Math.Round(t.Output!.Duration.TotalMilliseconds);
                     if (t.Unexpected)
                     {

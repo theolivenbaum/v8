@@ -17,17 +17,17 @@ public class ConformanceGates
         "mjsunit/array-join",
         "mjsunit/string-replace",
         "mjsunit/json",
-        "mjsunit/regexp",
+        "mjsunit/regexp-global",
         "mjsunit/math-min-max",
         "mjsunit/number-tostring",
         "mjsunit/object-define-property",
-        "mjsunit/es6/symbols",
+        "mjsunit/es6/promise-all",
         "mjsunit/es6/generators-objects",
         "mjsunit/es6/classes",
         "mjsunit/es6/proxies",
         "mjsunit/es6/typedarray",
         "mjsunit/harmony/modules-import-1",
-        "mjsunit/regress/regress-1119",
+        "mjsunit/es6/templates",
         "mjsunit/cross-realm-global-prototype",
         "mjsunit/realm-property-access",
         "mjsunit/es8/async-await-basic",
@@ -37,9 +37,9 @@ public class ConformanceGates
         "test262/built-ins/Promise/all/resolve-element-function-nonconstructor",
         "test262/built-ins/Promise/prototype/then/resolve-pending-fulfilled-non-obj",
         "test262/built-ins/Proxy/get/trap-is-undefined",
-        "test262/built-ins/ArrayBuffer/prototype/slice/this-is-detached",
+        "test262/built-ins/ArrayBuffer/prototype/slice/end-default-if-absent",
         "test262/built-ins/TypedArray/prototype/fill/detached-buffer",
-        "test262/built-ins/RegExp/prototype/exec/15.10.6.2_A1_T1",
+        "test262/built-ins/RegExp/prototype/exec/S15.10.6.2_A10",
         "test262/built-ins/JSON/parse/text-negative-zero",
         "test262/built-ins/Function/prototype/toString/method-class-expression",
         "test262/built-ins/Object/defineProperty/15.2.3.6-4-1",
@@ -51,8 +51,12 @@ public class ConformanceGates
         "test262/language/statements/for-of/iterator-next-reference",
         "test262/annexB/built-ins/String/prototype/substr/start-and-length-as-numbers",
         "test262/language/types/number/S8.5_A2.1",
+        "test262/language/expressions/await/async-await-interleaved",
+        "test262/language/expressions/await/early-errors-await-not-simple-assignment-target",
         "message/fail/array-spread-non-iterable-object",
         "message/fail/arrow-bare-rest-param",
+        "message/fail/simple-throw",
+        "webkit/fast/js/basic-strict-mode",
     ];
 
     [Fact]
@@ -73,7 +77,7 @@ public class ConformanceGates
                 TimeoutSeconds = 60,
                 Out = output,
             };
-            options.Suites.AddRange(["mjsunit", "test262", "message"]);
+            options.Suites.AddRange(["mjsunit", "test262", "message", "webkit"]);
             options.Filters.AddRange(OracleSmokeTests);
             var runner = new Runner(options);
             await runner.RunAsync(TestContext.Current.CancellationToken);

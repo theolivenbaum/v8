@@ -205,9 +205,13 @@ public sealed partial class Test262Frontmatter
     static string Scalar(string s)
     {
         s = s.Trim();
+        if (s.Length >= 2 && s[0] is '"' or '\'')
+        {
+            int close = s.IndexOf(s[0], 1);
+            if (close > 0) return s[1..close];
+        }
         int hash = s.IndexOf(" #", StringComparison.Ordinal);
-        if (hash >= 0 && !(s.StartsWith('"') || s.StartsWith('\''))) s = s[..hash].TrimEnd();
-        if (s.Length >= 2 && ((s[0] == '"' && s[^1] == '"') || (s[0] == '\'' && s[^1] == '\''))) s = s[1..^1];
+        if (hash >= 0) s = s[..hash].TrimEnd();
         return s;
     }
 }

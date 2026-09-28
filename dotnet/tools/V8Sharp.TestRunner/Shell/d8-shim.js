@@ -83,9 +83,11 @@
   set(Realm, 'dispose', fn('dispose', (i) => host('realmDispose', i)));
   set(Realm, 'switch', fn('switch', (i) => host('realmSwitch', i)));
   set(Realm, 'eval', fn('eval', (i, s) => host('realmEval', i, s)));
+  // The shared value lives in a JS object of the main realm, so any value
+  // (a symbol too) survives without crossing into the host.
   ObjectDefineProperty(Realm, 'shared', {
-    get: fn('shared', () => host('realmSharedGet')),
-    set: fn('shared', (v) => host('realmSharedSet', v)),
+    get: fn('shared', () => host('realmSharedBox').value),
+    set: fn('shared', (v) => { host('realmSharedBox').value = v; }),
     enumerable: true,
     configurable: true,
   });
