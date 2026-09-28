@@ -84,4 +84,20 @@ public class EngineConformanceTest : TestWithContext
              %ConstructConsString("Concatenated", "String")].join();
             """));
     }
+
+    // mjsunit/disallow-codegen-from-strings: direct eval and Function check
+    // allow_code_gen_from_strings (--disallow-code-generation-from-strings).
+    [Fact]
+    public void DisallowCodeGenerationFromStrings()
+    {
+        i_isolate.NativeContext.AllowCodeGenFromStrings = JSValue.False;
+        Assert.Equal("EvalError: Code generation from strings disallowed for this context|EvalError|EvalError|5", RunString("""
+            var r = [];
+            try { eval("1 + 1"); } catch (e) { r.push(String(e)); }
+            try { (0, eval)("1 + 1"); } catch (e) { r.push(e.name); }
+            try { Function("x", "return x"); } catch (e) { r.push(e.name); }
+            r.push(eval(5));
+            r.join("|");
+            """));
+    }
 }

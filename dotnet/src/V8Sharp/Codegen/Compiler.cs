@@ -391,8 +391,17 @@ namespace V8Sharp.Codegen
         {
             NativeContext nativeContext = isolate.NativeContext;
 
+            // Check if native context allows code generation from
+            // strings. Throw an exception if it doesn't.
+            JSString? source = Builtins.BuiltinsGlobal.ValidateDynamicCompilationSource(isolate, nativeContext, sourceObject,
+                out bool unknownObject);
             // If the argument is an unhandled string time, bounce to GlobalEval.
-            if (sourceObject.HeapObjectOrNull is not JSString source) return nativeContext.GlobalEvalFun;
+            if (unknownObject) return nativeContext.GlobalEvalFun;
+            if (source is null)
+            {
+                return isolate.Throw(isolate.Factory.NewEvalError(MessageTemplate.CodeGenFromStrings,
+                    Builtins.BuiltinsGlobal.ErrorMessageForCodeGenerationFromStrings(isolate, nativeContext)));
+            }
 
             // Deal with a normal eval call with a string argument. Compile it
             // and return the compiled function bound in the local context.
@@ -420,9 +429,20 @@ namespace V8Sharp.Codegen
             public static readonly DynamicFunctionCompiler Instance = new();
 
             public JSFunction GetFunctionFromString(Isolate isolate, NativeContext nativeContext, JSString source,
-                int parametersEndPos, bool isCodeLike) =>
-                GetFunctionFromValidatedString(isolate, nativeContext, source, ParseRestriction.ONLY_SINGLE_FUNCTION_LITERAL,
+                int parametersEndPos, bool isCodeLike)
+            {
+                // Compiler::GetFunctionFromString: ValidateDynamicCompilationSource,
+                // then GetFunctionFromValidatedString, which throws the EvalError
+                // for a null (disallowed) source.
+                JSString? validated = Builtins.BuiltinsGlobal.ValidateDynamicCompilationSource(isolate, nativeContext, source, out _);
+                if (validated is null)
+                {
+                    isolate.Throw(isolate.Factory.NewEvalError(MessageTemplate.CodeGenFromStrings,
+                        Builtins.BuiltinsGlobal.ErrorMessageForCodeGenerationFromStrings(isolate, nativeContext)));
+                }
+                return GetFunctionFromValidatedString(isolate, nativeContext, validated!, ParseRestriction.ONLY_SINGLE_FUNCTION_LITERAL,
                     parametersEndPos);
+            }
 
             JSFunction IDynamicFunctionCompiler.GetFunctionFromValidatedString(Isolate isolate, NativeContext nativeContext,
                 JSString source, ParseRestriction restriction, int parametersEndPos) =>
