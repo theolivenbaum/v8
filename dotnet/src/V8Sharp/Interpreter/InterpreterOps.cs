@@ -492,6 +492,7 @@ public static class InterpreterOps
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void RecordCompareFeedback(in JSValue lhs, in JSValue rhs, ref byte feedback)
     {
+        if (feedback == (byte)COF.TypeIndex.Any) return;
         COF.Type type = CompareFeedbackFor(lhs) | CompareFeedbackFor(rhs);
         UpdateCompareFeedback(ref feedback, COF.CalculateTypeIndex((uint)type));
     }

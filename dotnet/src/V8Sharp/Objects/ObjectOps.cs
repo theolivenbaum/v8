@@ -57,11 +57,22 @@ public static class ObjectOps
 
     /// <summary>IsCallable: the map's is_callable bit.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsCallable(in JSValue value) => value.HeapObjectOrNull is JSReceiver r && r.Map.IsCallable;
+    public static bool IsCallable(in JSValue value) => AsReceiverOrNull(value) is { } r && r.Map.IsCallable;
+
+    /// <summary>
+    /// The value as a JSReceiver, or null. The instance type range test, where
+    /// `is JSReceiver` on the abstract class is a cast helper call.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSReceiver? AsReceiverOrNull(in JSValue value)
+    {
+        HeapObject? o = value._obj;
+        return o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver ? Unsafe.As<JSReceiver>(o) : null;
+    }
 
     /// <summary>IsConstructor: the map's is_constructor bit.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsConstructor(in JSValue value) => value.HeapObjectOrNull is JSReceiver r && r.Map.IsConstructor;
+    public static bool IsConstructor(in JSValue value) => AsReceiverOrNull(value) is { } r && r.Map.IsConstructor;
 
     /// <summary>IsUndetectable (document.all-like objects).</summary>
     public static bool IsUndetectable(in JSValue value) => value.HeapObjectOrNull is JSReceiver r && r.Map.IsUndetectable;
@@ -875,7 +886,7 @@ public static class ObjectOps
         }
 
         // If {object} is not a receiver, return false.
-        if (obj.HeapObjectOrNull is not JSReceiver receiver) return false;
+        if (AsReceiverOrNull(obj) is not { } receiver) return false;
 
         // CodeStubAssembler::OrdinaryHasInstance: for a JSFunction whose
         // "prototype" is the function prototype accessor, the prototype comes
@@ -922,7 +933,7 @@ public static class ObjectOps
     public static bool InstanceOf(Isolate isolate, JSValue obj, JSValue callable)
     {
         // The {callable} must be a receiver.
-        if (callable.HeapObjectOrNull is not JSReceiver callableReceiver)
+        if (AsReceiverOrNull(callable) is not { } callableReceiver)
         {
             isolate.Throw(isolate.Factory.NewTypeError(MessageTemplate.NonObjectInInstanceOfCheck));
             return false;
