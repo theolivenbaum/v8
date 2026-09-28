@@ -116,6 +116,45 @@ internal static class InterpreterBitwise
         return JSValue.FromNumber(result);
     }
 
+    /// <summary>
+    /// The int32 operation of the bitwise bytecode <paramref name="op"/> (the
+    /// register or the Smi form). The dispatch loop handles all of them with
+    /// one inlined call site each for the register and the immediate forms:
+    /// every inlined call site costs RyuJIT locals, and the loop's limit (512)
+    /// decides which handlers get their helpers inlined.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static double Apply(Bytecode op, int l, int r) => op switch
+    {
+        Bytecode.BitwiseOr or Bytecode.BitwiseOrSmi => l | r,
+        Bytecode.BitwiseXor or Bytecode.BitwiseXorSmi => l ^ r,
+        Bytecode.BitwiseAnd or Bytecode.BitwiseAndSmi => l & r,
+        Bytecode.ShiftLeft or Bytecode.ShiftLeftSmi => l << (r & 0x1F),
+        Bytecode.ShiftRight or Bytecode.ShiftRightSmi => l >> (r & 0x1F),
+        _ => (uint)l >> (r & 0x1F),
+    };
+
+    /// <summary>
+    /// <see cref="TryBinary{TOp}"/> and <see cref="TryWithSmi{TOp}"/> for any
+    /// bitwise bytecode <paramref name="op"/>: the number case, or undefined
+    /// when it does not apply. <paramref name="rhsIsSmi"/>: the right operand
+    /// is the bytecode's immediate (always a Smi).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static JSValue TryAny(Bytecode op, in JSValue lhs, double rd, bool rhsIsSmi, ref byte feedback)
+    {
+        if (lhs._obj != NumberTag.Instance) return default;
+        double ld = lhs._num;
+        int l = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(ld)) : (int)ld;
+        int r = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(rd)) : (int)rd;
+        if (l != ld || r != rd) return default;
+        double result = Apply(op, l, r);
+        bool smi = InSmiRange(l) && (rhsIsSmi || InSmiRange(r)) && result <= JSValue.SmiMaxValue && result >= JSValue.SmiMinValue &&
+                   (l != 0 || !double.IsNegative(ld)) && (rhsIsSmi || r != 0 || !double.IsNegative(rd));
+        InterpreterOps.UpdateBinaryFeedback(ref feedback, smi ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
+        return JSValue.FromNumber(result);
+    }
+
     /// <summary>A bitwise operator with a Smi immediate right operand (BitwiseAndSmi ...).</summary>
     public static JSValue WithSmi<TOp>(Isolate isolate, JSValue lhs, int rhs, ref byte feedback) where TOp : struct, IInt32BitwiseOp
     {

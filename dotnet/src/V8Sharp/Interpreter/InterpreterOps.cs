@@ -551,6 +551,11 @@ public static class InterpreterOps
         return JSValue.FromBoolean(ObjectOps.Equals(isolate, lhs, rhs));
     }
 
+    /// <summary>The feedback of a comparison of two numbers (SignedSmall or Number).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void UpdateCompareFeedbackForNumbers(ref byte feedback, double l, double r) =>
+        UpdateCompareFeedback(ref feedback, IsSmiDouble(l) && IsSmiDouble(r) ? COF.TypeIndex.SignedSmall : COF.TypeIndex.Number);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static JSValue CompareNumbers(Operation op, double l, double r, ref byte feedback)
     {
