@@ -125,9 +125,11 @@ public class FunctionBuiltinsTest : CoreBuiltinsTest
     }
 
     [Fact]
-    public void FunctionConstructorNeedsCompiler()
+    public void FunctionConstructorCompiles()
     {
-        Assert.Throws<InvalidOperationException>(() => Call("Function", Str("return 1")));
+        // The compiler pipeline registers Isolate.DynamicFunctionCompiler.
+        JSValue f = Call("Function", Str("a"), Str("b"), Str("return a + b"));
+        Assert.Equal(5.0, Execution.Call(i_isolate, f, JSValue.Undefined, [JSValue.FromInt(2), JSValue.FromInt(3)]).Number);
     }
 
     [Fact]
