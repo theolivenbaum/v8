@@ -23,7 +23,7 @@ public static partial class InterpreterExecution
     /// until the frame returns or suspends; for the prefixed scales it runs one
     /// bytecode and returns to the SingleScale loop.
     /// </summary>
-    [SkipLocalsInit]
+
     internal static JSValue Loop<TS>(Isolate isolate, ref InterpreterState st) where TS : struct, IOperandScale
     {
         int S = TS.Scale;
