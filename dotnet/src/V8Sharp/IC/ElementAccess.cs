@@ -17,6 +17,13 @@ public static class ElementAccess
     public static bool TryLoadFastElement(Isolate isolate, JSObject obj, double key, LoadHandler handler, out JSValue result)
     {
         result = default;
+        if (handler.HandlerKind == LoadHandler.Kind.kElementWithTransition)
+        {
+            // Runtime_TransitionElementsKindWithKind, then the element load.
+            if (obj is not JSArray || !ElementsKinds.IsFastElementsKind(obj.Map.ElementsKind)) return false;
+            JSObject.TransitionElementsKind(isolate, obj, handler.ElementsKind);
+            if (obj.Map.ElementsKind != handler.ElementsKind) return false;
+        }
         if (!ElementsKinds.IsFastElementsKind(handler.ElementsKind))
         {
             if (ElementsKinds.IsTypedArrayOrRabGsabTypedArrayElementsKind(handler.ElementsKind) && obj is JSTypedArray typedArray)

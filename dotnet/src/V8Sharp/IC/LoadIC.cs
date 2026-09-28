@@ -677,7 +677,7 @@ public sealed class KeyedLoadIC : IC
                 }
             }
             else if (obj._obj is JSObject jsObject && key.IsNumber && feedback._obj is FixedArray polymorphic &&
-                     LoadIC.FindPolymorphicHandler(polymorphic, jsObject.Map) is LoadHandler { HandlerKind: LoadHandler.Kind.kElement } elementHandler &&
+                     LoadIC.FindPolymorphicHandler(polymorphic, jsObject.Map) is LoadHandler { HandlerKind: LoadHandler.Kind.kElement or LoadHandler.Kind.kElementWithTransition } elementHandler &&
                      ElementAccess.TryLoadFastElement(isolate, jsObject, key._num, elementHandler, out JSValue elementResult))
             {
                 return elementResult;
@@ -985,12 +985,20 @@ public sealed class KeyedLoadIC : IC
 
         KeyedAccessLoadMode loadMode = oldLoadMode | newLoadMode;
         var newMapsAndHandlers = new List<(Map Map, JSValue Handler)>(targetMapsAndHandlers.Count);
+        var maps = new Map[targetMapsAndHandlers.Count];
+        for (int i = 0; i < maps.Length; i++) maps[i] = targetMapsAndHandlers[i].Map;
         foreach ((Map oldMap, JSValue oldHandler) in targetMapsAndHandlers)
         {
             // Filter out deprecated maps to ensure their instances get migrated.
             if (oldMap.IsDeprecated) continue;
             KeyedAccessLoadMode oldMode = oldHandler.HeapObjectOrNull is LoadHandler lh ? LoadModeOf(lh) : KeyedAccessLoadMode.kInBounds;
-            newMapsAndHandlers.Add((oldMap, LoadElementHandler(oldMap, GetUpdatedLoadModeForMap(oldMap, oldMode, loadMode))));
+            Map? tmap = oldMap.FindElementsKindTransitionedMap(_isolate, maps);
+            // Mark all stable receiver maps that have elements kind transition map
+            // among receiver_maps as unstable because the ICs and the optimizing
+            // compilers may perform an elements kind transition for this kind of
+            // receivers.
+            if (tmap is not null && oldMap.IsStable) oldMap.NotifyLeafMapLayoutChange(_isolate);
+            newMapsAndHandlers.Add((oldMap, LoadElementHandler(oldMap, GetUpdatedLoadModeForMap(oldMap, oldMode, loadMode), tmap)));
         }
         if (newMapsAndHandlers.Count == 0)
         {
@@ -1029,7 +1037,7 @@ public sealed class KeyedLoadIC : IC
     }
 
     /// <summary>KeyedLoadIC::LoadElementHandler.</summary>
-    HeapObject LoadElementHandler(Map receiverMap, KeyedAccessLoadMode loadMode)
+    HeapObject LoadElementHandler(Map receiverMap, KeyedAccessLoadMode loadMode, Map? transitionTarget = null)
     {
         InstanceType instanceType = receiverMap.InstanceType;
         bool allowOob = (loadMode & KeyedAccessLoadMode.kHandleOOB) != 0;
@@ -1045,6 +1053,10 @@ public sealed class KeyedLoadIC : IC
         ElementsKind elementsKind = receiverMap.ElementsKind;
         if (ElementsKinds.IsSloppyArgumentsElementsKind(elementsKind)) return LoadHandler.LoadSlow(_isolate);
         bool isJSArray = instanceType == InstanceType.JSArrayType;
+        if (isJSArray && transitionTarget is not null && ElementsKinds.IsFastElementsKind(elementsKind))
+        {
+            return LoadHandler.TransitionAndLoadElement(_isolate, transitionTarget.ElementsKind, allowOob, allowHoles);
+        }
         return LoadHandler.LoadElement(_isolate, elementsKind, isJSArray, allowOob, allowHoles);
     }
 }

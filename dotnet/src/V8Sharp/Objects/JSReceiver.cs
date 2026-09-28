@@ -101,7 +101,7 @@ public abstract partial class JSReceiver
     /// running JavaScript (accessors and proxies read as undefined; the
     /// engine's own AccessorInfo "special data properties" are evaluated).
     /// </summary>
-    public static JSValue GetDataProperty(ref LookupIterator it)
+    public static JSValue GetDataProperty(ref LookupIterator it, bool allowAllocation = true)
     {
         for (;; it.Next())
         {
@@ -122,7 +122,7 @@ public abstract partial class JSReceiver
                 {
                     // Special handling for AccessorInfo, which behaves like a data
                     // property.
-                    if (it.GetAccessors() is AccessorInfo info && info.HasNoSideEffect)
+                    if (allowAllocation && it.GetAccessors() is AccessorInfo info && info.HasNoSideEffect)
                     {
                         try
                         {
@@ -150,12 +150,12 @@ public abstract partial class JSReceiver
     }
 
     /// <summary>JSReceiver::GetDataProperty(isolate, object, name).</summary>
-    public static JSValue GetDataProperty(Isolate isolate, JSReceiver obj, Name name)
+    public static JSValue GetDataProperty(Isolate isolate, JSReceiver obj, Name name, bool allowAllocation = true)
     {
         var key = new PropertyKey(isolate, name);
         var it = new LookupIterator(isolate, obj, key, obj, LookupIterator.Configuration.PROTOTYPE_CHAIN_SKIP_INTERCEPTOR);
         if (!it.IsFound) return JSValue.Undefined;
-        return GetDataProperty(ref it);
+        return GetDataProperty(ref it, allowAllocation);
     }
 
     /// <summary>JSReceiver::GetProperty(isolate, receiver, name).</summary>
@@ -476,7 +476,7 @@ public abstract partial class JSReceiver
         {
             if (receiver.Map.GetConstructor() is JSFunction constructor)
             {
-                JSString name = JSFunction.GetDebugName(isolate, constructor);
+                JSString name = JSFunction.GetDebugName(isolate, constructor, allowAllocation: false);
                 if (name.Length != 0 && !JSString.Equals(name, ReadOnlyRoots.Object_string))
                 {
                     return (constructor, name);
@@ -490,7 +490,7 @@ public abstract partial class JSReceiver
 
             var itToStringTag = new LookupIterator(isolate, receiver, ReadOnlyRoots.to_string_tag_symbol, current,
                 LookupIterator.Configuration.OWN_SKIP_INTERCEPTOR);
-            JSValue maybeToStringTag = GetDataProperty(ref itToStringTag);
+            JSValue maybeToStringTag = GetDataProperty(ref itToStringTag, allowAllocation: false);
             if (maybeToStringTag.HeapObjectOrNull is JSString tag) return (null, tag);
 
             // Consider the following example:
@@ -507,7 +507,7 @@ public abstract partial class JSReceiver
             {
                 var itConstructor = new LookupIterator(isolate, receiver, ReadOnlyRoots.constructor_string, current,
                     LookupIterator.Configuration.OWN_SKIP_INTERCEPTOR);
-                JSValue maybeConstructor = GetDataProperty(ref itConstructor);
+                JSValue maybeConstructor = GetDataProperty(ref itConstructor, allowAllocation: false);
                 if (maybeConstructor.HeapObjectOrNull is JSFunction constructor)
                 {
                     JSString name = SharedFunctionInfo.DebugName(isolate, constructor.Shared);

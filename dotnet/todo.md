@@ -156,9 +156,36 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       harness compiles direct evals of string literals itself); block
       coverage is ported but has no golden coverage (only the oracle can
       check it).
-- [ ] feedback vectors and ICs (load/store/keyed/global/call/binary op/compare)
-- [ ] interpreter dispatch loop, generators, async functions
-- [ ] runtime functions (`%` intrinsics used by bytecode and by mjsunit)
+- [x] feedback vectors and ICs (src/ic, Objects/Feedback*.cs): FeedbackVector,
+      FeedbackNexus, closure feedback cells, lazy feedback allocation;
+      LoadIC/StoreIC/KeyedLoadIC/KeyedStoreIC/LoadGlobalIC/StoreGlobalIC/
+      DefineNamedOwnIC/DefineKeyedOwnIC/StoreInArrayLiteralIC/HasIC with
+      monomorphic, polymorphic and megamorphic (stub cache) states and C#
+      handler objects; element handlers with validity cells and
+      ElementsTransitionAndStore; typed array element loads; call, construct
+      (AllocationSite for Array), instanceof, binary-op and compare feedback;
+      allocation mementos (JSArray.AllocationMementoSite) with
+      DigestTransitionFeedback. Tests: tests/V8Sharp.Tests/IC. Open:
+      CloneObjectIC fast case (%HaveSameMap after spread), LoadSuperIC
+      handlers, typed array element stores in the IC, pretenuring.
+- [x] interpreter dispatch loop (Interpreter/InterpreterLoop.cs, one loop per
+      operand scale, rare bytecodes in LoopCold), frames on the register
+      stack in V8's layout with bytecode-to-bytecode calls and constructs in
+      the caller's loop (InterpreterInlineCalls), exceptions and handler
+      tables, generators, async functions, async generators and for-await
+      (InterpreterAsync, Builtins.Async.cs, port of builtins-async-*-gen.cc),
+      disposable stacks (using / await using), stack traces through
+      interpreter frames incl. async frames (CaptureAsyncStackTrace).
+      Tests: tests/V8Sharp.Tests/Interpreter. Open: baseline tier (in
+      progress elsewhere), debugger hooks.
+- [x] runtime functions (Runtime/, RuntimeTable): every function the
+      bytecode generator emits, plus the mjsunit test natives (%Prepare/
+      Optimize* answer as --jitless V8, elements-kind queries, protectors,
+      %HasCowElements, %NormalizeElements, %HasFixed*Elements ...). Open:
+      %GetFeedback, %RuntimeEvaluateREPL, block coverage (%DebugToggleBlock
+      Coverage, %DebugCollectCoverage), %ShareObject/shared structs, the
+      runtime.cc IsEnabledForFuzzing allowlist in the parser (until then the
+      compiler does not pass --fuzzing to the parser).
 - [~] builtins: Object, Function, Reflect, Proxy, global functions (URI
       coding, escape/unescape, isNaN/isFinite, parseInt/parseFloat, eval),
       Error (+ AggregateError, SuppressedError, captureStackTrace, isError,
@@ -270,8 +297,40 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       runs (wait for the interpreter), the runtime dispatch entries (the
       interpreter owns the table; Runtime* expose typed static methods),
       Intl-dependent behaviour (V8Sharp is the non-ICU build).
-- [ ] modules (import/export, dynamic import, top-level await)
-- [ ] eval / new Function / with
+- [x] modules (Objects/Module.cs: module.cc, source-text-module.cc,
+      synthetic-module.cc; Runtime/RuntimeModules.cs): instantiate/link,
+      evaluate with top-level await and async module evaluation, namespaces,
+      import.meta, dynamic import, import attributes (JSON and text modules
+      in the d8sharp loader, V8Sharp.D8/ModuleLoader.cs). test262
+      language/module-code, language/import, language/expressions/dynamic-
+      import pass except import defer and source phase imports (not
+      ported: JSDeferredModuleNamespace and module sources).
+- [x] eval / new Function / with (Compiler.GetFunctionFromEval with the eval
+      origin, CreateDynamicFunction, lookup slots, sourceURL comments).
+- [x] d8sharp shell (src/V8Sharp.D8): print/write/read/load/quit, Realm,
+      d8.file/d8.test basics, performance.now, modules (.mjs), the message
+      loop; TestRunner engine V8SharpEngine and the Bench host.
+
+### Builtin failures seen by the interpreter port
+
+Failures the mjsunit/test262 runs show in code owned by other ports
+(checked with d8sharp against the oracle):
+
+- `Object.keys`/`JSON.stringify` of a typed array after a typed array of the
+  same map was enumerated returns no keys (mjsunit object-keys-typedarray,
+  json-stringify-typedarray): `BuiltinsObject.HasNoElements` treats the
+  typed array's empty `Elements` as "no elements" (V8 checks for
+  empty_fixed_array; typed arrays have a ByteArray).
+- `new Array(0)` is packed (V8: holey; allocation-site-info,
+  regress-crbug-245480).
+- The typed array species protectors are not invalidated
+  (protector-cell/*-species, typedarray-prototype-constructor-*).
+- `console` is not installed on the global object (the TestRunner shim wraps
+  it only when present).
+- The TestRunner's `print` is JavaScript in d8-shim.js, so it shows up in
+  stack traces (stack-trace-cpp-function-template-*; d8sharp is correct).
+- Atomics.waitAsync suspension, Array.fromAsync, ShadowRealm, Worker, the
+  d8 serializer and profiler hooks are not implemented.
 
 ## Conformance progress (V8Sharp engine)
 

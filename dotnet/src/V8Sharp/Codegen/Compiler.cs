@@ -54,7 +54,9 @@ namespace V8Sharp.Codegen
                 // Deviation: source positions are always collected (V8 collects them lazily).
                 enable_lazy_source_positions = false,
                 stress_lazy_source_positions = f.stress_lazy_source_positions,
-                fuzzing = f.fuzzing,
+                // Deviation: --fuzzing is not passed on. The parser does not have
+                // runtime.cc's IsEnabledForFuzzing allowlist and would drop every
+                // intrinsic; wrong argument counts still fail the parse.
                 log_function_events = f.log_function_events,
                 print_scopes = f.print_scopes,
                 script_context_cells = f.script_context_cells,

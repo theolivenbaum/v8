@@ -234,6 +234,8 @@ for now, to be revisited when the reason goes away.
   and import.meta callbacks) are delegates. Not ported: source phase imports
   and `import defer` (JSDeferredModuleNamespace), both behind harmony flags;
   WebAssembly, bytes modules and bundles in the d8 loader.
+- Parser flags: `--fuzzing` is not passed to the parser, which lacks
+  runtime.cc's IsEnabledForFuzzing allowlist (it would drop every intrinsic).
 - Stack traces: async frames are captured as CallSiteInfos with the source
   position already resolved from the generator's suspend offset (V8 stores the
   bytecode offset and resolves lazily).

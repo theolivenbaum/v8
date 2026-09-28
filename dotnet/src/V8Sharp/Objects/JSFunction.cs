@@ -1076,7 +1076,7 @@ public sealed class JSFunction(Map map, SharedFunctionInfo shared, Context conte
     }
 
     /// <summary>JSFunction::GetDebugName.</summary>
-    public static JSString GetDebugName(Isolate isolate, JSFunction function)
+    public static JSString GetDebugName(Isolate isolate, JSFunction function, bool allowAllocation = true)
     {
         // Below we use the same fast-path that we already established for
         // Function.prototype.bind(), where we avoid a slow "name" property
@@ -1086,7 +1086,7 @@ public sealed class JSFunction(Map map, SharedFunctionInfo shared, Context conte
         // it must be the FunctionNameGetter).
         if (!Accessors.UseFastFunctionNameLookup(isolate, function.Map))
         {
-            JSValue name = JSReceiver.GetDataProperty(isolate, function, ReadOnlyRoots.name_string);
+            JSValue name = JSReceiver.GetDataProperty(isolate, function, ReadOnlyRoots.name_string, allowAllocation);
             if (name.HeapObjectOrNull is JSString s) return s;
         }
         return SharedFunctionInfo.DebugName(isolate, function.Shared);
