@@ -1029,7 +1029,7 @@ public sealed class KeyedStoreIC : IC
     {
         var key = new PropertyKey(isolate, index);
         var it = new LookupIterator(isolate, array, key, LookupIterator.Configuration.OWN);
-        JSObject.DefineOwnPropertyIgnoreAttributes(ref it, value, PropertyAttributes.NONE);
+        JSObject.DefineOwnPropertyIgnoreAttributes(ref it, value, PropertyAttributes.NONE, ShouldThrow.ThrowOnError);
         return value;
     }
 

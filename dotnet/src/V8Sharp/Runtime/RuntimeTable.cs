@@ -451,8 +451,27 @@ public static partial class RuntimeTable
         Register(FunctionId.PretenureAllocationSite, RuntimeTest.ReturnUndefined);
         Register(FunctionId.ForceFlush, RuntimeTest.ReturnUndefined);
         Register(FunctionId.CompleteInobjectSlackTracking, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.OptimizeObjectForAddingMultipleProperties, static (i, a) => a[0]);
-        Register(FunctionId.TryMigrateInstance, static (i, a) => a[0]);
+        // Runtime_OptimizeObjectForAddingMultipleProperties.
+        Register(FunctionId.OptimizeObjectForAddingMultipleProperties, static (i, a) =>
+        {
+            JSObject obj = a[0].As<JSObject>();
+            int properties = (int)a[1].Number;
+            // Conservative upper limit to prevent fuzz tests from going OOM.
+            if (properties > 100000) return i.ThrowIllegalOperation();
+            if (obj.HasFastProperties && obj is not JSGlobalProxy)
+            {
+                JSObject.NormalizeProperties(i, obj, PropertyNormalizationMode.KEEP_INOBJECT_PROPERTIES, properties, "OptimizeForAdding");
+            }
+            return obj;
+        });
+        // Runtime_TryMigrateInstance.
+        Register(FunctionId.TryMigrateInstance, static (i, a) =>
+        {
+            JSObject obj = a[0].As<JSObject>();
+            if (!obj.Map.IsDeprecated) return JSValue.FromInt(0);
+            if (!JSObject.TryMigrateInstance(i, obj)) return JSValue.FromInt(0);
+            return obj;
+        });
         Register(FunctionId.SetForceSlowPath, RuntimeTest.ReturnUndefined);
         Register(FunctionId.DebugTraceMinimal, RuntimeTest.ReturnUndefined);
         Register(FunctionId.SetDispatchTableGCInterval, RuntimeTest.ReturnUndefined);
