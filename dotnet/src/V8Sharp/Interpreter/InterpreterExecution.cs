@@ -123,35 +123,23 @@ public static partial class InterpreterExecution
         frame.Kind = InterpreterFrameKind.Interpreted;
         frame.IsConstructor = isConstruct;
 
-        FeedbackVector? feedbackVector = function.RawFeedbackCell.Value as FeedbackVector;
-        if (feedbackVector is null)
-        {
-            // JSFunction::InitializeFeedbackCell on first entry (V8 does it when
-            // the function is compiled / its code installed).
-            if (function.RawFeedbackCell.Value is not ClosureFeedbackCellArray)
-            {
-                JSFunctionFeedback.InitializeFeedbackCell(isolate, function, false);
-                feedbackVector = function.RawFeedbackCell.Value as FeedbackVector;
-            }
-        }
-        else
-        {
-            feedbackVector.InvocationCount++;
-        }
+        FeedbackVector? feedbackVector = FeedbackVectorOnEntry(isolate, function);
         Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset) =
             feedbackVector is null ? JSValue.Undefined : feedbackVector;
 
+        // The loop reads the constants through the bytecode (ConstantPoolValues).
+        if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
         var state = new InterpreterState
         {
             Function = function,
             Bytecode = bytecode,
-            Constants = bytecode.ConstantPoolValues ?? InterpreterRuntime.MaterializeConstantPool(isolate, bytecode),
             FeedbackVector = feedbackVector,
             Context = context,
             Accumulator = JSValue.Undefined,
             Pc = 0,
             Fp = fp,
             FrameIndex = depth,
+            BaseFrameIndex = depth,
             Argc = argc,
         };
         try
@@ -167,8 +155,33 @@ public static partial class InterpreterExecution
     }
 
     /// <summary>
+    /// The feedback vector of a function being entered: JSFunction::InitializeFeedbackCell
+    /// on first entry (V8 does it when the function is compiled / its code
+    /// installed), and the invocation count.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static FeedbackVector? FeedbackVectorOnEntry(Isolate isolate, JSFunction function)
+    {
+        if (function.RawFeedbackCell.Value is FeedbackVector feedbackVector)
+        {
+            feedbackVector.InvocationCount++;
+            return feedbackVector;
+        }
+        return InitializeFeedbackOnEntry(isolate, function);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static FeedbackVector? InitializeFeedbackOnEntry(Isolate isolate, JSFunction function)
+    {
+        if (function.RawFeedbackCell.Value is ClosureFeedbackCellArray) return null;
+        JSFunctionFeedback.InitializeFeedbackCell(isolate, function, false);
+        return function.RawFeedbackCell.Value as FeedbackVector;
+    }
+
+    /// <summary>
     /// Runs the dispatch loop, catching exceptions and dispatching them to the
-    /// frame's handler table (Isolate::UnwindAndFindHandler for this frame).
+    /// handler tables of its frames (Isolate::UnwindAndFindHandler for this
+    /// frame and the calls it runs inline, InterpreterInlineCalls).
     /// </summary>
     internal static JSValue Run(Isolate isolate, ref InterpreterState state)
     {
@@ -178,23 +191,14 @@ public static partial class InterpreterExecution
             {
                 return Loop<SingleScale>(isolate, ref state);
             }
-            // The filter only looks for a handler: an exception this frame does
+            // The filter only looks for a handler: an exception these frames do
             // not handle keeps propagating without a catch-and-rethrow, which
             // would run every outer frame's handler nested on the .NET stack.
-            catch (JavaScriptException e) when (HasHandler(isolate, ref state))
+            catch (JavaScriptException e) when (InterpreterInlineCalls.AnyFrameHasHandler(isolate, ref state))
             {
-                TryDispatchToHandler(isolate, ref state, e.Value, e.MessageObject);
+                InterpreterInlineCalls.UnwindToHandler(isolate, ref state, e.Value, e.MessageObject);
             }
         }
-    }
-
-    /// <summary>Whether this frame's handler table covers the current bytecode offset.</summary>
-    static bool HasHandler(Isolate isolate, ref InterpreterState state)
-    {
-        byte[] handlerTableBytes = state.Bytecode.HandlerTable;
-        if (handlerTableBytes.Length == 0) return false;
-        int pc = isolate.InterpreterFrames[state.FrameIndex].Pc;
-        return new HandlerTable(handlerTableBytes).LookupHandlerIndexForRange(pc) >= 0;
     }
 
     /// <summary>
@@ -231,7 +235,11 @@ public static partial class InterpreterExecution
         // Frames above this one are gone (their finally blocks popped them), and
         // so is any stack space reserved above this frame's register file.
         isolate.InterpreterFrameDepth = state.FrameIndex + 1;
-        isolate.RegisterStackTop = state.Fp + state.Bytecode.RegisterCount;
+        // Released slots are cleared: the register stack above its top is
+        // always undefined (InterpreterInlineCalls relies on it).
+        int top = state.Fp + state.Bytecode.RegisterCount;
+        if (isolate.RegisterStackTop > top) isolate.ReleaseRegisters(top);
+        else isolate.RegisterStackTop = top;
         return true;
     }
 

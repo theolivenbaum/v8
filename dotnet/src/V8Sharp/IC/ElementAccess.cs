@@ -17,6 +17,22 @@ public static class ElementAccess
     public static bool TryLoadFastElement(Isolate isolate, JSObject obj, double key, LoadHandler handler, out JSValue result)
     {
         result = default;
+        if (handler.HandlerKind == LoadHandler.Kind.kElementWithTransition)
+        {
+            // Runtime_TransitionElementsKindWithKind, then the element load.
+            if (obj is not JSArray || !ElementsKinds.IsFastElementsKind(obj.Map.ElementsKind)) return false;
+            JSObject.TransitionElementsKind(isolate, obj, handler.ElementsKind);
+            if (obj.Map.ElementsKind != handler.ElementsKind) return false;
+        }
+        if (!ElementsKinds.IsFastElementsKind(handler.ElementsKind))
+        {
+            if (ElementsKinds.IsTypedArrayOrRabGsabTypedArrayElementsKind(handler.ElementsKind) && obj is JSTypedArray typedArray)
+            {
+                return TryLoadTypedElement(isolate, typedArray, key, handler, out result);
+            }
+            // Dictionary, nonextensible, sealed and frozen elements take the runtime.
+            return false;
+        }
         int index = (int)key;
         if (index != key || index < 0) return false;
         // Typed arrays keep their data in the buffer (their elements are the
@@ -59,6 +75,26 @@ public static class ElementAccess
     }
 
     /// <summary>
+    /// EmitElementLoad for the typed array kinds: an in-bounds element, or
+    /// undefined out of bounds (including detached) when the handler allows it.
+    /// </summary>
+    static bool TryLoadTypedElement(Isolate isolate, JSTypedArray array, double key, LoadHandler handler, out JSValue result)
+    {
+        result = default;
+        long index = (long)key;
+        if (index != key || index < 0) return false;
+        ulong length = array.GetLength();
+        if ((ulong)index >= length)
+        {
+            if (!handler.AllowOutOfBounds) return false;
+            result = JSValue.Undefined;
+            return true;
+        }
+        result = TypedArrayElementsOps.Load(isolate, array, (ulong)index);
+        return true;
+    }
+
+    /// <summary>
     /// A keyed store through an element handler (EmitElementStore for the fast
     /// kinds). Returns false when the store needs the runtime (a value that
     /// does not fit the elements kind, a copy-on-write store, growth beyond
@@ -67,22 +103,24 @@ public static class ElementAccess
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryStoreFastElement(Isolate isolate, JSObject obj, double key, StoreHandler handler, JSValue value)
     {
+        if (!handler.IsValid) return false;
         int index = (int)key;
         if (index != key || index < 0) return false;
+        if (handler.ElementsTransitionMap is Map transition)
+        {
+            // ElementsTransitionAndStore: the pessimistic transition to the most
+            // general kind among the polymorphic receiver maps, then the store.
+            // JSObject.TransitionElementsKind also feeds the transition back to
+            // the allocation site (V8's CSA bails out to the runtime for that).
+            if (!ElementsKinds.IsFastElementsKind(obj.Map.ElementsKind) ||
+                !ElementsKinds.IsFastElementsKind(transition.ElementsKind) || obj.Elements.IsCowArray)
+            {
+                return false;
+            }
+            JSObject.TransitionElementsKind(isolate, obj, transition.ElementsKind);
+        }
         ElementsKind kind = obj.Map.ElementsKind;
         if (!ElementsKinds.IsFastElementsKind(kind)) return false;
-        if (handler.ElementsTransitionMap is { } transitionMap)
-        {
-            // ElementsTransitionAndStore: move the receiver to the more general
-            // map the IC has seen first (this also feeds the transition into an
-            // allocation memento's site), then store.
-            ElementsKind toKind = transitionMap.ElementsKind;
-            if (!ElementsKinds.IsFastElementsKind(toKind) || !ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind)) return false;
-            if (obj.Elements.IsCowArray) return false;
-            JSObject.TransitionElementsKind(isolate, obj, toKind);
-            if (!ReferenceEquals(obj.Map, transitionMap)) return false;
-            kind = toKind;
-        }
 
         // The value must fit the elements kind without a transition.
         if (ElementsKinds.IsSmiElementsKind(kind))

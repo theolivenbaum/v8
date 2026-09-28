@@ -53,6 +53,14 @@ namespace V8Sharp.Codegen
                 max_lazy = f.max_lazy,
                 // Deviation: source positions are always collected (V8 collects them lazily).
                 enable_lazy_source_positions = false,
+                stress_lazy_source_positions = f.stress_lazy_source_positions,
+                log_function_events = f.log_function_events,
+                print_scopes = f.print_scopes,
+                script_context_cells = f.script_context_cells,
+                function_context_cells = f.function_context_cells,
+                function_context_cells_max_size = f.function_context_cells_max_size,
+                ignition_elide_redundant_tdz_checks = f.ignition_elide_redundant_tdz_checks,
+                enable_experimental_regexp_engine = f.enable_experimental_regexp_engine,
                 use_strict = f.use_strict,
                 fuzzing = f.fuzzing,
                 allow_natives_for_differential_fuzzing = f.allow_natives_for_differential_fuzzing,
@@ -61,6 +69,10 @@ namespace V8Sharp.Codegen
                 sandbox_fuzzing = f.sandbox_fuzzing,
                 verify_bytecode_full = f.verify_bytecode_full,
                 js_decorators = f.js_decorators,
+                js_source_phase_imports = f.js_source_phase_imports,
+                js_defer_import_eval = f.js_defer_import_eval,
+                harmony_import_attributes = f.harmony_import_attributes,
+                js_esm_ns_reexport = f.js_esm_ns_reexport,
             };
             isolate.CompilerParsingFlags = flags;
             return flags;
@@ -127,6 +139,19 @@ namespace V8Sharp.Codegen
             script.ColumnOffset = columnOffset;
             SharedFunctionInfo shared = CompileScript(isolate, script, isReplMode);
             return isolate.Factory.NewFunction(shared, isolate.NativeContext);
+        }
+
+        /// <summary>
+        /// ScriptCompiler::CompileModule: compiles a module script and creates its
+        /// SourceTextModule (Factory::NewSourceTextModule). Throws the SyntaxError.
+        /// </summary>
+        public static SourceTextModule CompileModule(Isolate isolate, JSString source, JSValue name)
+        {
+            Script script = isolate.Factory.NewScript(source);
+            script.Name = name;
+            script.OriginOptionsIsModule = true;
+            SharedFunctionInfo shared = CompileScript(isolate, script);
+            return SourceTextModule.New(isolate, shared);
         }
 
         /// <summary>
@@ -210,12 +235,31 @@ namespace V8Sharp.Codegen
             }
         }
 
+        /// <summary>Parser::HandleDebugMagicComments: stores the sourceURL and sourceMappingURL comments on the script.</summary>
+        static void HandleDebugMagicComments(Isolate isolate, Parser parser, Script script)
+        {
+            string? sourceUrl = parser.SourceUrl();
+            if (sourceUrl is not null) script.SourceUrl = isolate.Factory.InternalizeString(sourceUrl);
+            string? sourceMappingUrl = parser.SourceMappingUrl();
+            // The API can provide a source map URL and the API should take precedence.
+            if (sourceMappingUrl is not null && script.SourceMappingUrl.IsUndefined)
+            {
+                script.SourceMappingUrl = isolate.Factory.InternalizeString(sourceMappingUrl);
+            }
+        }
+
         /// <summary>CompileToplevel (compiler.cc).</summary>
         static SharedFunctionInfo CompileToplevel(Isolate isolate, ParseInfo parseInfo, Script script, ScopeInfo? outerScopeInfo)
         {
             if (!RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
 
-            if (!ParsingEntry.ParseProgram(parseInfo, script, outerScopeInfo))
+            // parsing::ParseProgram, keeping the parser for
+            // Parser::HandleDebugMagicComments.
+            parseInfo.set_character_stream(ScannerStream.For(((IParsingScript)script).source()));
+            var parser = new Parser(parseInfo);
+            parser.ParseProgram(script, parseInfo, outerScopeInfo);
+            HandleDebugMagicComments(isolate, parser, script);
+            if (parseInfo.literal() is null)
             {
                 ReportPendingMessages(isolate, parseInfo, script);
             }
@@ -352,7 +396,21 @@ namespace V8Sharp.Codegen
             Script script = isolate.Factory.NewScript(source);
             script.Compilation = Script.CompilationType.Eval;
             script.EvalFromShared = outerInfo;
-            if (evalPosition == Globals.kNoSourcePosition) evalPosition = 0;
+            if (evalPosition == Globals.kNoSourcePosition)
+            {
+                // If the position is missing, attempt to get the code offset by
+                // walking the stack. Do not translate the code offset into source
+                // position, but store it as negative value for lazy translation.
+                evalPosition = 0;
+                InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
+                for (int i = isolate.InterpreterFrameDepth - 1; i >= 0; i--)
+                {
+                    if (frames[i].Kind != InterpreterFrameKind.Interpreted) continue;
+                    script.EvalFromShared = frames[i].Function.Shared;
+                    evalPosition = -frames[i].Pc;
+                    break;
+                }
+            }
             script.EvalFromPosition = evalPosition;
             if (outerInfo.Script is { } outerScript)
             {

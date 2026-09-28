@@ -52,6 +52,9 @@ public static partial class RuntimeTable
 
     public static void Register(FunctionId id, RuntimeFunctionImpl impl) => s_table[(int)id] = impl;
 
+    static JSValue HasKind(JSValue obj, ElementsKind kind) =>
+        JSValue.FromBoolean(obj.HeapObjectOrNull is JSObject o && o.GetElementsKind() == kind);
+
     public static void RegisterPair(FunctionId id, RuntimeFunctionPairImpl impl) => s_pairTable[(int)id] = impl;
 
     public static bool IsImplemented(FunctionId id) => s_table[(int)id] is not null || s_pairTable[(int)id] is not null;
@@ -61,7 +64,26 @@ public static partial class RuntimeTable
     {
         RuntimeFunctionImpl? impl = s_table[(int)id];
         if (impl is null) return NotImplemented(id);
+        if (isolate.Flags.fuzzing) return CallFuzzing(isolate, impl, args);
         return impl(isolate, args);
+    }
+
+    /// <summary>
+    /// CrashUnlessFuzzing: under --fuzzing, a test native called with too few
+    /// arguments (V8's args.length() checks) returns undefined instead of
+    /// crashing. The implementations index their arguments directly, so the
+    /// missing argument shows up as an IndexOutOfRangeException.
+    /// </summary>
+    static JSValue CallFuzzing(Isolate isolate, RuntimeFunctionImpl impl, ReadOnlySpan<JSValue> args)
+    {
+        try
+        {
+            return impl(isolate, args);
+        }
+        catch (IndexOutOfRangeException)
+        {
+            return JSValue.Undefined;
+        }
     }
 
     /// <summary>CallRuntimeForPair.</summary>
@@ -308,6 +330,32 @@ public static partial class RuntimeTable
         Register(FunctionId.HasSloppyArgumentsElements,
             static (i, a) => RuntimeTest.HasElementsKind(a[0], ElementsKinds.IsSloppyArgumentsElementsKind));
         Register(FunctionId.HasFastElements, static (i, a) => RuntimeTest.HasElementsKind(a[0], ElementsKinds.IsFastElementsKind));
+        // Runtime_HasFixed<Type>Elements: the exact typed array elements kind.
+        Register(FunctionId.HasFixedInt8Elements, static (i, a) => HasKind(a[0], ElementsKind.INT8_ELEMENTS));
+        Register(FunctionId.HasFixedUint8Elements, static (i, a) => HasKind(a[0], ElementsKind.UINT8_ELEMENTS));
+        Register(FunctionId.HasFixedUint8ClampedElements, static (i, a) => HasKind(a[0], ElementsKind.UINT8_CLAMPED_ELEMENTS));
+        Register(FunctionId.HasFixedInt16Elements, static (i, a) => HasKind(a[0], ElementsKind.INT16_ELEMENTS));
+        Register(FunctionId.HasFixedUint16Elements, static (i, a) => HasKind(a[0], ElementsKind.UINT16_ELEMENTS));
+        Register(FunctionId.HasFixedInt32Elements, static (i, a) => HasKind(a[0], ElementsKind.INT32_ELEMENTS));
+        Register(FunctionId.HasFixedUint32Elements, static (i, a) => HasKind(a[0], ElementsKind.UINT32_ELEMENTS));
+        Register(FunctionId.HasFixedFloat16Elements, static (i, a) => HasKind(a[0], ElementsKind.FLOAT16_ELEMENTS));
+        Register(FunctionId.HasFixedFloat32Elements, static (i, a) => HasKind(a[0], ElementsKind.FLOAT32_ELEMENTS));
+        Register(FunctionId.HasFixedFloat64Elements, static (i, a) => HasKind(a[0], ElementsKind.FLOAT64_ELEMENTS));
+        Register(FunctionId.HasFixedBigInt64Elements, static (i, a) => HasKind(a[0], ElementsKind.BIGINT64_ELEMENTS));
+        Register(FunctionId.HasFixedBigUint64Elements, static (i, a) => HasKind(a[0], ElementsKind.BIGUINT64_ELEMENTS));
+        // Runtime_NormalizeElements.
+        Register(FunctionId.NormalizeElements, static (i, a) =>
+        {
+            JSObject array = a[0].As<JSObject>();
+            JSObject.NormalizeElements(i, array);
+            return array;
+        });
+        // Runtime_GetInitializerFunction: the class fields initializer of a constructor.
+        Register(FunctionId.GetInitializerFunction,
+            static (i, a) => JSReceiver.GetDataProperty(i, a[0].As<JSReceiver>(), ReadOnlyRoots.class_fields_symbol));
+        // Debug-build-only diagnostics: no-ops in release V8 as well.
+        Register(FunctionId.DisassembleFunction, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.VerifyGetJSBuiltinState, RuntimeTest.ReturnUndefined);
         Register(FunctionId.DebugPrint, static (i, a) => RuntimeTest.DebugPrint(i, a));
         Register(FunctionId.Is64Bit, static (i, a) => RuntimeTest.Is64Bit(i));
         Register(FunctionId.StringMaxLength, static (i, a) => RuntimeTest.StringMaxLength(i));
@@ -363,7 +411,7 @@ public static partial class RuntimeTable
         Register(FunctionId.EnqueueMicrotask, static (i, a) => RuntimeTest.EnqueueMicrotask(i, a[0]));
         Register(FunctionId.NewRegExpWithBacktrackLimit, static (i, a) => RuntimeTest.NewRegExpWithBacktrackLimit(i, a[0], a[1], a[2]));
         Register(FunctionId.ThrowStackOverflow, static (i, a) => i.StackOverflow());
-        Register(FunctionId.CollectGarbage, static (i, a) => { i.GCEpoch++; return RuntimeTest.CollectGarbage(); });
+        Register(FunctionId.CollectGarbage, static (i, a) => RuntimeTest.CollectGarbage());
         Register(FunctionId.MajorGCForCompilerTesting, static (i, a) => RuntimeTest.CollectGarbage());
 
         // Tiering and heap-layout queries, as a --jitless V8 answers them.
@@ -380,7 +428,7 @@ public static partial class RuntimeTable
         Register(FunctionId.InLargeObjectSpace, RuntimeTest.ReturnFalse);
         Register(FunctionId.IsInWritableSharedSpace, RuntimeTest.ReturnFalse);
         Register(FunctionId.IsSharedString, RuntimeTest.ReturnFalse);
-        Register(FunctionId.HasCowElements, RuntimeTest.ReturnFalse);
+        Register(FunctionId.HasCowElements, static (i, a) => JSValue.FromBoolean(a[0].HeapObjectOrNull is JSObject { Elements.IsCowArray: true }));
         Register(FunctionId.AssertNotPeeled, RuntimeTest.ReturnUndefined);
         Register(FunctionId.BaselineOsr, RuntimeTest.ReturnUndefined);
         Register(FunctionId.DisableOptimizationFinalization, RuntimeTest.ReturnUndefined);
@@ -400,6 +448,15 @@ public static partial class RuntimeTable
         Register(FunctionId.CreateJSGeneratorObject,
             static (i, a) => Interpreter.InterpreterGenerators.CreateJSGeneratorObject(i, a[0].As<JSFunction>(), a[1]));
         Register(FunctionId.GeneratorGetFunction, static (i, a) => a[0].As<JSGeneratorObject>().Function);
+        // runtime-module.cc.
+        Register(FunctionId.DeclareModuleExports,
+            static (i, a) => RuntimeModules.DeclareModuleExports(i, a[0].As<FixedArray>(), a[1].As<JSFunction>()));
+        Register(FunctionId.GetModuleNamespace, static (i, a) => RuntimeModules.GetModuleNamespace(i, (int)a[0].Number));
+        Register(FunctionId.GetImportMetaObject, static (i, a) => RuntimeModules.GetImportMetaObject(i));
+        Register(FunctionId.GetModuleNamespaceExport,
+            static (i, a) => RuntimeModules.GetModuleNamespaceExport(i, a[0].As<JSModuleNamespace>(), a[1].As<JSString>()));
+        Register(FunctionId.DynamicImportCall, static (i, a) => RuntimeModules.DynamicImportCall(i, a));
+        Register(FunctionId.GetAbstractModuleSource, static (i, a) => i.NativeContext.AbstractModuleSourceFunction);
         Register(FunctionId.CreateAsyncFromSyncIterator,
             static (i, a) => Builtins.AsyncFromSyncIteratorBuiltins.CreateAsyncFromSyncIterator(i, a[0]));
     }

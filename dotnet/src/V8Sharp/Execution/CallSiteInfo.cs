@@ -141,7 +141,7 @@ public sealed class CallSiteInfo : HeapObject
                     if (evalScript.Name.HeapObjectOrNull is JSString evalScriptName)
                     {
                         builder.AppendString(evalScriptName);
-                        if (evalScript.GetPositionInfo(script.EvalFromPosition, out Script.PositionInfo info, Script.OffsetFlag.NoOffset))
+                        if (evalScript.GetPositionInfo(script.GetEvalPosition(), out Script.PositionInfo info, Script.OffsetFlag.NoOffset))
                         {
                             builder.AppendCharacter(':');
                             builder.AppendInt(info.Line + 1);
@@ -269,6 +269,8 @@ public sealed class CallSiteInfo : HeapObject
         {
             var entry = new InternalIndex(i);
             if (!dictionary.ToKey(entry, out JSValue key)) continue;
+            // GlobalDictionaryShape::Unwrap: the key of a global dictionary entry is its cell's name.
+            if (key.HeapObjectOrNull is PropertyCell cell) key = cell.Name;
             if (key.IsSymbol) continue;
             PropertyDetails details;
             JSValue value;
@@ -307,7 +309,14 @@ public sealed class CallSiteInfo : HeapObject
         {
             JSReceiver? current = it.GetCurrent();
             if (current is not JSObject obj) break;
-            if (isolate.IsAccessCheckNeeded(obj)) break;
+            // Object::IsAccessCheckNeeded: a global proxy needs one only when
+            // detached from the current global object.
+            if (obj is JSGlobalProxy proxy
+                    ? isolate.Context is null || proxy.IsDetachedFrom(isolate.Context.GlobalObject)
+                    : obj.Map.IsAccessCheckNeeded)
+            {
+                break;
+            }
             if (obj.HasFastProperties) name = InferMethodNameFromFastObject(isolate, obj, fun, name);
             else if (obj is JSGlobalObject global) name = InferMethodNameFromDictionary(isolate, global.GlobalDictionary, fun, name);
             else name = InferMethodNameFromDictionary(isolate, obj.PropertyDictionary, fun, name);

@@ -2471,16 +2471,13 @@ public partial class JSObject
     }
 
     /// <summary>
-    /// JSObject::UpdateAllocationSite: feeds an elements-kind transition of a
-    /// young array back into the AllocationSite of its memento. With
-    /// <paramref name="checkOnly"/> (AllocationSiteUpdateMode::kCheckOnly)
-    /// nothing changes.
+    /// JSObject::UpdateAllocationSite. V8 finds the site through the
+    /// AllocationMemento behind a young array; V8Sharp keeps it on the array
+    /// (<see cref="JSArray.AllocationMementoSite"/>).
     /// </summary>
     public static bool UpdateAllocationSite(Isolate isolate, JSObject obj, ElementsKind toKind, bool checkOnly = false)
     {
-        if (obj is not JSArray array) return false;
-        AllocationSite? site = array.FindAllocationMemento(isolate);
-        if (site is null) return false;
+        if (obj is not JSArray { AllocationMementoSite: { } site }) return false;
         return AllocationSite.DigestTransitionFeedback(isolate, site, toKind, checkOnly);
     }
 

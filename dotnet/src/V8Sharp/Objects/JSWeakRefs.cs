@@ -377,12 +377,6 @@ namespace V8Sharp
     public sealed partial class Isolate
     {
         /// <summary>
-        /// Counts collections: an allocation memento made in an earlier epoch
-        /// is gone, as a GC moves V8's young objects without their mementos.
-        /// </summary>
-        public int GCEpoch;
-
-        /// <summary>
         /// The AllocationSite a construct call passes to the Array constructor
         /// (V8: in a register to ArrayConstructorImpl); consumed on entry.
         /// </summary>
@@ -419,7 +413,6 @@ namespace V8Sharp
         /// </summary>
         public void CollectGarbage()
         {
-            GCEpoch++;
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();

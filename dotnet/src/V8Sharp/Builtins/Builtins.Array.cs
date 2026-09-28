@@ -339,7 +339,7 @@ public static partial class BuiltinsArray
         var array = (JSArray)isolate.Factory.NewJSObjectFromMap(initialMap);
         // If we don't care to track arrays of to_kind ElementsKind, then
         // don't emit a memento for them.
-        if (site is not null && AllocationSite.ShouldTrack(toKind)) array.InitializeAllocationMemento(isolate, site);
+        if (site is not null && AllocationSite.ShouldTrack(toKind)) array.AllocationMementoSite = site;
         isolate.Factory.NewJSArrayStorage(array, 0, 0, Factory.ArrayStorageAllocationMode.DONT_INITIALIZE_ARRAY_ELEMENTS);
 
         ElementsKind oldKind = array.GetElementsKind();

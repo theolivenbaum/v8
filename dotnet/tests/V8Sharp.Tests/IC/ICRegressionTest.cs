@@ -40,6 +40,53 @@ public class ICRegressionTest : TestWithContext
     }
 
     [Fact]
+    public void TypedArrayLoadAfterOutOfBounds()
+    {
+        // An out-of-bounds load puts the handler in OOB mode; in-bounds loads
+        // must still read the typed array (mjsunit/compiler/regress-934175).
+        Assert.Equal("undefined,42,42", RunString("""
+            var ar = new Float32Array(1);
+            ar[0] = 42;
+            function f(i) { return ar[i]; }
+            [String(f(1)), f(0), f(0)].join();
+            """));
+    }
+
+    [Fact]
+    public void HoleyStoreSeesPrototypeSetter()
+    {
+        // mjsunit/regress/regress-5275-1: the element store handler is guarded
+        // by the prototype chain validity cell.
+        Assert.Equal("1|undefined", RunString("""
+            function f(x) { var a = new Array(1); a[0] = x; return a; }
+            var r = [f(1)[0]];
+            Array.prototype.__defineSetter__('0', function() {});
+            r.push(String(f(1)[0]));
+            delete Array.prototype[0];
+            r.join('|');
+            """));
+    }
+
+    [Fact]
+    public void PolymorphicElementStoreKeepsInvalidatedCell()
+    {
+        // mjsunit/regress/regress-crbug-1053939: a typed array on the prototype
+        // chain swallows the out-of-bounds store.
+        Assert.Equal("1", RunString("""
+            function f(a, b) { a[b] = 1; }
+            var v = [];
+            f(v, 1);
+            var saved = Array.prototype.__proto__;
+            v.__proto__.__proto__ = new Int32Array();
+            f(Object(), 1);
+            f(v, 2);
+            var keys = Object.keys(v).join();
+            Array.prototype.__proto__ = saved;
+            keys;
+            """));
+    }
+
+    [Fact]
     public void StoreToUndefinedMessage()
     {
         Assert.Equal("TypeError: Cannot set properties of undefined (setting 'x')", RunString("""

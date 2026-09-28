@@ -344,8 +344,7 @@ public sealed partial class Factory(Isolate isolate)
         {
             // CopyJSObjectWithAllocationSite: the memento goes behind the copy
             // only when a site is passed (never copied from the source).
-            cloneArray.AllocationMemento = null;
-            if (site is not null) cloneArray.InitializeAllocationMemento(_isolate, site);
+            cloneArray.AllocationMementoSite = site;
         }
 
         FixedArrayBase elements = source.Elements;
