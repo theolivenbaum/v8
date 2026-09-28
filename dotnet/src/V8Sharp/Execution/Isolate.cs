@@ -91,9 +91,10 @@ public sealed partial class Isolate
         {
             Throw(Factory.NewError(NativeContext.ErrorFunction, MessageTemplate.Unsupported, []));
         }
-        // V8 also sets the context's scope info to shadow_realm_scope_info
-        // (a ScopeType::SHADOW_REALM_SCOPE marker); V8Sharp does not model it.
-        return HostCreateShadowRealmContextCallback!(this, NativeContext);
+        NativeContext shadowRealmContext = HostCreateShadowRealmContextCallback!(this, NativeContext);
+        // shadow_realm_context->set_scope_info(shadow_realm_scope_info).
+        shadowRealmContext.IsShadowRealm = true;
+        return shadowRealmContext;
     }
 
     /// <summary>Isolate::allow_atomics_wait (v8::Isolate::SetAllowAtomicsWait; d8's --no-can-block).</summary>

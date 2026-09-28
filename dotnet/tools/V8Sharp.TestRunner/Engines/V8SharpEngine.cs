@@ -62,8 +62,14 @@ sealed class V8SharpJsIsolate : IJsIsolate
         Host = host;
         Isolate = VIsolate.New(flags);
         Isolate.AllowAtomicsWait = engine.AllowAtomicsWait;
-        // d8's Shell::HostCreateShadowRealmContext: a plain new context.
-        Isolate.HostCreateShadowRealmContextCallback = static (isolate, _) => Bootstrapper.CreateEnvironment(isolate);
+        // d8's Shell::HostCreateShadowRealmContext: a plain new context in the
+        // initiator's origin (same security token).
+        Isolate.HostCreateShadowRealmContextCallback = static (isolate, initiator) =>
+        {
+            NativeContext context = Bootstrapper.CreateEnvironment(isolate);
+            context.SecurityToken = initiator.SecurityToken;
+            return context;
+        };
         Isolate.PromiseRejectCallback = OnPromiseReject;
         var main = new V8SharpRealm(this, Isolate.InitialNativeContext!);
         _realms.Add(main);

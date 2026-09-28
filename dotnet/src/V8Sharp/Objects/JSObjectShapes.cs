@@ -403,6 +403,34 @@ public sealed partial class JSWrappedFunction
         }
     }
 
+    /// <summary>
+    /// CodeStubAssembler::GetFunctionRealm, which CallWrappedFunction uses: a
+    /// revoked proxy throws kProxyRevoked for 'apply' (the runtime version has
+    /// no trap name).
+    /// </summary>
+    static NativeContext GetFunctionRealm(Isolate isolate, JSReceiver target)
+    {
+        JSReceiver current = target;
+        while (true)
+        {
+            if (current is JSProxy proxy)
+            {
+                if (proxy.IsRevoked)
+                {
+                    isolate.ThrowTypeError(MessageTemplate.ProxyRevoked, isolate.Factory.NewStringFromAsciiChecked("apply"));
+                }
+                current = proxy.Target.As<JSReceiver>();
+                continue;
+            }
+            if (current is JSBoundFunction bound)
+            {
+                current = bound.BoundTargetFunction;
+                continue;
+            }
+            return JSReceiver.GetFunctionRealm(isolate, current);
+        }
+    }
+
     static JSValue CallInCallerRealm(Isolate isolate, JSWrappedFunction function, JSValue receiver, ReadOnlySpan<JSValue> args)
     {
 
@@ -411,7 +439,7 @@ public sealed partial class JSWrappedFunction
         // 4. Let callerRealm be ? GetFunctionRealm(F).
         NativeContext callerContext = function.Context;
         // 3. Let targetRealm be ? GetFunctionRealm(target).
-        NativeContext targetContext = JSReceiver.GetFunctionRealm(isolate, target);
+        NativeContext targetContext = GetFunctionRealm(isolate, target);
         // 5. NOTE: Any exception objects produced after this point are associated
         // with callerRealm.
 

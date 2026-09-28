@@ -236,6 +236,12 @@ public sealed partial class NativeContext : Context
         SetNativeContext(this);
     }
 
+    /// <summary>
+    /// Whether the context is a ShadowRealm's: V8 gives such a context the
+    /// shadow_realm_scope_info (scope type SHADOW_REALM_SCOPE).
+    /// </summary>
+    public bool IsShadowRealm;
+
     /// <summary>The global object is kept in the native context's extension slot.</summary>
     public new JSGlobalObject GlobalObject
     {

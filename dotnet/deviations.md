@@ -322,8 +322,9 @@ Bootstrapper
   first use per isolate.
 - Uri (src/strings/uri.cc): one UTF-16 buffer instead of V8's one-byte and
   two-byte buffers; the strings produced are the same.
-- CallSite methods: no ShadowRealm boundary checks (ShadowRealm is not
-  ported). getScriptHash computes the SHA-256 on each call (V8 caches it on
+- CallSite methods: the ShadowRealm boundary check reads
+  `NativeContext.IsShadowRealm` (V8: the context's shadow_realm_scope_info).
+  getScriptHash computes the SHA-256 on each call (V8 caches it on
   the script) and never returns "" for opaque origins (not modelled).
   getThis returns undefined for a receiver that is still the hole.
 - Error.isError has no API-wrapper (DOMException) case.
@@ -331,8 +332,9 @@ Bootstrapper
   handler as V8 does (callable map, API function constructor, called through
   CALL_AS_FUNCTION_DELEGATE), but its prototype is Object.prototype instead of
   the template function's own prototype object.
-- ShadowRealm: the realm's native context does not get V8's
-  shadow_realm_scope_info. importValue has no host module loader behind it
+- ShadowRealm: a ShadowRealm's native context is marked with
+  `NativeContext.IsShadowRealm` instead of V8's shadow_realm_scope_info.
+  importValue has no host module loader behind it
   (V8Sharp has no dynamic import yet), so the inner promise always rejects
   with V8's kUnsupported error (what V8 does without a host callback) and the
   ExportGetter (ShadowRealmImportValueFulfilled) is not created.

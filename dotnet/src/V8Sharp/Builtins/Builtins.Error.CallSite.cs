@@ -110,6 +110,16 @@ public static class BuiltinsCallSite
         return frame.GetScriptName();
     }
 
+    /// <summary>CHECK_SHADOW_REALM_BOUNDARY_OR_RETURN_FAILURE.</summary>
+    static void CheckShadowRealmBoundary(Isolate isolate, NativeContext context1, NativeContext context2, string method)
+    {
+        if (!ReferenceEquals(context1, context2) && (context1.IsShadowRealm || context2.IsShadowRealm))
+        {
+            isolate.ThrowTypeError(MessageTemplate.CallSiteMethodCrossedShadowRealmBoundary,
+                isolate.Factory.NewStringFromAsciiChecked(method));
+        }
+    }
+
     public static JSValue CallSitePrototypeGetFunction(Isolate isolate, in BuiltinArguments args)
     {
         CallSiteInfo frame = CheckCallSite(isolate, in args, "getFunction");
@@ -117,8 +127,11 @@ public static class BuiltinsCallSite
         JSFunction function = frame.Function;
         if (frame.IsStrict || function.Shared.IsToplevel) return JSValue.Undefined;
         // Get function's creation context. Return undefined if not available.
-        // (ShadowRealm boundaries are not checked: ShadowRealm is not ported.)
-        if (function.GetCreationContext() is null) return JSValue.Undefined;
+        if (function.GetCreationContext() is not { } creationContext) return JSValue.Undefined;
+        // ShadowRealms have a boundary: references to outside objects must not
+        // exist in the ShadowRealm, and references to ShadowRealm objects must
+        // not exist outside the ShadowRealm.
+        CheckShadowRealmBoundary(isolate, isolate.NativeContext, creationContext, "getFunction");
         isolate.CountUsage("kCallSiteAPIGetFunctionSloppyCall");
         return function;
     }
@@ -182,8 +195,12 @@ public static class BuiltinsCallSite
         if (frame.IsStrict) return JSValue.Undefined;
         isolate.CountUsage("kCallSiteAPIGetThisSloppyCall");
         JSValue thisObj = frame.ReceiverOrInstance;
-        // Get receiver's creation context. Return undefined if not available.
-        if (thisObj.HeapObjectOrNull is JSReceiver receiver && receiver.GetCreationContext() is null) return JSValue.Undefined;
+        if (thisObj.HeapObjectOrNull is JSReceiver receiver)
+        {
+            // Get receiver's creation context. Return undefined if not available.
+            if (receiver.GetCreationContext() is not { } creationContext) return JSValue.Undefined;
+            CheckShadowRealmBoundary(isolate, isolate.NativeContext, creationContext, "getThis");
+        }
         // The receiver of a constructor frame without a receiver yet is the hole.
         return thisObj.IsTheHole ? JSValue.Undefined : thisObj;
     }
