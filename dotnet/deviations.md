@@ -185,6 +185,10 @@ for now, to be revisited when the reason goes away.
 
 ## Baseline compiler (Sparkplug) and tiering
 
+- Temporary: `--sparkplug` is off by default (V8's x64 default is on), so
+  V8Sharp runs the interpreter only unless `--sparkplug` or
+  `--always-sparkplug` is passed, while interpreter correctness and
+  performance come first. Turn it back on in FlagList.Generated.cs.
 - Code generation: IL in a static method of a dynamic assembly per function
   instead of machine code (architecture.md section 9.1). The assembly is not
   collectible (RyuJIT does not tier collectible code), so baseline code is

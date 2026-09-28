@@ -315,6 +315,7 @@ when its bytecode is finalized. A running interpreter frame switches at its
 next `JumpLoop` (OSR to baseline, `InterpreterOnStackReplacement_ToBaseline`):
 the dispatch loop returns to `Run`, which continues the same frame in the
 baseline code at the loop header. `--jitless` implies `--no-sparkplug`.
+(Temporarily `--sparkplug` defaults to off in V8Sharp; see deviations.md.)
 
 **RyuJIT.** Methods of a (non-collectible) dynamic assembly take part in
 RyuJIT's tiered compilation: a baseline method is first jitted quickly at

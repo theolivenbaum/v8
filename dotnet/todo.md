@@ -466,6 +466,11 @@ interpreter, compiler, ICs, modules or d8sharp rather than the builtins
       arithmetic, a baseline-to-baseline call path (BaselineCalls). Tests:
       tests/V8Sharp.Tests/Baseline (interpreter vs --always-sparkplug).
       Open: see "Baseline: open items" below.
+      Temporarily OFF by default (--sparkplug=false): enable with --sparkplug
+      or --always-sparkplug. With it on (tiering, V8's defaults) mjsunit had 3
+      new failures against mjsunit.v8sharp.txt (harmony/global, which fails
+      interpreted too, and weakrefs/cleanup-from-different-realm,
+      cleanup-proxy-from-different-realm, not investigated).
 - Baseline: open items
   - Bytecode flushing and baseline code flushing (mjsunit/baseline/flush-*)
     are not implemented (no bytecode aging).

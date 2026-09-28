@@ -218,7 +218,7 @@ public sealed partial class FlagList
     public bool trace_track_allocation_sites = false;
     public bool trace_migration = false;
     public bool trace_generalization = false;
-    public bool sparkplug = true;  // build default; V8: ENABLE_SPARKPLUG_BY_DEFAULT (x64); V8Sharp has the baseline IL tier
+    public bool sparkplug = false;  // build default; V8: ENABLE_SPARKPLUG_BY_DEFAULT (true on x64). Temporarily off in V8Sharp: the baseline IL tier runs only with --sparkplug / --always-sparkplug (deviations.md)
     public bool always_sparkplug = false;
     public bool baseline_batch_compilation = true;
     public bool concurrent_sparkplug = false;
