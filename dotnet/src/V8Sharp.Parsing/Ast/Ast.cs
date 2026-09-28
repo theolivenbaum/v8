@@ -1611,11 +1611,15 @@ public sealed class ArrayLiteralBoilerplateBuilder : LiteralBoilerplateBuilder
     private readonly List<Expression> _values;
     private readonly int _firstSpreadIndex;
 
-    internal ArrayLiteralBoilerplateBuilder(List<Expression> values, int first_spread_index)
+    // Public: the bytecode generator builds one for spread calls (V8's
+    // zone()->New<ArrayLiteralBoilerplateBuilder>(elements, first_spread_index)).
+    public ArrayLiteralBoilerplateBuilder(List<Expression> values, int first_spread_index)
     {
         _values = values;
         _firstSpreadIndex = first_spread_index;
     }
+
+    public List<Expression> values() => _values;
 
     // Determines whether the {CreateShallowArrayLiteral} builtin can be used.
     public bool IsFastCloningSupported() =>
