@@ -39,6 +39,37 @@ public sealed class JSArray(Map map) : JSObject(map)
     /// <summary>The length property (a number in uint32 range).</summary>
     public JSValue Length = JSValue.Zero;
 
+    /// <summary>
+    /// The AllocationMemento V8 allocates right behind a young array created
+    /// with allocation-site tracking (literals, the Array constructor).
+    /// Deviation: V8Sharp has no heap layout, so the memento is a field; it
+    /// counts only while <see cref="AllocationMementoEpoch"/> equals the
+    /// isolate's GC epoch, because V8 drops mementos when a GC moves the array
+    /// out of the young generation (PretenuringHandler::FindAllocationMemento).
+    /// </summary>
+    internal AllocationSite? AllocationMemento;
+    internal int AllocationMementoEpoch;
+
+    /// <summary>PretenuringHandler::FindAllocationMemento (kForRuntime).</summary>
+    internal AllocationSite? FindAllocationMemento(Isolate isolate)
+    {
+        AllocationSite? site = AllocationMemento;
+        if (site is null) return null;
+        if (AllocationMementoEpoch != isolate.GCEpoch || site.IsZombie)
+        {
+            AllocationMemento = null;
+            return null;
+        }
+        return site;
+    }
+
+    /// <summary>Factory::InitializeAllocationMemento.</summary>
+    internal void InitializeAllocationMemento(Isolate isolate, AllocationSite site)
+    {
+        AllocationMemento = site;
+        AllocationMementoEpoch = isolate.GCEpoch;
+    }
+
     /// <summary>JSArray::HasArrayPrototype.</summary>
     public bool HasArrayPrototype(Isolate isolate) => ReferenceEquals(Map.Prototype, isolate.NativeContext.InitialArrayPrototype);
 

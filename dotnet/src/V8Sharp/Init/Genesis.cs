@@ -62,6 +62,7 @@ sealed partial class Genesis
         InitializeCallSiteBuiltins();
         InstallABunchOfRandomThings();
         InstallErrorStackAccessorFunctions();
+        BuiltinsConsole.InstallExtrasBindings(isolate, _nativeContext);
         ConfigureGlobalObject();
 
         _nativeContext.MicrotaskQueue = microtaskQueue ?? isolate.DefaultMicrotaskQueue;

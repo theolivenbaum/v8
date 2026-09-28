@@ -391,6 +391,11 @@ public sealed class ParseInfo
     public FunctionLiteral? literal() => _literal;
     public void set_literal(FunctionLiteral? literal) => _literal = literal;
 
+    // Parser::HandleDebugMagicComments stores these on the Script; the parser
+    // has no Script object, so ParseProgram leaves them here for the engine.
+    public string? source_url_magic_comment { get; set; }
+    public string? source_mapping_url_magic_comment { get; set; }
+
     public DeclarationScope scope() => literal()!.scope();
 
     public int parameters_end_pos() => _parametersEndPos;

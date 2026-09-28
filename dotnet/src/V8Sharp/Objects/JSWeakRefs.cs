@@ -376,6 +376,18 @@ namespace V8Sharp
     /// <summary>The weak-reference state V8 keeps on the Heap.</summary>
     public sealed partial class Isolate
     {
+        /// <summary>
+        /// Counts collections: an allocation memento made in an earlier epoch
+        /// is gone, as a GC moves V8's young objects without their mementos.
+        /// </summary>
+        public int GCEpoch;
+
+        /// <summary>
+        /// The AllocationSite a construct call passes to the Array constructor
+        /// (V8: in a register to ArrayConstructorImpl); consumed on entry.
+        /// </summary>
+        internal AllocationSite? ArrayConstructorAllocationSite;
+
         readonly HashSet<HeapObject> _weakRefsKeepDuringJob = new(ReferenceEqualityComparer.Instance);
         readonly List<WeakReference<JSFinalizationRegistry>> _trackedFinalizationRegistries = [];
         readonly Queue<JSFinalizationRegistry> _dirtyFinalizationRegistries = new();
@@ -407,6 +419,7 @@ namespace V8Sharp
         /// </summary>
         public void CollectGarbage()
         {
+            GCEpoch++;
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();

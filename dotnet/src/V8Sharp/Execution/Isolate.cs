@@ -103,6 +103,12 @@ public sealed partial class Isolate
     /// <summary>Isolate::error_message_param (used by DataView builtins' stack names).</summary>
     public int ErrorMessageParam;
 
+    /// <summary>Isolate::console_delegate (v8::debug::SetConsoleDelegate); null: console calls do nothing.</summary>
+    public Builtins.ConsoleDelegate? ConsoleDelegate;
+
+    /// <summary>Isolate::last_console_context_id.</summary>
+    public int LastConsoleContextId;
+
     int _nextScriptId;
     int _nextUniqueSfiId;
     bool _inStackOverflow;

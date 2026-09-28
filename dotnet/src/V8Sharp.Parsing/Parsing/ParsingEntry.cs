@@ -28,6 +28,12 @@ public static class ParsingEntry
         Parser parser = new(info);
 
         parser.ParseProgram(script, info, maybe_outer_scope_info);
+        // Parser::HandleDebugMagicComments.
+        if (info.literal() != null)
+        {
+            info.source_url_magic_comment = parser.SourceUrl();
+            info.source_mapping_url_magic_comment = parser.SourceMappingUrl();
+        }
         if (use_counts != null) parser.UpdateStatistics(script, use_counts, out _);
         return info.literal() != null;
     }

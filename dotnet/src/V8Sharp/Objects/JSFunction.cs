@@ -260,6 +260,14 @@ public sealed class SharedFunctionInfo : HeapObject
         {
             scopeInfo.SetFunctionName(_sharedName);
         }
+        // The inferred name ("o.foo" for `o.foo = function() {}`) moves onto the
+        // ScopeInfo too, as the UncompiledData that held it goes away.
+        JSString inferred = InferredName();
+        if (inferred.Length != 0 && scopeInfo.HasInferredFunctionName &&
+            !ReferenceEquals(scopeInfo.InferredFunctionName().HeapObjectOrNull, inferred))
+        {
+            scopeInfo.SetInferredFunctionName(inferred);
+        }
         NameOrScopeInfo = scopeInfo;
     }
 

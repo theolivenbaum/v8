@@ -300,12 +300,16 @@ public sealed class JSExternalObject(Map map) : JSObject(map)
 }
 
 /// <summary>
-/// V8's AllocationSite: allocation feedback for array and object literals
-/// (elements-kind transitions and pretenuring). V8Sharp has no mementos or
-/// pretenuring; the site records the transition feedback only.
+/// V8's AllocationSite (src/objects/allocation-site.h): allocation feedback for
+/// array and object literals and the Array constructor. Arrays created with a
+/// site carry an allocation memento (JSArray.AllocationMemento) through which
+/// elements-kind transitions are fed back. Pretenuring is not ported.
 /// </summary>
 public sealed class AllocationSite() : HeapObject(InstanceType.AllocationSiteType)
 {
+    /// <summary>AllocationSite::kMaximumArrayBytesToPretransition.</summary>
+    public const uint kMaximumArrayBytesToPretransition = 8 * 1024;
+
     /// <summary>AllocationSite::PretenureDecision.</summary>
     public enum PretenureDecision { kUndecided = 0, kDontTenure = 1, kMaybeTenure = 2, kTenure = 3, kZombie = 4 }
 
@@ -317,21 +321,74 @@ public sealed class AllocationSite() : HeapObject(InstanceType.AllocationSiteTyp
     public bool DoNotInlineCall;
     public AllocationSite? NestedSite;
     public PretenureDecision Decision;
+    /// <summary>AllocationSite::SpeculationDisabled (the DoNotInlineBit of the transition info).</summary>
+    public bool SpeculationDisabled;
 
-    /// <summary>AllocationSite::ShouldTrack: only more-general transitions of array sites are tracked.</summary>
-    public static bool ShouldTrack(ElementsKind from, ElementsKind to) => ElementsKinds.IsMoreGeneralElementsKindTransition(from, to);
+    public bool IsZombie => Decision == PretenureDecision.kZombie;
 
-    /// <summary>AllocationSite::DigestTransitionFeedback.</summary>
-    public static bool DigestTransitionFeedback(Isolate isolate, AllocationSite site, ElementsKind toKind)
+    /// <summary>AllocationSite::PointsToLiteral: the site of a literal (it holds the boilerplate).</summary>
+    public bool PointsToLiteral => Boilerplate is not null;
+
+    /// <summary>AllocationSite::GetElementsKind (constructed arrays; literal sites read the boilerplate).</summary>
+    public ElementsKind GetElementsKind() => ElementsKind;
+
+    public void SetElementsKind(ElementsKind kind) => ElementsKind = kind;
+
+    public void SetSpeculationDisabled() => SpeculationDisabled = true;
+
+    /// <summary>
+    /// AllocationSite::ShouldTrack: a site is only worth a memento while the
+    /// boilerplate's kind is the initial (Smi) kind.
+    /// </summary>
+    public static bool ShouldTrack(ElementsKind boilerplateElementsKind) => ElementsKinds.IsSmiElementsKind(boilerplateElementsKind);
+
+    /// <summary>AllocationSite::CanTrack (--allocation-site-pretenuring is on by default).</summary>
+    public static bool CanTrack(InstanceType type) => type is InstanceType.JSArrayType or InstanceType.JSObjectType;
+
+    /// <summary>
+    /// AllocationSite::DigestTransitionFeedback: a transition of an array made
+    /// from this site transitions the literal's boilerplate (or, for a
+    /// constructed array, the site's kind) so later arrays start in the more
+    /// general kind. With <paramref name="checkOnly"/> (kCheckOnly) nothing
+    /// changes; the result says whether it would.
+    /// </summary>
+    public static bool DigestTransitionFeedback(Isolate isolate, AllocationSite site, ElementsKind toKind, bool checkOnly = false)
     {
-        ElementsKind kind = site.ElementsKind;
-        if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
-        if (ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind))
+        bool result = false;
+
+        if (site.PointsToLiteral && site.Boilerplate is JSArray boilerplate)
         {
-            site.ElementsKind = toKind;
-            return true;
+            ElementsKind kind = boilerplate.GetElementsKind();
+            // if kind is holey ensure that to_kind is as well.
+            if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
+            if (ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind))
+            {
+                // If the array is huge, it's not likely to be defined in a local
+                // function, so we shouldn't make new instances of it very often.
+                ObjectOps.ToArrayLength(boilerplate.Length, out uint length);
+                if (length <= kMaximumArrayBytesToPretransition)
+                {
+                    if (checkOnly) return true;
+                    JSObject.TransitionElementsKind(isolate, boilerplate, toKind);
+                    site.ElementsKind = boilerplate.GetElementsKind();
+                    result = true;
+                }
+            }
         }
-        return false;
+        else
+        {
+            // The AllocationSite is for a constructed Array.
+            ElementsKind kind = site.GetElementsKind();
+            // if kind is holey ensure that to_kind is as well.
+            if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
+            if (ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind))
+            {
+                if (checkOnly) return true;
+                site.SetElementsKind(toKind);
+                result = true;
+            }
+        }
+        return result;
     }
 }
 

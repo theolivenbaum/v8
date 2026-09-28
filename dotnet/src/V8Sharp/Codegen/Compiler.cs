@@ -219,6 +219,11 @@ namespace V8Sharp.Codegen
             {
                 ReportPendingMessages(isolate, parseInfo, script);
             }
+            // Parser::HandleDebugMagicComments.
+            if (parseInfo.source_url_magic_comment is { } sourceUrl)
+            {
+                script.SourceUrl = isolate.Factory.InternalizeString(sourceUrl);
+            }
 
             var heap = new CompilerHeap(isolate, script);
             FunctionLiteral literal = parseInfo.literal()!;

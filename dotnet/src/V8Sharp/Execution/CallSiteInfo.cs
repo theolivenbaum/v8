@@ -274,6 +274,9 @@ public sealed class CallSiteInfo : HeapObject
             JSValue value;
             if (dictionary is GlobalDictionary global)
             {
+                // GlobalDictionary::ToKey: the key is the cell's name.
+                key = global.NameAt(entry);
+                if (key.IsSymbol) continue;
                 details = global.DetailsAt(entry);
                 value = global.ValueAt(entry);
             }
@@ -304,7 +307,7 @@ public sealed class CallSiteInfo : HeapObject
         {
             JSReceiver? current = it.GetCurrent();
             if (current is not JSObject obj) break;
-            if (obj.Map.IsAccessCheckNeeded) break;
+            if (isolate.IsAccessCheckNeeded(obj)) break;
             if (obj.HasFastProperties) name = InferMethodNameFromFastObject(isolate, obj, fun, name);
             else if (obj is JSGlobalObject global) name = InferMethodNameFromDictionary(isolate, global.GlobalDictionary, fun, name);
             else name = InferMethodNameFromDictionary(isolate, obj.PropertyDictionary, fun, name);

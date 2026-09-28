@@ -270,34 +270,65 @@ public static partial class BuiltinsArray
         // If new_target is undefined, then this is the 'Call' case, so set new_target
         // to function.
         JSReceiver newTarget = args.NewTarget.IsUndefined ? function : args.NewTarget.As<JSReceiver>();
-        return NewArray(isolate, function, newTarget, args.Arguments);
+        // The construct feedback's AllocationSite (V8 passes it to
+        // ArrayConstructorImpl in a register; see Isolate.ArrayConstructorAllocationSite).
+        AllocationSite? site = isolate.ArrayConstructorAllocationSite;
+        isolate.ArrayConstructorAllocationSite = null;
+        return NewArray(isolate, function, newTarget, args.Arguments, site);
     }
 
     /// <summary>Runtime_NewArray.</summary>
-    internal static JSArray NewArray(Isolate isolate, JSFunction constructor, JSReceiver newTarget, ReadOnlySpan<JSValue> argv)
+    internal static JSArray NewArray(Isolate isolate, JSFunction constructor, JSReceiver newTarget, ReadOnlySpan<JSValue> argv,
+        AllocationSite? site = null)
     {
         bool holey = false;
+        bool canUseTypeFeedback = site is not null;
+        bool canInlineArrayConstructor = true;
         // For arity 1, the constructor call  is treated as `Array(length)` if it is a
         // number, and `Array(single_element_value)` otherwise. For the length call,
         // check various bounds.
         if (argv.Length == 1)
         {
+            // Keep in sync with: `ArrayConstructInitializeElements`.
             JSValue arg0 = argv[0];
-            if (arg0.IsNumber && ObjectOps.ToArrayLength(arg0, out uint length) &&
-                !JSArray.SetLengthWouldNormalizeForLength(length) && length != 0)
+            if (arg0.IsNumber)
             {
-                holey = true;
+                if (!ObjectOps.ToArrayLength(arg0, out uint length))
+                {
+                    // The array is a dictionary in this case.
+                    canUseTypeFeedback = false;
+                }
+                else if (JSArray.SetLengthWouldNormalizeForLength(length))
+                {
+                    // The array is a dictionary in this case.
+                    canUseTypeFeedback = false;
+                }
+                else if (length != 0)
+                {
+                    holey = true;
+                    if (length >= JSArray.kInitialMaxFastElementArray) canInlineArrayConstructor = false;
+                }
+            }
+            else
+            {
+                canUseTypeFeedback = false;
             }
         }
 
         Map initialMap = JSFunction.GetDerivedMap(isolate, constructor, newTarget);
 
-        ElementsKind initialKind = initialMap.ElementsKind;
+        ElementsKind initialKind = canUseTypeFeedback ? site!.GetElementsKind() : initialMap.ElementsKind;
         ElementsKind toKind = holey ? ElementsKinds.GetHoleyElementsKind(initialKind) : initialKind;
 
         if (argv.Length > 1 || (argv.Length == 1 && !argv[0].IsNumber))
         {
             toKind = GetTransitionedElementsKind(initialKind, argv);
+        }
+
+        if (toKind != initialKind)
+        {
+            // Update the allocation site info to reflect the advice alteration.
+            site?.SetElementsKind(toKind);
         }
 
         // We should allocate with an initial map that reflects the allocation site
@@ -306,9 +337,20 @@ public static partial class BuiltinsArray
         initialMap = Map.AsElementsKind(isolate, initialMap, toKind);
 
         var array = (JSArray)isolate.Factory.NewJSObjectFromMap(initialMap);
+        // If we don't care to track arrays of to_kind ElementsKind, then
+        // don't emit a memento for them.
+        if (site is not null && AllocationSite.ShouldTrack(toKind)) array.InitializeAllocationMemento(isolate, site);
         isolate.Factory.NewJSArrayStorage(array, 0, 0, Factory.ArrayStorageAllocationMode.DONT_INITIALIZE_ARRAY_ELEMENTS);
 
+        ElementsKind oldKind = array.GetElementsKind();
         ArrayConstructInitializeElements(isolate, array, argv);
+
+        if (site is not null && (oldKind != array.GetElementsKind() || !canUseTypeFeedback || !canInlineArrayConstructor))
+        {
+            // Protect against deopt loops by disabling speculating optimizations in
+            // some cases.
+            site.SetSpeculationDisabled();
+        }
         return array;
     }
 

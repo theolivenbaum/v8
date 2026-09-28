@@ -261,6 +261,12 @@ public static class InterpreterCalls
                 isolate.Context = outer;
             }
         }
+        // The builtin's frame takes machine stack in V8 (BuiltinExitFrame and the
+        // C++/CSA frames below it); reserving it on the register stack makes
+        // recursion through builtins (callbacks, toString/join, Reflect.apply)
+        // overflow at about V8's depth. Deviation: V8Sharp's builtins run on
+        // the .NET stack, which is sized independently of --stack-size.
+        int stackTop = isolate.AllocateRegisters(kBuiltinFrameSlots);
         int depth = isolate.InterpreterFrameDepth;
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
         frame.Function = function;
@@ -282,8 +288,12 @@ public static class InterpreterCalls
             isolate.Context = saved;
             isolate.InterpreterFrameDepth = depth;
             isolate.InterpreterFrames[depth] = default;
+            isolate.RegisterStackTop = stackTop;
         }
     }
+
+    /// <summary>The stack slots of a builtin's frames, measured against V8 (see CallBuiltin).</summary>
+    internal const int kBuiltinFrameSlots = 12;
 
     /// <summary>CallWithSpread: the last argument is spread (builtins-call-gen.cc CallOrConstructWithSpread).</summary>
     public static JSValue CallWithSpread(Isolate isolate, JSValue callee, ReadOnlySpan<JSValue> receiverAndArgs)
@@ -407,6 +417,11 @@ public static class InterpreterCalls
             SharedFunctionInfo shared = function.Shared;
             if (shared.HasBuiltinId && shared.BuiltinId != Builtin.CompileLazy)
             {
+                // Construct with an AllocationSite: ArrayConstructorImpl gets the site.
+                if (site is not null && shared.BuiltinId == Builtin.ArrayConstructor)
+                {
+                    isolate.ArrayConstructorAllocationSite = site;
+                }
                 // JSBuiltinsConstructStub: the builtin creates its own receiver.
                 return CallBuiltin(isolate, function, JSValue.TheHole, args, newTarget);
             }

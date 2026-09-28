@@ -363,7 +363,7 @@ public static partial class RuntimeTable
         Register(FunctionId.EnqueueMicrotask, static (i, a) => RuntimeTest.EnqueueMicrotask(i, a[0]));
         Register(FunctionId.NewRegExpWithBacktrackLimit, static (i, a) => RuntimeTest.NewRegExpWithBacktrackLimit(i, a[0], a[1], a[2]));
         Register(FunctionId.ThrowStackOverflow, static (i, a) => i.StackOverflow());
-        Register(FunctionId.CollectGarbage, static (i, a) => RuntimeTest.CollectGarbage());
+        Register(FunctionId.CollectGarbage, static (i, a) => { i.GCEpoch++; return RuntimeTest.CollectGarbage(); });
         Register(FunctionId.MajorGCForCompilerTesting, static (i, a) => RuntimeTest.CollectGarbage());
 
         // Tiering and heap-layout queries, as a --jitless V8 answers them.

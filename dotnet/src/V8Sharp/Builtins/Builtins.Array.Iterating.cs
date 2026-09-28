@@ -158,8 +158,17 @@ public static partial class BuiltinsArray
     {
         JSReceiver o = PrepareCallbackBuiltin(isolate, args, "Array.prototype.filter", out double len, out JSValue callbackfn);
         JSValue thisArg = args.AtOrUndefined(2);
-        // FastFilterSpeciesCreate / ArraySpeciesCreate(O, 0).
-        JSReceiver output = ArraySpeciesCreate(isolate, args.Receiver, 0);
+        // FastFilterSpeciesCreate: a 0-length array with the ElementsKind of a
+        // fast receiver; else ArraySpeciesCreate(O, 0).
+        JSReceiver output;
+        if (Protectors.IsArraySpeciesLookupChainIntact(isolate) && IsFastJSArray(isolate, o, out JSArray fastO))
+        {
+            output = isolate.Factory.NewJSArray(fastO.Map.ElementsKind, 0, 0);
+        }
+        else
+        {
+            output = ArraySpeciesCreate(isolate, args.Receiver, 0);
+        }
         double to = 0;
         for (double k = 0; k < len; k++)
         {
@@ -182,9 +191,22 @@ public static partial class BuiltinsArray
     {
         JSReceiver o = PrepareCallbackBuiltin(isolate, args, "Array.prototype.map", out double len, out JSValue callbackfn);
         JSValue thisArg = args.AtOrUndefined(2);
-        // 5. Let A be ? ArraySpeciesCreate(O, len).
-        JSReceiver array = ArraySpeciesCreate(isolate, args.Receiver, len);
-        for (double k = 0; k < len; k++)
+        JSReceiver array;
+        double k = 0;
+        if (Protectors.IsArraySpeciesLookupChainIntact(isolate) && IsFastJSArrayForRead(isolate, args.Receiver, out JSArray fastO) &&
+            len <= JSValue.SmiMaxValue)
+        {
+            JSArray result = FastArrayMap(isolate, fastO, (int)len, callbackfn, thisArg, out int bailoutK);
+            if (bailoutK < 0) return result;
+            array = result;
+            k = bailoutK;
+        }
+        else
+        {
+            // 5. Let A be ? ArraySpeciesCreate(O, len).
+            array = ArraySpeciesCreate(isolate, args.Receiver, len);
+        }
+        for (; k < len; k++)
         {
             if (TryGetPresentElement(isolate, o, k, out JSValue kValue))
             {
@@ -194,6 +216,70 @@ public static partial class BuiltinsArray
             }
         }
         return array;
+    }
+
+    /// <summary>
+    /// FastArrayMap (array-map.tq) with its Vector: the results go into a
+    /// FixedArray and the output array gets the most specific packed kind
+    /// that holds them (holey when elements were skipped). On a bailout
+    /// (the receiver stopped being fast) returns the array built so far and
+    /// the index to continue at in <paramref name="bailoutK"/> (else -1).
+    /// </summary>
+    static JSArray FastArrayMap(Isolate isolate, JSArray fastO, int len, JSValue callbackfn, JSValue thisArg, out int bailoutK)
+    {
+        JSValue[] results = len > 0 ? new JSValue[len] : [];
+        bool onlySmis = true, onlyNumbers = true, skippedElements = false;
+        int k = 0;
+        bailoutK = -1;
+        for (; k < len; k++)
+        {
+            // fastOW.Recheck().
+            if (!IsFastJSArrayForRead(isolate, fastO, out _) || k >= (int)fastO.Length.Number)
+            {
+                bailoutK = k;
+                break;
+            }
+            if (!TryGetFastElement(isolate, fastO, k, out JSValue value, out bool present) || !present)
+            {
+                // FoundHole.
+                results[k] = JSValue.TheHole;
+                skippedElements = true;
+                continue;
+            }
+            JSValue result = Execution.Call(isolate, callbackfn, thisArg, [value, JSValue.FromNumber(k), fastO]);
+            // Vector::StoreResult.
+            if (!result.IsSmi)
+            {
+                onlySmis = false;
+                if (!result.IsNumber) onlyNumbers = false;
+            }
+            results[k] = result;
+        }
+        int validLength = bailoutK < 0 ? len : bailoutK;
+        for (int i = validLength; i < len; i++) results[i] = JSValue.TheHole;
+
+        // Vector::CreateJSArray.
+        ElementsKind kind = ElementsKind.PACKED_SMI_ELEMENTS;
+        if (!onlySmis) kind = onlyNumbers ? ElementsKind.PACKED_DOUBLE_ELEMENTS : ElementsKind.PACKED_ELEMENTS;
+        if (skippedElements || validLength < len) kind = ElementsKinds.GetHoleyElementsKind(kind);
+        if (len == 0) return isolate.Factory.NewJSArray(kind, 0, 0);
+        FixedArrayBase elements;
+        if (ElementsKinds.IsDoubleElementsKind(kind))
+        {
+            FixedDoubleArray doubles = isolate.Factory.NewFixedDoubleArrayWithHoles(len);
+            for (int i = 0; i < validLength; i++)
+            {
+                if (!results[i].IsTheHole) doubles.Set(i, results[i].Number);
+            }
+            elements = doubles;
+        }
+        else
+        {
+            FixedArray fixedArray = isolate.Factory.NewFixedArray(len);
+            results.AsSpan().CopyTo(fixedArray.Data);
+            elements = fixedArray;
+        }
+        return isolate.Factory.NewJSArrayWithElements(elements, kind, len);
     }
 
     /// <summary>ES #sec-array.prototype.reduce (ArrayReduceLoopContinuation).</summary>

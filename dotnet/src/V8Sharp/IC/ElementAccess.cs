@@ -67,11 +67,22 @@ public static class ElementAccess
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryStoreFastElement(Isolate isolate, JSObject obj, double key, StoreHandler handler, JSValue value)
     {
-        if (handler.ElementsTransitionMap is not null) return false;
         int index = (int)key;
         if (index != key || index < 0) return false;
         ElementsKind kind = obj.Map.ElementsKind;
         if (!ElementsKinds.IsFastElementsKind(kind)) return false;
+        if (handler.ElementsTransitionMap is { } transitionMap)
+        {
+            // ElementsTransitionAndStore: move the receiver to the more general
+            // map the IC has seen first (this also feeds the transition into an
+            // allocation memento's site), then store.
+            ElementsKind toKind = transitionMap.ElementsKind;
+            if (!ElementsKinds.IsFastElementsKind(toKind) || !ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind)) return false;
+            if (obj.Elements.IsCowArray) return false;
+            JSObject.TransitionElementsKind(isolate, obj, toKind);
+            if (!ReferenceEquals(obj.Map, transitionMap)) return false;
+            kind = toKind;
+        }
 
         // The value must fit the elements kind without a transition.
         if (ElementsKinds.IsSmiElementsKind(kind))
@@ -96,7 +107,7 @@ public static class ElementAccess
             if (index >= elements.Length)
             {
                 if (!ElementsAccessor.ForKind(kind).GrowCapacity(isolate, obj, (uint)index)) return false;
-                if (!ReferenceEquals(obj.Map, handler.ElementsTransitionMap ?? obj.Map)) return false;
+                if (obj.Map.ElementsKind != kind) return false;
                 elements = obj.Elements;
             }
             if (!WriteElement(elements, kind, index, value)) return false;
