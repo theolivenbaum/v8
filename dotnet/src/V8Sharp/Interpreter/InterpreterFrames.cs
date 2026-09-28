@@ -52,6 +52,16 @@ namespace V8Sharp
         public InterpreterFrameKind Kind;
         /// <summary>The frame was entered by [[Construct]].</summary>
         public bool IsConstructor;
+        /// <summary>
+        /// The frame was entered by a call from the dispatch loop of its caller
+        /// without a new .NET frame (InterpreterInlineCalls); Return resumes the
+        /// caller in the same loop.
+        /// </summary>
+        public bool InlineCall;
+        /// <summary>An inline frame: the caller's bytecode offset to resume at.</summary>
+        public int ReturnPc;
+        /// <summary>An inline frame: the register stack top before its arguments were pushed.</summary>
+        public int RegisterStart;
     }
 
     public sealed partial class Isolate

@@ -326,6 +326,11 @@ public sealed class Shell
         Install(context, global, "version", VersionFunction, 0);
         Install(context, global, "setTimeout", SetTimeout, 2);
 
+        JSObject performance = _isolate.Factory.NewJSObject(context.ObjectFunction);
+        Install(context, performance, "now", PerformanceNow, 0);
+        JSObject.SetOwnPropertyIgnoreAttributes(_isolate, global, _isolate.Factory.InternalizeString("performance"), performance,
+            PropertyAttributes.DONT_ENUM);
+
         JSObject d8 = _isolate.Factory.NewJSObject(context.ObjectFunction);
         JSObject file = _isolate.Factory.NewJSObject(context.ObjectFunction);
         Install(context, file, "execute", Load, 1);
@@ -420,6 +425,12 @@ public sealed class Shell
 
     /// <summary>Shell::Version.</summary>
     static JSValue VersionFunction(Isolate isolate, in BuiltinArguments args) => isolate.Factory.NewStringFromUtf16(Version);
+
+    static readonly System.Diagnostics.Stopwatch s_timeOrigin = System.Diagnostics.Stopwatch.StartNew();
+
+    /// <summary>Shell::PerformanceNow: milliseconds since the shell started.</summary>
+    static JSValue PerformanceNow(Isolate isolate, in BuiltinArguments args) =>
+        JSValue.FromNumber(s_timeOrigin.Elapsed.TotalMilliseconds);
 
     /// <summary>Shell::SetTimeout: queues the callback for the message loop.</summary>
     static JSValue SetTimeout(Isolate isolate, in BuiltinArguments args)

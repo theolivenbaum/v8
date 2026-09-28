@@ -58,6 +58,12 @@ public struct InterpreterState
     public int Argc;
     /// <summary>Set when the frame returned (Return / SuspendGenerator) during a single step.</summary>
     public bool Done;
+    /// <summary>
+    /// The frame record index of the frame this loop was entered for; frames
+    /// above it up to <see cref="FrameIndex"/> are inline calls (the fields
+    /// above describe the innermost one).
+    /// </summary>
+    public int BaseFrameIndex;
 }
 
 /// <summary>Operand decoding (little-endian, unaligned, as V8's BytecodeOperandReadUnaligned).</summary>
@@ -67,8 +73,10 @@ internal static class Operands
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int Signed<TS>(ref byte code, int offset) where TS : struct, IOperandScale
     {
-        if (TS.Scale == 1) return (sbyte)Unsafe.Add(ref code, offset);
-        if (TS.Scale == 2) return Unsafe.ReadUnaligned<short>(ref Unsafe.Add(ref code, offset));
+        // typeof tests fold at JIT time without an inlined call, which matters in
+        // the dispatch loop: it exhausts the JIT's inlining budget.
+        if (typeof(TS) == typeof(SingleScale)) return (sbyte)Unsafe.Add(ref code, offset);
+        if (typeof(TS) == typeof(DoubleScale)) return Unsafe.ReadUnaligned<short>(ref Unsafe.Add(ref code, offset));
         return Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref code, offset));
     }
 
@@ -76,8 +84,8 @@ internal static class Operands
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int Unsigned<TS>(ref byte code, int offset) where TS : struct, IOperandScale
     {
-        if (TS.Scale == 1) return Unsafe.Add(ref code, offset);
-        if (TS.Scale == 2) return Unsafe.ReadUnaligned<ushort>(ref Unsafe.Add(ref code, offset));
+        if (typeof(TS) == typeof(SingleScale)) return Unsafe.Add(ref code, offset);
+        if (typeof(TS) == typeof(DoubleScale)) return Unsafe.ReadUnaligned<ushort>(ref Unsafe.Add(ref code, offset));
         return (int)Unsafe.ReadUnaligned<uint>(ref Unsafe.Add(ref code, offset));
     }
 

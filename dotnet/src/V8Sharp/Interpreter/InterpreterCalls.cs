@@ -123,7 +123,7 @@ public static class InterpreterCalls
     }
 
     /// <summary>CollectConstructFeedback (ic-callable.tq); returns the AllocationSite for Array construction.</summary>
-    static AllocationSite? CollectConstructFeedback(Isolate isolate, FeedbackVector? fv, int slot, JSValue target, JSValue newTarget)
+    internal static AllocationSite? CollectConstructFeedback(Isolate isolate, FeedbackVector? fv, int slot, JSValue target, JSValue newTarget)
     {
         if (fv is null) return null;
         JSValue[] slots = fv.Slots;
@@ -331,7 +331,7 @@ public static class InterpreterCalls
     /// for base constructors, runs the bytecode, and picks the result.
     /// </summary>
     /// <summary>The stack slots of V8's construct stub frame, measured against --jitless V8.</summary>
-    const int kConstructStubFrameSlots = 16;
+    internal const int kConstructStubFrameSlots = 16;
 
     static JSValue ConstructInterpreted(Isolate isolate, JSFunction function, JSValue newTarget, int argsStart, int argc,
         ReadOnlySpan<JSValue> spanArgs, bool useSpan = false)
