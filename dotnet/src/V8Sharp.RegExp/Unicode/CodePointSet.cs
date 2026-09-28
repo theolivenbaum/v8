@@ -39,6 +39,17 @@ internal sealed class CodePointSet
 
     public void Clear() => _ranges.Clear();
 
+    /// <summary>UnicodeSet::operator==.</summary>
+    public bool SetEquals(CodePointSet other)
+    {
+        if (_ranges.Count != other._ranges.Count) return false;
+        for (int i = 0; i < _ranges.Count; i++)
+        {
+            if (_ranges[i] != other._ranges[i]) return false;
+        }
+        return true;
+    }
+
     public void Set(int from, int to)
     {
         _ranges.Clear();

@@ -1204,8 +1204,12 @@ internal sealed class RegExpParserImpl
                 quantifierType = RegExpQuantifier.QuantifierType.NON_GREEDY;
                 Advance();
             }
-            // v8_flags.regexp_possessive_quantifier is a debug-only flag and is
-            // not ported.
+            else if (s_regexpPossessiveQuantifier && Current == '+')
+            {
+                // v8_flags.regexp_possessive_quantifier is a debug-only flag.
+                quantifierType = RegExpQuantifier.QuantifierType.POSSESSIVE;
+                Advance();
+            }
             if (!builder.AddQuantifierToAtom(min, max, _quantifierCount, quantifierType))
             {
                 return ReportError(RegExpError.InvalidQuantifier);
@@ -1215,7 +1219,10 @@ internal sealed class RegExpParserImpl
     }
 
     /// <summary>--js-regexp-buffer-boundaries (\A, \z, \Z). Off by default in V8.</summary>
-    internal static bool s_jsRegExpBufferBoundaries;
+    internal static bool s_jsRegExpBufferBoundaries = false;
+
+    /// <summary>--regexp-possessive-quantifier (debug-only in V8, default false).</summary>
+    internal static bool s_regexpPossessiveQuantifier = false;
 
     RegExpParserState? ParseOpenParenthesis(RegExpParserState state)
     {
