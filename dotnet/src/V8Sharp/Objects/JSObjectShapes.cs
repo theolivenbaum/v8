@@ -374,7 +374,7 @@ public sealed class JSDataView(Map map) : JSArrayBufferView(map)
 // ---- Date and RegExp ----------------------------------------------------------------------
 
 /// <summary>V8's JSDate: the time value and the cached local-time fields.</summary>
-public sealed class JSDate(Map map) : JSObject(map)
+public sealed partial class JSDate(Map map) : JSObject(map)
 {
     /// <summary>JSDate::FieldIndex.</summary>
     public enum FieldIndex
