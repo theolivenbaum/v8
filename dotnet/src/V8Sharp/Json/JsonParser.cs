@@ -207,10 +207,31 @@ public sealed class JsonParser
     JsonValNode? _parsedValNode;
 
     // The property and element stacks of the iterative parser.
-    JsonProperty[] _propertyStack = new JsonProperty[16];
+    // Pooled: a large array's element stack would otherwise be a new
+    // large-object-heap allocation on every parse.
+    JsonProperty[] _propertyStack = ArrayPool<JsonProperty>.Shared.Rent(16);
     int _propertyCount;
-    JSValue[] _elementStack = new JSValue[16];
+    JSValue[] _elementStack = ArrayPool<JSValue>.Shared.Rent(16);
     int _elementCount;
+
+    void ReleaseStacks()
+    {
+        System.Array.Clear(_propertyStack, 0, _propertyCount);
+        ArrayPool<JsonProperty>.Shared.Return(_propertyStack);
+        _propertyStack = [];
+        System.Array.Clear(_elementStack, 0, _elementCount);
+        ArrayPool<JSValue>.Shared.Return(_elementStack);
+        _elementStack = [];
+    }
+
+    static void Grow<T>(ref T[] array, int count)
+    {
+        T[] bigger = ArrayPool<T>.Shared.Rent(count * 2);
+        System.Array.Copy(array, bigger, count);
+        System.Array.Clear(array, 0, count);
+        ArrayPool<T>.Shared.Return(array);
+        array = bigger;
+    }
 
     struct JsonProperty(JsonString @string)
     {
@@ -246,7 +267,15 @@ public sealed class JsonParser
         // reviver cannot observe the context argument, so V8Sharp always
         // collects them.
         var parser = new JsonParser(isolate, source);
-        JSValue result = parser.ParseJson(collectSourceStrings);
+        JSValue result;
+        try
+        {
+            result = parser.ParseJson(collectSourceStrings);
+        }
+        finally
+        {
+            parser.ReleaseStacks();
+        }
         if (collectSourceStrings)
         {
             return JsonParseInternalizer.Internalize(isolate, result, (JSReceiver)reviver.Object, source,
@@ -256,7 +285,18 @@ public sealed class JsonParser
     }
 
     /// <summary>JsonParser::CheckRawJson.</summary>
-    public static bool CheckRawJson(Isolate isolate, JSString source) => new JsonParser(isolate, source).ParseRawJson();
+    public static bool CheckRawJson(Isolate isolate, JSString source)
+    {
+        var parser = new JsonParser(isolate, source);
+        try
+        {
+            return parser.ParseRawJson();
+        }
+        finally
+        {
+            parser.ReleaseStacks();
+        }
+    }
 
     // ---------------------------------------------------------------------
     // Characters and tokens.
@@ -606,13 +646,13 @@ public sealed class JsonParser
 
     void PushProperty(JsonString key)
     {
-        if (_propertyCount == _propertyStack.Length) System.Array.Resize(ref _propertyStack, _propertyCount * 2);
+        if (_propertyCount == _propertyStack.Length) Grow(ref _propertyStack, _propertyCount);
         _propertyStack[_propertyCount++] = new JsonProperty(key);
     }
 
     void PushElement(JSValue value)
     {
-        if (_elementCount == _elementStack.Length) System.Array.Resize(ref _elementStack, _elementCount * 2);
+        if (_elementCount == _elementStack.Length) Grow(ref _elementStack, _elementCount);
         _elementStack[_elementCount++] = value;
     }
 
@@ -860,9 +900,13 @@ public sealed class JsonParser
     /// </summary>
     JSValue BuildJsonObject(in JsonContinuation cont)
     {
-        JSObject obj = _isolate.Factory.NewJSObject(_isolate.NativeContext.ObjectFunction);
         int start = cont.Index;
         int length = _propertyCount - start;
+        int namedLength = length - (int)cont.Elements;
+        // JSDataObjectBuilder starts from the object literal map for the
+        // expected number of named properties (shared with object literals).
+        Map map = _isolate.Factory.ObjectLiteralMapFromCache(_isolate.NativeContext, namedLength);
+        JSObject obj = JSObject.NewFastOrSlowJSObjectFromMap(_isolate, map);
 
         // First store the elements.
         if (cont.Elements > 0)
@@ -1019,9 +1063,76 @@ public sealed class JsonParser
             AdvanceToNonDecimal();
         }
 
-        double number = Conversions.StringToDouble(_chars.AsSpan(start, _cursor - start), ConversionFlag.NoConversionFlag, double.NaN);
+        ReadOnlySpan<char> chars = _chars.AsSpan(start, _cursor - start);
+        if (TryFastDecimal(chars, out double fast)) return JSValue.FromNumber(fast);
+        double number = Conversions.StringToDouble(chars, ConversionFlag.NoConversionFlag, double.NaN);
         Debug.Assert(!double.IsNaN(number));
         return JSValue.FromNumber(number);
+    }
+
+    static ReadOnlySpan<double> PowersOfTen =>
+    [
+        1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19,
+        1e20, 1e21, 1e22,
+    ];
+
+    /// <summary>
+    /// Clinger's fast path for a validated JSON number: with at most 15
+    /// significant digits and a decimal exponent within [-22, 22], the
+    /// mantissa and the power of ten are exact doubles and one IEEE
+    /// multiplication or division gives the correctly rounded result.
+    /// Deviation: V8 hands every non-Smi number to StringToDouble, whose
+    /// fast_float first step is this same fast path; doing it here avoids the
+    /// general entry point's overhead. Results are identical.
+    /// </summary>
+    static bool TryFastDecimal(ReadOnlySpan<char> chars, out double result)
+    {
+        result = 0;
+        int i = 0;
+        bool negative = chars[0] == '-';
+        if (negative) i++;
+        ulong mantissa = 0;
+        int digits = 0;
+        int exponent = 0;
+        for (; i < chars.Length && CharPredicates.IsDecimalDigit(chars[i]); i++)
+        {
+            if (mantissa != 0 || chars[i] != '0') digits++;
+            mantissa = mantissa * 10 + (uint)(chars[i] - '0');
+            if (digits > 15) return false;
+        }
+        if (i < chars.Length && chars[i] == '.')
+        {
+            for (i++; i < chars.Length && CharPredicates.IsDecimalDigit(chars[i]); i++)
+            {
+                if (mantissa != 0 || chars[i] != '0') digits++;
+                mantissa = mantissa * 10 + (uint)(chars[i] - '0');
+                exponent--;
+                if (digits > 15) return false;
+            }
+        }
+        if (i < chars.Length)
+        {
+            // Exponent part ('e' or 'E', validated by the scanner).
+            i++;
+            bool expNegative = false;
+            if (chars[i] is '-' or '+')
+            {
+                expNegative = chars[i] == '-';
+                i++;
+            }
+            int e = 0;
+            for (; i < chars.Length; i++)
+            {
+                e = e * 10 + (chars[i] - '0');
+                if (e > 1000) return false;
+            }
+            exponent += expNegative ? -e : e;
+        }
+        if (exponent < -22 || exponent > 22) return false;
+        double value = mantissa;
+        value = exponent < 0 ? value / PowersOfTen[-exponent] : value * PowersOfTen[exponent];
+        result = negative ? -value : value;
+        return true;
     }
 
     // ---------------------------------------------------------------------

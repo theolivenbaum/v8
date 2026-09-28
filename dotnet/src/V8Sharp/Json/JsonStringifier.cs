@@ -37,18 +37,14 @@ public sealed class JsonStringifier
 
     readonly List<(JSValue Key, JSReceiver Object)> _stack = [];
 
-    /// <summary>The characters that need escaping in a JSON string: controls, '"', '\' and surrogates.</summary>
-    static readonly SearchValues<char> s_needsEscape = SearchValues.Create(BuildNeedsEscape());
-
-    static string BuildNeedsEscape()
-    {
-        var chars = new List<char>();
-        for (int c = 0; c < 0x20; c++) chars.Add((char)c);
-        chars.Add('"');
-        chars.Add('\\');
-        for (int c = 0xD800; c <= 0xDFFF; c++) chars.Add((char)c);
-        return new string(chars.ToArray());
-    }
+    /// <summary>
+    /// The ASCII characters that need escaping in a JSON string (controls, '"'
+    /// and '\'); surrogates are found with a range search. V8's
+    /// DoNotEscape / JsonDoNotEscapeFlagTable.
+    /// </summary>
+    static readonly SearchValues<char> s_asciiNeedsEscape = SearchValues.Create(
+        "\"\\\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u000f" +
+        "\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f");
 
     JsonStringifier(Isolate isolate)
     {
@@ -811,7 +807,11 @@ public sealed class JsonStringifier
         bool requiredEscaping = false;
         while (true)
         {
-            int found = src.IndexOfAny(s_needsEscape);
+            // Two vectorized scans (ASCII escapes, then surrogates before the
+            // first ASCII escape) are faster than one over a set that mixes both.
+            int found = src.IndexOfAny(s_asciiNeedsEscape);
+            int surrogate = (found < 0 ? src : src[..found]).IndexOfAnyInRange('\uD800', '\uDFFF');
+            if (surrogate >= 0) found = surrogate;
             if (found < 0)
             {
                 AppendChars(src);

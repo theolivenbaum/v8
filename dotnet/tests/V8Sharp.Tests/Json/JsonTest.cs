@@ -199,6 +199,31 @@ public class JsonTest : IntrinsicsTestBase
     }
 
     [Fact]
+    public void NumbersAgreeWithStringToDouble()
+    {
+        var rng = new Random(99);
+        for (int i = 0; i < 20000; i++)
+        {
+            var sb = new StringBuilder();
+            if (rng.Next(3) == 0) sb.Append('-');
+            int intDigits = rng.Next(1, 12);
+            sb.Append(rng.Next(4) == 0 ? '0' : (char)('1' + rng.Next(9)));
+            if (sb[^1] != '0') for (int d = 1; d < intDigits; d++) sb.Append((char)('0' + rng.Next(10)));
+            if (rng.Next(2) == 0)
+            {
+                sb.Append('.');
+                int frac = rng.Next(1, 10);
+                for (int d = 0; d < frac; d++) sb.Append((char)('0' + rng.Next(10)));
+            }
+            if (rng.Next(3) == 0) sb.Append(rng.Next(2) == 0 ? 'e' : 'E').Append(rng.Next(3) switch { 0 => "-", 1 => "+", _ => "" }).Append(rng.Next(0, 40));
+            string s = sb.ToString();
+            double expected = V8Sharp.Base.Numbers.Conversions.StringToDouble(s, V8Sharp.Base.Numbers.ConversionFlag.NoConversionFlag);
+            double actual = Parse(s).Number;
+            Assert.True(BitConverter.DoubleToInt64Bits(expected) == BitConverter.DoubleToInt64Bits(actual), s);
+        }
+    }
+
+    [Fact]
     public void ParseValidJsonP()
     {
         var rng = new Random(17);
