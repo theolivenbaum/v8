@@ -4,4 +4,8 @@
     <RootNamespace>V8Sharp.Base</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="V8Sharp.Base.Tests" />
+  </ItemGroup>
+
 </Project>
