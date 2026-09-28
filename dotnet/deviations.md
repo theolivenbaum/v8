@@ -239,9 +239,8 @@ Execution
 Bootstrapper
 - No snapshot: `Bootstrapper.CreateEnvironment` builds every native context
   from scratch with Genesis, in V8's order.
-- Not installed yet: Intl, Temporal, ArrayBuffer/SharedArrayBuffer/Atomics,
-  typed arrays, DataView, DisposableStack, shared structs, extras and
-  extensions. The RegExpMatchInfo of a native context is created on first use
+- Not installed: Intl, Temporal, shared structs, extras and the extensions
+  other than gc and externalize-string. The RegExpMatchInfo of a native context is created on first use
   (`RegExpMatchInfo.Get`), not by InitializeGlobal.
 - The error stack getter and setter are JSFunctions created eagerly per native
   context (`NativeContext.ErrorStackGetterFun`/`ErrorStackSetterFun`), not
@@ -407,7 +406,10 @@ Bootstrapper
   (`Isolate.PostNonNestableDelayedTask`, which `RunPendingTasks` waits for
   when nothing else is pending, as d8's message loop does). Waiters of dead
   isolates or contexts are not cleaned up (no IsolateDeinit hook).
-- Array.fromAsync is not registered (needs async functions and promises).
+- Array.fromAsync keeps its resume state in a synthetic function context
+  like array-from-async.tq, but the state machine loop is a C# switch over
+  the labels; each await point is PromiseResolve + PerformPromiseThenImpl
+  with the root-function closures, as in V8.
 
 ## Builtins: Number, Math, BigInt, JSON, Date
 

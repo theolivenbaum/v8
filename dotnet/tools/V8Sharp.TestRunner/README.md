@@ -5,7 +5,7 @@ The equivalent of V8's `tools/run-tests.py`: runs `test/mjsunit`,
 `.status` files, `// Flags:` lines and harnesses, against either engine:
 
 - `oracle`: real V8 14.7 in-process through ClearScript (`V8Sharp.Oracle`);
-- `v8sharp`: the port (reports every test as failing until it runs JavaScript).
+- `v8sharp`: the port, in-process.
 
 ## Usage
 
@@ -57,8 +57,14 @@ kept across updates). A run reports **newly failing** tests (unexpected, not in
 the file) and **newly passing** ones (in the file, now as expected), and exits
 non-zero when anything is newly failing. This is how the port's progress is
 tracked: after a change, run the suites and `--update-expectations`; the diff
-of the expectation files is the progress. Only the oracle's files are
-committed so far; the v8sharp ones start when the engine runs scripts.
+of the expectation files is the progress. Both engines' files are
+committed.
+
+A glob line whose reason starts with `SKIP` does not only expect the tests
+to fail: they are not run on that engine at all (reported as skipped, and
+`--list` shows the reason). This is for a whole feature the engine does not
+implement, e.g. `built-ins/Temporal/**  # SKIP: Temporal is not ported` in
+`test262.v8sharp.txt`, so that full runs do not spend time on it.
 
 ## How it runs tests
 
@@ -209,6 +215,6 @@ handling, output formats) were fixed along the way.
   Setting flags per test in one process (`--no-freeze-flags-after-init`)
   works for simple flags but cannot undo implications, and ClearScript's
   library does not export `FlagList::ResetAllFlags`, so it is not used.
-- The v8sharp engine is a stub (`Engines/V8SharpEngine.cs`): every test fails
-  with "cannot run JavaScript yet" and no v8sharp expectation files are
-  committed.
+- The v8sharp engine (`Engines/V8SharpEngine.cs`) runs V8Sharp in-process;
+  its host provides d8's `--no-can-block` (Isolate.AllowAtomicsWait) and a
+  ShadowRealm context callback like d8's.
