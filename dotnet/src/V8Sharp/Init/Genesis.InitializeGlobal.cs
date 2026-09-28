@@ -863,6 +863,9 @@ sealed partial class Genesis
             Bootstrapper.InstallToStringTag(isolate, math, "Math");
         }
 
+        // ---- bootstrapper.cc 4120-4451 (Genesis.TypedArrays.cs)
+        InitializeGlobalTypedArrays(global);
+
         // ---- bootstrapper.cc 4453-4626
         {  // -- M a p
             JSFunction jsMapFun = Bootstrapper.InstallFunction(isolate, global, "Map", InstanceType.JSMapType, 0, 0, JSValue.TheHole, Builtin.MapConstructor, 0, false);
