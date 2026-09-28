@@ -44,11 +44,27 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [ ] tests: scanner, parsing, preparser, ast-value, scanner-streams
 
 ### V8Sharp.RegExp
-- [ ] regexp parser, AST, flags
-- [ ] compiler (tonode, compiler), bytecode generator, peephole
-- [ ] bytecode interpreter; experimental (linear) engine
-- [ ] case folding / unicode sets without ICU
-- [ ] tests: regexp-unittest
+- [x] regexp parser, AST, flags, errors, AST printer (regexp-parser.cc,
+      regexp-ast.cc, regexp-flags.h, regexp-error.cc, regexp-ast-printer.cc)
+- [x] compiler (regexp-compiler-tonode.cc, regexp-compiler.cc), bytecodes,
+      bytecode generator, peephole (one-byte and two-byte compilation)
+- [x] bytecode interpreter (RawMatch for one-byte and two-byte subjects);
+      experimental (linear) engine: bytecode, compiler, NFA interpreter,
+      /l flag, backtrack-limit fallback, capture-group-opt
+- [x] regexp.cc compile/exec pipeline without the heap: atom fast path,
+      lazy irregexp compilation, capture name map, EscapeRegExpSource,
+      VerifyFlags (public API: RegExpEngine.Compile, CompiledRegExp.Exec)
+- [x] case folding / property escapes / unicode sets without ICU: tables
+      generated from UCD 17.0 and emoji 17.0 by
+      tools/unicode/gen_regexp_unicode_tables.py
+- [x] tests: regexp-unittest (62 pass, 3 engine-level skips), differential
+      corpus vs the oracle (mjsunit, mjsunit/harmony, webkit, test262
+      built-ins/RegExp and language/literals/regexp, experimental engine):
+      100% agreement once the oracle's older V8/Unicode version is accounted
+      for (reports in dotnet/artifacts/regexp-differential/)
+- [ ] native backends: an IL-emitting RegExpMacroAssembler (tier-up)
+- [ ] TODO(merge): switch Unicode/*.cs to the shared unibrow port in
+      V8Sharp.Base once it lands
 
 ### V8Sharp (engine)
 - [ ] objects: strings (table, flattening, hashing, compare), symbols,
@@ -102,3 +118,23 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
   LanguageMode and other shared enums; `RuntimeFunctionId` and
   `NativeContextFields` move to the runtime/objects code; the constant pool is
   `object[]` until heap constants exist.
+- RegExp: V8 uses ICU for case closure (/ui, /vi), Unicode property escapes
+  and \p{...} of strings. V8Sharp.RegExp emulates the needed ICU calls
+  (UnicodeSet closeOver with simple case folding, property lookups by exact
+  alias, empty sets rejected like ICU) over tables generated from UCD 17.0
+  and emoji 17.0 (`Unicode/UnicodeTables.g.cs`), instead of "no ICU".
+- RegExp: a subject counts as one-byte when all its code units are <= 0xFF
+  (V8 decides by string representation); callers that know the
+  representation pass it to `CompiledRegExp.Exec`. Results are identical;
+  only which bytecode runs differs.
+- RegExp: no interrupt/stack-guard polling in the bytecode interpreter or the
+  NFA interpreter (no isolate), so they never return RETRY; the backtrack
+  stack is limited to V8's 64 MB (EXCEPTION on overflow).
+- RegExp: `AddNonBmpSurrogatePairs` emits its grouped alternatives in
+  insertion order where V8 iterates a ZoneUnorderedMap; the alternatives match
+  disjoint code points, so only code order differs.
+- RegExp differential tests: the oracle (V8 14.7) predates the lookbehind
+  alternative-sorting fix (regress-regexp-lookbehind-sort-alternatives.js)
+  and Unicode/Emoji 17 (new scripts Beria_Erfe, Sidetic, Tai_Yo, Tolong_Siki,
+  U+0295 now Ll, Extended_Pictographic changes); those mismatches are
+  classified as known in the test.
