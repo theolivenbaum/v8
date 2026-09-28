@@ -38,7 +38,15 @@ public sealed class BaselineCompiler
     readonly Isolate _isolate;
     readonly SharedFunctionInfo _shared;
     readonly BytecodeArray _bytecode;
-    readonly DynamicMethod _method;
+    readonly DynamicMethod? _method;
+    readonly TypeBuilder? _type;
+    readonly MethodBuilder? _methodBuilder;
+
+    /// <summary>
+    /// V8SHARP_BASELINE_DYNAMICMETHOD=1 emits DynamicMethods (compiled once, fully
+    /// optimized) instead of methods in the tiered code space (BaselineCodeSpace).
+    /// </summary>
+    static readonly bool s_useDynamicMethod = Environment.GetEnvironmentVariable("V8SHARP_BASELINE_DYNAMICMETHOD") == "1";
     readonly BaselineAssembler _masm;
     readonly ILGenerator _il;
     readonly BytecodeArrayIterator _iterator;
@@ -59,9 +67,18 @@ public sealed class BaselineCompiler
         _shared = sharedFunctionInfo;
         _bytecode = bytecode;
         string name = sharedFunctionInfo.Name().ToString();
-        _method = new DynamicMethod("baseline:" + (name.Length == 0 ? "(anonymous)" : name), typeof(JSValue),
-            [typeof(Isolate), typeof(InterpreterState).MakeByRefType()], typeof(BaselineCompiler).Module, skipVisibility: true);
-        _il = _method.GetILGenerator(Math.Max(64, bytecode.Length * 16));
+        name = "baseline:" + (name.Length == 0 ? "(anonymous)" : name);
+        if (s_useDynamicMethod)
+        {
+            _method = new DynamicMethod(name, typeof(JSValue), [typeof(Isolate), typeof(InterpreterState).MakeByRefType()],
+                typeof(BaselineCompiler).Module, skipVisibility: true);
+            _il = _method.GetILGenerator(Math.Max(64, bytecode.Length * 16));
+        }
+        else
+        {
+            (_type, _methodBuilder) = BaselineCodeSpace.For(isolate).DefineMethod(name);
+            _il = _methodBuilder.GetILGenerator(Math.Max(64, bytecode.Length * 16));
+        }
         _masm = new BaselineAssembler(_il);
         _iterator = new BytecodeArrayIterator(bytecode);
         _labels = new Label[bytecode.Length + 1];
@@ -113,7 +130,16 @@ public sealed class BaselineCompiler
     /// <summary>BaselineCompiler::Build: the code object.</summary>
     public BaselineCode Build()
     {
-        var entry = (BaselineCodeEntry)_method.CreateDelegate(typeof(BaselineCodeEntry));
+        BaselineCodeEntry entry;
+        if (_method is not null)
+        {
+            entry = (BaselineCodeEntry)_method.CreateDelegate(typeof(BaselineCodeEntry));
+        }
+        else
+        {
+            Type type = BaselineCodeSpace.CreateType(_type!);
+            entry = (BaselineCodeEntry)type.GetMethod(_methodBuilder!.Name)!.CreateDelegate(typeof(BaselineCodeEntry));
+        }
         int[] entries = new int[_entryOffsets.Count];
         _entryOffsets.CopyTo(entries);
         return new BaselineCode(_shared, _bytecode, entry, entries, _il.ILOffset);
@@ -992,18 +1018,19 @@ public sealed class BaselineCompiler
                 break;
 
             // ---- Compare operations ---------------------------------------------------------------------------------------------------------
-            case Bytecode.TestEqual: VisitBinaryOp("TestEqual"); break;
+            case Bytecode.TestEqual: VisitCompare("TestEqual"); break;
             case Bytecode.TestEqualStrict:
+                if (TryVisitCompareFusedWithJump("TestEqualStrictBool")) break;
                 Reg(RegisterOperand(0));
                 Acc();
                 Feedback(1);
                 CallBuiltin("TestEqualStrict");
                 SetAcc();
                 break;
-            case Bytecode.TestLessThan: VisitBinaryOp("TestLessThan"); break;
-            case Bytecode.TestGreaterThan: VisitBinaryOp("TestGreaterThan"); break;
-            case Bytecode.TestLessThanOrEqual: VisitBinaryOp("TestLessThanOrEqual"); break;
-            case Bytecode.TestGreaterThanOrEqual: VisitBinaryOp("TestGreaterThanOrEqual"); break;
+            case Bytecode.TestLessThan: VisitCompare("TestLessThan"); break;
+            case Bytecode.TestGreaterThan: VisitCompare("TestGreaterThan"); break;
+            case Bytecode.TestLessThanOrEqual: VisitCompare("TestLessThanOrEqual"); break;
+            case Bytecode.TestGreaterThanOrEqual: VisitCompare("TestGreaterThanOrEqual"); break;
             case Bytecode.TestInstanceOf:
                 Isolate();
                 Fv();
@@ -1441,9 +1468,60 @@ public sealed class BaselineCompiler
         SetAcc();
     }
 
+    /// <summary>A compare (operands: register, embedded feedback), fused with a following conditional jump when possible.</summary>
+    void VisitCompare(string builtin)
+    {
+        if (TryVisitCompareFusedWithJump(builtin + "Bool")) return;
+        VisitBinaryOp(builtin);
+    }
+
+    // The boolean of a compare fused with the conditional jump after it.
+    LocalBuilder? _fusedCondition;
+    bool _fusedPending;
+
+    /// <summary>
+    /// A compare followed by JumpIfTrue/JumpIfFalse/JumpIfToBoolean* that no
+    /// other jump reaches: the compare's builtin returns a bool that the jump
+    /// branches on (the accumulator still gets the boolean, as the bytecode
+    /// says). This is an IL-level peephole; the bytecode semantics are unchanged.
+    /// </summary>
+    bool TryVisitCompareFusedWithJump(string boolBuiltin)
+    {
+        Bytecode next = _iterator.NextBytecode();
+        bool fusable = next is Bytecode.JumpIfTrue or Bytecode.JumpIfFalse or Bytecode.JumpIfToBooleanTrue or
+            Bytecode.JumpIfToBooleanFalse or Bytecode.JumpIfTrueConstant or Bytecode.JumpIfFalseConstant or
+            Bytecode.JumpIfToBooleanTrueConstant or Bytecode.JumpIfToBooleanFalseConstant;
+        int nextOffset = _iterator.NextOffset();
+        if (!fusable || nextOffset >= _isJumpTarget.Length || _isJumpTarget[nextOffset]) return false;
+        _fusedCondition ??= _il.DeclareLocal(typeof(bool));
+        Isolate();
+        Reg(RegisterOperand(0));
+        Acc();
+        Feedback(1);
+        CallBuiltin(boolBuiltin);
+        _il.Emit(OpCodes.Stloc, _fusedCondition);
+        _il.Emit(OpCodes.Ldloc, _fusedCondition);
+        CallBuiltin("Bool");
+        SetAcc();
+        _fusedPending = true;
+        return true;
+    }
+
     /// <summary>A conditional jump on a predicate of the accumulator.</summary>
     void VisitJumpIf(string predicate, bool jumpIfTrue)
     {
+        if (_fusedPending)
+        {
+            // The accumulator is the boolean in _fusedCondition: IsTrue and
+            // ToBoolean are the condition, IsFalse its negation.
+            _fusedPending = false;
+            bool branchOnTrue = predicate == "IsFalse" ? !jumpIfTrue : jumpIfTrue;
+            _il.Emit(OpCodes.Ldloc, _fusedCondition!);
+            Label fusedTarget = _labels[JumpTargetOffset()];
+            if (branchOnTrue) _masm.JumpIfTrue(fusedTarget);
+            else _masm.JumpIfFalse(fusedTarget);
+            return;
+        }
         _masm.LoadAccumulatorAddress();
         CallBuiltin(predicate);
         Label target = _labels[JumpTargetOffset()];

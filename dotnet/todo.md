@@ -313,6 +313,17 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
       arithmetic, a baseline-to-baseline call path (BaselineCalls). Tests:
       tests/V8Sharp.Tests/Baseline (interpreter vs --always-sparkplug).
       Open: see "Baseline: open items" below.
+- Baseline: open items
+  - Bytecode flushing and baseline code flushing (mjsunit/baseline/flush-*)
+    are not implemented (no bytecode aging).
+  - No compilation cache, so closures from separately compiled identical
+    sources do not share baseline code (mjsunit/baseline/cross-realm).
+  - d8.test.verifySourcePositions (verify-bytecode-offsets) is not in the
+    test host.
+  - Concurrent Sparkplug (background compile) is not ported.
+  - Performance: calls still pay the interpreter frame's setup (register
+    file clear, frame record, write barriers); a leaner frame protocol
+    shared with the interpreter would help both tiers.
 - [ ] Optimizing compiler: SSA graph from bytecode + feedback, speculative
       representations, inlining, deoptimizer (Maglev analogue)
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays

@@ -432,6 +432,62 @@ public static class BaselineBuiltins
             ? InterpreterOps.CompareNumbers(Operation.GreaterThanOrEqual, lhs._num, rhs._num, ref feedback)
             : InterpreterOps.Relational(isolate, Operation.GreaterThanOrEqual, lhs, rhs, ref feedback);
 
+    // The same compares as a bool, for a compare fused with the conditional
+    // jump that follows it (the accumulator still gets the boolean).
+
+    [MethodImpl(Inline)]
+    static bool CompareNumbersBool(Operation op, double l, double r, ref byte feedback)
+    {
+        InterpreterOps.UpdateCompareFeedback(ref feedback,
+            IsSmi(l, out _) && IsSmi(r, out _) ? CompareOperationFeedback.TypeIndex.SignedSmall : CompareOperationFeedback.TypeIndex.Number);
+        return op switch
+        {
+            Operation.LessThan => l < r,
+            Operation.GreaterThan => l > r,
+            Operation.LessThanOrEqual => l <= r,
+            Operation.GreaterThanOrEqual => l >= r,
+            _ => l == r,
+        };
+    }
+
+    [MethodImpl(Inline)]
+    public static bool TestLessThanBool(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
+        lhs.IsNumber && rhs.IsNumber
+            ? CompareNumbersBool(Operation.LessThan, lhs._num, rhs._num, ref feedback)
+            : InterpreterOps.Relational(isolate, Operation.LessThan, lhs, rhs, ref feedback).IsTrue;
+
+    [MethodImpl(Inline)]
+    public static bool TestGreaterThanBool(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
+        lhs.IsNumber && rhs.IsNumber
+            ? CompareNumbersBool(Operation.GreaterThan, lhs._num, rhs._num, ref feedback)
+            : InterpreterOps.Relational(isolate, Operation.GreaterThan, lhs, rhs, ref feedback).IsTrue;
+
+    [MethodImpl(Inline)]
+    public static bool TestLessThanOrEqualBool(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
+        lhs.IsNumber && rhs.IsNumber
+            ? CompareNumbersBool(Operation.LessThanOrEqual, lhs._num, rhs._num, ref feedback)
+            : InterpreterOps.Relational(isolate, Operation.LessThanOrEqual, lhs, rhs, ref feedback).IsTrue;
+
+    [MethodImpl(Inline)]
+    public static bool TestGreaterThanOrEqualBool(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
+        lhs.IsNumber && rhs.IsNumber
+            ? CompareNumbersBool(Operation.GreaterThanOrEqual, lhs._num, rhs._num, ref feedback)
+            : InterpreterOps.Relational(isolate, Operation.GreaterThanOrEqual, lhs, rhs, ref feedback).IsTrue;
+
+    [MethodImpl(Inline)]
+    public static bool TestEqualBool(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
+        lhs.IsNumber && rhs.IsNumber
+            ? CompareNumbersBool(Operation.Equal, lhs._num, rhs._num, ref feedback)
+            : InterpreterOps.Equal(isolate, lhs, rhs, ref feedback).IsTrue;
+
+    [MethodImpl(Inline)]
+    public static bool TestEqualStrictBool(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
+        lhs.IsNumber && rhs.IsNumber
+            ? CompareNumbersBool(Operation.StrictEqual, lhs._num, rhs._num, ref feedback)
+            : InterpreterOps.StrictEqual(lhs, rhs, ref feedback).IsTrue;
+
+    [MethodImpl(Inline)] public static JSValue Bool(bool value) => JSValue.FromBoolean(value);
+
     public static JSValue TestInstanceOf(Isolate isolate, FeedbackVector? fv, int slot, JSValue obj, JSValue callable) =>
         InterpreterOps.InstanceOf(isolate, fv, slot, obj, callable);
 
