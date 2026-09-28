@@ -272,7 +272,19 @@ for now, to be revisited when the reason goes away.
   push sets both), so a call of the same function at the same depth skips
   those reference stores; they stay reachable until the record is reused or
   an explicit collection (`gc()`, `Isolate.CollectGarbage`) clears the
-  records above the live frames.
+  records above the live frames. Popping an inline frame writes nothing to
+  its record (every push sets all fields).
+- The register stack above its top is undefined except below
+  `Isolate.RegisterStackDirtyEnd`: a returning inline frame leaves its
+  parameters, fixed slots and registers there, and the next inline call at
+  that depth compares before each reference store (same closure, context,
+  feedback vector, often the same receiver and argument tags), skipping the
+  GC write barriers. Its register file is cleared on entry (V8's trampoline
+  fills it with undefined). The stale values stay reachable until they are
+  overwritten, the frame entered from C# below them returns
+  (`ReleaseRegistersAndDirty`), or an explicit collection clears them.
+- `InterpreterState` is a `ref struct`: RyuJIT emits no GC write barrier for
+  stores through a byref to a byref-like type (it cannot be on the heap).
 - Calls: a call or `new` from bytecode to an ordinary compiled bytecode
   function runs in the caller's dispatch loop (`InterpreterInlineCalls`)
   without a .NET frame; generators, async functions, class and derived
