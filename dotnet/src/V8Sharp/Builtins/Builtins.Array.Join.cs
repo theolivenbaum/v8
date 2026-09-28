@@ -109,37 +109,46 @@ public static partial class BuiltinsArray
             char[] result = new char[_totalStringLength];
             int pos = 0;
             ReadOnlySpan<char> last = default;
+            // WriteChunkListToFlat: consecutive strings are separated by one
+            // implicit separator; a positive count replaces it.
+            int numSeparators = 0;
             for (int i = 0; i < _count; i++)
             {
                 object? entry = _entries[i];
+                int repeatLast = 0;
+                if (entry is int n)
+                {
+                    if (n > 0) numSeparators = n;
+                    else repeatLast = -n;
+                }
+                for (int k = 0; k < numSeparators; k++)
+                {
+                    sepChars.CopyTo(result.AsSpan(pos));
+                    pos += sepChars.Length;
+                }
+                numSeparators = 0;
+                if (repeatLast > 0)
+                {
+                    // Repeat the last written string (with separators between).
+                    for (int k = 0; k < repeatLast; k++)
+                    {
+                        if (k > 0)
+                        {
+                            sepChars.CopyTo(result.AsSpan(pos));
+                            pos += sepChars.Length;
+                        }
+                        last.CopyTo(result.AsSpan(pos));
+                        pos += last.Length;
+                    }
+                    numSeparators = 1;
+                }
                 if (entry is JSString str)
                 {
                     last = str.FlatSpan();
                     last.CopyTo(result.AsSpan(pos));
                     pos += last.Length;
-                }
-                else
-                {
-                    int n = (int)entry!;
-                    if (n > 0)
-                    {
-                        for (int k = 0; k < n; k++)
-                        {
-                            sepChars.CopyTo(result.AsSpan(pos));
-                            pos += sepChars.Length;
-                        }
-                    }
-                    else
-                    {
-                        // Repeat the last string -n times, each preceded by a separator.
-                        for (int k = 0; k < -n; k++)
-                        {
-                            sepChars.CopyTo(result.AsSpan(pos));
-                            pos += sepChars.Length;
-                            last.CopyTo(result.AsSpan(pos));
-                            pos += last.Length;
-                        }
-                    }
+                    // Next string element, needs at least one separator preceding it.
+                    numSeparators = 1;
                 }
             }
             return isolate.Factory.NewStringFromUtf16(new string(result));
