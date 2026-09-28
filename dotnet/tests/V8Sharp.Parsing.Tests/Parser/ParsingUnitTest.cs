@@ -379,6 +379,23 @@ public partial class ParsingTest
         Assert.Equal(input.assigned, var.maybe_assigned() == MaybeAssignedFlag.kMaybeAssigned);
     }
 
+    private void TestMaybeAssigned(Input input, string variable, int module, int allow_lazy_parsing) =>
+        TestMaybeAssigned(input, variable, module != 0, allow_lazy_parsing != 0);
+
+    private void TestMaybeAssigned(Input input, string variable, int module, bool allow_lazy_parsing) =>
+        TestMaybeAssigned(input, variable, module != 0, allow_lazy_parsing);
+
+    private void TestMaybeAssigned(Input input, string variable, bool module, int allow_lazy_parsing) =>
+        TestMaybeAssigned(input, variable, module, allow_lazy_parsing != 0);
+
+    private static Input wrap(Input input)
+    {
+        var location = new int[input.location.Length + 1];
+        location[0] = 0;
+        input.location.CopyTo(location, 1);
+        return new Input(input.assigned, "function WRAPPED() { " + input.source + " }", location);
+    }
+
     [Fact]
     public void AutoSemicolonToken()
     {
@@ -963,6 +980,286 @@ public partial class ParsingTest
 
 
     [Fact]
+    public void ScanKeywords()
+    {
+        // TOKEN_LIST(IGNORE_TOKEN, KEYWORD): the keyword tokens and their text.
+        var keywords = new List<(string keyword, Token token)>();
+        for (int t = 0; t < (int)Token.NumTokens; t++)
+        {
+            if (Token.IsKeyword((Token)t)) keywords.Add((Token.StringOf((Token)t), (Token)t));
+        }
+        Assert.NotEmpty(keywords);
+
+        UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForTest();
+        foreach ((string keyword, Token token) key_token in keywords)
+        {
+            string keyword = key_token.keyword;
+            int length = keyword.Length;
+            {
+                var scanner = new Scanner(ScannerStream.ForTesting(keyword), flags);
+                scanner.Initialize();
+                Assert.Equal(key_token.token, scanner.Next());
+                Assert.Equal(Token.Eos, scanner.Next());
+            }
+            // Removing characters will make keyword matching fail.
+            {
+                var scanner = new Scanner(ScannerStream.ForTesting(keyword[..(length - 1)]), flags);
+                scanner.Initialize();
+                Assert.Equal(Token.Identifier, scanner.Next());
+                Assert.Equal(Token.Eos, scanner.Next());
+            }
+            // Adding characters will make keyword matching fail.
+            foreach (char c in new[] { 'z', '0', '_' })
+            {
+                var scanner = new Scanner(ScannerStream.ForTesting(keyword + c), flags);
+                scanner.Initialize();
+                Assert.Equal(Token.Identifier, scanner.Next());
+                Assert.Equal(Token.Eos, scanner.Next());
+            }
+            // Replacing characters will make keyword matching fail.
+            {
+                var scanner = new Scanner(ScannerStream.ForTesting(keyword[..(length - 1)] + "_"), flags);
+                scanner.Initialize();
+                Assert.Equal(Token.Identifier, scanner.Next());
+                Assert.Equal(Token.Eos, scanner.Next());
+            }
+        }
+    }
+
+    // A PreParser over |source| (V8's tests build one by hand).
+    private static PreParser.PreParseResult PreParse(string source, UnoptimizedCompileFlags flags,
+                                                     PendingCompilationErrorHandler pending_error_handler,
+                                                     ParsingFlags v8_flags = null)
+    {
+        var scanner = new Scanner(ScannerStream.ForTesting(source), flags);
+        scanner.Initialize();
+        var ast_value_factory = new AstValueFactory();
+        var preparser = new PreParser(scanner, ast_value_factory, pending_error_handler, flags,
+                                      v8_flags ?? ParsingFlags.Default);
+        return preparser.PreParseProgram();
+    }
+
+    [Fact]
+    public void ScanHTMLEndComments()
+    {
+        UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForTest();
+
+        // Regression test. See:
+        //    http://code.google.com/p/chromium/issues/detail?id=53548
+        // Tests that --> is correctly interpreted as comment-to-end-of-line if there
+        // is only whitespace before it on the line (with comments considered as
+        // whitespace, even a multiline-comment containing a newline).
+        // This was not the case if it occurred before the first real token
+        // in the input.
+        string[] tests =
+        [
+            // Before first real token.
+            "-->",
+            "--> is eol-comment",
+            "--> is eol-comment\nvar y = 37;\n",
+            "\n --> is eol-comment\nvar y = 37;\n",
+            "\n-->is eol-comment\nvar y = 37;\n",
+            "\n-->\nvar y = 37;\n",
+            "/* precomment */ --> is eol-comment\nvar y = 37;\n",
+            "/* precomment */-->eol-comment\nvar y = 37;\n",
+            "\n/* precomment */ --> is eol-comment\nvar y = 37;\n",
+            "\n/*precomment*/-->eol-comment\nvar y = 37;\n",
+            // After first real token.
+            "var x = 42;\n--> is eol-comment\nvar y = 37;\n",
+            "var x = 42;\n/* precomment */ --> is eol-comment\nvar y = 37;\n",
+            "x/* precomment\n */ --> is eol-comment\nvar y = 37;\n",
+            "var x = 42; /* precomment\n */ --> is eol-comment\nvar y = 37;\n",
+            "var x = 42;/*\n*/-->is eol-comment\nvar y = 37;\n",
+            // With multiple comments preceding HTMLEndComment
+            "/* MLC \n */ /* SLDC */ --> is eol-comment\nvar y = 37;\n",
+            "/* MLC \n */ /* SLDC1 */ /* SLDC2 */ --> is eol-comment\nvar y = 37;\n",
+            "/* MLC1 \n */ /* MLC2 \n */ --> is eol-comment\nvar y = 37;\n",
+            "/* SLDC */ /* MLC \n */ --> is eol-comment\nvar y = 37;\n",
+            "/* MLC1 \n */ /* SLDC1 */ /* MLC2 \n */ /* SLDC2 */ --> is eol-comment\nvar y = 37;\n",
+        ];
+
+        string[] fail_tests =
+        [
+            "x --> is eol-comment\nvar y = 37;\n",
+            "\"\\n\" --> is eol-comment\nvar y = 37;\n",
+            "x/* precomment */ --> is eol-comment\nvar y = 37;\n",
+            "var x = 42; --> is eol-comment\nvar y = 37;\n",
+        ];
+
+        foreach (string source in tests)
+        {
+            var pending_error_handler = new PendingCompilationErrorHandler();
+            PreParser.PreParseResult result = PreParse(source, flags, pending_error_handler);
+            Assert.Equal(PreParser.PreParseResult.kPreParseSuccess, result);
+            Assert.False(pending_error_handler.has_pending_error());
+        }
+
+        foreach (string source in fail_tests)
+        {
+            var pending_error_handler = new PendingCompilationErrorHandler();
+            PreParser.PreParseResult result = PreParse(source, flags, pending_error_handler);
+            // Even in the case of a syntax error, kPreParseSuccess is returned.
+            Assert.Equal(PreParser.PreParseResult.kPreParseSuccess, result);
+            Assert.True(pending_error_handler.has_pending_error() ||
+                        pending_error_handler.has_error_unidentifiable_by_preparser());
+        }
+    }
+
+    [Fact]
+    public void ScanHtmlComments()
+    {
+        UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForTest();
+
+        const string src = "a <!-- b --> c";
+        // Disallow HTML comments.
+        {
+            flags.set_is_module(true);
+            var scanner = new Scanner(ScannerStream.ForTesting(src), flags);
+            scanner.Initialize();
+            Assert.Equal(Token.Identifier, scanner.Next());
+            Assert.Equal(Token.Illegal, scanner.Next());
+        }
+
+        // Skip HTML comments:
+        {
+            flags.set_is_module(false);
+            var scanner = new Scanner(ScannerStream.ForTesting(src), flags);
+            scanner.Initialize();
+            Assert.Equal(Token.Identifier, scanner.Next());
+            Assert.Equal(Token.Eos, scanner.Next());
+        }
+    }
+
+    [Fact]
+    public void StandAlonePreParser()
+    {
+        UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForTest();
+        flags.set_allow_natives_syntax(true);
+
+        string[] programs =
+        [
+            "{label: 42}",
+            "var x = 42;",
+            "function foo(x, y) { return x + y; }",
+            "%ArgleBargle(glop);",
+            "var x = new new Function('this.x = 42');",
+            "var f = (x, y) => x + y;",
+        ];
+
+        foreach (string program in programs)
+        {
+            var pending_error_handler = new PendingCompilationErrorHandler();
+            PreParser.PreParseResult result = PreParse(program, flags, pending_error_handler);
+            Assert.Equal(PreParser.PreParseResult.kPreParseSuccess, result);
+            Assert.False(pending_error_handler.has_pending_error());
+        }
+    }
+
+    [Fact]
+    public void StandAlonePreParserNoNatives()
+    {
+        UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForTest();
+
+        string[] programs = ["%ArgleBargle(glop);", "var x = %_IsSmi(42);"];
+
+        foreach (string program in programs)
+        {
+            // Preparser defaults to disallowing natives syntax.
+            var pending_error_handler = new PendingCompilationErrorHandler();
+            PreParser.PreParseResult result = PreParse(program, flags, pending_error_handler);
+            Assert.Equal(PreParser.PreParseResult.kPreParseSuccess, result);
+            Assert.True(pending_error_handler.has_pending_error() ||
+                        pending_error_handler.has_error_unidentifiable_by_preparser());
+        }
+    }
+
+    [Fact]
+    public void RegressChromium62639()
+    {
+        UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForTest();
+
+        const string program = "var x = 'something';\n" + "escape: function() {}";
+        // Fails parsing expecting an identifier after "function".
+        // Before fix, didn't check *ok after Expect(Token::Identifier, ok),
+        // and then used the invalid currently scanned literal. This always
+        // failed in debug mode, and sometimes crashed in release mode.
+
+        var pending_error_handler = new PendingCompilationErrorHandler();
+        PreParser.PreParseResult result = PreParse(program, flags, pending_error_handler);
+        // Even in the case of a syntax error, kPreParseSuccess is returned.
+        Assert.Equal(PreParser.PreParseResult.kPreParseSuccess, result);
+        Assert.True(pending_error_handler.has_pending_error() ||
+                    pending_error_handler.has_error_unidentifiable_by_preparser());
+    }
+
+    [Fact]
+    public void PreParseOverflow()
+    {
+        UnoptimizedCompileFlags flags = UnoptimizedCompileFlags.ForTest();
+
+        const int kProgramSize = 1024 * 1024;
+        string program = new('(', kProgramSize);
+
+        var pending_error_handler = new PendingCompilationErrorHandler();
+        PreParser.PreParseResult result = PreParse(program, flags, pending_error_handler);
+        Assert.Equal(PreParser.PreParseResult.kPreParseStackOverflow, result);
+    }
+
+    [Fact]
+    public void StreamScanner()
+    {
+        const string str1 = "{ foo get for : */ <- \n\n /*foo*/ bib";
+        Utf16CharacterStream stream1 = ScannerStream.ForTesting(str1);
+        Token[] expectations1 =
+        [
+            Token.LeftBrace, Token.Identifier, Token.Get, Token.For, Token.Colon, Token.Mul, Token.Div,
+            Token.LessThan, Token.Sub, Token.Identifier, Token.Eos, Token.Illegal,
+        ];
+        TestStreamScanner(stream1, expectations1, 0, 0);
+
+        const string str2 = "case default const {THIS\nPART\nSKIPPED} do";
+        Utf16CharacterStream stream2 = ScannerStream.ForTesting(str2);
+        Token[] expectations2 =
+        [
+            Token.Case, Token.Default, Token.Const, Token.LeftBrace,
+            // Skipped part here
+            Token.RightBrace, Token.Do, Token.Eos, Token.Illegal,
+        ];
+        Assert.Equal('{', str2[19]);
+        Assert.Equal('}', str2[37]);
+        TestStreamScanner(stream2, expectations2, 20, 37);
+
+        const string str3 = "{}}}}";
+        Token[] expectations3 =
+        [
+            Token.LeftBrace, Token.RightBrace, Token.RightBrace, Token.RightBrace, Token.RightBrace, Token.Eos,
+            Token.Illegal,
+        ];
+        // Skip zero-four RBRACEs.
+        for (int i = 0; i <= 4; i++)
+        {
+            expectations3[6 - i] = Token.Illegal;
+            expectations3[5 - i] = Token.Eos;
+            Utf16CharacterStream stream3 = ScannerStream.ForTesting(str3);
+            TestStreamScanner(stream3, expectations3, 1, 1 + i);
+        }
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    [Fact]
     public void RegExpScanning()
     {
         // RegExp token with added garbage at the end. The scanner should only
@@ -999,6 +1296,131 @@ public partial class ParsingTest
     }
 
     [Fact]
+    public void ScopeUsesArgumentsSuperThis()
+    {
+        (string prefix, string suffix)[] surroundings =
+        [
+            ("function f() {", "}"),
+            ("var f = () => {", "};"),
+            ("class C { constructor() {", "} }"),
+        ];
+
+        const int NONE = 0;
+        const int ARGUMENTS = 1;
+        const int SUPER_PROPERTY = 1 << 1;
+        const int THIS = 1 << 2;
+        const int EVAL = 1 << 4;
+
+        (string body, int expected)[] source_data =
+        [
+            ("", NONE),
+            ("return this", THIS),
+            ("return arguments", ARGUMENTS),
+            ("return super.x", SUPER_PROPERTY),
+            ("return arguments[0]", ARGUMENTS),
+            ("return this + arguments[0]", ARGUMENTS | THIS),
+            ("return this + arguments[0] + super.x", ARGUMENTS | SUPER_PROPERTY | THIS),
+            ("return x => this + x", THIS),
+            ("return x => super.f() + x", SUPER_PROPERTY),
+            ("this.foo = 42;", THIS),
+            ("this.foo();", THIS),
+            ("if (foo()) { this.f() }", THIS),
+            ("if (foo()) { super.f() }", SUPER_PROPERTY),
+            ("if (arguments.length) { this.f() }", ARGUMENTS | THIS),
+            ("while (true) { this.f() }", THIS),
+            ("while (true) { super.f() }", SUPER_PROPERTY),
+            ("if (true) { while (true) this.foo(arguments) }", ARGUMENTS | THIS),
+            // Multiple nesting levels must work as well.
+            ("while (true) { while (true) { while (true) return this } }", THIS),
+            ("while (true) { while (true) { while (true) return super.f() } }", SUPER_PROPERTY),
+            ("if (1) { return () => { while (true) new this() } }", THIS),
+            ("return function (x) { return this + x }", NONE),
+            ("return { m(x) { return super.m() + x } }", NONE),
+            ("var x = function () { this.foo = 42 };", NONE),
+            ("var x = { m() { super.foo = 42 } };", NONE),
+            ("if (1) { return function () { while (true) new this() } }", NONE),
+            ("if (1) { return { m() { while (true) super.m() } } }", NONE),
+            ("return function (x) { return () => this }", NONE),
+            ("return { m(x) { return () => super.m() } }", NONE),
+            // Flags must be correctly set when using block scoping.
+            ("\"use strict\"; while (true) { let x; this, arguments; }", THIS),
+            ("\"use strict\"; while (true) { let x; this, super.f(), arguments; }", SUPER_PROPERTY | THIS),
+            ("\"use strict\"; if (foo()) { let x; this.f() }", THIS),
+            ("\"use strict\"; if (foo()) { let x; super.f() }", SUPER_PROPERTY),
+            ("\"use strict\"; if (1) {" + "  let x; return { m() { return this + super.m() + arguments } }" + "}",
+             NONE),
+            ("eval(42)", EVAL),
+            ("if (1) { eval(42) }", EVAL),
+            ("eval('super.x')", EVAL),
+            ("eval('this.x')", EVAL),
+            ("eval('arguments')", EVAL),
+        ];
+
+        for (int j = 0; j < surroundings.Length; ++j)
+        {
+            for (int i = 0; i < source_data.Length; ++i)
+            {
+                // Super property is only allowed in constructor and method.
+                if (((source_data[i].expected & SUPER_PROPERTY) != 0 || source_data[i].expected == NONE) && j != 2)
+                {
+                    continue;
+                }
+                string program = surroundings[j].prefix + source_data[i].body + surroundings[j].suffix;
+                var script = new SourceScript(program, 1);
+                UnoptimizedCompileFlags flags = NewScriptFlags();
+                // The information we're checking is only produced when eager parsing.
+                flags.set_allow_lazy_parsing(false);
+                ParseInfo info = NewParseInfo(flags);
+                info.set_scope_info_provider(TestScopeInfoProvider.Instance);
+                CHECK_PARSE_PROGRAM(info, script);
+                DeclarationScope.AllocateScopeInfos(info, TestScopeInfoProvider.Instance);
+                Assert.NotNull(info.literal());
+
+                DeclarationScope script_scope = info.literal().scope();
+                Assert.True(script_scope.is_script_scope());
+
+                Scope scope = script_scope.inner_scope();
+                Assert.NotNull(scope);
+                Assert.Null(scope.sibling());
+                // Adjust for constructor scope.
+                if (j == 2)
+                {
+                    scope = scope.inner_scope();
+                    Assert.NotNull(scope);
+                    Assert.Null(scope.sibling());
+                }
+                // Arrows themselves never get an arguments object.
+                if ((source_data[i].expected & ARGUMENTS) != 0 && !scope.AsDeclarationScope().is_arrow_scope())
+                {
+                    Assert.NotNull(scope.AsDeclarationScope().arguments());
+                }
+                if (IsClassConstructor(scope.AsDeclarationScope().function_kind()))
+                {
+                    if ((source_data[i].expected & SUPER_PROPERTY) != 0 || (source_data[i].expected & EVAL) != 0)
+                    {
+                        Assert.True(scope.GetHomeObjectScope().needs_home_object());
+                    }
+                }
+                else if ((source_data[i].expected & SUPER_PROPERTY) != 0)
+                {
+                    Assert.True(scope.GetHomeObjectScope().needs_home_object());
+                }
+                if ((source_data[i].expected & THIS) != 0)
+                {
+                    // Currently the is_used() flag is conservative; all variables in a
+                    // script scope are marked as used.
+                    Assert.True(scope.GetReceiverScope().receiver().is_used());
+                }
+                if (is_sloppy(scope.language_mode()))
+                {
+                    Assert.Equal((source_data[i].expected & EVAL) != 0,
+                                 scope.AsDeclarationScope().sloppy_eval_can_extend_vars());
+                }
+            }
+        }
+    }
+
+    [Fact]
     public void ParseNumbers()
     {
         CheckParsesToNumber("1.");
@@ -1016,6 +1438,292 @@ public partial class ParsingTest
         CheckParsesToNumber("-134.e44");
         CheckParsesToNumber("-134.44e44");
         CheckParsesToNumber("-.44");
+    }
+
+    // A C string literal of UTF-8 bytes (each char of |bytes| is one byte),
+    // decoded as Factory::NewStringFromUtf8 does: invalid sequences become
+    // U+FFFD, one per maximal subpart.
+    private static string U8(string bytes)
+    {
+        byte[] data = new byte[bytes.Length];
+        for (int i = 0; i < bytes.Length; i++) data[i] = (byte)bytes[i];
+        return Encoding.UTF8.GetString(data);
+    }
+
+    [Fact]
+    public void ScopePositions()
+    {
+        // Test the parser for correctly setting the start and end positions
+        // of a scope. We check the scope positions of exactly one scope
+        // nested in the global scope of a program. 'inner source' is the
+        // source code that determines the part of the source belonging
+        // to the nested scope. 'outer_prefix' and 'outer_suffix' are
+        // parts of the source that belong to the global scope.
+        (string outer_prefix, string inner_source, string outer_suffix, ScopeType scope_type,
+         LanguageMode language_mode)[] source_data =
+        [
+            ("  with ({}", "){ block; }", " more;", ScopeType.WITH_SCOPE, LanguageMode.Sloppy),
+            ("  with ({}", "){ block; }", "; more;", ScopeType.WITH_SCOPE, LanguageMode.Sloppy),
+            ("  with ({}", "){\n    block;\n  }", "\n  more;", ScopeType.WITH_SCOPE, LanguageMode.Sloppy),
+            ("  with ({}", ")statement;", " more;", ScopeType.WITH_SCOPE, LanguageMode.Sloppy),
+            ("  with ({}", ")statement", "\n  more;", ScopeType.WITH_SCOPE, LanguageMode.Sloppy),
+            ("  with ({}", ")statement;", "\n  more;", ScopeType.WITH_SCOPE, LanguageMode.Sloppy),
+            ("  try {} catch ", "(e) { block; }", " more;", ScopeType.CATCH_SCOPE, LanguageMode.Sloppy),
+            ("  try {} catch ", "(e) { block; }", "; more;", ScopeType.CATCH_SCOPE, LanguageMode.Sloppy),
+            ("  try {} catch ", "(e) {\n    block;\n  }", "\n  more;", ScopeType.CATCH_SCOPE,
+             LanguageMode.Sloppy),
+            ("  try {} catch ", "(e) { block; }", " finally { block; } more;", ScopeType.CATCH_SCOPE,
+             LanguageMode.Sloppy),
+            ("  start;\n  ", "{ let block; }", " more;", ScopeType.BLOCK_SCOPE, LanguageMode.Strict),
+            ("  start;\n  ", "{ let block; }", "; more;", ScopeType.BLOCK_SCOPE, LanguageMode.Strict),
+            ("  start;\n  ", "{\n    let block;\n  }", "\n  more;", ScopeType.BLOCK_SCOPE, LanguageMode.Strict),
+            ("  start;\n  function fun", "(a,b) { infunction; }", " more;", ScopeType.FUNCTION_SCOPE,
+             LanguageMode.Sloppy),
+            ("  start;\n  function fun", "(a,b) {\n    infunction;\n  }", "\n  more;", ScopeType.FUNCTION_SCOPE,
+             LanguageMode.Sloppy),
+            ("  start;\n", "(a,b) => a + b", "; more;", ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            ("  start;\n", "(a,b) => { return a+b; }", "\nmore;", ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            ("  start;\n  (function fun", "(a,b) { infunction; }", ")();", ScopeType.FUNCTION_SCOPE,
+             LanguageMode.Sloppy),
+            ("  for (", "let x = 1 ; x < 10; ++ x) { block; }", " more;", ScopeType.BLOCK_SCOPE,
+             LanguageMode.Strict),
+            ("  for (", "let x = 1 ; x < 10; ++ x) { block; }", "; more;", ScopeType.BLOCK_SCOPE,
+             LanguageMode.Strict),
+            ("  for (", "let x = 1 ; x < 10; ++ x) {\n    block;\n  }", "\n  more;", ScopeType.BLOCK_SCOPE,
+             LanguageMode.Strict),
+            ("  for (", "let x = 1 ; x < 10; ++ x) statement;", " more;", ScopeType.BLOCK_SCOPE,
+             LanguageMode.Strict),
+            ("  for (", "let x = 1 ; x < 10; ++ x) statement", "\n  more;", ScopeType.BLOCK_SCOPE,
+             LanguageMode.Strict),
+            ("  for (", "let x = 1 ; x < 10; ++ x)\n    statement;", "\n  more;", ScopeType.BLOCK_SCOPE,
+             LanguageMode.Strict),
+            ("  for ", "(let x in {}) { block; }", " more;", ScopeType.BLOCK_SCOPE, LanguageMode.Strict),
+            ("  for ", "(let x in {}) { block; }", "; more;", ScopeType.BLOCK_SCOPE, LanguageMode.Strict),
+            ("  for ", "(let x in {}) {\n    block;\n  }", "\n  more;", ScopeType.BLOCK_SCOPE,
+             LanguageMode.Strict),
+            ("  for ", "(let x in {}) statement;", " more;", ScopeType.BLOCK_SCOPE, LanguageMode.Strict),
+            ("  for ", "(let x in {}) statement", "\n  more;", ScopeType.BLOCK_SCOPE, LanguageMode.Strict),
+            ("  for ", "(let x in {})\n    statement;", "\n  more;", ScopeType.BLOCK_SCOPE, LanguageMode.Strict),
+            // Check that 6-byte and 4-byte encodings of UTF-8 strings do not throw
+            // the preparser off in terms of byte offsets.
+            // 2 surrogates, encode a character that doesn't need a surrogate.
+            (U8("  'foo\xED\xA0\x81\xED\xB0\x89';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // 4-byte encoding.
+            (U8("  'foo\xF0\x90\x90\x8A';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // 3-byte encoding of ࿿.
+            (U8("  'foo\xE0\xBF\xBF';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // 3-byte surrogate, followed by broken 2-byte surrogate w/ impossible 2nd
+            // byte and last byte missing.
+            (U8("  'foo\xED\xA0\x81\xED\x89';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // Broken 3-byte encoding of ࿿ with missing last byte.
+            (U8("  'foo\xE0\xBF';\n  (function fun"), "(a,b) { infunction; }", ")();", ScopeType.FUNCTION_SCOPE,
+             LanguageMode.Sloppy),
+            // Broken 3-byte encoding of ࿿ with missing 2 last bytes.
+            (U8("  'foo\xE0';\n  (function fun"), "(a,b) { infunction; }", ")();", ScopeType.FUNCTION_SCOPE,
+             LanguageMode.Sloppy),
+            // Broken 3-byte encoding of ÿ should be a 2-byte encoding.
+            (U8("  'foo\xE0\x83\xBF';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // Broken 3-byte encoding of \u007F should be a 2-byte encoding.
+            (U8("  'foo\xE0\x81\xBF';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // Unpaired lead surrogate.
+            (U8("  'foo\xED\xA0\x81';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // Unpaired lead surrogate where the following code point is a 3-byte
+            // sequence.
+            (U8("  'foo\xED\xA0\x81\xE0\xBF\xBF';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // Unpaired lead surrogate where the following code point is a 4-byte
+            // encoding of a trail surrogate.
+            (U8("  'foo\xED\xA0\x81\xF0\x8D\xB0\x89';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // Unpaired trail surrogate.
+            (U8("  'foo\xED\xB0\x89';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // 2-byte encoding of ÿ.
+            (U8("  'foo\xC3\xBF';\n  (function fun"), "(a,b) { infunction; }", ")();", ScopeType.FUNCTION_SCOPE,
+             LanguageMode.Sloppy),
+            // Broken 2-byte encoding of ÿ with missing last byte.
+            (U8("  'foo\xC3';\n  (function fun"), "(a,b) { infunction; }", ")();", ScopeType.FUNCTION_SCOPE,
+             LanguageMode.Sloppy),
+            // Broken 2-byte encoding of \u007F should be a 1-byte encoding.
+            (U8("  'foo\xC1\xBF';\n  (function fun"), "(a,b) { infunction; }", ")();", ScopeType.FUNCTION_SCOPE,
+             LanguageMode.Sloppy),
+            // Illegal 5-byte encoding.
+            (U8("  'foo\xF8\xBF\xBF\xBF\xBF';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // Illegal 6-byte encoding.
+            (U8("  'foo\xFC\xBF\xBF\xBF\xBF\xBF';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // Illegal 0xFE byte
+            (U8("  'foo\xFE\xBF\xBF\xBF\xBF\xBF\xBF';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            // Illegal 0xFF byte
+            (U8("  'foo\xFF\xBF\xBF\xBF\xBF\xBF\xBF\xBF';\n  (function fun"), "(a,b) { infunction; }", ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            ("  'foo';\n  (function fun", U8("(a,b) { 'bar\xED\xA0\x81\xED\xB0\x8B'; }"), ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+            ("  'foo';\n  (function fun", U8("(a,b) { 'bar\xF0\x90\x90\x8C'; }"), ")();",
+             ScopeType.FUNCTION_SCOPE, LanguageMode.Sloppy),
+        ];
+
+        foreach (var data in source_data)
+        {
+            int kPrefixLen = data.outer_prefix.Length;
+            int kInnerLen = data.inner_source.Length;
+            int kSuffixLen = data.outer_suffix.Length;
+            int kProgramSize = kPrefixLen + kInnerLen + kSuffixLen;
+            string program = data.outer_prefix + data.inner_source + data.outer_suffix;
+
+            // Parse program source.
+            Assert.Equal(kProgramSize, program.Length);
+            var script = new SourceScript(program, 1);
+
+            UnoptimizedCompileFlags flags = NewScriptFlags();
+            flags.set_outer_language_mode(data.language_mode);
+            ParseInfo info = NewParseInfo(flags);
+            CHECK_PARSE_PROGRAM(info, script);
+
+            // Check scope types and positions.
+            Scope scope = info.literal().scope();
+            Assert.True(scope.is_script_scope());
+            Assert.Equal(0, scope.start_position());
+            Assert.Equal(kProgramSize, scope.end_position());
+
+            Scope inner_scope = scope.inner_scope();
+            Assert.NotNull(inner_scope);
+            Assert.Null(inner_scope.sibling());
+            Assert.Equal(data.scope_type, inner_scope.scope_type());
+            Assert.Equal(kPrefixLen, inner_scope.start_position());
+            // The end position of a token is one position after the last
+            // character belonging to that token.
+            Assert.Equal(kPrefixLen + kInnerLen, inner_scope.end_position());
+        }
+    }
+
+    [Fact]
+    public void DiscardFunctionBody()
+    {
+        // Test that inner function bodies are discarded if possible.
+        // See comments in ParseFunctionLiteral in parser.cc.
+        string[] discard_sources =
+        [
+            "(function f() { function g() { var a; } })();",
+            "(function f() { function g() { { function h() { } } } })();",
+            /* TODO(conradw): In future it may be possible to apply this optimisation
+             * to these productions.
+            "(function f() { 0, function g() { var a; } })();",
+            "(function f() { 0, { g() { var a; } } })();",
+            "(function f() { 0, class c { g() { var a; } } })();", */
+        ];
+
+        foreach (string source in discard_sources)
+        {
+            var script = new SourceScript(source, 1);
+            ParseInfo info = NewParseInfo(NewScriptFlags());
+            CHECK_PARSE_PROGRAM(info, script);
+            FunctionLiteral function = info.literal();
+            Assert.NotNull(function);
+            // The rewriter will rewrite this to
+            //     .result = (function f(){...})();
+            //     return .result;
+            // so extract the function from there.
+            Assert.Equal(2, function.body().Count);
+            FunctionLiteral inner = (FunctionLiteral)((Call)((Assignment)((ExpressionStatement)function.body()[0])
+                .expression()).value()).expression();
+            Scope inner_scope = inner.scope();
+            Assert.False(inner_scope.declarations().is_empty());
+            FunctionLiteral fun = ((FunctionDeclaration)inner_scope.declarations().AtForTest(0)).fun();
+            Assert.False(fun.ShouldEagerCompile());
+        }
+    }
+
+    [Fact]
+    public void ParserSync()
+    {
+        string[][] context_data =
+        [
+            ["", ""],
+            ["{", "}"],
+            ["if (true) ", " else {}"],
+            ["if (true) {} else ", ""],
+            ["if (true) ", ""],
+            ["do ", " while (false)"],
+            ["while (false) ", ""],
+            ["for (;;) ", ""],
+            ["with ({})", ""],
+            ["switch (12) { case 12: ", "}"],
+            ["switch (12) { default: ", "}"],
+            ["switch (12) { ", "case 12: }"],
+            ["label2: ", ""],
+            [null, null],
+        ];
+
+        string[] statement_data =
+        [
+            "{}", "var x", "var x = 1", "const x", "const x = 1", ";", "12",
+            "if (false) {} else ;", "if (false) {} else {}", "if (false) {} else 12",
+            "if (false) ;", "if (false) {}", "if (false) 12", "do {} while (false)",
+            "for (;;) ;", "for (;;) {}", "for (;;) 12", "continue", "continue label",
+            "continue\nlabel", "break", "break label", "break\nlabel",
+            // TODO(marja): activate once parsing 'return' is merged into ParserBase.
+            // "return",
+            // "return  12",
+            // "return\n12",
+            "with ({}) ;", "with ({}) {}", "with ({}) 12", "switch ({}) { default: }",
+            "label3: ", "throw", "throw  12", "throw\n12", "try {} catch(e) {}",
+            "try {} finally {}", "try {} catch(e) {} finally {}", "debugger",
+            null,
+        ];
+
+        string[] termination_data = ["", ";", "\n", ";\n", "\n;", null];
+
+        for (int i = 0; context_data[i][0] != null; ++i)
+        {
+            for (int j = 0; statement_data[j] != null; ++j)
+            {
+                for (int k = 0; termination_data[k] != null; ++k)
+                {
+                    // Plug the source code pieces together.
+                    string program = "label: for (;;) { " + context_data[i][0] + statement_data[j] +
+                                     termination_data[k] + context_data[i][1] + " }";
+                    TestParserSync(program, null, 0);
+                }
+            }
+        }
+
+        // Neither Harmony numeric literals nor our natives syntax have any
+        // interaction with the flags above, so test these separately to reduce
+        // the combinatorial explosion.
+        TestParserSync("0o1234", null, 0);
+        TestParserSync("0b1011", null, 0);
+
+        ParserFlag[] flags3 = [kAllowNatives];
+        TestParserSync("%DebugPrint(123)", flags3, flags3.Length);
+    }
+
+    [Fact]
+    public void StrictOctal()
+    {
+        // Test that syntax error caused by octal literal is reported correctly as
+        // such (issue 2220). (V8 compiles the script through the API and reads
+        // the exception; here the parse error is read directly.)
+        const string source =
+            "\"use strict\";       \n" +
+            "a = function() {      \n" +
+            "  b = function() {    \n" +
+            "    01;               \n" +
+            "  };                  \n" +
+            "};                    \n";
+        ParseInfo info = NewParseInfo(NewScriptFlags());
+        Assert.False(ParsingEntry.ParseProgram(info, new SourceScript(source, 1)));
+        Assert.Equal("Octal literals are not allowed in strict mode.",
+                     info.pending_error_handler().FormatErrorMessageForTest());
     }
 
     [Fact]
@@ -1220,6 +1928,39 @@ public partial class ParsingTest
                                                                         "var foo = { }; foo.arguments = {};",
                                                                         null];
         RunParserSyncTest(context_data, statement_data, kSuccess);
+    }
+
+    [Fact]
+    public void ErrorsFutureStrictReservedWords()
+    {
+        // Tests that both preparsing and parsing produce the right kind of errors for
+        // using future strict reserved words as identifiers. Without the strict mode,
+        // it's ok to use future strict reserved words as identifiers. With the strict
+        // mode, it isn't.
+        string[][] strict_contexts = [
+                ["function test_func() {\"use strict\"; ", "}"],
+                ["() => { \"use strict\"; ", "}"],
+                [null, null]];
+        // clang-format off
+        string[] statement_data = [
+            "var let;", "var foo, let;", "try { } catch (let) { }", "function let() { }", "(function let() { })", "function foo(let) { }", "function foo(bar, let) { }", "let = 1;", "let += 1;", "var foo = let = 1;", "++let;", "let ++;", "var implements;", "var foo, implements;", "try { } catch (implements) { }", "function implements() { }", "(function implements() { })", "function foo(implements) { }", "function foo(bar, implements) { }", "implements = 1;", "implements += 1;", "var foo = implements = 1;", "++implements;", "implements ++;", "var static;", "var foo, static;", "try { } catch (static) { }", "function static() { }", "(function static() { })", "function foo(static) { }", "function foo(bar, static) { }", "static = 1;", "static += 1;", "var foo = static = 1;", "++static;", "static ++;", "var yield;", "var foo, yield;", "try { } catch (yield) { }", "function yield() { }", "(function yield() { })", "function foo(yield) { }", "function foo(bar, yield) { }", "yield = 1;", "yield += 1;", "var foo = yield = 1;", "++yield;", "yield ++;",
+            "let let;", "for (let let; false; ) {}", "for (let let in {}) {}", "for (let let of []) {}", "const let = null;", "for (const let = null; false; ) {}", "for (const let in {}) {}", "for (const let of []) {}", "let implements;", "for (let implements; false; ) {}", "for (let implements in {}) {}", "for (let implements of []) {}", "const implements = null;", "for (const implements = null; false; ) {}", "for (const implements in {}) {}", "for (const implements of []) {}", "let static;", "for (let static; false; ) {}", "for (let static in {}) {}", "for (let static of []) {}", "const static = null;", "for (const static = null; false; ) {}", "for (const static in {}) {}", "for (const static of []) {}", "let yield;", "for (let yield; false; ) {}", "for (let yield in {}) {}", "for (let yield of []) {}", "const yield = null;", "for (const yield = null; false; ) {}", "for (const yield in {}) {}", "for (const yield of []) {}",
+            null
+        ];
+        // clang-format on
+        RunParserSyncTest(strict_contexts, statement_data, kError);
+        // From ES2015, 13.3.1.1 Static Semantics: Early Errors:
+        //
+        // > LexicalDeclaration : LetOrConst BindingList ;
+        // >
+        // > - It is a Syntax Error if the BoundNames of BindingList contains "let".
+        string[][] non_strict_contexts = [["", ""],
+                                                                                        ["function test_func() {", "}"],
+                                                                                        ["() => {", "}"],
+                                                                                        [null, null]];
+        string[] invalid_statements = [
+                "let let;", "for (let let; false; ) {}", "for (let let in {}) {}", "for (let let of []) {}", "const let = null;", "for (const let = null; false; ) {}", "for (const let in {}) {}", "for (const let of []) {}", null];
+        RunParserSyncTest(non_strict_contexts, invalid_statements, kError);
     }
 
     [Fact]
@@ -1441,6 +2182,69 @@ public partial class ParsingTest
     }
 
     [Fact]
+    public void NoErrorsGenerator()
+    {
+        // clang-format off
+        string[][] context_data = [
+            [ "function * gen() {", "}" ],
+            [ "(function * gen() {", "})" ],
+            [ "(function * () {", "})" ],
+            [ null, null ]
+        ];
+        string[] statement_data = [
+            // A generator without a body is valid.
+            "yield 2;",
+            "yield * 2;",
+            "yield * \n 2;",
+            "yield yield 1;",
+            "yield * yield * 1;",
+            "yield 3 + (yield 4);",
+            "yield * 3 + (yield * 4);",
+            "(yield * 3) + (yield * 4);",
+            "yield 3; yield 4;",
+            "yield * 3; yield * 4;",
+            "(function (yield) { })",
+            "(function yield() { })",
+            "yield { yield: 12 }",
+            "yield /* comment */ { yield: 12 }",
+            "yield * \n { yield: 12 }",
+            "yield /* comment */ * \n { yield: 12 }",
+            // You can return in a generator.
+            "yield 1; return",
+            "yield * 1; return",
+            "yield 1; return 37",
+            "yield * 1; return 37",
+            "yield 1; return 37; yield 'dead';",
+            "yield * 1; return 37; yield * 'dead';",
+            // Yield is still a valid key in object literals.
+            "({ yield: 1 })",
+            "({ get yield() { } })",
+            // And in assignment pattern computed properties
+            "({ [yield]: x } = { })",
+            // Yield without RHS.
+            "yield;",
+            "yield",
+            "yield\n",
+            "yield /* comment */yield // comment\n(yield)",
+            "[yield]",
+            "{yield}",
+            "yield, yield",
+            "yield; yield",
+            "(yield) ? yield : yield",
+            "(yield) \n ? yield : yield",
+            // If there is a newline before the next token, we don't look for RHS.
+            "yield\nfor (;;) {}",
+            "x = class extends (yield) {}",
+            "x = class extends f(yield) {}",
+            "x = class extends (null, yield) { }",
+            "x = class extends (a ? null : yield) { }",
+            null
+        ];
+        // clang-format on
+        RunParserSyncTest(context_data, statement_data, kSuccess);
+    }
+
+    [Fact]
     public void ErrorsYieldGenerator()
     {
         // clang-format off
@@ -1584,6 +2388,18 @@ public partial class ParsingTest
                                                                         "eval: while(true) { break eval; }",
                                                                         "arguments: while(true) { break arguments; }",
                                                                         null];
+        RunParserSyncTest(context_data, statement_data, kSuccess);
+    }
+
+    [Fact]
+    public void NoErrorsFutureStrictReservedAsLabelsSloppy()
+    {
+        string[][] context_data = [["", ""],
+                                                                          ["function test_func() {", "}"],
+                                                                          ["() => {", "}"],
+                                                                          [null, null]];
+        string[] statement_data = [
+                "let: while (true) { break let; }", "implements: while (true) { break implements; }", "interface: while (true) { break interface; }", "package: while (true) { break package; }", "private: while (true) { break private; }", "protected: while (true) { break protected; }", "public: while (true) { break public; }", "static: while (true) { break static; }", "yield: while (true) { break yield; }", null];
         RunParserSyncTest(context_data, statement_data, kSuccess);
     }
 
@@ -1878,7 +2694,7 @@ public partial class ParsingTest
             "set foo(v) {}",
             "set \"foo\"(v) {}",
             "set 1(v) {}",
-            // Non-colliding getters and setters -> no errors
+            // Non-colliding getters and setters . no errors
             "foo: 1, get bar() {}",
             "foo: 1, set bar(v) {}",
             "\"foo\": 1, get \"bar\"() {}",
@@ -1920,6 +2736,26 @@ public partial class ParsingTest
         ];
         // clang-format on
         RunParserSyncTest(context_data, statement_data, kSuccess);
+    }
+
+    [Fact]
+    public void TooManyArguments()
+    {
+        string[][] context_data = [["foo(", "0)"], [null, null]];
+
+        // Code::kMaxArguments (src/objects/code.h).
+        const int kMaxArguments = (1 << 16) - 10;
+        var statement = new StringBuilder(kMaxArguments * 2);
+        for (int i = 0; i < kMaxArguments; ++i)
+        {
+            statement.Append("0,");
+        }
+
+        string[] statement_data = [statement.ToString(), null];
+
+        // The test is quite slow, so run it with a reduced set of flags.
+        ParserFlag[] empty_flags = [kAllowLazy];
+        RunParserSyncTest(context_data, statement_data, kError, empty_flags, 1);
     }
 
     [Fact]
@@ -2034,6 +2870,472 @@ public partial class ParsingTest
         RunParserSyncTest(prefix_context_data, bad_statement_data_common, kError);
         RunParserSyncTest(postfix_context_data, good_statement_data, kSuccess);
         RunParserSyncTest(postfix_context_data, bad_statement_data_common, kError);
+    }
+
+    [Fact]
+    public void MaybeAssignedInsideLoop()
+    {
+        int[] top = []; // Can't use {} in initializers below.
+        Input[] module_and_script_tests = [
+                new(true, "for (j=x; j<10; ++j) { foo = j }", top),
+                new(true, "for (j=x; j<10; ++j) { [foo] = [j] }", top),
+                new(true, "for (j=x; j<10; ++j) { [[foo]=[42]] = [] }", top),
+                new(true, "for (j=x; j<10; ++j) { var foo = j }", top),
+                new(true, "for (j=x; j<10; ++j) { var [foo] = [j] }", top),
+                new(true, "for (j=x; j<10; ++j) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (j=x; j<10; ++j) { var foo; foo = j }", top),
+                new(true, "for (j=x; j<10; ++j) { var foo; [foo] = [j] }", top),
+                new(true, "for (j=x; j<10; ++j) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (j=x; j<10; ++j) { let foo; foo = j }", [0]),
+                new(true, "for (j=x; j<10; ++j) { let foo; [foo] = [j] }", [0]),
+                new(true, "for (j=x; j<10; ++j) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for (j=x; j<10; ++j) { let foo = j }", [0]),
+                new(false, "for (j=x; j<10; ++j) { let [foo] = [j] }", [0]),
+                new(false, "for (j=x; j<10; ++j) { const foo = j }", [0]),
+                new(false, "for (j=x; j<10; ++j) { const [foo] = [j] }", [0]),
+                new(false, "for (j=x; j<10; ++j) { function foo() {return j} }", [0]),
+                new(true, "for ({j}=x; j<10; ++j) { foo = j }", top),
+                new(true, "for ({j}=x; j<10; ++j) { [foo] = [j] }", top),
+                new(true, "for ({j}=x; j<10; ++j) { [[foo]=[42]] = [] }", top),
+                new(true, "for ({j}=x; j<10; ++j) { var foo = j }", top),
+                new(true, "for ({j}=x; j<10; ++j) { var [foo] = [j] }", top),
+                new(true, "for ({j}=x; j<10; ++j) { var [[foo]=[42]] = [] }", top),
+                new(true, "for ({j}=x; j<10; ++j) { var foo; foo = j }", top),
+                new(true, "for ({j}=x; j<10; ++j) { var foo; [foo] = [j] }", top),
+                new(true, "for ({j}=x; j<10; ++j) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for ({j}=x; j<10; ++j) { let foo; foo = j }", [0]),
+                new(true, "for ({j}=x; j<10; ++j) { let foo; [foo] = [j] }", [0]),
+                new(true, "for ({j}=x; j<10; ++j) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for ({j}=x; j<10; ++j) { let foo = j }", [0]),
+                new(false, "for ({j}=x; j<10; ++j) { let [foo] = [j] }", [0]),
+                new(false, "for ({j}=x; j<10; ++j) { const foo = j }", [0]),
+                new(false, "for ({j}=x; j<10; ++j) { const [foo] = [j] }", [0]),
+                new(false, "for ({j}=x; j<10; ++j) { function foo() {return j} }", [0]),
+                new(true, "for (var j=x; j<10; ++j) { foo = j }", top),
+                new(true, "for (var j=x; j<10; ++j) { [foo] = [j] }", top),
+                new(true, "for (var j=x; j<10; ++j) { [[foo]=[42]] = [] }", top),
+                new(true, "for (var j=x; j<10; ++j) { var foo = j }", top),
+                new(true, "for (var j=x; j<10; ++j) { var [foo] = [j] }", top),
+                new(true, "for (var j=x; j<10; ++j) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (var j=x; j<10; ++j) { var foo; foo = j }", top),
+                new(true, "for (var j=x; j<10; ++j) { var foo; [foo] = [j] }", top),
+                new(true, "for (var j=x; j<10; ++j) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (var j=x; j<10; ++j) { let foo; foo = j }", [0]),
+                new(true, "for (var j=x; j<10; ++j) { let foo; [foo] = [j] }", [0]),
+                new(true, "for (var j=x; j<10; ++j) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for (var j=x; j<10; ++j) { let foo = j }", [0]),
+                new(false, "for (var j=x; j<10; ++j) { let [foo] = [j] }", [0]),
+                new(false, "for (var j=x; j<10; ++j) { const foo = j }", [0]),
+                new(false, "for (var j=x; j<10; ++j) { const [foo] = [j] }", [0]),
+                new(false, "for (var j=x; j<10; ++j) { function foo() {return j} }", [0]),
+                new(true, "for (var {j}=x; j<10; ++j) { foo = j }", top),
+                new(true, "for (var {j}=x; j<10; ++j) { [foo] = [j] }", top),
+                new(true, "for (var {j}=x; j<10; ++j) { [[foo]=[42]] = [] }", top),
+                new(true, "for (var {j}=x; j<10; ++j) { var foo = j }", top),
+                new(true, "for (var {j}=x; j<10; ++j) { var [foo] = [j] }", top),
+                new(true, "for (var {j}=x; j<10; ++j) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (var {j}=x; j<10; ++j) { var foo; foo = j }", top),
+                new(true, "for (var {j}=x; j<10; ++j) { var foo; [foo] = [j] }", top),
+                new(true, "for (var {j}=x; j<10; ++j) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (var {j}=x; j<10; ++j) { let foo; foo = j }", [0]),
+                new(true, "for (var {j}=x; j<10; ++j) { let foo; [foo] = [j] }", [0]),
+                new(true, "for (var {j}=x; j<10; ++j) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for (var {j}=x; j<10; ++j) { let foo = j }", [0]),
+                new(false, "for (var {j}=x; j<10; ++j) { let [foo] = [j] }", [0]),
+                new(false, "for (var {j}=x; j<10; ++j) { const foo = j }", [0]),
+                new(false, "for (var {j}=x; j<10; ++j) { const [foo] = [j] }", [0]),
+                new(false, "for (var {j}=x; j<10; ++j) { function foo() {return j} }", [0]),
+                new(true, "for (let j=x; j<10; ++j) { foo = j }", top),
+                new(true, "for (let j=x; j<10; ++j) { [foo] = [j] }", top),
+                new(true, "for (let j=x; j<10; ++j) { [[foo]=[42]] = [] }", top),
+                new(true, "for (let j=x; j<10; ++j) { var foo = j }", top),
+                new(true, "for (let j=x; j<10; ++j) { var [foo] = [j] }", top),
+                new(true, "for (let j=x; j<10; ++j) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (let j=x; j<10; ++j) { var foo; foo = j }", top),
+                new(true, "for (let j=x; j<10; ++j) { var foo; [foo] = [j] }", top),
+                new(true, "for (let j=x; j<10; ++j) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (let j=x; j<10; ++j) { let foo; foo = j }", [0, 0]),
+                new(true, "for (let j=x; j<10; ++j) { let foo; [foo] = [j] }", [0, 0]),
+                new(true, "for (let j=x; j<10; ++j) { let foo; [[foo]=[42]] = [] }", [0, 0]),
+                new(false, "for (let j=x; j<10; ++j) { let foo = j }", [0, 0]),
+                new(false, "for (let j=x; j<10; ++j) { let [foo] = [j] }", [0, 0]),
+                new(false, "for (let j=x; j<10; ++j) { const foo = j }", [0, 0]),
+                new(false, "for (let j=x; j<10; ++j) { const [foo] = [j] }", [0, 0]),
+                new(false,
+                  "for (let j=x; j<10; ++j) { function foo() {return j} }",
+                  [0, 0, 0]),
+                new(true, "for (let {j}=x; j<10; ++j) { foo = j }", top),
+                new(true, "for (let {j}=x; j<10; ++j) { [foo] = [j] }", top),
+                new(true, "for (let {j}=x; j<10; ++j) { [[foo]=[42]] = [] }", top),
+                new(true, "for (let {j}=x; j<10; ++j) { var foo = j }", top),
+                new(true, "for (let {j}=x; j<10; ++j) { var [foo] = [j] }", top),
+                new(true, "for (let {j}=x; j<10; ++j) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (let {j}=x; j<10; ++j) { var foo; foo = j }", top),
+                new(true, "for (let {j}=x; j<10; ++j) { var foo; [foo] = [j] }", top),
+                new(true, "for (let {j}=x; j<10; ++j) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (let {j}=x; j<10; ++j) { let foo; foo = j }", [0, 0]),
+                new(true, "for (let {j}=x; j<10; ++j) { let foo; [foo] = [j] }", [0, 0]),
+                new(true,
+                  "for (let {j}=x; j<10; ++j) { let foo; [[foo]=[42]] = [] }",
+                  [0, 0]),
+                new(false, "for (let {j}=x; j<10; ++j) { let foo = j }", [0, 0]),
+                new(false, "for (let {j}=x; j<10; ++j) { let [foo] = [j] }", [0, 0]),
+                new(false, "for (let {j}=x; j<10; ++j) { const foo = j }", [0, 0]),
+                new(false, "for (let {j}=x; j<10; ++j) { const [foo] = [j] }", [0, 0]),
+                new(false,
+                  "for (let {j}=x; j<10; ++j) { function foo(){return j} }",
+                  [0, 0, 0]),
+                new(true, "for (j of x) { foo = j }", top),
+                new(true, "for (j of x) { [foo] = [j] }", top),
+                new(true, "for (j of x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (j of x) { var foo = j }", top),
+                new(true, "for (j of x) { var [foo] = [j] }", top),
+                new(true, "for (j of x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (j of x) { var foo; foo = j }", top),
+                new(true, "for (j of x) { var foo; [foo] = [j] }", top),
+                new(true, "for (j of x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (j of x) { let foo; foo = j }", [0]),
+                new(true, "for (j of x) { let foo; [foo] = [j] }", [0]),
+                new(true, "for (j of x) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for (j of x) { let foo = j }", [0]),
+                new(false, "for (j of x) { let [foo] = [j] }", [0]),
+                new(false, "for (j of x) { const foo = j }", [0]),
+                new(false, "for (j of x) { const [foo] = [j] }", [0]),
+                new(false, "for (j of x) { function foo() {return j} }", [0]),
+                new(true, "for ({j} of x) { foo = j }", top),
+                new(true, "for ({j} of x) { [foo] = [j] }", top),
+                new(true, "for ({j} of x) { [[foo]=[42]] = [] }", top),
+                new(true, "for ({j} of x) { var foo = j }", top),
+                new(true, "for ({j} of x) { var [foo] = [j] }", top),
+                new(true, "for ({j} of x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for ({j} of x) { var foo; foo = j }", top),
+                new(true, "for ({j} of x) { var foo; [foo] = [j] }", top),
+                new(true, "for ({j} of x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for ({j} of x) { let foo; foo = j }", [0]),
+                new(true, "for ({j} of x) { let foo; [foo] = [j] }", [0]),
+                new(true, "for ({j} of x) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for ({j} of x) { let foo = j }", [0]),
+                new(false, "for ({j} of x) { let [foo] = [j] }", [0]),
+                new(false, "for ({j} of x) { const foo = j }", [0]),
+                new(false, "for ({j} of x) { const [foo] = [j] }", [0]),
+                new(false, "for ({j} of x) { function foo() {return j} }", [0]),
+                new(true, "for (var j of x) { foo = j }", top),
+                new(true, "for (var j of x) { [foo] = [j] }", top),
+                new(true, "for (var j of x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (var j of x) { var foo = j }", top),
+                new(true, "for (var j of x) { var [foo] = [j] }", top),
+                new(true, "for (var j of x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (var j of x) { var foo; foo = j }", top),
+                new(true, "for (var j of x) { var foo; [foo] = [j] }", top),
+                new(true, "for (var j of x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (var j of x) { let foo; foo = j }", [0]),
+                new(true, "for (var j of x) { let foo; [foo] = [j] }", [0]),
+                new(true, "for (var j of x) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for (var j of x) { let foo = j }", [0]),
+                new(false, "for (var j of x) { let [foo] = [j] }", [0]),
+                new(false, "for (var j of x) { const foo = j }", [0]),
+                new(false, "for (var j of x) { const [foo] = [j] }", [0]),
+                new(false, "for (var j of x) { function foo() {return j} }", [0]),
+                new(true, "for (var {j} of x) { foo = j }", top),
+                new(true, "for (var {j} of x) { [foo] = [j] }", top),
+                new(true, "for (var {j} of x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (var {j} of x) { var foo = j }", top),
+                new(true, "for (var {j} of x) { var [foo] = [j] }", top),
+                new(true, "for (var {j} of x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (var {j} of x) { var foo; foo = j }", top),
+                new(true, "for (var {j} of x) { var foo; [foo] = [j] }", top),
+                new(true, "for (var {j} of x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (var {j} of x) { let foo; foo = j }", [0]),
+                new(true, "for (var {j} of x) { let foo; [foo] = [j] }", [0]),
+                new(true, "for (var {j} of x) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for (var {j} of x) { let foo = j }", [0]),
+                new(false, "for (var {j} of x) { let [foo] = [j] }", [0]),
+                new(false, "for (var {j} of x) { const foo = j }", [0]),
+                new(false, "for (var {j} of x) { const [foo] = [j] }", [0]),
+                new(false, "for (var {j} of x) { function foo() {return j} }", [0]),
+                new(true, "for (let j of x) { foo = j }", top),
+                new(true, "for (let j of x) { [foo] = [j] }", top),
+                new(true, "for (let j of x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (let j of x) { var foo = j }", top),
+                new(true, "for (let j of x) { var [foo] = [j] }", top),
+                new(true, "for (let j of x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (let j of x) { var foo; foo = j }", top),
+                new(true, "for (let j of x) { var foo; [foo] = [j] }", top),
+                new(true, "for (let j of x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (let j of x) { let foo; foo = j }", [0, 1, 0]),
+                new(true, "for (let j of x) { let foo; [foo] = [j] }", [0, 1, 0]),
+                new(true, "for (let j of x) { let foo; [[foo]=[42]] = [] }", [0, 1, 0]),
+                new(false, "for (let j of x) { let foo = j }", [0, 1, 0]),
+                new(false, "for (let j of x) { let [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (let j of x) { const foo = j }", [0, 1, 0]),
+                new(false, "for (let j of x) { const [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (let j of x) { function foo() {return j} }", [0, 1, 0]),
+                new(true, "for (let {j} of x) { foo = j }", top),
+                new(true, "for (let {j} of x) { [foo] = [j] }", top),
+                new(true, "for (let {j} of x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (let {j} of x) { var foo = j }", top),
+                new(true, "for (let {j} of x) { var [foo] = [j] }", top),
+                new(true, "for (let {j} of x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (let {j} of x) { var foo; foo = j }", top),
+                new(true, "for (let {j} of x) { var foo; [foo] = [j] }", top),
+                new(true, "for (let {j} of x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (let {j} of x) { let foo; foo = j }", [0, 1, 0]),
+                new(true, "for (let {j} of x) { let foo; [foo] = [j] }", [0, 1, 0]),
+                new(true, "for (let {j} of x) { let foo; [[foo]=[42]] = [] }", [0, 1, 0]),
+                new(false, "for (let {j} of x) { let foo = j }", [0, 1, 0]),
+                new(false, "for (let {j} of x) { let [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (let {j} of x) { const foo = j }", [0, 1, 0]),
+                new(false, "for (let {j} of x) { const [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (let {j} of x) { function foo() {return j} }", [0, 1, 0]),
+                new(true, "for (const j of x) { foo = j }", top),
+                new(true, "for (const j of x) { [foo] = [j] }", top),
+                new(true, "for (const j of x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (const j of x) { var foo = j }", top),
+                new(true, "for (const j of x) { var [foo] = [j] }", top),
+                new(true, "for (const j of x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (const j of x) { var foo; foo = j }", top),
+                new(true, "for (const j of x) { var foo; [foo] = [j] }", top),
+                new(true, "for (const j of x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (const j of x) { let foo; foo = j }", [0, 1, 0]),
+                new(true, "for (const j of x) { let foo; [foo] = [j] }", [0, 1, 0]),
+                new(true, "for (const j of x) { let foo; [[foo]=[42]] = [] }", [0, 1, 0]),
+                new(false, "for (const j of x) { let foo = j }", [0, 1, 0]),
+                new(false, "for (const j of x) { let [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (const j of x) { const foo = j }", [0, 1, 0]),
+                new(false, "for (const j of x) { const [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (const j of x) { function foo() {return j} }", [0, 1, 0]),
+                new(true, "for (const {j} of x) { foo = j }", top),
+                new(true, "for (const {j} of x) { [foo] = [j] }", top),
+                new(true, "for (const {j} of x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (const {j} of x) { var foo = j }", top),
+                new(true, "for (const {j} of x) { var [foo] = [j] }", top),
+                new(true, "for (const {j} of x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (const {j} of x) { var foo; foo = j }", top),
+                new(true, "for (const {j} of x) { var foo; [foo] = [j] }", top),
+                new(true, "for (const {j} of x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (const {j} of x) { let foo; foo = j }", [0, 1, 0]),
+                new(true, "for (const {j} of x) { let foo; [foo] = [j] }", [0, 1, 0]),
+                new(true, "for (const {j} of x) { let foo; [[foo]=[42]] = [] }", [0, 1, 0]),
+                new(false, "for (const {j} of x) { let foo = j }", [0, 1, 0]),
+                new(false, "for (const {j} of x) { let [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (const {j} of x) { const foo = j }", [0, 1, 0]),
+                new(false, "for (const {j} of x) { const [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (const {j} of x) { function foo() {return j} }", [0, 1, 0]),
+                new(true, "for (j in x) { foo = j }", top),
+                new(true, "for (j in x) { [foo] = [j] }", top),
+                new(true, "for (j in x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (j in x) { var foo = j }", top),
+                new(true, "for (j in x) { var [foo] = [j] }", top),
+                new(true, "for (j in x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (j in x) { var foo; foo = j }", top),
+                new(true, "for (j in x) { var foo; [foo] = [j] }", top),
+                new(true, "for (j in x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (j in x) { let foo; foo = j }", [0]),
+                new(true, "for (j in x) { let foo; [foo] = [j] }", [0]),
+                new(true, "for (j in x) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for (j in x) { let foo = j }", [0]),
+                new(false, "for (j in x) { let [foo] = [j] }", [0]),
+                new(false, "for (j in x) { const foo = j }", [0]),
+                new(false, "for (j in x) { const [foo] = [j] }", [0]),
+                new(false, "for (j in x) { function foo() {return j} }", [0]),
+                new(true, "for ({j} in x) { foo = j }", top),
+                new(true, "for ({j} in x) { [foo] = [j] }", top),
+                new(true, "for ({j} in x) { [[foo]=[42]] = [] }", top),
+                new(true, "for ({j} in x) { var foo = j }", top),
+                new(true, "for ({j} in x) { var [foo] = [j] }", top),
+                new(true, "for ({j} in x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for ({j} in x) { var foo; foo = j }", top),
+                new(true, "for ({j} in x) { var foo; [foo] = [j] }", top),
+                new(true, "for ({j} in x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for ({j} in x) { let foo; foo = j }", [0]),
+                new(true, "for ({j} in x) { let foo; [foo] = [j] }", [0]),
+                new(true, "for ({j} in x) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for ({j} in x) { let foo = j }", [0]),
+                new(false, "for ({j} in x) { let [foo] = [j] }", [0]),
+                new(false, "for ({j} in x) { const foo = j }", [0]),
+                new(false, "for ({j} in x) { const [foo] = [j] }", [0]),
+                new(false, "for ({j} in x) { function foo() {return j} }", [0]),
+                new(true, "for (var j in x) { foo = j }", top),
+                new(true, "for (var j in x) { [foo] = [j] }", top),
+                new(true, "for (var j in x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (var j in x) { var foo = j }", top),
+                new(true, "for (var j in x) { var [foo] = [j] }", top),
+                new(true, "for (var j in x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (var j in x) { var foo; foo = j }", top),
+                new(true, "for (var j in x) { var foo; [foo] = [j] }", top),
+                new(true, "for (var j in x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (var j in x) { let foo; foo = j }", [0]),
+                new(true, "for (var j in x) { let foo; [foo] = [j] }", [0]),
+                new(true, "for (var j in x) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for (var j in x) { let foo = j }", [0]),
+                new(false, "for (var j in x) { let [foo] = [j] }", [0]),
+                new(false, "for (var j in x) { const foo = j }", [0]),
+                new(false, "for (var j in x) { const [foo] = [j] }", [0]),
+                new(false, "for (var j in x) { function foo() {return j} }", [0]),
+                new(true, "for (var {j} in x) { foo = j }", top),
+                new(true, "for (var {j} in x) { [foo] = [j] }", top),
+                new(true, "for (var {j} in x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (var {j} in x) { var foo = j }", top),
+                new(true, "for (var {j} in x) { var [foo] = [j] }", top),
+                new(true, "for (var {j} in x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (var {j} in x) { var foo; foo = j }", top),
+                new(true, "for (var {j} in x) { var foo; [foo] = [j] }", top),
+                new(true, "for (var {j} in x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (var {j} in x) { let foo; foo = j }", [0]),
+                new(true, "for (var {j} in x) { let foo; [foo] = [j] }", [0]),
+                new(true, "for (var {j} in x) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "for (var {j} in x) { let foo = j }", [0]),
+                new(false, "for (var {j} in x) { let [foo] = [j] }", [0]),
+                new(false, "for (var {j} in x) { const foo = j }", [0]),
+                new(false, "for (var {j} in x) { const [foo] = [j] }", [0]),
+                new(false, "for (var {j} in x) { function foo() {return j} }", [0]),
+                new(true, "for (let j in x) { foo = j }", top),
+                new(true, "for (let j in x) { [foo] = [j] }", top),
+                new(true, "for (let j in x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (let j in x) { var foo = j }", top),
+                new(true, "for (let j in x) { var [foo] = [j] }", top),
+                new(true, "for (let j in x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (let j in x) { var foo; foo = j }", top),
+                new(true, "for (let j in x) { var foo; [foo] = [j] }", top),
+                new(true, "for (let j in x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (let j in x) { let foo; foo = j }", [0, 1, 0]),
+                new(true, "for (let j in x) { let foo; [foo] = [j] }", [0, 1, 0]),
+                new(true, "for (let j in x) { let foo; [[foo]=[42]] = [] }", [0, 1, 0]),
+                new(false, "for (let j in x) { let foo = j }", [0, 1, 0]),
+                new(false, "for (let j in x) { let [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (let j in x) { const foo = j }", [0, 1, 0]),
+                new(false, "for (let j in x) { const [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (let j in x) { function foo() {return j} }", [0, 1, 0]),
+                new(true, "for (let {j} in x) { foo = j }", top),
+                new(true, "for (let {j} in x) { [foo] = [j] }", top),
+                new(true, "for (let {j} in x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (let {j} in x) { var foo = j }", top),
+                new(true, "for (let {j} in x) { var [foo] = [j] }", top),
+                new(true, "for (let {j} in x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (let {j} in x) { var foo; foo = j }", top),
+                new(true, "for (let {j} in x) { var foo; [foo] = [j] }", top),
+                new(true, "for (let {j} in x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (let {j} in x) { let foo; foo = j }", [0, 1, 0]),
+                new(true, "for (let {j} in x) { let foo; [foo] = [j] }", [0, 1, 0]),
+                new(true, "for (let {j} in x) { let foo; [[foo]=[42]] = [] }", [0, 1, 0]),
+                new(false, "for (let {j} in x) { let foo = j }", [0, 1, 0]),
+                new(false, "for (let {j} in x) { let [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (let {j} in x) { const foo = j }", [0, 1, 0]),
+                new(false, "for (let {j} in x) { const [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (let {j} in x) { function foo() {return j} }", [0, 1, 0]),
+                new(true, "for (const j in x) { foo = j }", top),
+                new(true, "for (const j in x) { [foo] = [j] }", top),
+                new(true, "for (const j in x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (const j in x) { var foo = j }", top),
+                new(true, "for (const j in x) { var [foo] = [j] }", top),
+                new(true, "for (const j in x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (const j in x) { var foo; foo = j }", top),
+                new(true, "for (const j in x) { var foo; [foo] = [j] }", top),
+                new(true, "for (const j in x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (const j in x) { let foo; foo = j }", [0, 1, 0]),
+                new(true, "for (const j in x) { let foo; [foo] = [j] }", [0, 1, 0]),
+                new(true, "for (const j in x) { let foo; [[foo]=[42]] = [] }", [0, 1, 0]),
+                new(false, "for (const j in x) { let foo = j }", [0, 1, 0]),
+                new(false, "for (const j in x) { let [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (const j in x) { const foo = j }", [0, 1, 0]),
+                new(false, "for (const j in x) { const [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (const j in x) { function foo() {return j} }", [0, 1, 0]),
+                new(true, "for (const {j} in x) { foo = j }", top),
+                new(true, "for (const {j} in x) { [foo] = [j] }", top),
+                new(true, "for (const {j} in x) { [[foo]=[42]] = [] }", top),
+                new(true, "for (const {j} in x) { var foo = j }", top),
+                new(true, "for (const {j} in x) { var [foo] = [j] }", top),
+                new(true, "for (const {j} in x) { var [[foo]=[42]] = [] }", top),
+                new(true, "for (const {j} in x) { var foo; foo = j }", top),
+                new(true, "for (const {j} in x) { var foo; [foo] = [j] }", top),
+                new(true, "for (const {j} in x) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "for (const {j} in x) { let foo; foo = j }", [0, 1, 0]),
+                new(true, "for (const {j} in x) { let foo; [foo] = [j] }", [0, 1, 0]),
+                new(true, "for (const {j} in x) { let foo; [[foo]=[42]] = [] }", [0, 1, 0]),
+                new(false, "for (const {j} in x) { let foo = j }", [0, 1, 0]),
+                new(false, "for (const {j} in x) { let [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (const {j} in x) { const foo = j }", [0, 1, 0]),
+                new(false, "for (const {j} in x) { const [foo] = [j] }", [0, 1, 0]),
+                new(false, "for (const {j} in x) { function foo() {return j} }", [0, 1, 0]),
+                new(true, "while (j) { foo = j }", top),
+                new(true, "while (j) { [foo] = [j] }", top),
+                new(true, "while (j) { [[foo]=[42]] = [] }", top),
+                new(true, "while (j) { var foo = j }", top),
+                new(true, "while (j) { var [foo] = [j] }", top),
+                new(true, "while (j) { var [[foo]=[42]] = [] }", top),
+                new(true, "while (j) { var foo; foo = j }", top),
+                new(true, "while (j) { var foo; [foo] = [j] }", top),
+                new(true, "while (j) { var foo; [[foo]=[42]] = [] }", top),
+                new(true, "while (j) { let foo; foo = j }", [0]),
+                new(true, "while (j) { let foo; [foo] = [j] }", [0]),
+                new(true, "while (j) { let foo; [[foo]=[42]] = [] }", [0]),
+                new(false, "while (j) { let foo = j }", [0]),
+                new(false, "while (j) { let [foo] = [j] }", [0]),
+                new(false, "while (j) { const foo = j }", [0]),
+                new(false, "while (j) { const [foo] = [j] }", [0]),
+                new(false, "while (j) { function foo() {return j} }", [0]),
+                new(true, "do { foo = j } while (j)", top),
+                new(true, "do { [foo] = [j] } while (j)", top),
+                new(true, "do { [[foo]=[42]] = [] } while (j)", top),
+                new(true, "do { var foo = j } while (j)", top),
+                new(true, "do { var [foo] = [j] } while (j)", top),
+                new(true, "do { var [[foo]=[42]] = [] } while (j)", top),
+                new(true, "do { var foo; foo = j } while (j)", top),
+                new(true, "do { var foo; [foo] = [j] } while (j)", top),
+                new(true, "do { var foo; [[foo]=[42]] = [] } while (j)", top),
+                new(true, "do { let foo; foo = j } while (j)", [0]),
+                new(true, "do { let foo; [foo] = [j] } while (j)", [0]),
+                new(true, "do { let foo; [[foo]=[42]] = [] } while (j)", [0]),
+                new(false, "do { let foo = j } while (j)", [0]),
+                new(false, "do { let [foo] = [j] } while (j)", [0]),
+                new(false, "do { const foo = j } while (j)", [0]),
+                new(false, "do { const [foo] = [j] } while (j)", [0]),
+                new(false, "do { function foo() {return j} } while (j)", [0]),
+        ];
+        Input[] script_only_tests = [
+                new(true, "for (j=x; j<10; ++j) { function foo() {return j} }", top),
+                new(true, "for ({j}=x; j<10; ++j) { function foo() {return j} }", top),
+                new(true, "for (var j=x; j<10; ++j) { function foo() {return j} }", top),
+                new(true, "for (var {j}=x; j<10; ++j) { function foo() {return j} }", top),
+                new(true, "for (let j=x; j<10; ++j) { function foo() {return j} }", top),
+                new(true, "for (let {j}=x; j<10; ++j) { function foo() {return j} }", top),
+                new(true, "for (j of x) { function foo() {return j} }", top),
+                new(true, "for ({j} of x) { function foo() {return j} }", top),
+                new(true, "for (var j of x) { function foo() {return j} }", top),
+                new(true, "for (var {j} of x) { function foo() {return j} }", top),
+                new(true, "for (let j of x) { function foo() {return j} }", top),
+                new(true, "for (let {j} of x) { function foo() {return j} }", top),
+                new(true, "for (const j of x) { function foo() {return j} }", top),
+                new(true, "for (const {j} of x) { function foo() {return j} }", top),
+                new(true, "for (j in x) { function foo() {return j} }", top),
+                new(true, "for ({j} in x) { function foo() {return j} }", top),
+                new(true, "for (var j in x) { function foo() {return j} }", top),
+                new(true, "for (var {j} in x) { function foo() {return j} }", top),
+                new(true, "for (let j in x) { function foo() {return j} }", top),
+                new(true, "for (let {j} in x) { function foo() {return j} }", top),
+                new(true, "for (const j in x) { function foo() {return j} }", top),
+                new(true, "for (const {j} in x) { function foo() {return j} }", top),
+                new(true, "while (j) { function foo() {return j} }", top),
+                new(true, "do { function foo() {return j} } while (j)", top),
+        ];
+        for (int i = 0; i < module_and_script_tests.Length; ++i) {
+            Input input = module_and_script_tests[i];
+            for (int module = 0; module <= 1; ++module) {
+                for (int allow_lazy_parsing = 0; allow_lazy_parsing <= 1;
+                          ++allow_lazy_parsing) {
+                    TestMaybeAssigned(input, "foo", module, allow_lazy_parsing);
+                }
+                TestMaybeAssigned(wrap(input), "foo", module, false);
+            }
+        }
+        for (int i = 0; i < script_only_tests.Length; ++i) {
+            Input input = script_only_tests[i];
+            for (int allow_lazy_parsing = 0; allow_lazy_parsing <= 1;
+                      ++allow_lazy_parsing) {
+                TestMaybeAssigned(input, "foo", false, allow_lazy_parsing);
+            }
+            TestMaybeAssigned(wrap(input), "foo", false, false);
+        }
     }
 
     [Fact]
@@ -2623,6 +3925,99 @@ public partial class ParsingTest
             // clang-format on
             RunParserSyncTest(context_data, data, kError);
             RunModuleParserSyncTest(context_data, data, kError);
+        }
+    }
+
+    [Fact]
+    public void BasicImportAttributesParsing()
+    {
+        // clang-format off
+        string[] kSources = [
+            "import { a as b } from 'm.js' with { };",
+            "import n from 'n.js' with { };",
+            "export { a as b } from 'm.js' with { };",
+            "export * from 'm.js' with { };",
+            "import 'm.js' with { };",
+            "import * as foo from 'bar.js' with { };",
+            "import { a as b } from 'm.js' with { a: 'b' };",
+            "import { a as b } from 'm.js' with { c: 'd' };",
+            "import { a as b } from 'm.js' with { 'c': 'd' };",
+            "import { a as b } from 'm.js' with { a: 'b', 'c': 'd', e: 'f' };",
+            "import { a as b } from 'm.js' with { 'c': 'd', };",
+            "import n from 'n.js' with { 'c': 'd' };",
+            "export { a as b } from 'm.js' with { 'c': 'd' };",
+            "export * from 'm.js' with { 'c': 'd' };",
+            "import 'm.js' with { 'c': 'd' };",
+            "import * as foo from 'bar.js' with { 'c': 'd' };",
+            "import { a as b } from 'm.js' with { \nc: 'd'};",
+            "import { a as b } from 'm.js' with { c:\n 'd'};",
+            "import { a as b } from 'm.js' with { c:'d'\n};",
+            "import { a as b } from 'm.js' with { '0': 'b', };",
+            "import 'm.js'\n with { };",
+            "import 'm.js' \nwith { };",
+            "import { a } from 'm.js'\n with { };",
+            "export * from 'm.js'\n with { };"
+        ];
+        // clang-format on
+        v8_flags.harmony_import_attributes = true;
+                    for (int i = 0; i < kSources.Length; ++i) {
+            string source = kSources[i];
+            // Show that parsing as a module works
+            {
+                var script = new SourceScript(source, 1);
+                                        UnoptimizedCompileFlags flags =
+                        NewScriptFlags();
+                flags.set_is_module(true);
+                ParseInfo info = NewParseInfo(flags);
+                CHECK_PARSE_PROGRAM(info, script);
+            }
+            // And that parsing a script does not.
+            {
+                                        var script = new SourceScript(source, 1);
+                UnoptimizedCompileFlags flags =
+                        NewScriptFlags();
+                ParseInfo info = NewParseInfo(flags);
+                Assert.True(!ParsingEntry.ParseProgram(info, script));
+                Assert.True(info.pending_error_handler().has_pending_error());
+            }
+        }
+    }
+
+    [Fact]
+    public void ImportAttributesParsingErrors()
+    {
+        // clang-format off
+        string[] kErrorSources = [
+            "import { a } from 'm.js' with {;",
+            "import { a } from 'm.js' with };",
+            "import { a } from 'm.js' , with { };",
+            "import { a } from 'm.js' with , { };",
+            "import { a } from 'm.js' with { , };",
+            "import { a } from 'm.js' with { b };",
+            "import { a } from 'm.js' with { 'b' };",
+            "import { a } from 'm.js' with { for };",
+            "import { a } from 'm.js' with { with };",
+            "export { a } with { };",
+            "export * with { };",
+            "import { a } from 'm.js' with { x: 2 };",
+            "import { a } from 'm.js' with { b: c };",
+            "import { a } from 'm.js' with { 'b': c };",
+            "import { a } from 'm.js' with { , b: c };",
+            "import { a } from 'm.js' with { a: 'b', a: 'c' };",
+            "import { a } from 'm.js' with { a: 'b', 'a': 'c' };",
+            "import 'm.js' assert { a: 'b' };"
+        ];
+        // clang-format on
+        v8_flags.harmony_import_attributes = true;
+                    for (int i = 0; i < kErrorSources.Length; ++i) {
+            string source = kErrorSources[i];
+            var script = new SourceScript(source, 1);
+                            UnoptimizedCompileFlags flags =
+                    NewScriptFlags();
+            flags.set_is_module(true);
+            ParseInfo info = NewParseInfo(flags);
+            Assert.True(!ParsingEntry.ParseProgram(info, script));
+            Assert.True(info.pending_error_handler().has_pending_error());
         }
     }
 
@@ -5544,6 +6939,222 @@ public partial class ParsingTest
         string[][] context_data = [["({", "});"], [null, null]];
         string[] error_data = ["a: 1, [2]", "[1], a: 1", null];
         RunParserSyncTest(context_data, error_data, kError);
+    }
+
+    [Fact]
+    public void BasicImportExportParsing()
+    {
+        // clang-format off
+        string[] kSources = [
+                "export let x = 0;",
+                "export var y = 0;",
+                "export const z = 0;",
+                "export function func() { };",
+                "export class C { };",
+                "export { };",
+                "function f() {}; f(); export { f };",
+                "var a, b, c; export { a, b as baz, c };",
+                "var d, e; export { d as dreary, e, };",
+                "export default function f() {}",
+                "export default function() {}",
+                "export default function*() {}",
+                "export default class C {}",
+                "export default class {}",
+                "export default class extends C {}",
+                "export default 42",
+                "var x; export default x = 7",
+                "export { Q } from 'somemodule.js';",
+                "export * from 'somemodule.js';",
+                "var foo; export { foo as for };",
+                "export { arguments } from 'm.js';",
+                "export { for } from 'm.js';",
+                "export { yield } from 'm.js'",
+                "export { static } from 'm.js'",
+                "export { let } from 'm.js'",
+                "var a; export { a as b, a as c };",
+                "var a; export { a as await };",
+                "var a; export { a as enum };",
+                "import 'somemodule.js';",
+                "import { } from 'm.js';",
+                "import { a } from 'm.js';",
+                "import { a, b as d, c, } from 'm.js';",
+                "import * as thing from 'm.js';",
+                "import thing from 'm.js';",
+                "import thing, * as rest from 'm.js';",
+                "import thing, { a, b, c } from 'm.js';",
+                "import { arguments as a } from 'm.js';",
+                "import { for as f } from 'm.js';",
+                "import { yield as y } from 'm.js';",
+                "import { static as s } from 'm.js';",
+                "import { let as l } from 'm.js';",
+                "import thing from 'a.js'; export {thing};",
+                "export {thing}; import thing from 'a.js';",
+                "import {thing} from 'a.js'; export {thing};",
+                "export {thing}; import {thing} from 'a.js';",
+                "import * as thing from 'a.js'; export {thing};",
+                "export {thing}; import * as thing from 'a.js';",
+        ];
+        // clang-format on
+                    for (int i = 0; i < kSources.Length; ++i) {
+            string source = kSources[i];
+            // Show that parsing as a module works
+            {
+                var script = new SourceScript(source, 1);
+                                        UnoptimizedCompileFlags flags =
+                        NewScriptFlags();
+                flags.set_is_module(true);
+                ParseInfo info = NewParseInfo(flags);
+                CHECK_PARSE_PROGRAM(info, script);
+            }
+            // And that parsing a script does not.
+            {
+                                        var script = new SourceScript(source, 1);
+                UnoptimizedCompileFlags flags =
+                        NewScriptFlags();
+                ParseInfo info = NewParseInfo(flags);
+                Assert.True(!ParsingEntry.ParseProgram(info, script));
+                Assert.True(info.pending_error_handler().has_pending_error());
+            }
+        }
+    }
+
+    [Fact]
+    public void NamespaceExportParsing()
+    {
+        // clang-format off
+        string[] kSources = [
+                "export * as arguments from 'bar'",
+                "export * as await from 'bar'",
+                "export * as default from 'bar'",
+                "export * as enum from 'bar'",
+                "export * as foo from 'bar'",
+                "export * as for from 'bar'",
+                "export * as let from 'bar'",
+                "export * as static from 'bar'",
+                "export * as yield from 'bar'",
+        ];
+        // clang-format on
+                    for (int i = 0; i < kSources.Length; ++i) {
+            string source = kSources[i];
+            var script = new SourceScript(source, 1);
+                            UnoptimizedCompileFlags flags =
+                    NewScriptFlags();
+            flags.set_is_module(true);
+            ParseInfo info = NewParseInfo(flags);
+            CHECK_PARSE_PROGRAM(info, script);
+        }
+    }
+
+    [Fact]
+    public void ImportExportParsingErrors()
+    {
+        // clang-format off
+        string[] kErrorSources = [
+                "export {",
+                "var a; export { a",
+                "var a; export { a,",
+                "var a; export { a, ;",
+                "var a; export { a as };",
+                "var a, b; export { a as , b};",
+                "export }",
+                "var foo, bar; export { foo bar };",
+                "export { foo };",
+                "export { , };",
+                "export default;",
+                "export default var x = 7;",
+                "export default let x = 7;",
+                "export default const x = 7;",
+                "export *;",
+                "export * from;",
+                "export { Q } from;",
+                "export default from 'module.js';",
+                "export { for }",
+                "export { for as foo }",
+                "export { arguments }",
+                "export { arguments as foo }",
+                "var a; export { a, a };",
+                "var a, b; export { a as b, b };",
+                "var a, b; export { a as c, b as c };",
+                "export default function f(){}; export default class C {};",
+                "export default function f(){}; var a; export { a as default };",
+                "export function() {}",
+                "export function*() {}",
+                "export class {}",
+                "export class extends C {}",
+                "import from;",
+                "import from 'm.js';",
+                "import { };",
+                "import {;",
+                "import };",
+                "import { , };",
+                "import { , } from 'm.js';",
+                "import { a } from;",
+                "import { a } 'm.js';",
+                "import , from 'm.js';",
+                "import a , from 'm.js';",
+                "import a { b, c } from 'm.js';",
+                "import arguments from 'm.js';",
+                "import eval from 'm.js';",
+                "import { arguments } from 'm.js';",
+                "import { eval } from 'm.js';",
+                "import { a as arguments } from 'm.js';",
+                "import { for } from 'm.js';",
+                "import { y as yield } from 'm.js'",
+                "import { s as static } from 'm.js'",
+                "import { l as let } from 'm.js'",
+                "import { a as await } from 'm.js';",
+                "import { a as enum } from 'm.js';",
+                "import { x }, def from 'm.js';",
+                "import def, def2 from 'm.js';",
+                "import * as x, def from 'm.js';",
+                "import * as x, * as y from 'm.js';",
+                "import {x}, {y} from 'm.js';",
+                "import * as x, {y} from 'm.js';",
+                "export *;",
+                "export * as;",
+                "export * as foo;",
+                "export * as foo from;",
+                "export * as foo from ';",
+                "export * as ,foo from 'bar'",
+        ];
+        // clang-format on
+                    for (int i = 0; i < kErrorSources.Length; ++i) {
+            string source = kErrorSources[i];
+            var script = new SourceScript(source, 1);
+                            UnoptimizedCompileFlags flags =
+                    NewScriptFlags();
+            flags.set_is_module(true);
+            ParseInfo info = NewParseInfo(flags);
+            Assert.True(!ParsingEntry.ParseProgram(info, script));
+            Assert.True(info.pending_error_handler().has_pending_error());
+        }
+    }
+
+    [Fact]
+    public void ModuleTopLevelFunctionDecl()
+    {
+        // clang-format off
+        string[] kErrorSources = [
+                "function f() {} function f() {}",
+                "var f; function f() {}",
+                "function f() {} var f;",
+                "function* f() {} function* f() {}",
+                "var f; function* f() {}",
+                "function* f() {} var f;",
+                "function f() {} function* f() {}",
+                "function* f() {} function f() {}",
+        ];
+        // clang-format on
+                    for (int i = 0; i < kErrorSources.Length; ++i) {
+            string source = kErrorSources[i];
+            var script = new SourceScript(source, 1);
+                            UnoptimizedCompileFlags flags =
+                    NewScriptFlags();
+            flags.set_is_module(true);
+            ParseInfo info = NewParseInfo(flags);
+            Assert.True(!ParsingEntry.ParseProgram(info, script));
+            Assert.True(info.pending_error_handler().has_pending_error());
+        }
     }
 
     [Fact]
@@ -8646,6 +10257,162 @@ public partial class ParsingTest
     }
 
     [Fact]
+    public void ForAwaitOfErrors()
+    {
+        // clang-format off
+        string[][] context_data = [
+            [ "async function f() { for await ", " ; }" ],
+            [ "async function f() { for await ", " { } }" ],
+            [ "async function f() { 'use strict'; for await ", " ; }" ],
+            [ "async function f() { 'use strict'; for await ", "  { } }" ],
+            [ "async function * f() { for await ", " ; }" ],
+            [ "async function * f() { for await ", " { } }" ],
+            [ "async function * f() { 'use strict'; for await ", " ; }" ],
+            [ "async function * f() { 'use strict'; for await ", "  { } }" ],
+            [ null, null ]
+        ];
+        string[] data = [
+            // Primary Expressions
+            "(a = 1 of [])",
+            "(a = 1) of [])",
+            "(a.b = 1 of [])",
+            "((a.b = 1) of [])",
+            "([a] = 1 of [])",
+            "(([a] = 1) of [])",
+            "([a = 1] = 1 of [])",
+            "(([a = 1] = 1) of [])",
+            "([a = 1 = 1, ...b] = 1 of [])",
+            "(([a = 1 = 1, ...b] = 1) of [])",
+            "({a} = 1 of [])",
+            "(({a} = 1) of [])",
+            "({a: a} = 1 of [])",
+            "(({a: a} = 1) of [])",
+            "({'a': a} = 1 of [])",
+            "(({'a': a} = 1) of [])",
+            "({\"a\": a} = 1 of [])",
+            "(({\"a\": a} = 1) of [])",
+            "({[Symbol.iterator]: a} = 1 of [])",
+            "(({[Symbol.iterator]: a} = 1) of [])",
+            "({0: a} = 1 of [])",
+            "(({0: a} = 1) of [])",
+            "({a = 1} = 1 of [])",
+            "(({a = 1} = 1) of [])",
+            "({a: a = 1} = 1 of [])",
+            "(({a: a = 1} = 1) of [])",
+            "({'a': a = 1} = 1 of [])",
+            "(({'a': a = 1} = 1) of [])",
+            "({\"a\": a = 1} = 1 of [])",
+            "(({\"a\": a = 1} = 1) of [])",
+            "({[Symbol.iterator]: a = 1} = 1 of [])",
+            "(({[Symbol.iterator]: a = 1} = 1) of [])",
+            "({0: a = 1} = 1 of [])",
+            "(({0: a = 1} = 1) of [])",
+            "(function a() {} of [])",
+            "([1] of [])",
+            "({a: 1} of [])(var a = 1 of [])",
+            "(var a, b of [])",
+            "(var [a] = 1 of [])",
+            "(var [a], b of [])",
+            "(var [a = 1] = 1 of [])",
+            "(var [a = 1], b of [])",
+            "(var [a = 1 = 1, ...b] of [])",
+            "(var [a = 1, ...b], c of [])",
+            "(var {a} = 1 of [])",
+            "(var {a}, b of [])",
+            "(var {a: a} = 1 of [])",
+            "(var {a: a}, b of [])",
+            "(var {'a': a} = 1 of [])",
+            "(var {'a': a}, b of [])",
+            "(var {\"a\": a} = 1 of [])",
+            "(var {\"a\": a}, b of [])",
+            "(var {[Symbol.iterator]: a} = 1 of [])",
+            "(var {[Symbol.iterator]: a}, b of [])",
+            "(var {0: a} = 1 of [])",
+            "(var {0: a}, b of [])",
+            "(var {a = 1} = 1 of [])",
+            "(var {a = 1}, b of [])",
+            "(var {a: a = 1} = 1 of [])",
+            "(var {a: a = 1}, b of [])",
+            "(var {'a': a = 1} = 1 of [])",
+            "(var {'a': a = 1}, b of [])",
+            "(var {\"a\": a = 1} = 1 of [])",
+            "(var {\"a\": a = 1}, b of [])",
+            "(var {[Symbol.iterator]: a = 1} = 1 of [])",
+            "(var {[Symbol.iterator]: a = 1}, b of [])",
+            "(var {0: a = 1} = 1 of [])",
+            "(var {0: a = 1}, b of [])",
+            // LexicalDeclartions
+            "(let a = 1 of [])",
+            "(let a, b of [])",
+            "(let [a] = 1 of [])",
+            "(let [a], b of [])",
+            "(let [a = 1] = 1 of [])",
+            "(let [a = 1], b of [])",
+            "(let [a = 1, ...b] = 1 of [])",
+            "(let [a = 1, ...b], c of [])",
+            "(let {a} = 1 of [])",
+            "(let {a}, b of [])",
+            "(let {a: a} = 1 of [])",
+            "(let {a: a}, b of [])",
+            "(let {'a': a} = 1 of [])",
+            "(let {'a': a}, b of [])",
+            "(let {\"a\": a} = 1 of [])",
+            "(let {\"a\": a}, b of [])",
+            "(let {[Symbol.iterator]: a} = 1 of [])",
+            "(let {[Symbol.iterator]: a}, b of [])",
+            "(let {0: a} = 1 of [])",
+            "(let {0: a}, b of [])",
+            "(let {a = 1} = 1 of [])",
+            "(let {a = 1}, b of [])",
+            "(let {a: a = 1} = 1 of [])",
+            "(let {a: a = 1}, b of [])",
+            "(let {'a': a = 1} = 1 of [])",
+            "(let {'a': a = 1}, b of [])",
+            "(let {\"a\": a = 1} = 1 of [])",
+            "(let {\"a\": a = 1}, b of [])",
+            "(let {[Symbol.iterator]: a = 1} = 1 of [])",
+            "(let {[Symbol.iterator]: a = 1}, b of [])",
+            "(let {0: a = 1} = 1 of [])",
+            "(let {0: a = 1}, b of [])",
+            "(const a = 1 of [])",
+            "(const a, b of [])",
+            "(const [a] = 1 of [])",
+            "(const [a], b of [])",
+            "(const [a = 1] = 1 of [])",
+            "(const [a = 1], b of [])",
+            "(const [a = 1, ...b] = 1 of [])",
+            "(const [a = 1, ...b], b of [])",
+            "(const {a} = 1 of [])",
+            "(const {a}, b of [])",
+            "(const {a: a} = 1 of [])",
+            "(const {a: a}, b of [])",
+            "(const {'a': a} = 1 of [])",
+            "(const {'a': a}, b of [])",
+            "(const {\"a\": a} = 1 of [])",
+            "(const {\"a\": a}, b of [])",
+            "(const {[Symbol.iterator]: a} = 1 of [])",
+            "(const {[Symbol.iterator]: a}, b of [])",
+            "(const {0: a} = 1 of [])",
+            "(const {0: a}, b of [])",
+            "(const {a = 1} = 1 of [])",
+            "(const {a = 1}, b of [])",
+            "(const {a: a = 1} = 1 of [])",
+            "(const {a: a = 1}, b of [])",
+            "(const {'a': a = 1} = 1 of [])",
+            "(const {'a': a = 1}, b of [])",
+            "(const {\"a\": a = 1} = 1 of [])",
+            "(const {\"a\": a = 1}, b of [])",
+            "(const {[Symbol.iterator]: a = 1} = 1 of [])",
+            "(const {[Symbol.iterator]: a = 1}, b of [])",
+            "(const {0: a = 1} = 1 of [])",
+            "(const {0: a = 1}, b of [])",
+            null
+        ];
+        // clang-format on
+        RunParserSyncTest(context_data, data, kError);
+    }
+
+    [Fact]
     public void ForAwaitOfFunctionDeclaration()
     {
         // clang-format off
@@ -8666,6 +10433,98 @@ public partial class ParsingTest
         ];
         // clang-format on
         RunParserSyncTest(context_data, data, kError);
+    }
+
+    [Fact]
+    public void AsyncGenerator()
+    {
+        // clang-format off
+        string[][] context_data = [
+            [ "async function * gen() {", "}" ],
+            [ "(async function * gen() {", "})" ],
+            [ "(async function * () {", "})" ],
+            [ "({ async * gen () {", "} })" ],
+            [ null, null ]
+        ];
+        string[] statement_data = [
+            // An async generator without a body is valid.
+            "yield 2;",
+            "yield * 2;",
+            "yield * \n 2;",
+            "yield yield 1;",
+            "yield * yield * 1;",
+            "yield 3 + (yield 4);",
+            "yield * 3 + (yield * 4);",
+            "(yield * 3) + (yield * 4);",
+            "yield 3; yield 4;",
+            "yield * 3; yield * 4;",
+            "(function (yield) { })",
+            "(function yield() { })",
+            "(function (await) { })",
+            "(function await() { })",
+            "yield { yield: 12 }",
+            "yield /* comment */ { yield: 12 }",
+            "yield * \n { yield: 12 }",
+            "yield /* comment */ * \n { yield: 12 }",
+            // You can return in an async generator.
+            "yield 1; return",
+            "yield * 1; return",
+            "yield 1; return 37",
+            "yield * 1; return 37",
+            "yield 1; return 37; yield 'dead';",
+            "yield * 1; return 37; yield * 'dead';",
+            // Yield/Await are still a valid key in object literals.
+            "({ yield: 1 })",
+            "({ get yield() { } })",
+            "({ await: 1 })",
+            "({ get await() { } })",
+            // And in assignment pattern computed properties
+            "({ [yield]: x } = { })",
+            "({ [await 1]: x } = { })",
+            // Yield without RHS.
+            "yield;",
+            "yield",
+            "yield\n",
+            "yield /* comment */yield // comment\n(yield)",
+            "[yield]",
+            "{yield}",
+            "yield, yield",
+            "yield; yield",
+            "(yield) ? yield : yield",
+            "(yield) \n ? yield : yield",
+            // If there is a newline before the next token, we don't look for RHS.
+            "yield\nfor (;;) {}",
+            "x = class extends (yield) {}",
+            "x = class extends f(yield) {}",
+            "x = class extends (null, yield) { }",
+            "x = class extends (a ? null : yield) { }",
+            "x = class extends (await 10) {}",
+            "x = class extends f(await 10) {}",
+            "x = class extends (null, await 10) { }",
+            "x = class extends (a ? null : await 10) { }",
+            // More tests featuring AwaitExpressions
+            "await 10",
+            "await 10; return",
+            "await 10; return 20",
+            "await 10; return 20; yield 'dead'",
+            "await (yield 10)",
+            "await (yield 10); return",
+            "await (yield 10); return 20",
+            "await (yield 10); return 20; yield 'dead'",
+            "yield await 10",
+            "yield await 10; return",
+            "yield await 10; return 20",
+            "yield await 10; return 20; yield 'dead'",
+            "await /* comment */ 10",
+            "await // comment\n 10",
+            "yield await /* comment\n */ 10",
+            "yield await // comment\n 10",
+            "await (yield /* comment */)",
+            "await (yield // comment\n)",
+            null
+        ];
+        // clang-format on
+        RunParserSyncTest(context_data, statement_data, kSuccess);
     }
 
     [Fact]
@@ -8795,6 +10654,35 @@ public partial class ParsingTest
         RunParserSyncTest(context_data, data, kSuccess);
         RunParserSyncTest(context_data, data, kSuccess, null, 0, null, 0,
                                             null, 0, true);
+    }
+
+    [Fact]
+    public void LogicalAssignmentDestructuringErrors()
+    {
+        // clang-format off
+        string[][] context_data = [
+            [ "if (", ") { foo(); }" ],
+            [ "(", ")" ],
+            [ "foo(", ")" ],
+            [ null, null ]
+        ];
+        string[] error_data = [
+            "[ x ] ||= [ 2 ]",
+            "[ x ||= 2 ] = [ 2 ]",
+            "{ x } ||= { x: 2 }",
+            "{ x: x ||= 2 ] = { x: 2 }",
+            "[ x ] &&= [ 2 ]",
+            "[ x &&= 2 ] = [ 2 ]",
+            "{ x } &&= { x: 2 }",
+            "{ x: x &&= 2 ] = { x: 2 }",
+            "[ x ] ??= [ 2 ]",
+            "[ x ??= 2 ] = [ 2 ]",
+            "{ x } ??= { x: 2 }",
+            "{ x: x ??= 2 ] = { x: 2 }",
+            null
+        ];
+        // clang-format on
+        RunParserSyncTest(context_data, error_data, kError);
     }
 
     // Not ported: these tests run JavaScript or inspect heap objects, which the
