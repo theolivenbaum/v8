@@ -1,0 +1,40 @@
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningsAsErrors>nullable</WarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <!-- The engine is built the way V8 is built with v8_enable_i18n_support=false:
+         no ICU, so no culture data is needed at all. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Unsafe code is allowed only in files that say why in a comment; see CLAUDE.md. -->
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <Version>0.1.0</Version>
+    <Deterministic>true</Deterministic>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+    <!-- CA1707 etc. fight the V8 naming we mirror on purpose. -->
+    <NoWarn>$(NoWarn);CA1707;CA1716;CA1720;CA1711;CA1051;CA1062;CA1034;CA1815;CA1000;CA1305;CA1307;CA1309;CA1310;CA1822;CA2211;CA1805;CA1810;CA1819;CA1024;CA1028;CA1008;CA1027;CA1045;CA1502;CA1506;CA1505;CA1852;CA1861;CA1508;CA1823;CA1859;CA5394;CA1063;CA1816;CA2201;CA1031;CA1032;CA1064;CA1812;CA1725;CA1003;CA1033;CA2225;CA1043;CA1854;CA1512;CA1513;CA1514;CA1865;CA1866;CA1847;CA1834</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <Optimize>true</Optimize>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Authors>Curiosity GmbH; the V8 project authors</Authors>
+    <Company>Curiosity GmbH</Company>
+    <Product>V8Sharp</Product>
+    <Copyright>Copyright (c) 2026 Curiosity GmbH. Based on V8, Copyright 2006-2026 the V8 project authors.</Copyright>
+    <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
+  </PropertyGroup>
+
+</Project>

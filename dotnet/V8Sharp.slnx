@@ -1,0 +1,21 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/V8Sharp.Base/V8Sharp.Base.csproj" />
+    <Project Path="src/V8Sharp.Parsing/V8Sharp.Parsing.csproj" />
+    <Project Path="src/V8Sharp.RegExp/V8Sharp.RegExp.csproj" />
+    <Project Path="src/V8Sharp/V8Sharp.csproj" />
+    <Project Path="src/V8Sharp.D8/V8Sharp.D8.csproj" />
+    <Project Path="src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/V8Sharp.Base.Tests/V8Sharp.Base.Tests.csproj" />
+    <Project Path="tests/V8Sharp.Parsing.Tests/V8Sharp.Parsing.Tests.csproj" />
+    <Project Path="tests/V8Sharp.RegExp.Tests/V8Sharp.RegExp.Tests.csproj" />
+    <Project Path="tests/V8Sharp.Tests/V8Sharp.Tests.csproj" />
+    <Project Path="tests/V8Sharp.Parity.Tests/V8Sharp.Parity.Tests.csproj" />
+    <Project Path="tests/V8Sharp.Conformance.Tests/V8Sharp.Conformance.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/V8Sharp.TestRunner/V8Sharp.TestRunner.csproj" />
+  </Folder>
+</Solution>

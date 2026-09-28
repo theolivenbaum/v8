@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>V8Sharp.TestRunner</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/V8Sharp/V8Sharp.csproj" />
+    <ProjectReference Include="../../src/V8Sharp.D8/V8Sharp.D8.csproj" />
+    <ProjectReference Include="../../src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />
+  </ItemGroup>
+
+</Project>

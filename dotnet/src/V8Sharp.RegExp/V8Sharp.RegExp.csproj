@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>V8Sharp.RegExp</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/V8Sharp.Base/V8Sharp.Base.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,10 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+  <PropertyGroup>
+    <!-- Test names follow the V8 test names they port, e.g. TEST(Foo_Bar). -->
+    <NoWarn>$(NoWarn);CA1515;CA1052;CA2007;xUnit1026</NoWarn>
+  </PropertyGroup>
+</Project>

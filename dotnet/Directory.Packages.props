@@ -1,0 +1,26 @@
+<Project>
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <!-- The engine itself has NO package dependencies: it is 100% managed IL.
+       ClearScript's native V8 is used only by the test oracle
+       (V8Sharp.Oracle) to compare the port against the real engine. -->
+  <ItemGroup Label="Oracle only (native V8)">
+    <PackageVersion Include="Microsoft.ClearScript.V8" Version="7.5.1.1" />
+    <PackageVersion Include="Microsoft.ClearScript.V8.Native.linux-x64" Version="7.5.1.1" />
+    <PackageVersion Include="Microsoft.ClearScript.V8.Native.linux-arm64" Version="7.5.1.1" />
+    <PackageVersion Include="Microsoft.ClearScript.V8.Native.osx-x64" Version="7.5.1.1" />
+    <PackageVersion Include="Microsoft.ClearScript.V8.Native.osx-arm64" Version="7.5.1.1" />
+    <PackageVersion Include="Microsoft.ClearScript.V8.Native.win-x64" Version="7.5.1.1" />
+  </ItemGroup>
+
+  <ItemGroup Label="Test">
+    <PackageVersion Include="xunit.v3" Version="3.2.2" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+  </ItemGroup>
+
+</Project>

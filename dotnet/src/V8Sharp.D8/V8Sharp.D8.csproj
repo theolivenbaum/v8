@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>V8Sharp.D8</RootNamespace>
+    <AssemblyName>d8sharp</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/V8Sharp/V8Sharp.csproj" />
+  </ItemGroup>
+
+</Project>

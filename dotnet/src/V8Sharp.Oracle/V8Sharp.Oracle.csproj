@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The reference engine for differential tests: the real V8, as shipped
+       natively by ClearScript. Nothing in the engine references this project. -->
+  <PropertyGroup>
+    <RootNamespace>V8Sharp.Oracle</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ClearScript.V8" />
+    <PackageReference Include="Microsoft.ClearScript.V8.Native.linux-x64" />
+    <PackageReference Include="Microsoft.ClearScript.V8.Native.linux-arm64" />
+    <PackageReference Include="Microsoft.ClearScript.V8.Native.osx-x64" />
+    <PackageReference Include="Microsoft.ClearScript.V8.Native.osx-arm64" />
+    <PackageReference Include="Microsoft.ClearScript.V8.Native.win-x64" />
+  </ItemGroup>
+
+</Project>
