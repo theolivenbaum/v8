@@ -290,12 +290,12 @@ public sealed class PreParserScopedStatementList : IScopedPtrList<PreParserScope
 // The pre-parser doesn't need to build lists of expressions, identifiers, or
 // the like. If the PreParser is used in variable tracking mode, it needs to
 // build lists of variables though.
-public sealed class PreParserExpressionList(List<object> buffer)
+public sealed class PreParserExpressionList
     : IScopedPtrList<PreParserExpressionList, PreParserExpression>
 {
     private int length_;
 
-    public static PreParserExpressionList New(List<object> buffer) => new(buffer);
+    public static PreParserExpressionList New(List<object> buffer) => new();
 
     public int length() => length_;
 

@@ -737,14 +737,14 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
             return result;
         }
 
-        public void RecordDeclarationError(Scanner.Location loc, MessageTemplate message)
+        public new void RecordDeclarationError(Scanner.Location loc, MessageTemplate message)
         {
             declaration_error_location = loc;
             declaration_error_message = message;
         }
 
-        public void RecordNonSimpleParameter() => has_simple_parameter_list_ = false;
-        public void RecordThisUse() => uses_this_ = true;
+        public new void RecordNonSimpleParameter() => has_simple_parameter_list_ = false;
+        public new void RecordThisUse() => uses_this_ = true;
         public int function_literal_id() => function_literal_id_;
 
         private FunctionKind kind()

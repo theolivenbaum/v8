@@ -121,4 +121,207 @@ public static class NumberConversions
         if (radixLog2 == 3) return c >= '0' && c <= '7';
         return CharPredicates.IsHexDigit(c);
     }
+
+    // DoubleToInt32 (src/numbers/conversions-inl.h): ECMA ToInt32.
+    public static int DoubleToInt32(double x)
+    {
+        if (double.IsFinite(x) && x <= int.MaxValue && x >= int.MinValue)
+        {
+            // All doubles within these limits are trivially convertable to an int.
+            return (int)x;
+        }
+        if (!double.IsFinite(x) || x == 0) return 0;
+        // Reduce modulo 2^32 using the exact binary representation.
+        long bits = BitConverter.DoubleToInt64Bits(x);
+        int exponent = (int)((bits >> 52) & 0x7FF) - 1075;
+        ulong significand = ((ulong)bits & 0xFFFFFFFFFFFFFUL) | 0x10000000000000UL;
+        uint result;
+        if (exponent < 0)
+        {
+            if (exponent <= -53) return 0;
+            result = (uint)(significand >> -exponent);
+        }
+        else
+        {
+            if (exponent > 31) return 0;
+            result = (uint)(significand << exponent);
+        }
+        return bits < 0 ? -(int)result : (int)result;
+    }
+
+    public static uint DoubleToUint32(double x) => (uint)DoubleToInt32(x);
+
+    // Modulo (src/numbers/conversions-inl.h / fmod): C#'s % on doubles is fmod.
+    public static double Modulo(double x, double y) => x % y;
+
+    // math::pow (src/numbers/ieee754.cc) with v8_flags.use_std_math_pow, the
+    // default on every platform but AIX: the ECMAScript special cases, then
+    // std::pow (Math.Pow is the C runtime pow).
+    public static double Pow(double x, double y)
+    {
+        if (double.IsNaN(y))
+        {
+            // 1. If exponent is NaN, return NaN.
+            return double.NaN;
+        }
+        if (double.IsInfinity(y) && (x == 1 || x == -1))
+        {
+            // 9. If exponent is +∞𝔽, then
+            //   b. If abs(ℝ(base)) = 1, return NaN.
+            // and
+            // 10. If exponent is -∞𝔽, then
+            //   b. If abs(ℝ(base)) = 1, return NaN.
+            return double.NaN;
+        }
+        if (double.IsNaN(x))
+        {
+            // libm pow distinguishes between quiet and signaling NaN; JS doesn't.
+            x = double.NaN;
+        }
+
+        // The following special cases just exist to match the optimizing compilers'
+        // behavior, which avoid calls to `pow` in those cases.
+        if (y == 2)
+        {
+            // x ** 2   ==>   x * x
+            return x * x;
+        }
+        else if (y == 0.5)
+        {
+            // x ** 0.5   ==>  sqrt(x), except if x is -Infinity
+            if (double.IsInfinity(x))
+            {
+                return double.PositiveInfinity;
+            }
+            else
+            {
+                // Note the +0 so that we get +0 for -0**0.5 rather than -0.
+                return Math.Sqrt(x + 0);
+            }
+        }
+
+        return Math.Pow(x, y);
+    }
+
+    // DoubleToStringView / DoubleToCString (src/numbers/conversions.cc): the
+    // ECMAScript Number::toString. V8 takes the shortest digits from
+    // dragonbox; .NET's "R" formatting also yields the shortest round-trip
+    // digits.
+    public static string DoubleToCString(double v)
+    {
+        if (double.IsNaN(v)) return "NaN";
+        if (double.IsInfinity(v)) return v < 0.0 ? "-Infinity" : "Infinity";
+        if (v == 0) return "0";
+        if (v >= int.MinValue && v <= int.MaxValue && v == Math.Floor(v))
+        {
+            // This will trigger if v is -0 and -0.0 is stringified to "0".
+            return ((int)v).ToString(CultureInfo.InvariantCulture);
+        }
+
+        // Shortest digits and decimal exponent from the round-trip format.
+        string shortest = Math.Abs(v).ToString("R", CultureInfo.InvariantCulture);
+        Span<char> digits = stackalloc char[32];
+        int length = 0;
+        int exponent10; // position of the decimal point relative to digits start
+        int epos = shortest.IndexOfAny(['E', 'e']);
+        string mantissa = epos >= 0 ? shortest[..epos] : shortest;
+        int exp = epos >= 0 ? int.Parse(shortest.AsSpan(epos + 1), NumberStyles.AllowLeadingSign,
+                                        CultureInfo.InvariantCulture) : 0;
+        int dot = mantissa.IndexOf('.');
+        int intDigits = dot >= 0 ? dot : mantissa.Length;
+        bool leading = true;
+        int skippedLeadingZeros = 0;
+        for (int i = 0; i < mantissa.Length; i++)
+        {
+            char c = mantissa[i];
+            if (c == '.') continue;
+            if (leading && c == '0')
+            {
+                skippedLeadingZeros++;
+                continue;
+            }
+            leading = false;
+            digits[length++] = c;
+        }
+        while (length > 1 && digits[length - 1] == '0') length--;
+        exponent10 = intDigits - skippedLeadingZeros + exp;
+        int decimal_point = exponent10;
+
+        System.Text.StringBuilder builder = new(32);
+        if (v < 0) builder.Append('-');
+        ReadOnlySpan<char> decimal_rep = digits[..length];
+        if (length <= decimal_point && decimal_point <= 21)
+        {
+            // ECMA-262 section 9.8.1 step 6.
+            builder.Append(decimal_rep);
+            builder.Append('0', decimal_point - length);
+        }
+        else if (0 < decimal_point && decimal_point <= 21)
+        {
+            // ECMA-262 section 9.8.1 step 7.
+            builder.Append(decimal_rep[..decimal_point]);
+            builder.Append('.');
+            builder.Append(decimal_rep[decimal_point..]);
+        }
+        else if (decimal_point <= 0 && decimal_point > -6)
+        {
+            // ECMA-262 section 9.8.1 step 8.
+            builder.Append("0.");
+            builder.Append('0', -decimal_point);
+            builder.Append(decimal_rep);
+        }
+        else
+        {
+            // ECMA-262 section 9.8.1 step 9 and 10 combined.
+            builder.Append(decimal_rep[0]);
+            if (length != 1)
+            {
+                builder.Append('.');
+                builder.Append(decimal_rep[1..]);
+            }
+            builder.Append('e');
+            builder.Append(decimal_point >= 0 ? '+' : '-');
+            int exponent = decimal_point - 1;
+            if (exponent < 0) exponent = -exponent;
+            builder.Append(exponent.ToString(CultureInfo.InvariantCulture));
+        }
+        return builder.ToString();
+    }
+
+    // BigIntLiteralToDecimal (src/numbers/conversions.cc): a scanned BigInt
+    // literal ("0x1f", "0o17", "0b101" or decimal, without the 'n') as a
+    // decimal digit string.
+    public static string BigIntLiteralToDecimal(ReadOnlySpan<char> literal)
+    {
+        int radix = 10;
+        ReadOnlySpan<char> digits = literal;
+        if (literal.Length >= 2 && literal[0] == '0')
+        {
+            switch (literal[1])
+            {
+                case 'x':
+                case 'X':
+                    radix = 16;
+                    digits = literal[2..];
+                    break;
+                case 'o':
+                case 'O':
+                    radix = 8;
+                    digits = literal[2..];
+                    break;
+                case 'b':
+                case 'B':
+                    radix = 2;
+                    digits = literal[2..];
+                    break;
+            }
+        }
+        System.Numerics.BigInteger value = System.Numerics.BigInteger.Zero;
+        foreach (char c in digits)
+        {
+            if (c == '_') continue;
+            value = value * radix + CharPredicates.HexValue(c);
+        }
+        return value.ToString(CultureInfo.InvariantCulture);
+    }
 }

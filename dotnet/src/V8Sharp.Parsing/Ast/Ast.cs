@@ -2636,7 +2636,7 @@ public sealed class FunctionLiteral : Expression, V8Sharp.Parsing.IParserFunctio
     public FunctionSyntaxKind syntax_kind() => _syntaxKind;
     public FunctionKind kind() => scope().function_kind();
 
-    public bool IsAnonymousFunctionDefinition() => is_anonymous_expression();
+    public new bool IsAnonymousFunctionDefinition() => is_anonymous_expression();
 
     public int suspend_count() => _suspendCount;
     public void set_suspend_count(int suspend_count) => _suspendCount = suspend_count;
@@ -2854,7 +2854,7 @@ public sealed class ClassLiteral : Expression
     public int end_position() => _endPosition;
     public bool has_static_computed_names() => _hasStaticComputedNames;
     public bool is_anonymous_expression() => _isAnonymousExpression;
-    public bool IsAnonymousFunctionDefinition() => is_anonymous_expression();
+    public new bool IsAnonymousFunctionDefinition() => is_anonymous_expression();
     public FunctionLiteral? static_initializer() => _staticInitializer;
     public FunctionLiteral? instance_members_initializer_function() => _instanceMembersInitializerFunction;
     public Variable? home_object() => _homeObject;

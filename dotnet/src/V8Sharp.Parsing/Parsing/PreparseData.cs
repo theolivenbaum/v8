@@ -225,7 +225,7 @@ public sealed class PreparseDataBuilder
             _index = 0;
         }
 
-        public void Finalize()
+        public void FinalizeData() // ByteData::Finalize
         {
             _zoneByteData = new byte[_index];
             for (int i = 0; i < _index; i++) _zoneByteData[i] = _byteData![i];
@@ -306,7 +306,7 @@ public sealed class PreparseDataBuilder
         {
             if (ScopeNeedsData(scope)) SaveDataForScope(scope);
         }
-        _byteData.Finalize();
+        _byteData.FinalizeData();
     }
 
     // In some cases, PreParser cannot produce the same Scope structure as

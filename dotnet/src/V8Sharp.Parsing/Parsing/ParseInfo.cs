@@ -424,4 +424,10 @@ public sealed class ParseInfo
     public IScopeInfoProvider? scope_info_provider() => _scopeInfoProvider;
     public void set_scope_info_provider(IScopeInfoProvider? provider) => _scopeInfoProvider = provider;
     private IScopeInfoProvider? _scopeInfoProvider;
+
+    // RegExp::VerifySyntax for regexp literals (the engine's irregexp). Without
+    // one the parser accepts every pattern.
+    public IRegExpSyntaxValidator? regexp_syntax_validator() => _regExpSyntaxValidator;
+    public void set_regexp_syntax_validator(IRegExpSyntaxValidator? validator) => _regExpSyntaxValidator = validator;
+    private IRegExpSyntaxValidator? _regExpSyntaxValidator;
 }
