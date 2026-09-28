@@ -295,6 +295,26 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | RegExp | 780 | 1759 | 4595 |
 | NavierStokes | 632 | 1441 | 27465 |
 
+Performance with the baseline tier (Octane, 2026-09-28, 4-core container
+shared with other jobs, mean of 2 runs; V8Sharp.Bench):
+
+| benchmark | v8sharp:jitless | v8sharp (tiering) | v8sharp:always-sparkplug | V8 --jitless | V8 sparkplug |
+|---|---|---|---|---|---|
+| Richards | 158 | 425 | 415 | 1248 | 1695 |
+| DeltaBlue | 174 | 382 | 381 | 1314 | 1694 |
+| Crypto | 173 | 384 | 407 | 1074 | 1444 |
+| RayTrace | 474 | 689 | 669 | 2792 | 3609 |
+| EarleyBoyer | 709 | 1049 | 831 | 4541 | 7075 |
+| RegExp | 552 | 1122 | 1134 | 2072 | 3150 |
+| Splay | 753 | 1152 | 1515 | 2529 | 1910 |
+| NavierStokes | 594 | 1000 | 806 | 1287 | 1646 |
+| geomean | 442 | 798 | 781 | 1953 | 2353 |
+
+Baseline is 1.8x the interpreter (geomean; 2.2-2.7x on Richards, DeltaBlue,
+Crypto, RegExp). RayTrace, Splay and EarleyBoyer are dominated by allocation
+and GC (object = JSObject + JSValue[] fields) and by runtime paths
+(instanceof's @@hasInstance lookup), which the tier does not change.
+
 - [ ] Temporal: V8 15.6 implements it as a binding layer
       (`src/objects/js-temporal-objects.cc`, `builtins-temporal.cc`) over the
       Rust crate temporal_rs (`third_party/rust/temporal_capi`, not in this
