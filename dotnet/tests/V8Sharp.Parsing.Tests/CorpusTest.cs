@@ -207,16 +207,24 @@ public class CorpusTest(ITestOutputHelper output)
         }
     }
 
-    // The known V8 failures listed in test/test262/test262.status (any
-    // condition), as path prefixes or exact paths without ".js".
+    // The known V8 failures listed in test/test262/test262.status sections
+    // that apply to a default x64 build (ALWAYS and 'not i18n', since intl402
+    // is not run here), as path prefixes or exact paths without ".js".
     private static List<string> KnownV8Failures()
     {
         var result = new List<string>();
         string status = Path.Combine(RepoRoot(), "test", "test262", "test262.status");
+        bool applies = false;
         foreach (string line in File.ReadLines(status))
         {
             string t = line.Trim();
-            if (!t.StartsWith('\'') ||
+            if (line.StartsWith('['))
+            {
+                applies = t.StartsWith("[ALWAYS", StringComparison.Ordinal) ||
+                          t.StartsWith("['not i18n'", StringComparison.Ordinal);
+                continue;
+            }
+            if (!applies || !t.StartsWith('\'') ||
                 !(t.Contains("FAIL", StringComparison.Ordinal) || t.Contains("SKIP", StringComparison.Ordinal)))
             {
                 continue;
@@ -316,6 +324,85 @@ public class CorpusTest(ITestOutputHelper output)
             $"{known_count} more listed as failing in test262.status";
         File.WriteAllText(Path.Combine(ArtifactsDir(), "test262.txt"),
                           summary + "\n" + failures + "\n# Known V8 failures\n" + knownFailures);
+        output.WriteLine(summary);
+    }
+
+    private static string OracleError(V8Sharp.Oracle.ReferenceV8 v8, string program)
+    {
+        string theirs = v8.Run(program).TrimEnd('\n');
+        const string uncaught = "Uncaught ";
+        return theirs.StartsWith(uncaught, StringComparison.Ordinal) ? theirs[uncaught.Length..] : theirs;
+    }
+
+    // The SyntaxError message of every negative (parse phase) classic-script
+    // test262 test, compared with the one real V8 reports. The oracle is an
+    // older V8 (see dotnet/UPSTREAM.md), so a few messages legitimately
+    // differ; the list is written for review rather than asserted.
+    [Fact(Explicit = true)]
+    public void Test262NegativeMessagesMatchOracle()
+    {
+        string root = Test262Root();
+        Assert.SkipWhen(root == null, "test262 checkout not found");
+        List<string> known = KnownV8Failures();
+        var mismatches = new StringBuilder();
+        int total = 0, matched = 0;
+        using var v8 = new V8Sharp.Oracle.ReferenceV8(allowNativesSyntax: false);
+        foreach (string file in Directory.EnumerateFiles(root, "*.js", SearchOption.AllDirectories).Order())
+        {
+            string relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+            if (relative.StartsWith("harness/", StringComparison.Ordinal) ||
+                relative.Contains("_FIXTURE", StringComparison.Ordinal) ||
+                relative.StartsWith("intl402/", StringComparison.Ordinal) ||
+                relative.StartsWith("staging/", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            string source = File.ReadAllText(file);
+            Test262Meta meta = ParseMeta(source);
+            if (!meta.NegativeParse || meta.Module || IsKnownFailure(known, relative[..^3])) continue;
+            if (meta.Features.Contains("decorators") || meta.Features.Contains("source-phase-imports") ||
+                meta.Features.Contains("import-defer") || meta.Features.Contains("IsHTMLDDA"))
+            {
+                continue;
+            }
+            // A regexp literal is only checked with a validator (see Scanner).
+            var strict_variants = new List<bool>();
+            if (meta.Raw || meta.NoStrict) strict_variants.Add(false);
+            else if (meta.OnlyStrict) strict_variants.Add(true);
+            else
+            {
+                strict_variants.Add(false);
+                strict_variants.Add(true);
+            }
+            foreach (bool strict in strict_variants)
+            {
+                string program = strict ? "'use strict';\n" + source : source;
+                string ours = ParseSource(program, false, false, new ParsingFlags());
+                if (ours == null) continue;  // counted by Test262()
+                int at = ours.LastIndexOf(" @", StringComparison.Ordinal);
+                if (at >= 0) ours = ours[..at];
+                string theirs = OracleError(v8, program);
+                if (ours != theirs)
+                {
+                    // A program V8 ran may have left globals behind that
+                    // break a later one: retry in a fresh isolate.
+                    using var fresh = new V8Sharp.Oracle.ReferenceV8(allowNativesSyntax: false);
+                    theirs = OracleError(fresh, program);
+                }
+                total++;
+                if (ours == theirs)
+                {
+                    matched++;
+                }
+                else
+                {
+                    mismatches.Append(relative).Append(strict ? " (strict)" : "").Append(": ours: ").Append(ours)
+                        .Append(" | V8: ").AppendLine(theirs);
+                }
+            }
+        }
+        string summary = $"test262 negative messages: {matched}/{total} match V8";
+        File.WriteAllText(Path.Combine(ArtifactsDir(), "test262-messages.txt"), summary + "\n" + mismatches);
         output.WriteLine(summary);
     }
 }
