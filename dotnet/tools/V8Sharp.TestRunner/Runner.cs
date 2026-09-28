@@ -28,6 +28,9 @@ public sealed class RunnerOptions
     public bool ListOnly { get; set; }
     public int ShowFailures { get; set; } = 20;
 
+    /// <summary>Flags appended to every test's command line (run-tests.py --extra-flags).</summary>
+    public List<string> ExtraFlags { get; } = [];
+
     /// <summary>Unexpected outcomes are run again this many times; a test that
     /// then behaves as expected counts as passing and is marked flaky.</summary>
     public int RerunFailures { get; set; } = 1;
@@ -159,7 +162,10 @@ public sealed class Runner(RunnerOptions options)
     public async Task<int> RunAsync(CancellationToken cancel = default)
     {
         var buildVars = LoadBuildConfig(options.Engine);
-        var context = new SuiteContext(options.V8Root, FindTest262Root(options.V8Root, options.Test262Root), buildVars, options.Engine);
+        var context = new SuiteContext(options.V8Root, FindTest262Root(options.V8Root, options.Test262Root), buildVars, options.Engine)
+        {
+            ExtraFlags = options.ExtraFlags,
+        };
         var filter = CompileFilter(options.Filters);
         var all = new List<(TestSuite Suite, List<TestCase> Tests)>();
         foreach (var name in options.Suites)

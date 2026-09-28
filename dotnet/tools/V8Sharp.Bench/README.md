@@ -14,7 +14,10 @@ dotnet tools/V8Sharp.Bench/bin/Release/net10.0/V8Sharp.Bench.dll compare \
 
 Engines: `v8:jit` (V8 as shipped), `v8:maglev` (`--no-turbofan`),
 `v8:sparkplug` (`--no-maglev --no-turbofan`), `v8:jitless` (`--jitless`,
-Ignition only), and `v8sharp`. Suites: `octane` (all), `octane:<name>`,
+Ignition only), and V8Sharp in-process: `v8sharp` (its defaults: Ignition +
+baseline IL), `v8sharp:jitless` (the interpreter only), `v8sharp:sparkplug`
+(same as `v8sharp`) and `v8sharp:always-sparkplug`. `V8SHARP_BENCH_FLAGS`
+adds V8 flags to the v8sharp runs. Suites: `octane` (all), `octane:<name>`,
 `perf:<dir>` for a directory of `test/js-perf-test`. Raw results go to
 `dotnet/artifacts/bench/`.
 

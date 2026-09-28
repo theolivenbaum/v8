@@ -291,6 +291,8 @@ namespace V8Sharp.Codegen
             DeclarationScope.AllocateScopeInfos(parseInfo, ScopeInfoProviderFor(isolate));
 
             var functionsToCompile = new List<FunctionLiteral> { parseInfo.literal()! };
+            // The finalized functions, for CompileAllWithBaseline (--always-sparkplug).
+            List<SharedFunctionInfo>? finalized = isolate.Flags.always_sparkplug ? [] : null;
             while (functionsToCompile.Count != 0)
             {
                 FunctionLiteral literal = functionsToCompile[^1];
@@ -302,7 +304,9 @@ namespace V8Sharp.Codegen
                 if (job.ExecuteJob() != InterpreterCompilationJob.Status.SUCCEEDED) return false;
                 if (job.FinalizeJob(heap) != InterpreterCompilationJob.Status.SUCCEEDED) return false;
                 InstallUnoptimizedCode(isolate, job.compilation_info(), shared, literal);
+                finalized?.Add(shared);
             }
+            if (finalized is not null) CompileAllWithBaseline(isolate, finalized);
             return true;
         }
 

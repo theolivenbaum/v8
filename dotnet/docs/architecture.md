@@ -217,7 +217,8 @@ Turbofan/Turboshaft. V8Sharp keeps the tiering policy (interrupt budget,
 1. **Baseline (Sparkplug analogue).** A single pass from bytecode to IL via
    `DynamicMethod`: one IL block per bytecode, same frame layout, calls into
    the same runtime/IC helpers. Removes dispatch and operand decoding; RyuJIT
-   does register allocation.
+   does register allocation. Implemented in `src/V8Sharp/Baseline/`
+   (section 9.1).
 2. **Optimizing (Maglev analogue).** A graph built from bytecode + feedback:
    speculative Smi/double/int32 representations held in unboxed IL locals,
    map checks, inlined property loads at known field indices, inlined
@@ -243,3 +244,86 @@ Turbofan/Turboshaft. V8Sharp keeps the tiering policy (interrupt budget,
   source tree (15.6), and built with ICU. Differences caused by version or
   ICU are recorded in `todo.md`; for this tree's behaviour the golden files
   and the `.status` files are the authority.
+
+### 9.1 The baseline tier (src/baseline -> `Baseline/`)
+
+Files: `BaselineCompiler.cs` (baseline-compiler.cc: PreVisit, Prologue,
+`VisitSingleBytecode`), `BaselineAssembler.cs` (baseline-assembler.h over an
+`ILGenerator`), `BaselineBuiltins.cs` (what the Visit* methods call),
+`BaselineCode.cs` (Code of kind BASELINE), `BaselineExecution.cs` (entry,
+OSR, budget interrupts), `BaselineBatchCompiler.cs`, `Baseline.cs`
+(CanCompileWithBaseline), `Execution/TieringManager.cs`,
+`Codegen/Compiler.Baseline.cs` (CompileSharedWithBaseline, CompileBaseline,
+CompileAllWithBaseline).
+
+**Code shape.** A baseline function is one static method
+`JSValue (Isolate, ref InterpreterState)` in its own type of a process-wide
+Reflection.Emit assembly (`BaselineCodeSpace`; the assembly carries
+`IgnoresAccessChecksTo("V8Sharp")` so the code may reach engine internals). Each bytecode becomes an IL
+block; operands are decoded at compile time and pushed as constants.
+Jump targets are IL labels, `SwitchOnSmiNoFeedback` and
+`SwitchOnGeneratorState` are IL `switch` tables. The IL evaluation stack is
+empty between bytecodes.
+
+**Frame.** The frame *is* the interpreter frame (V8's invariant that
+baseline frames look like interpreter frames): `InterpreterExecution.EnterFrame`
+builds it on the register stack and pushes the frame record, then runs the
+SharedFunctionInfo's baseline code instead of the dispatch loop. Registers are
+accessed as `ref JSValue` at `fpRef + index` (a managed pointer local), so
+generators, `arguments`, stack traces and the frame walker see the same slots.
+The accumulator, the current context, the feedback vector, the constant pool
+and the bytecode array live in IL locals; the context is also written to its
+frame slot and to `isolate.Context` where the interpreter does it. The
+record's `IsBaseline` flag tells `%GetOptimizationStatus` the frame's tier.
+
+**Bytecode offset.** Before every bytecode that can throw or call out, the
+code stores the bytecode offset (after any prefix, as the interpreter does)
+in the frame record. V8 recovers the offset from the return address through
+the bytecode offset table; V8Sharp's frame walker, handler lookup and
+source positions read the record, as for interpreted frames.
+
+**Entry points and exceptions.** The method starts with a dispatch on
+`state.Pc`: offset 0 (a call), every exception handler, and every loop header
+(`JumpLoop` target). An exception thrown out of a helper leaves the method;
+`BaselineExecution.Run` (like the interpreter's `Run`) looks up the frame's
+handler table at the recorded offset, sets up the handler's context and the
+exception, and calls the method again, which jumps to the handler. `Throw`
+and `ReThrow` with a handler in the same frame branch back to the dispatch
+without a .NET exception. IL `try` regions are not used: they cannot be
+entered by a branch, and the handler table already has the ranges.
+
+**Calling helpers.** Every non-trivial bytecode calls a static method of
+`BaselineBuiltins` that does what the interpreter's case does (the same IC
+entry points, runtime functions, `InterpreterOps`, `InterpreterCalls`).
+RyuJIT inlines the small ones into the method (verified with
+`DOTNET_JitDisasm`), including the ICs' monomorphic fast paths. The binary
+and unary operations have Smi fast paths in IL-inlined form: when the
+embedded feedback is already SignedSmall and operands and result are Smis,
+only the result is computed; anything else takes the interpreter's helper,
+which records feedback.
+
+**Tiering.** `TieringManager.OnInterruptTick` is ported: the first budget
+interrupt allocates the feedback vector and enqueues the function to the
+batch compiler (V8's defaults: `--sparkplug`, `--baseline-batch-compilation`,
+threshold 4 KB of estimated code, budget `invocation_count_for_feedback_allocation`
+(8) x bytecode length). Later ticks raise the budget (there is no optimizing
+tier: `use_optimizer()` is false, as in a V8 built without Turbofan and
+Maglev). A call to a function whose SharedFunctionInfo has baseline code
+enters it (allocating the feedback vector first if needed,
+Runtime_InstallBaselineCode). `--always-sparkplug` compiles every function
+when its bytecode is finalized. A running interpreter frame switches at its
+next `JumpLoop` (OSR to baseline, `InterpreterOnStackReplacement_ToBaseline`):
+the dispatch loop returns to `Run`, which continues the same frame in the
+baseline code at the loop header. `--jitless` implies `--no-sparkplug`.
+(Temporarily `--sparkplug` defaults to off in V8Sharp; see deviations.md.)
+
+**RyuJIT.** Methods of a (non-collectible) dynamic assembly take part in
+RyuJIT's tiered compilation: a baseline method is first jitted quickly at
+tier 0, hot ones are rejitted at tier 1 with dynamic PGO, and long-running
+loops in tier-0 code switch to optimized code through RyuJIT's OSR. This is
+what makes Sparkplug's "compile fast" property hold: a `DynamicMethod` is
+always compiled with full optimization, which with the inlined IC and
+arithmetic fast paths cost ~7 ms per function (eval-heavy code became 30x
+slower than the interpreter). `V8SHARP_BASELINE_DYNAMICMETHOD=1` switches back
+to collectible DynamicMethods for comparison. The generated IL stays small
+by calling helpers, because very large methods fall back to MinOpts.

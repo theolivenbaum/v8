@@ -172,3 +172,17 @@ public static class EngineGlobals
         }
     }
 }
+
+/// <summary>
+/// CachedTieringDecision (src/common/globals.h): the tiering decision cached on
+/// the SharedFunctionInfo across closures.
+/// </summary>
+public enum CachedTieringDecision
+{
+    kPending,
+    kEarlySparkplug,
+    kDelayMaglev,
+    kEarlyMaglev,
+    kEarlyTurbofan,
+    kNormal,
+}

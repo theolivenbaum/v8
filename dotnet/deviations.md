@@ -183,6 +183,52 @@ for now, to be revisited when the reason goes away.
   declarations, and the Smi range of the ClearScript build (32-bit Smis). The
   test normalizes the first two and lists the rest per function.
 
+## Baseline compiler (Sparkplug) and tiering
+
+- Temporary: `--sparkplug` is off by default (V8's x64 default is on), so
+  V8Sharp runs the interpreter only unless `--sparkplug` or
+  `--always-sparkplug` is passed, while interpreter correctness and
+  performance come first. Turn it back on in FlagList.Generated.cs.
+- Code generation: IL in a static method of a dynamic assembly per function
+  instead of machine code (architecture.md section 9.1). The assembly is not
+  collectible (RyuJIT does not tier collectible code), so baseline code is
+  never freed, where V8 collects Code objects; no bytecode offset table: the current
+  bytecode offset is stored in the frame record before each bytecode that can
+  throw or call (`BaselineAssembler.StoreBytecodeOffset`), so the frame walker
+  and handler lookup work as for interpreted frames.
+- Exception handlers and OSR entries: the code is entered at a bytecode offset
+  through a dispatch at the method start (handlers, loop headers, 0), not at a
+  machine pc. `BaselineExecution.Run` re-enters it after the handler lookup.
+- Baseline code lives on `SharedFunctionInfo.BaselineCode` beside the
+  BytecodeArray (V8 replaces function_data with the Code object). A JSFunction
+  has no code field: every closure of a SharedFunctionInfo with baseline code
+  runs it (V8 updates each closure's code at its next call through
+  CompileLazy/InstallBaselineCode, with the same effect).
+- OSR from Ignition: V8 checks for baseline code on every JumpLoop and
+  tail-calls InterpreterOnStackReplacement_ToBaseline, entering at the
+  JumpLoop's pc; V8Sharp does the check after the back edge and enters at the
+  loop header (the same bytecode runs next). The max_arguments stack check
+  before OSR is not needed (arguments are not pushed on a machine stack).
+- `--concurrent-sparkplug` is off (V8's x64 default is on): the batch is
+  compiled on the main thread. IL generation is cheap, and RyuJIT compiles
+  each method lazily on its first call (tier 0) and optimizes hot ones on a
+  background thread (tier 1).
+- No optimizing tier yet: `Isolate.UseOptimizer` is false, so
+  `TieringManager` behaves as in a V8 built without Turbofan and Maglev
+  (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the
+  baseline bits). The interrupt budget after tier-up is
+  `invocation_count_for_turbofan` x bytecode length, as V8 computes it; the
+  ticks only raise it.
+- `BaselineBuiltins`: V8's baseline code calls the same builtins as Ignition's
+  handlers; V8Sharp's builtins are small C# methods that repeat the glue of
+  the interpreter's dispatch-loop cases (register windows, feedback
+  collection) around the shared helpers, so the dispatch loop needs no
+  refactoring. The Smi fast paths of the arithmetic builtins skip the
+  feedback update only when the embedded feedback is already SignedSmall
+  (the update would be a no-op).
+- `%CompileBaseline` on a non-user function, or when Sparkplug is disabled,
+  throws an InvalidOperationException (V8: CHECK failure).
+
 ## Interpreter execution, ICs, runtime, compiler and modules
 
 - Dispatch: one C# loop specialized per operand scale

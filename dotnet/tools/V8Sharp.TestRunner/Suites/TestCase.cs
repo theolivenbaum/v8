@@ -35,7 +35,7 @@ public sealed partial class TestCase
 
     /// <summary>All flags, in V8's order: suite, source (<c>// Flags:</c>),
     /// status-file flags; V8 flags and d8 options mixed as on d8's command line.</summary>
-    public required IReadOnlyList<string> Flags { get; init; }
+    public required IReadOnlyList<string> Flags { get; set; }
 
     /// <summary><c>// Environment Variables:</c> (mjsunit).</summary>
     public IReadOnlyDictionary<string, string> Env { get; init; } = new Dictionary<string, string>();

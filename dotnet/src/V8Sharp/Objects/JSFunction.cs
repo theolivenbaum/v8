@@ -4,9 +4,10 @@
 // function-level operations the object model needs (initial maps, prototypes,
 // name/length, toString).
 //
-// Code objects and tiers are not ported: a JSFunction runs either a builtin
+// Code objects are not ported: a JSFunction runs either a builtin
 // (SharedFunctionInfo.BuiltinId, dispatched through BuiltinRegistry) or its
-// bytecode (SharedFunctionInfo.FunctionData, run by Isolate.InterpreterEntry).
+// bytecode (SharedFunctionInfo.FunctionData, run by Isolate.InterpreterEntry,
+// which enters the SharedFunctionInfo's baseline code when it has some).
 using System.Runtime.CompilerServices;
 using V8Sharp.Builtins;
 using V8Sharp.Common;
@@ -237,6 +238,20 @@ public sealed class SharedFunctionInfo : HeapObject
     /// TODO(merge): type as V8Sharp.Interpreter.BytecodeArray once the interpreter lands.
     /// </summary>
     public object? FunctionData;
+
+    /// <summary>
+    /// SharedFunctionInfo::baseline_code: the Sparkplug code compiled from the
+    /// bytecode (a <see cref="Baseline.BaselineCode"/>), or null. V8 keeps it in
+    /// function_data (a Code object that points to the bytecode); V8Sharp keeps
+    /// function_data the BytecodeArray and holds the code beside it.
+    /// </summary>
+    public Baseline.BaselineCode? BaselineCode;
+
+    /// <summary>SharedFunctionInfo::HasBaselineCode.</summary>
+    public bool HasBaselineCode => BaselineCode is not null;
+
+    /// <summary>SharedFunctionInfo::cached_tiering_decision.</summary>
+    public CachedTieringDecision CachedTieringDecision;
 
     public bool HasBuiltinId => BuiltinId != Builtin.NoBuiltinId;
     public bool HasUncompiledData => FunctionData is UncompiledData;

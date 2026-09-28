@@ -58,6 +58,11 @@ public struct InterpreterState
     /// <summary>Set when the frame returned (Return / SuspendGenerator) during a single step.</summary>
     public bool Done;
     /// <summary>
+    /// Set by JumpLoop when the function has baseline code: the frame leaves the
+    /// dispatch loop and continues in baseline code at Pc (OSR to Sparkplug).
+    /// </summary>
+    public bool OsrToBaseline;
+    /// <summary>
     /// The frame record index of the frame this loop was entered for; frames
     /// above it up to <see cref="FrameIndex"/> are inline calls (the fields
     /// above describe the innermost one).
