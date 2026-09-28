@@ -95,6 +95,13 @@ public sealed class RegExpILCode
     public bool UsesBacktrackStack { get; internal set; }
 
     /// <summary>
+    /// The IL exceeded <see cref="RegExpMacroAssemblerIL.kMaxILSize"/>: it was
+    /// not handed to the JIT and the regexp runs on the bytecode interpreter
+    /// (CompiledRegExp.EnsureCompiled).
+    /// </summary>
+    public bool TooLargeForJit { get; internal set; }
+
+    /// <summary>
     /// NativeRegExpMacroAssembler::Execute: runs the code on the subject from
     /// <paramref name="startIndex"/>. Returns SUCCESS (1), FAILURE (0),
     /// EXCEPTION (-1, backtrack stack overflow) or FALLBACK_TO_EXPERIMENTAL
@@ -251,6 +258,16 @@ public sealed class RegExpMacroAssemblerIL : RegExpMacroAssembler
 {
     // Registers with a higher index live in an int[] allocated per execution.
     const int kMaxLocalRegisters = 1024;
+
+    /// <summary>
+    /// Deviation (deviations.md, RegExp): V8 compiles every irregexp to native
+    /// code (regexp.cc has no size limit short of kMaxRegisterCount). RyuJIT's
+    /// compile time grows superlinearly with a method's size: an alternation
+    /// of 2048 named groups is 655 KB of IL and takes 1.8 s to JIT, the 8192 of
+    /// mjsunit regress-980891 36 s (1.3 s on the bytecode interpreter), while
+    /// 200 KB take 90 ms. Code larger than this stays on the interpreter.
+    /// </summary>
+    internal const int kMaxILSize = 256 * 1024;
 
     const int kArgSubject = 1;
     const int kArgOutput = 3;
@@ -1539,6 +1556,11 @@ public sealed class RegExpMacroAssemblerIL : RegExpMacroAssembler
         _code.RegisterCount = _numRegisters;
         _code.ILSize = _il.ILOffset;
         _code.UsesBacktrackStack = backtrackStackUsed;
+        if (_code.ILSize > kMaxILSize)
+        {
+            _code.TooLargeForJit = true;
+            return _code;
+        }
         _code.Entry = (RegExpILEntry)_method.CreateDelegate(typeof(RegExpILEntry), _code);
         return _code;
     }

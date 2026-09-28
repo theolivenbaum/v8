@@ -583,14 +583,18 @@ public sealed class CompiledRegExp
     /// <summary>IrRegExpData::ticks_until_tier_up.</summary>
     public int TicksUntilTierUp => _ticksUntilTierUp;
 
+    // Set when the native (IL) code was too large to JIT (RegExpMacroAssemblerIL.kMaxILSize):
+    // the regexp stays on the bytecode interpreter.
+    bool _nativeCodeTooLarge;
+
     // IrRegExpData::CanTierUp.
-    bool CanTierUp => _tier.TierUp && Kind == RegExpKind.Irregexp;
+    bool CanTierUp => _tier.TierUp && Kind == RegExpKind.Irregexp && !_nativeCodeTooLarge;
 
     /// <summary>IrRegExpData::MarkedForTierUp.</summary>
     public bool MarkedForTierUp => CanTierUp && _ticksUntilTierUp == 0;
 
     /// <summary>IrRegExpData::ShouldProduceBytecode.</summary>
-    public bool ShouldProduceBytecode => _tier.InterpretAll || (_tier.TierUp && !MarkedForTierUp);
+    public bool ShouldProduceBytecode => _tier.InterpretAll || _nativeCodeTooLarge || (_tier.TierUp && !MarkedForTierUp);
 
     // IrRegExpData::TierUpTick.
     void TierUpTick()
@@ -669,6 +673,21 @@ public sealed class CompiledRegExp
             Debug.Assert(compileData.Error != RegExpError.None);
             CompileError = compileData.Error;
             return false;
+        }
+        if (compileData.CompilationTarget == CompilationTarget.kNative && compileData.NativeCode!.TooLargeForJit)
+        {
+            // Deviation: too large for the JIT (RegExpMacroAssemblerIL.kMaxILSize);
+            // compile to bytecode instead, and never tier up.
+            _nativeCodeTooLarge = true;
+            compileData = new RegExpCompileData();
+            if (!RegExpParser.ParseRegExp(Source, Flags, compileData)) throw new InvalidOperationException("reparse failed");
+            compileData.CompilationTarget = CompilationTarget.kBytecode;
+            if (!RegExpEngine.CompileIrregexp(compileData, Flags, sampleSubject, Source.Length, ref _backtrackLimit,
+                    IsLinearExecutable, isOneByte))
+            {
+                CompileError = compileData.Error;
+                return false;
+            }
         }
         if (compileData.CompilationTarget == CompilationTarget.kNative)
         {

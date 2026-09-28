@@ -128,6 +128,14 @@ for now, to be revisited when the reason goes away.
   SkipUntilOneOfMasked(3) use the portable lowering. Back references
   (including the LATIN1 case-insensitive one x64 inlines) and range arrays
   call C# helpers.
+- RegExp native tier: code whose IL exceeds 256 KB
+  (`RegExpMacroAssemblerIL.kMaxILSize`) is not handed to the JIT; the regexp
+  is compiled to bytecode instead and never tiers up. V8 compiles every
+  irregexp to native code (no size limit short of kMaxRegisterCount), but
+  RyuJIT's compile time grows superlinearly with method size: 200 KB of IL
+  take 90 ms, the 2048 named groups of an alternation (655 KB) 1.8 s, and
+  the 8192 of mjsunit regress-980891 36 s (2.5 s now, parsing and bytecode
+  included).
 - RegExp tiering: the V8 flags --regexp-interpret-all, --regexp-tier-up and
   --regexp-tier-up-ticks are static fields (RegExpEngine.s_regexp*) that
   RegExpEngine.Compile snapshots into the regexp (RegExpTierPolicy, also a
