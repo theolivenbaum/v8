@@ -53,7 +53,21 @@ namespace V8Sharp.Codegen
                 max_lazy = f.max_lazy,
                 // Deviation: source positions are always collected (V8 collects them lazily).
                 enable_lazy_source_positions = false,
+                stress_lazy_source_positions = f.stress_lazy_source_positions,
+                fuzzing = f.fuzzing,
+                log_function_events = f.log_function_events,
+                print_scopes = f.print_scopes,
+                script_context_cells = f.script_context_cells,
+                function_context_cells = f.function_context_cells,
+                function_context_cells_max_size = f.function_context_cells_max_size,
+                ignition_elide_redundant_tdz_checks = f.ignition_elide_redundant_tdz_checks,
+                enable_experimental_regexp_engine = f.enable_experimental_regexp_engine,
                 use_strict = f.use_strict,
+                js_decorators = f.js_decorators,
+                js_source_phase_imports = f.js_source_phase_imports,
+                js_defer_import_eval = f.js_defer_import_eval,
+                harmony_import_attributes = f.harmony_import_attributes,
+                js_esm_ns_reexport = f.js_esm_ns_reexport,
             };
             isolate.CompilerParsingFlags = flags;
             return flags;
