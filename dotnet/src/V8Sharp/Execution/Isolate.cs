@@ -39,6 +39,13 @@ public sealed partial class Isolate
     /// <summary>The flags of this isolate (V8's v8_flags).</summary>
     public readonly FlagList Flags;
 
+    /// <summary>
+    /// Set once any function of this isolate has baseline code: until then the
+    /// interpreter's JumpLoop skips the OSR-to-baseline check (V8's jitless
+    /// build compiles the check out of the handler).
+    /// </summary>
+    public bool MayHaveBaselineCode;
+
     /// <summary>Isolate::MemorySaverModeEnabled (no embedder memory-saver hint in V8Sharp).</summary>
     public bool MemorySaverModeEnabled() => Flags.optimize_for_size || Flags.memory_saver_mode == true;
 

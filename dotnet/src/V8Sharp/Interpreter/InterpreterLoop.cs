@@ -520,7 +520,7 @@ public static partial class InterpreterExecution
                     // case 3): Run continues the frame in it at the loop header.
                     // (JumpLoop reloads the feedback vector from the closure when the
                     // frame's cache is empty.)
-                    if (st.Function.Shared.BaselineCode is not null &&
+                    if (st.Isolate.MayHaveBaselineCode && st.Function.Shared.BaselineCode is not null &&
                         (st.FeedbackVector ?? st.Function.RawFeedbackCell.Value as FeedbackVector) is { } osrVector)
                     {
                         Unsafe.Add(ref fpSlot, InterpreterRuntime.kFeedbackVectorOffset) = osrVector;

@@ -28,6 +28,7 @@ public static partial class Compiler
 
         BaselineCode code = BaselineSupport.GenerateBaselineCode(isolate, shared);
         shared.BaselineCode = code;
+        isolate.MayHaveBaselineCode = true;
 
         if (trace)
         {
