@@ -198,6 +198,81 @@ public class JsonTest : IntrinsicsTestBase
         return list;
     }
 
+    /// <summary>A JS function over a C# callback (as Genesis::CreateApiFunction does).</summary>
+    JSFunction Fn(BuiltinFunction callback, int length)
+    {
+        var data = new FunctionTemplateInfo(callback) { Length = length };
+        SharedFunctionInfo info = factory.NewSharedFunctionInfo(ReadOnlyRoots.empty_string, data, Builtin.HandleApiCallOrConstruct, length, false);
+        info.BuiltinId = Builtin.HandleApiCallOrConstruct;
+        info.LanguageMode = V8Sharp.Common.LanguageMode.Strict;
+        info.Native = true;
+        info.UpdateFunctionMapIndex();
+        return factory.NewFunction(info, i_isolate.NativeContext, i_isolate.NativeContext.StrictFunctionWithoutPrototypeMap);
+    }
+
+    [Fact]
+    public void ReviverReplacerAndToJsonAgainstOracle()
+    {
+        const string text = "{\"a\":[1,2.50,{\"b\":\"x\\u0041\"}],\"c\":true,\"d\":null,\"1\":-0,\"e\":{\"f\":[]}}";
+        // reviver(k, v, ctx): logs the call, doubles numbers, drops "d", and
+        // mutates the holder of "a" to check the source-text snapshot logic.
+        string js = """
+            const log = [];
+            const r = JSON.parse(TEXT, function (k, v, ctx) {
+              log.push(k + '|' + typeof v + '|' + (ctx && 'source' in ctx ? ctx.source : '-'));
+              if (k === 'b') this.extra = 1;
+              if (k === 'd') return undefined;
+              if (typeof v === 'number') return v * 2;
+              return v;
+            });
+            log.push(JSON.stringify(r));
+            log.push(JSON.stringify(r, function (k, v) { log.push('R' + k + '|' + typeof v + '|' + (this === r)); return typeof v === 'number' ? v + 1 : v; }, 1));
+            log.push(JSON.stringify({ x: { toJSON(k) { return 'tj:' + k; } }, y: [{ toJSON(k) { return k; } }] }));
+            print(log.join('\n'));
+            """.Replace("TEXT", ReferenceV8.JsQuote(text));
+        string[] expected;
+        using (var v8 = new ReferenceV8())
+        {
+            expected = v8.Run(js).TrimEnd('\n').Split('\n');
+        }
+
+        var log = new List<string>();
+        JSFunction reviver = Fn((Isolate isolate, in BuiltinArguments args) =>
+        {
+            string k = S(args.AtOrUndefined(1));
+            JSValue v = args.AtOrUndefined(2);
+            JSValue ctx = args.AtOrUndefined(3);
+            JSValue source = ctx.IsJSReceiver && JSReceiver.HasProperty(isolate, (JSReceiver)ctx.Object, ReadOnlyRoots.source_string)
+                ? Get(ctx, "source") : default;
+            log.Add(k + "|" + S(ObjectOps.TypeOf(isolate, v)) + "|" + (source.IsUndefined && !(ctx.IsJSReceiver && JSReceiver.HasProperty(isolate, (JSReceiver)ctx.Object, ReadOnlyRoots.source_string)) ? "-" : S(source)));
+            if (k == "b") ObjectOps.SetProperty(isolate, args.Receiver, isolate.Factory.InternalizeString("extra"), Num(1), StoreOrigin.MaybeKeyed, ShouldThrow.ThrowOnError);
+            if (k == "d") return JSValue.Undefined;
+            if (v.IsNumber) return Num(v.Number * 2);
+            return v;
+        }, 3);
+        JSValue r = CallStatic("JSON.parse", Str(text), reviver);
+        log.Add(Stringify(r));
+        JSFunction replacer = Fn((Isolate isolate, in BuiltinArguments args) =>
+        {
+            JSValue v = args.AtOrUndefined(2);
+            log.Add("R" + S(args.AtOrUndefined(1)) + "|" + S(ObjectOps.TypeOf(isolate, v)) + "|" + (args.Receiver.IsIdenticalTo(r) ? "true" : "false"));
+            return v.IsNumber ? Num(v.Number + 1) : v;
+        }, 2);
+        log.Add(Stringify(r, replacer, Num(1)));
+        JSFunction toJsonX = Fn((Isolate isolate, in BuiltinArguments args) => Str("tj:" + S(args.AtOrUndefined(1))), 1);
+        JSFunction toJsonY = Fn((Isolate isolate, in BuiltinArguments args) => args.AtOrUndefined(1), 1);
+        JSValue x = Parse("{}");
+        ObjectOps.SetProperty(i_isolate, x, ReadOnlyRoots.toJSON_string, toJsonX, StoreOrigin.MaybeKeyed, ShouldThrow.ThrowOnError);
+        JSValue yElement = Parse("{}");
+        ObjectOps.SetProperty(i_isolate, yElement, ReadOnlyRoots.toJSON_string, toJsonY, StoreOrigin.MaybeKeyed, ShouldThrow.ThrowOnError);
+        JSValue outer = Parse("{\"x\":0,\"y\":[0]}");
+        ObjectOps.SetProperty(i_isolate, outer, factory.InternalizeString("x"), x, StoreOrigin.MaybeKeyed, ShouldThrow.ThrowOnError);
+        ObjectOps.SetElement(i_isolate, Get(outer, "y"), 0, yElement, ShouldThrow.ThrowOnError);
+        log.Add(Stringify(outer));
+
+        Assert.Equal(string.Join("\n", expected), string.Join("\n", log));
+    }
+
     [Fact]
     public void NumbersAgreeWithStringToDouble()
     {
