@@ -87,7 +87,8 @@ public static partial class Program
               V8Sharp.Bench list
             engines: v8:jit, v8:jitless, v8:sparkplug, v8:maglev, v8sharp, v8sharp:jitless, v8sharp:sparkplug,
                      v8sharp:always-sparkplug (V8SHARP_BENCH_FLAGS adds V8 flags to v8sharp runs);
-                     <engine>@<dir> runs it with the V8Sharp.Bench build in <dir> (another revision, a publish)
+                     <engine>@<dir> runs it with the V8Sharp.Bench build in <dir> (another revision, a publish);
+                     d8sharp[:mode]@<dir> runs the d8sharp shell built or published in <dir> as its own process
             suites:  octane (all), octane:<name>, octane-cpu (all) | octane-cpu:<name> (fixed work, scored
                      by thread CPU time; V8SHARP_BENCH_SCALE divides the iterations, default 50),
                      perf:<js-perf-test dir>, micro:<name> | micro:all
@@ -118,6 +119,12 @@ public static partial class Program
         if (driver is not null) host.Execute(driver, "driver.js");
         sw.Stop();
         Console.WriteLine($"@wall-ms {sw.Elapsed.TotalMilliseconds.ToString("F1", CultureInfo.InvariantCulture)}");
+        if (suite.StartsWith("octane-cpu:", StringComparison.Ordinal))
+        {
+            // The whole process: start-up, the JIT's background compilation, GC.
+            double cpu = Process.GetCurrentProcess().TotalProcessorTime.TotalMilliseconds;
+            Console.WriteLine($"{suite[11..]}.process(Score): {(1e6 / cpu).ToString("G6", CultureInfo.InvariantCulture)}");
+        }
         host.Dispose();
         return 0;
     }
@@ -278,7 +285,35 @@ public static partial class Program
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        if (buildDir is not null)
+        var wallClock = Stopwatch.StartNew();
+        if (childEngine == "d8sharp" || childEngine.StartsWith("d8sharp:", StringComparison.Ordinal))
+        {
+            // "d8sharp[:mode]@<dir>": the d8sharp shell published in <dir> (e.g.
+            // with ReadyToRun), as its own process: the files and the driver on
+            // its command line, as run-tests.py runs d8.
+            if (buildDir is null) throw new ArgumentException("d8sharp needs @<dir> (a d8sharp build or publish)");
+            string mode = childEngine == "d8sharp" ? "" : childEngine[8..];
+            if (!V8SharpModes.TryGetValue(mode, out var flags)) throw new ArgumentException("unknown v8sharp mode " + mode);
+            if (suite.StartsWith("octane-cpu:", StringComparison.Ordinal))
+                throw new ArgumentException("octane-cpu needs the in-process hosts (cpuTimeMs)");
+            string shell = Path.Combine(buildDir, OperatingSystem.IsWindows() ? "d8sharp.exe" : "d8sharp");
+            var (workDir, files, driver) = Workload(suite);
+            psi.FileName = File.Exists(shell) ? shell : "dotnet";
+            if (!File.Exists(shell)) psi.ArgumentList.Add(Path.Combine(buildDir, "d8sharp.dll"));
+            psi.WorkingDirectory = workDir;
+            foreach (string flag in (flags + " " + Environment.GetEnvironmentVariable("V8SHARP_BENCH_FLAGS")).Split(' ',
+                         StringSplitOptions.RemoveEmptyEntries))
+            {
+                psi.ArgumentList.Add(flag);
+            }
+            foreach (string f in files) psi.ArgumentList.Add(f);
+            if (driver is not null)
+            {
+                psi.ArgumentList.Add("-e");
+                psi.ArgumentList.Add(driver);
+            }
+        }
+        else if (buildDir is not null)
         {
             string apphost = Path.Combine(buildDir, OperatingSystem.IsWindows() ? "V8Sharp.Bench.exe" : "V8Sharp.Bench");
             if (File.Exists(apphost))
@@ -297,7 +332,8 @@ public static partial class Program
         // it is `dotnet` and the dll has to be passed along.
         else if (Path.GetFileNameWithoutExtension(psi.FileName) == "dotnet")
             psi.ArgumentList.Add(typeof(Program).Assembly.Location);
-        foreach (var a in new[] { "run", "--engine", childEngine, "--suite", suite }) psi.ArgumentList.Add(a);
+        if (!childEngine.StartsWith("d8sharp", StringComparison.Ordinal))
+            foreach (var a in new[] { "run", "--engine", childEngine, "--suite", suite }) psi.ArgumentList.Add(a);
 
         using var p = Process.Start(psi)!;
         var stdout = new StringBuilder();
@@ -327,6 +363,8 @@ public static partial class Program
             if (l.StartsWith("@wall-ms ", StringComparison.Ordinal))
                 wall = double.Parse(l[9..], CultureInfo.InvariantCulture);
         }
+        // The shell prints no @wall-ms: the process's wall time (start-up included).
+        if (wall == 0) wall = wallClock.Elapsed.TotalMilliseconds;
         if (p.ExitCode != 0)
         {
             string err = stderr.ToString().Trim();
@@ -393,8 +431,12 @@ static class Paths
     {
         string? root = Environment.GetEnvironmentVariable("V8SHARP_BENCH_ROOT");
         if (!string.IsNullOrEmpty(root)) return Path.GetFullPath(root);
-        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
-            if (File.Exists(Path.Combine(d.FullName, "V8Sharp.slnx"))) return d.FullName;
-        throw new DirectoryNotFoundException("cannot find dotnet/V8Sharp.slnx above " + AppContext.BaseDirectory);
+        // The binary's directory, then the working directory (for a build or
+        // publish outside the tree).
+        foreach (string start in new[] { AppContext.BaseDirectory, Environment.CurrentDirectory })
+            for (var d = new DirectoryInfo(start); d is not null; d = d.Parent)
+                if (File.Exists(Path.Combine(d.FullName, "V8Sharp.slnx"))) return d.FullName;
+        throw new DirectoryNotFoundException("cannot find dotnet/V8Sharp.slnx above " + AppContext.BaseDirectory +
+            " or the working directory; set V8SHARP_BENCH_ROOT");
     }
 }

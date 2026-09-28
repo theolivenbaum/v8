@@ -23,6 +23,43 @@ adds V8 flags to the v8sharp runs. Suites: `octane` (all), `octane:<name>`,
 access, calls, closures, construction, arrays, arithmetic, string
 concatenation; calls per second). Raw results go to `dotnet/artifacts/bench/`.
 
+## Comparing builds, publishes and the shell
+
+- `<engine>@<dir>` runs a measurement with the V8Sharp.Bench build in `<dir>`
+  (an older revision's `bin/`, or a publish), so old and new builds are
+  compared in one run: `--engines v8sharp@artifacts/old,v8sharp@artifacts/new,v8:jitless`.
+  Runs are the outer loop, so the engines are interleaved and load changes
+  on a shared machine hit every column alike. Copy a build out of `bin/`
+  before rebuilding (a build found outside the tree locates `dotnet/` through
+  `V8SHARP_BENCH_ROOT` or the working directory).
+- `d8sharp[:mode]@<dir>` runs the `d8sharp` shell built or published in `<dir>`
+  as its own process, with the files and the driver on its command line.
+- `octane-cpu` / `octane-cpu:<name>`: Octane's deterministic mode with the
+  iteration counts divided by `V8SHARP_BENCH_SCALE` (default 50), scored as
+  1e6 / CPU milliseconds of the thread that runs the benchmark
+  (`/proc/thread-self/schedstat`); `<name>.process` is the same for the whole
+  process (start-up, the JIT's background threads, GC). On a loaded machine
+  the thread's CPU time varies far less than Octane's wall-clock score; use it
+  for A/B of V8Sharp builds, and the wall-clock `octane` suites against V8.
+
+**Measure start-up-sensitive runs against a publish, not `bin/`.** From
+`bin/`, every engine method is compiled by the JIT at tier 0 on first use
+(the bootstrapper, parser, interpreter), which is most of a short run: a
+plain `d8sharp -e 'print(1)'` takes about 340 ms, 140 ms published with
+ReadyToRun and 110 ms ReadyToRun composite self-contained. Both
+`V8Sharp.D8` and `V8Sharp.Bench` publish ReadyToRun when given a runtime:
+
+```bash
+dotnet publish -c Release src/V8Sharp.D8 -r linux-x64 --self-contained false -o artifacts/d8-r2r
+dotnet publish -c Release tools/V8Sharp.Bench -r linux-x64 --self-contained false -o artifacts/bench-r2r
+dotnet tools/V8Sharp.Bench/bin/Release/net10.0/V8Sharp.Bench.dll compare --suites octane \
+    --engines v8sharp@artifacts/bench-r2r,d8sharp@artifacts/d8-r2r,v8:jitless --runs 3
+```
+
+Octane's own scores (after its warm-up) barely move with ReadyToRun (hot
+code is rejitted at tier 1 with dynamic PGO either way); `TieredPGO` is
+worth about 20% of the interpreter's Octane score and stays on.
+
 The yardsticks: phase 1 (interpreter) is measured against `v8:jitless`,
 the baseline IL tier against `v8:sparkplug`, the optimizing tier against
 `v8:maglev` and `v8:jit`.

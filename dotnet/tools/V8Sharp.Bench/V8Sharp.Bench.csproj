@@ -9,6 +9,13 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!-- ReadyToRun when published for a runtime (as d8sharp), so the in-process
+       v8sharp engines can be measured precompiled: publish to a directory and
+       name it with <engine>@<dir> (README). -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="../../src/V8Sharp/V8Sharp.csproj" />
     <ProjectReference Include="../../src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />

@@ -6,6 +6,23 @@
     <AssemblyName>d8sharp</AssemblyName>
   </PropertyGroup>
 
+  <!-- ReadyToRun: precompile the engine when publishing for a runtime, so a
+       d8sharp process does not spend its start and its first seconds in the
+       JIT (tier-0 compilation of the bootstrapper, parser and interpreter).
+       Measured (linux-x64, best of 7): `d8sharp -e 'print(1)'` 339 ms plain,
+       138 ms ReadyToRun, 111 ms ReadyToRun composite self-contained; Octane
+       richards run 20 times 932 / 373 / 328 ms. Long runs are unchanged: hot
+       code is rejitted at tier 1 with dynamic PGO either way.
+       Composite needs self-contained, so it turns itself on only when the
+       publish already is. Both need a RuntimeIdentifier, hence the condition
+       (publish with -r linux-x64, self-contained or not; the commands are in
+       tools/V8Sharp.Bench/README.md). Delete obj/ and bin/ for the RID when
+       switching between self-contained and framework-dependent. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishReadyToRunComposite Condition="'$(SelfContained)' == 'true'">true</PublishReadyToRunComposite>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="../../src/V8Sharp/V8Sharp.csproj" />
   </ItemGroup>
