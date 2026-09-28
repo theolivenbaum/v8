@@ -8,14 +8,14 @@ using static V8Sharp.Common.Globals;
 
 namespace V8Sharp.Ast;
 
-public readonly struct SourceRange(int start, int end)
+public struct SourceRange(int start, int end)
 {
-    public readonly int start = start;
-    public readonly int end = end;
+    public int start = start;
+    public int end = end;
 
     public SourceRange() : this(kNoSourcePosition, kNoSourcePosition) { }
 
-    public bool IsEmpty() => start == kNoSourcePosition;
+    public readonly bool IsEmpty() => start == kNoSourcePosition;
     public static SourceRange Empty() => new();
     public static SourceRange OpenEnded(int start) => new(start, kNoSourcePosition);
     public static SourceRange ContinuationOf(SourceRange that, int end = kNoSourcePosition) =>
@@ -29,7 +29,7 @@ public readonly struct SourceRange(int start, int end)
     // Coverage::Collect().
     public static SourceRange FunctionLiteralMarkerRange() => new(kFunctionLiteralSourcePosition, kFunctionLiteralSourcePosition);
 
-    public override string ToString() => $"[{start}, {end})";
+    public override readonly string ToString() => $"[{start}, {end})";
 }
 
 public enum SourceRangeKind

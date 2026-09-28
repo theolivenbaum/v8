@@ -19,7 +19,7 @@ namespace V8Sharp.Parsing;
 // and during parsing of the RHS, a function literal can be collected. After
 // parsing the RHS we can infer a name for function literals that do not have
 // a name.
-public sealed class FuncNameInferrer
+public sealed class FuncNameInferrer : IFuncNameInferrer
 {
     private enum NameType : byte
     {
@@ -61,6 +61,21 @@ public sealed class FuncNameInferrer
             if (count > _top) _fni._namesStack.RemoveRange(_top, count - _top);
             --_fni._scopeDepth;
         }
+    }
+
+    // FuncNameInferrer::State constructor / destructor, for ParserBase's
+    // FuncNameInferrerState.
+    public int EnterState()
+    {
+        ++_scopeDepth;
+        return _namesStack.Count;
+    }
+
+    public void LeaveState(int top)
+    {
+        int count = _namesStack.Count;
+        if (count > top) _namesStack.RemoveRange(top, count - top);
+        --_scopeDepth;
     }
 
     // Returns whether we have entered name collection state.

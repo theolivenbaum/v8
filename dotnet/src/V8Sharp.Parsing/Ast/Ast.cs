@@ -278,11 +278,11 @@ public abstract class AstNode
     public MaterializedLiteral? AsMaterializedLiteral() => this as MaterializedLiteral;
 }
 
-public abstract class Statement(int position, NodeType type) : AstNode(position, type)
+public abstract class Statement(int position, NodeType type) : AstNode(position, type), V8Sharp.Parsing.IParserStatement
 {
 }
 
-public abstract class Expression(int pos, NodeType type) : AstNode(pos, type)
+public abstract class Expression(int pos, NodeType type) : AstNode(pos, type), V8Sharp.Parsing.IParserExpression
 {
     private bool _isParenthesized;
 
@@ -381,7 +381,7 @@ public abstract class BreakableStatement(int position, NodeType type) : Statemen
 {
 }
 
-public sealed class Block : BreakableStatement
+public sealed class Block : BreakableStatement, V8Sharp.Parsing.IParserBlock<Statement, V8Sharp.Parsing.ScopedPtrList<Statement>>
 {
     private List<Statement> _statements;
     private Scope? _scope;
@@ -412,6 +412,12 @@ public sealed class Block : BreakableStatement
         _statements = new List<Statement>(statements.Count);
         for (int i = 0; i < statements.Count; i++) _statements.Add(statements[i]);
     }
+
+    void V8Sharp.Parsing.IParserBlock<Statement, V8Sharp.Parsing.ScopedPtrList<Statement>>.InitializeStatements(
+        V8Sharp.Parsing.ScopedPtrList<Statement> statements) => InitializeStatements(statements);
+
+    // block->statements()->Add(statement, zone).
+    public void AddStatement(Statement statement) => _statements.Add(statement);
 }
 
 public abstract class Declaration : AstNode, IThreadedListNode<Declaration>
@@ -1977,6 +1983,7 @@ public sealed class Call : CallBase
 
     // EvalScopeInfoIndexField is 20 bits wide.
     public const int kEvalScopeInfoIndexBits = 20;
+    public static bool EvalScopeInfoIndexFieldIsValid(int value) => (uint)value < (1u << kEvalScopeInfoIndexBits);
 
     private readonly bool _isTaggedTemplate;
     private readonly bool _isOptionalChainLink;
@@ -2484,7 +2491,7 @@ public sealed class Throw : Expression
     public Expression exception() => _exception;
 }
 
-public sealed class FunctionLiteral : Expression
+public sealed class FunctionLiteral : Expression, V8Sharp.Parsing.IParserFunctionLiteral
 {
     public enum ParameterFlag : byte
     {
@@ -3152,7 +3159,7 @@ public abstract class AstVisitor
 // ----------------------------------------------------------------------------
 // AstNode factory
 
-public sealed class AstNodeFactory
+public sealed partial class AstNodeFactory
 {
     private readonly AstValueFactory _astValueFactory;
     private readonly EmptyStatement _emptyStatement;
