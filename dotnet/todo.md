@@ -194,13 +194,25 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       IteratorStepValue, IteratorClose, CreateIterResultObject,
       IterableToList...}, AsyncFromSyncIteratorBuiltins.
       CreateAsyncFromSyncIterator, Isolate.{CollectGarbage, RunPendingTasks}.
-      49 xUnit tests (tests/V8Sharp.Tests/Builtins/{Promise,Collections,
-      Iterator,WeakRefs,DisposableStack}BuiltinsTest.cs), expectations from
-      the oracle. Missing: the test262/mjsunit runs (wait for the
-      interpreter), the async function/generator await paths (interpreter),
-      the `IteratorHelpers` forwarding shim in Builtins.Iterator.cs (remove
-      once no caller uses it), d8's gc() wiring to Isolate.CollectGarbage
-      and d8's task loop to Isolate.RunPendingTasks
+      Also the runtime functions of runtime-promise.cc, runtime-collections.cc,
+      runtime-weak-refs.cc and the protector queries of runtime-test.cc
+      (Runtime/Runtime.Promise.cs), and gc() (src/extensions/gc-extension.cc,
+      Init/GCExtension.cs); d8sharp and the runner's D8Shell pump the
+      isolate's foreground tasks. 50 xUnit tests
+      (tests/V8Sharp.Tests/Builtins/{Promise,Collections,Iterator,WeakRefs,
+      DisposableStack}BuiltinsTest.cs), expectations from the oracle.
+      test262 (v8sharp): built-ins/{Promise,Map,Set,WeakMap,WeakSet,WeakRef,
+      FinalizationRegistry,Iterator,DisposableStack}/** 100% (4414 tests);
+      AsyncDisposableStack 150/208, AsyncIteratorPrototype 18/26,
+      AsyncFromSyncIteratorPrototype 0/76: every failure needs async
+      functions/generators or for-await (Interpreter/InterpreterAsync.cs
+      stubs). mjsunit: the remaining failures of es6/promise*, collection*,
+      weakrefs/**, harmony/iterator* are the same async stubs, plus
+      es6/collections-constructor-with-modified-protoype (an IC bug: the
+      second `arr.length = 1` store with feedback does not truncate), the
+      d8 Realm microtask-queue/onerror tests (runner d8 shim) and
+      iterator-join (%ArrayBufferDetach). Missing: the `IteratorHelpers`
+      forwarding shim in Builtins.Iterator.cs (remove once no caller uses it)
 - [~] Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
       builtins and the array iterators (Builtins/Builtins.{Array,ArrayBuffer,
       TypedArray,DataView,Atomics}*.cs; Objects/JSArrayBuffer.cs,
