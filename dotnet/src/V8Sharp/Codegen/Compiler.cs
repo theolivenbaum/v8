@@ -216,12 +216,31 @@ namespace V8Sharp.Codegen
             }
         }
 
+        /// <summary>Parser::HandleDebugMagicComments: stores the sourceURL and sourceMappingURL comments on the script.</summary>
+        static void HandleDebugMagicComments(Isolate isolate, Parser parser, Script script)
+        {
+            string? sourceUrl = parser.SourceUrl();
+            if (sourceUrl is not null) script.SourceUrl = isolate.Factory.InternalizeString(sourceUrl);
+            string? sourceMappingUrl = parser.SourceMappingUrl();
+            // The API can provide a source map URL and the API should take precedence.
+            if (sourceMappingUrl is not null && script.SourceMappingUrl.IsUndefined)
+            {
+                script.SourceMappingUrl = isolate.Factory.InternalizeString(sourceMappingUrl);
+            }
+        }
+
         /// <summary>CompileToplevel (compiler.cc).</summary>
         static SharedFunctionInfo CompileToplevel(Isolate isolate, ParseInfo parseInfo, Script script, ScopeInfo? outerScopeInfo)
         {
             if (!RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
 
-            if (!ParsingEntry.ParseProgram(parseInfo, script, outerScopeInfo))
+            // parsing::ParseProgram, keeping the parser for
+            // Parser::HandleDebugMagicComments.
+            parseInfo.set_character_stream(ScannerStream.For(((IParsingScript)script).source()));
+            var parser = new Parser(parseInfo);
+            parser.ParseProgram(script, parseInfo, outerScopeInfo);
+            HandleDebugMagicComments(isolate, parser, script);
+            if (parseInfo.literal() is null)
             {
                 ReportPendingMessages(isolate, parseInfo, script);
             }

@@ -247,6 +247,12 @@ public static partial class InterpreterExecution
                     acc = JSValue.FromBoolean(acc.IsUndefined);
                     pc += 1;
                     continue;
+                case Bytecode.TestUndetectable:
+                    // x == null: hot in object-graph code (Richards, DeltaBlue).
+                    acc = JSValue.FromBoolean(acc.IsNullOrUndefined ||
+                        (acc._obj is JSReceiver undetectable && undetectable.Map.IsUndetectable));
+                    pc += 1;
+                    continue;
                 case Bytecode.TestTypeOf:
                     acc = JSValue.FromBoolean(InterpreterOps.TestTypeOf(acc, (TestTypeOfFlags.LiteralFlag)Byte(ref code, pc + 1)));
                     pc += 2;
@@ -1032,11 +1038,6 @@ public static partial class InterpreterExecution
         switch ((Bytecode)Unsafe.Add(ref code, pc))
         {
             // ---- Prefixes ----------------------------------------------------------
-            case Bytecode.TestUndetectable:
-                acc = JSValue.FromBoolean(InterpreterOps.IsUndetectable(acc));
-                pc += 1;
-                goto next;
-
             // ---- Lookup slots ------------------------------------------------------------------
             case Bytecode.LdaLookupSlot:
                 acc = RuntimeScopes.LoadLookupSlot(isolate, st.Context, st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref code, pc + 1)].UncheckedAs<JSString>(),

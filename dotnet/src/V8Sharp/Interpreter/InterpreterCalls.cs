@@ -274,7 +274,7 @@ public static class InterpreterCalls
     {
         JSValue receiver = receiverAndArgs[0];
         ReadOnlySpan<JSValue> args = receiverAndArgs[1..];
-        JSValue[] spread = SpreadArguments(isolate, args);
+        JSValue[] spread = SpreadArguments(isolate, args, callee);
         if (callee.HeapObjectOrNull is JSFunction function)
         {
             SharedFunctionInfo shared = function.Shared;
@@ -296,7 +296,7 @@ public static class InterpreterCalls
     /// the elements of a fast JSArray directly when the array iterator is
     /// untouched, else iterates (IterableToList).
     /// </summary>
-    public static JSValue[] SpreadArguments(Isolate isolate, ReadOnlySpan<JSValue> args)
+    public static JSValue[] SpreadArguments(Isolate isolate, ReadOnlySpan<JSValue> args, JSValue target)
     {
         int fixedCount = args.Length - 1;
         JSValue spreadValue = args[fixedCount];
@@ -304,7 +304,14 @@ public static class InterpreterCalls
         int total = fixedCount + list.Length;
         // CallOrConstructWithSpread pushes the arguments with a stack check
         // (there is no argument count limit): the RangeError is a stack overflow.
-        if (total > isolate.RegisterStackLimit - isolate.RegisterStackTop) isolate.StackOverflow();
+        // Runtime_VarargStackOverflow: with --superspreading the builtins of
+        // SUPERSPREAD_BUILTINS take the merged argument list instead (V8Sharp's
+        // builtins read their arguments from the heap array anyway).
+        if (total > isolate.RegisterStackLimit - isolate.RegisterStackTop &&
+            !(isolate.Flags.superspreading && target.HeapObjectOrNull is JSFunction { Shared.BuiltinId: Builtin.ArrayPrototypePush }))
+        {
+            isolate.StackOverflow();
+        }
         var result = new JSValue[total];
         args[..fixedCount].CopyTo(result);
         list.Data.AsSpan(0, list.Length).CopyTo(result.AsSpan(fixedCount));
@@ -407,7 +414,7 @@ public static class InterpreterCalls
         ReadOnlySpan<JSValue> args)
     {
         CollectConstructWithSpreadFeedback(isolate, fv, slot, newTarget);
-        JSValue[] spread = SpreadArguments(isolate, args);
+        JSValue[] spread = SpreadArguments(isolate, args, constructor);
         if (constructor.HeapObjectOrNull is JSFunction function && function.Map.IsConstructor)
         {
             SharedFunctionInfo shared = function.Shared;
