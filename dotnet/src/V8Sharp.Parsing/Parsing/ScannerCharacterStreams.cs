@@ -278,7 +278,9 @@ public sealed class ArrayCharacterSource(char[] data, int start_offset, int leng
         return (data, start_offset + p, length - p);
     }
 
-    public bool CanBeCloned => true;
+    // OnHeapStream (can_access_heap) is relocatable and cannot be cloned;
+    // ExternalStringStream and TestingStream can.
+    public bool CanBeCloned => !can_access_heap;
     public bool CanAccessHeap => can_access_heap;
     public ICharacterSource CloneSource() => this;
 }
@@ -297,7 +299,8 @@ public sealed class UnbufferedCharacterStream : Utf16CharacterStream
 
     public override bool can_access_heap() => _source.CanAccessHeap;
     public override bool can_be_cloned() => _source.CanBeCloned;
-    public override Utf16CharacterStream Clone() => new UnbufferedCharacterStream(pos(), _source.CloneSource());
+    // V8's copy constructor copies only the byte stream: the clone starts at 0.
+    public override Utf16CharacterStream Clone() => new UnbufferedCharacterStream(0, _source.CloneSource());
 
     protected override bool ReadBlock(int position)
     {
@@ -336,7 +339,8 @@ public sealed class BufferedCharacterStream : Utf16CharacterStream
 
     public override bool can_be_cloned() => _source.CanBeCloned;
     public override bool can_access_heap() => _source.CanAccessHeap;
-    public override Utf16CharacterStream Clone() => new BufferedCharacterStream(pos(), _source.CloneSource());
+    // V8's copy constructor copies only the byte stream: the clone starts at 0.
+    public override Utf16CharacterStream Clone() => new BufferedCharacterStream(0, _source.CloneSource());
 
     protected override bool ReadBlock(int position)
     {
@@ -363,7 +367,7 @@ public sealed class BufferedCharacterStream : Utf16CharacterStream
 // over ScriptCompiler::ExternalSourceStream). Chunks are UTF-16.
 public sealed class ChunkedCharacterSource : ICharacterSource
 {
-    private readonly Func<char[]?> _getMoreData;
+    private readonly Func<char[]?>? _getMoreData;
     private readonly List<(int Position, char[] Data)> _chunks;
 
     public ChunkedCharacterSource(Func<char[]?> getMoreData)
@@ -372,9 +376,11 @@ public sealed class ChunkedCharacterSource : ICharacterSource
         _chunks = [];
     }
 
+    // Cloned ChunkedStreams share the chunks and have a null source, and
+    // therefore can't fetch any new data.
     private ChunkedCharacterSource(ChunkedCharacterSource other)
     {
-        _getMoreData = other._getMoreData;
+        _getMoreData = null;
         _chunks = other._chunks;
     }
 
@@ -407,12 +413,12 @@ public sealed class ChunkedCharacterSource : ICharacterSource
 
     private void FetchChunk(int position)
     {
+        if (_getMoreData == null) throw new InvalidOperationException("cloned ChunkedStream cannot fetch data");
         char[] data = _getMoreData() ?? [];
         _chunks.Add((position, data));
     }
 
-    // V8's ChunkedStream copies share the chunks but cannot fetch more data.
-    public bool CanBeCloned => false;
+    public bool CanBeCloned => true;
     public bool CanAccessHeap => false;
     public ICharacterSource CloneSource() => new ChunkedCharacterSource(this);
 }
