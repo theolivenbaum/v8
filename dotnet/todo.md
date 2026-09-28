@@ -338,6 +338,15 @@ Failures the mjsunit/test262 runs show in code owned by other ports
 |---|---|---|---|---|---|
 | 2026-09-28 | test262 | 67759 | 94901 | 71.4% | first run; 79.1% without Temporal. Failing: async functions/generators/for-await, modules, dynamic import (interpreter, in progress); Promise/Iterator/Map/Set/Weak*/DisposableStack (collections port, in progress); Temporal (9210) |
 | 2026-09-28 | mjsunit | 6412 | 7597 | 84.4% | first run; clusters: regress (337), harmony (199, mostly async), maglev/compiler/turbolev (168, optimization-status asserts until the tiers exist), d8 (45) |
+| 2026-09-28 | test262 | 84670 | 94901 | 89.2% | interpreter port complete (async, modules, eval); 98.8% without Temporal (9210). Remaining: import defer and source phase imports (not ported), ShadowRealm (124), Array.fromAsync, Atomics.waitAsync; expectations: tools/V8Sharp.TestRunner/expectations/test262.v8sharp.txt |
+| 2026-09-28 | mjsunit | 7074 | 7597 | 93.1% | clusters: Worker and d8 host features, optimization-status asserts, import defer (43), ShadowRealm/Wasm/shared structs; expectations: mjsunit.v8sharp.txt |
+
+Octane (interpreter only, 2 runs, loaded 4-core container, 2026-09-28):
+Richards 257 / 1265 (v8 --jitless), DeltaBlue 240 / 1409, Crypto 218 / 1111,
+RayTrace 645 / 2771, EarleyBoyer 806 / 3996, NavierStokes 549 / 1078
+(20-23% of jitless V8, NavierStokes 51%). The 2x target needs the baseline
+tier; the interpreter profile is dominated by the dispatch loop (~70%) and
+frame push/pop (~15%).
 
 - [ ] Temporal: V8 15.6 implements it as a binding layer
       (`src/objects/js-temporal-objects.cc`, `builtins-temporal.cc`) over the
