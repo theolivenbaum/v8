@@ -9,6 +9,8 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/V8Sharp/V8Sharp.csproj" />
+    <!-- The oracle (real V8) checks the bytecode disassembly format (Interpreter/OracleBytecodeFormatTest.cs). -->
+    <ProjectReference Include="../../src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />
   </ItemGroup>
 
   <ItemGroup>
