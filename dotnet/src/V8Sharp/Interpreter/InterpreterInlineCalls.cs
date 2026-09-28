@@ -242,6 +242,7 @@ internal static class InterpreterInlineCalls
         frame.Argc = argc;
         frame.Kind = InterpreterFrameKind.Interpreted;
         frame.IsConstructor = isConstruct;
+        frame.IsBaseline = false;
         frame.InlineCall = true;
         frame.RegisterStart = registerStart;
         // The caller resumes after the call bytecode.
@@ -322,19 +323,11 @@ internal static class InterpreterInlineCalls
     static void PopFrame(Isolate isolate, ref InterpreterState st, InterpreterFrameRecord[] frames, ref InterpreterFrameRecord record)
     {
         int start = record.RegisterStart;
-        // Clears the record except Function and Bytecode (functions and their
+        // The record is left as it is: every push sets all of its fields but
+        // Function and Bytecode, which it compares first (functions and their
         // bytecode are long-lived; keeping them lets the next call at this depth
-        // skip the reference stores). Every push sets both.
-        record.Receiver = default;
-        record.Fp = 0;
-        record.Pc = 0;
-        record.Argc = 0;
-        record.Kind = default;
-        record.IsConstructor = false;
-        record.IsBaseline = false;
-        record.InlineCall = false;
-        record.ReturnPc = 0;
-        record.RegisterStart = 0;
+        // skip the reference stores), and Receiver, which only builtin frames
+        // set and clear.
         isolate.InterpreterFrameDepth = st.FrameIndex;
         // The frame's slots are not cleared: they stay below
         // RegisterStackDirtyEnd for the next call at this depth (PushFrameCore).

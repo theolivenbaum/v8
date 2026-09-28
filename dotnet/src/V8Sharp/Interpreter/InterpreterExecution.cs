@@ -123,6 +123,10 @@ public static partial class InterpreterExecution
         frame.Kind = InterpreterFrameKind.Interpreted;
         frame.IsConstructor = isConstruct;
         frame.IsBaseline = false;
+        frame.InlineCall = false;
+        frame.ReturnPc = 0;
+        frame.RegisterStart = 0;
+        frame.Receiver = default;
 
         // BaselineOrInterpreterEntry: a function whose SharedFunctionInfo has
         // baseline code runs it (Runtime_InstallBaselineCode gives it the

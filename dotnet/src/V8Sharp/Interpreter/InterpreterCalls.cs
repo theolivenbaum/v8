@@ -281,6 +281,10 @@ public static class InterpreterCalls
         frame.Argc = args.Length;
         frame.Kind = InterpreterFrameKind.Builtin;
         frame.IsConstructor = !newTarget.IsUndefined;
+        frame.IsBaseline = false;
+        frame.InlineCall = false;
+        frame.ReturnPc = 0;
+        frame.RegisterStart = 0;
         Context? saved = isolate.Context;
         isolate.Context = function.Context;
         try

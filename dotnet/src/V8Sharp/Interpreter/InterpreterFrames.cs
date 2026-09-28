@@ -74,12 +74,16 @@ namespace V8Sharp
         /// <summary>The maximum number of nested JavaScript frames before V8's stack overflow RangeError.</summary>
         public const int kMaxInterpreterFrames = 1 << 16;
 
-        InterpreterFrameRecord[]? _interpreterFrames;
+        // Pinned (the pinned object heap) like the register stack: see Isolate.RegisterStack.
+        readonly InterpreterFrameRecord[] _interpreterFrames =
+            GC.AllocateArray<InterpreterFrameRecord>(kMaxInterpreterFrames, pinned: true);
 
         /// <summary>The frame records of the live frames; index 0 is the outermost.</summary>
-        // Pinned (the pinned object heap) like the register stack: see Isolate.RegisterStack.
-        public InterpreterFrameRecord[] InterpreterFrames =>
-            _interpreterFrames ??= GC.AllocateArray<InterpreterFrameRecord>(kMaxInterpreterFrames, pinned: true);
+        public InterpreterFrameRecord[] InterpreterFrames
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => _interpreterFrames;
+        }
 
         /// <summary>The number of live frame records.</summary>
         public int InterpreterFrameDepth;
@@ -111,7 +115,7 @@ namespace V8Sharp
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void PopFramesTo(int depth)
         {
-            InterpreterFrameRecord[] frames = _interpreterFrames!;
+            InterpreterFrameRecord[] frames = _interpreterFrames;
             for (int i = InterpreterFrameDepth - 1; i >= depth; i--) frames[i] = default;
             InterpreterFrameDepth = depth;
         }
@@ -124,8 +128,7 @@ namespace V8Sharp
         /// </summary>
         internal void ClearStaleFrameRecords()
         {
-            InterpreterFrameRecord[]? frames = _interpreterFrames;
-            if (frames is null) return;
+            InterpreterFrameRecord[] frames = _interpreterFrames;
             // Popped records need not be contiguous (PopFramesTo clears its
             // records), so clear the whole tail; this runs only on explicit GCs.
             frames.AsSpan(InterpreterFrameDepth).Clear();

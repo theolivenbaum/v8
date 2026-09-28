@@ -145,6 +145,10 @@ public static class BaselineCalls
         frame.Kind = InterpreterFrameKind.Interpreted;
         frame.IsConstructor = isConstruct;
         frame.IsBaseline = true;
+        frame.InlineCall = false;
+        frame.ReturnPc = 0;
+        frame.RegisterStart = 0;
+        frame.Receiver = default;
 
         vector.InvocationCount++;
 
