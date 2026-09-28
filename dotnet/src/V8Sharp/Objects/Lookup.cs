@@ -431,7 +431,7 @@ public struct LookupIterator
     }
 
     readonly JSReceiver GetRootForNonJSReceiver() =>
-        ObjectOps.GetPrototypeChainRoot(_lookupStartObject, _isolate)
+        ObjectOps.GetPrototypeChainRootMap(_lookupStartObject, _isolate).Prototype
         ?? throw new InvalidOperationException("null prototype chain root");
 
     /// <summary>LookupIterator::HasAccess: the embedder's security check (always true: one security token).</summary>
