@@ -97,7 +97,13 @@ internal sealed class DifferentialRunner : IDisposable
 
     static readonly Dictionary<(string, string), RegExpCompileResult> s_cache = new();
 
-    public string RunOurs(string pattern, string flagsString, string subject)
+    /// <summary>
+    /// When set, patterns the experimental engine can handle are compiled with
+    /// the 'l' flag (linear engine) and RunOurs returns null for the others.
+    /// </summary>
+    public bool ForceLinear { get; set; }
+
+    public string? RunOurs(string pattern, string flagsString, string subject)
     {
         RegExpFlags? maybeFlags = RegExpFlagsExtensions.FromString(flagsString);
         // The 'l' flag needs --enable-experimental-regexp-engine in V8.
@@ -106,13 +112,23 @@ internal sealed class DifferentialRunner : IDisposable
             return "E:Invalid flags supplied to RegExp constructor '" + flagsString + "'";
         }
         RegExpFlags flags = maybeFlags.Value;
+        if (ForceLinear)
+        {
+            RegExpCompileResult linear = RegExpEngine.Compile(pattern, flags | RegExpFlags.Linear, OurBacktrackLimit);
+            if (!linear.Succeeded) return null;
+            return Execute(linear.RegExp!, pattern, flags, subject);
+        }
         RegExpCompileResult result = RegExpEngine.Compile(pattern, flags, OurBacktrackLimit);
         if (!result.Succeeded)
         {
             return "E:Invalid regular expression: /" + pattern + "/" + flags.ToFlagString() + ": " +
                    result.ErrorMessage;
         }
-        CompiledRegExp re = result.RegExp!;
+        return Execute(result.RegExp!, pattern, flags, subject);
+    }
+
+    static string Execute(CompiledRegExp re, string pattern, RegExpFlags flags, string subject)
+    {
         int[] regs = new int[re.RegistersPerMatch];
         bool global = flags.IsGlobal();
         bool sticky = flags.IsSticky();

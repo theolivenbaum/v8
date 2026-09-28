@@ -439,7 +439,8 @@ public class RegExpTest
         if (multiline) flags |= RegExpFlags.Multiline;
         if (unicode) flags |= RegExpFlags.Unicode;
         if (!RegExpParser.ParseRegExp(input, flags, compileData)) return null;
-        RegExpEngine.CompileIrregexp(compileData, flags, "", input.Length, RegExpEngine.kNoBacktrackLimit, false,
+        uint backtrackLimit = RegExpEngine.kNoBacktrackLimit;
+        RegExpEngine.CompileIrregexp(compileData, flags, "", input.Length, ref backtrackLimit, false,
             isOneByte);
         return compileData.Node;
     }

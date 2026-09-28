@@ -226,7 +226,7 @@ public static class RegExpEngine
     /// Returns false and sets data.Error on failure.
     /// </summary>
     public static bool CompileIrregexp(RegExpCompileData data, RegExpFlags flags, ReadOnlySpan<char> sampleSubject,
-        int originalSourceLength, uint backtrackLimit, bool isLinearExecutable, bool isOneByte = false,
+        int originalSourceLength, ref uint backtrackLimit, bool isLinearExecutable, bool isOneByte = false,
         bool peepholeOptimization = true)
     {
         if (RegistersForCaptureCount(data.CaptureCount) > RegExpMacroAssembler.kMaxRegisterCount)
@@ -267,7 +267,7 @@ public static class RegExpEngine
             PeepholeOptimization = peepholeOptimization,
         };
 
-        SetBacktrackAndExperimentalFallback(macroAssembler, backtrackLimit, isLinearExecutable);
+        backtrackLimit = SetBacktrackAndExperimentalFallback(macroAssembler, backtrackLimit, isLinearExecutable);
 
         // Inserted here, instead of in Assembler, because it depends on information
         // in the AST that isn't replicated in the Node structure.
@@ -304,7 +304,8 @@ public static class RegExpEngine
         return result.Succeeded;
     }
 
-    static void SetBacktrackAndExperimentalFallback(RegExpMacroAssembler macroAssembler, uint backtrackLimit,
+    // Returns the backtrack limit V8 stores back into the IrRegExpData.
+    static uint SetBacktrackAndExperimentalFallback(RegExpMacroAssembler macroAssembler, uint backtrackLimit,
         bool isLinearExecutable)
     {
         if (s_enableExperimentalRegExpEngineOnExcessiveBacktracks && isLinearExecutable)
@@ -320,6 +321,7 @@ public static class RegExpEngine
             macroAssembler.SetBacktrackLimit(backtrackLimit);
             macroAssembler.SetCanFallback(false);
         }
+        return backtrackLimit;
     }
 
     // RegExpImpl::AtomExecRaw.
@@ -543,7 +545,7 @@ public sealed class CompiledRegExp
 
         CanBeZeroLength = compileData.Tree!.MinMatch == 0;
         compileData.CompilationTarget = CompilationTarget.kBytecode;
-        if (!RegExpEngine.CompileIrregexp(compileData, Flags, sampleSubject, Source.Length, _backtrackLimit,
+        if (!RegExpEngine.CompileIrregexp(compileData, Flags, sampleSubject, Source.Length, ref _backtrackLimit,
                 IsLinearExecutable, isOneByte))
         {
             Debug.Assert(compileData.Error != RegExpError.None);

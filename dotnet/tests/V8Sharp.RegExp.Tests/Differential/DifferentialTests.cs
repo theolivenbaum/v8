@@ -95,13 +95,14 @@ public class DifferentialTests
         public int Triples;
         public int Agree;
         public int OracleTimeouts;
+        public int Skipped;
         public readonly List<Mismatch> Mismatches = [];
     }
 
-    internal static Stats RunCorpus(IEnumerable<string> files, string reportName)
+    internal static Stats RunCorpus(IEnumerable<string> files, string reportName, bool forceLinear = false)
     {
         var stats = new Stats();
-        using var runner = new DifferentialRunner();
+        using var runner = new DifferentialRunner { ForceLinear = forceLinear };
         string progressDir = Path.Combine(RepoRoot(), "dotnet", "artifacts", "regexp-differential");
         Directory.CreateDirectory(progressDir);
         string progressFile = Path.Combine(progressDir, reportName + ".progress");
@@ -148,7 +149,7 @@ public class DifferentialTests
                         stats.OracleTimeouts++;
                         continue;
                     }
-                    string ours;
+                    string? ours;
                     Volatile.Write(ref current, $"{relative}: /{Show(p.Source)}/{p.Flags} on \"{Show(subject)}\"\n");
                     try
                     {
@@ -157,6 +158,11 @@ public class DifferentialTests
                     catch (Exception e)
                     {
                         ours = "CRASH: " + e.GetType().Name + ": " + e.Message;
+                    }
+                    if (ours is null)
+                    {
+                        stats.Skipped++;
+                        break;
                     }
                     if (oracle == ours)
                     {
@@ -199,7 +205,7 @@ public class DifferentialTests
         sb.Append($"files {stats.Files}, patterns {stats.Patterns}, triples {stats.Triples}, ");
         int known = stats.Mismatches.Count(m => m.KnownReason is not null);
         sb.Append($"agree {stats.Agree}, mismatches {stats.Mismatches.Count} ({known} explained by the oracle's ");
-        sb.Append($"older V8/Unicode version), oracle timeouts {stats.OracleTimeouts}\n");
+        sb.Append($"older V8/Unicode version), oracle timeouts {stats.OracleTimeouts}, skipped {stats.Skipped}\n");
         int compared = stats.Agree + stats.Mismatches.Count;
         if (compared > 0)
         {
@@ -232,6 +238,40 @@ public class DifferentialTests
             sb.Append($"{m.File}: /{Show(m.Pattern)}/{m.Flags} on \"{Show(m.Subject)}\": oracle {Show(m.Oracle)} ours {Show(m.Ours)}\n");
         }
         Assert.True(unexplained.Count == 0, $"{name}: {unexplained.Count} unexplained mismatches of {compared}\n{sb}");
+    }
+
+    // The linear-time experimental engine must produce the same matches as the
+    // backtracking engine for every pattern it accepts (experimental-bytecode.h).
+    [Fact]
+    public void ExperimentalEngineAgreesWithOracle()
+    {
+        string root = Path.Combine(RepoRoot(), "test");
+        IEnumerable<string> files = Files(Path.Combine(root, "mjsunit"), "regexp*.js")
+            .Concat(Files(Path.Combine(root, "webkit"), "regexp*.js"))
+            .Concat(Files(Path.Combine(root, "webkit", "fast", "regex"), "*.js", SearchOption.AllDirectories));
+        Check(RunCorpus(files, "experimental-engine", forceLinear: true), "experimental engine");
+    }
+
+    // Same, with --experimental-regexp-engine-capture-group-opt, which adds
+    // lookahead and capturing lookbehind support and capture filtering.
+    [Fact]
+    public void ExperimentalEngineCaptureGroupOptAgreesWithOracle()
+    {
+        string root = Path.Combine(RepoRoot(), "test");
+        IEnumerable<string> files = Files(Path.Combine(root, "mjsunit"), "regexp*.js")
+            .Concat(Files(Path.Combine(root, "webkit"), "regexp*.js"))
+            .Concat(Files(Path.Combine(root, "webkit", "fast", "regex"), "*.js", SearchOption.AllDirectories));
+        bool old = V8Sharp.RegExp.Experimental.ExperimentalCompiler.s_experimentalRegExpEngineCaptureGroupOpt;
+        V8Sharp.RegExp.Experimental.ExperimentalCompiler.s_experimentalRegExpEngineCaptureGroupOpt = true;
+        try
+        {
+            Check(RunCorpus(files, "experimental-engine-capture-group-opt", forceLinear: true),
+                "experimental engine (capture group opt)");
+        }
+        finally
+        {
+            V8Sharp.RegExp.Experimental.ExperimentalCompiler.s_experimentalRegExpEngineCaptureGroupOpt = old;
+        }
     }
 
     [Fact]
