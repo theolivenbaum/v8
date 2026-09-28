@@ -62,6 +62,7 @@ sealed partial class Genesis
         InitializeCallSiteBuiltins();
         InstallABunchOfRandomThings();
         InstallErrorStackAccessorFunctions();
+        ConfigureGlobalObject();
 
         _nativeContext.MicrotaskQueue = microtaskQueue ?? isolate.DefaultMicrotaskQueue;
 
@@ -104,6 +105,13 @@ sealed partial class Genesis
         InitializeExperimentalGlobalTypedArrays();
 
         InitializeGlobal_queueMicrotask();
+    }
+
+    /// <summary>Genesis::ConfigureGlobalObject (no global proxy template): hooks the
+    /// global object up as the global proxy's hidden prototype.</summary>
+    void ConfigureGlobalObject()
+    {
+        JSObject.ForceSetPrototype(_isolate, _nativeContext.GlobalProxyObject, _nativeContext.GlobalObject);
     }
 
     // -----------------------------------------------------------------------

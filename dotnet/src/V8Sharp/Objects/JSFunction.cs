@@ -15,7 +15,7 @@ using V8Sharp.Roots;
 namespace V8Sharp.Objects;
 
 /// <summary>V8's Script: a compiled source text and its metadata.</summary>
-public sealed class Script : HeapObject
+public sealed partial class Script : HeapObject
 {
     /// <summary>Script::Type.</summary>
     public enum Type : byte { Native = 0, Extension = 1, Normal = 2, Wasm = 3, Inspector = 4 }

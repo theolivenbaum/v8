@@ -129,6 +129,8 @@ public sealed partial class Processor
     /// <summary>Z := X * Y, for inputs MultiplySmall declined.</summary>
     public Status MultiplyLarge(Span<ulong> Z, ReadOnlySpan<ulong> X, ReadOnlySpan<ulong> Y)
     {
+        // ProcessorImpl::Multiply: the algorithms want the longer operand first.
+        if (X.Length < Y.Length) { ReadOnlySpan<ulong> t = X; X = Y; Y = t; }
         MultiplyLargeImpl(Z, X, Y);
         return get_and_clear_status();
     }
