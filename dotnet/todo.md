@@ -187,8 +187,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       string formats and getters/setters (also run under TZ=America/New_York,
       Europe/London, Asia/Kolkata, America/Sao_Paulo), 770 JSON texts through
       parse+stringify. Waiting for the interpreter: the test262/mjsunit runs
-      of built-ins/{Number,Math,BigInt,JSON,Date}; JSON.parse revivers and
-      stringify replacer functions/toJSON only have builtin-function tests.
+      of built-ins/{Number,Math,BigInt,JSON,Date}. JSON revivers, replacer
+      functions and toJSON are checked against the oracle with API functions.
       Not ported: FastJsonStringifier and JSDataObjectBuilder (see
       deviations.md, JSON), the typed-array fast path of IterableForEach.
 - [~] String and RegExp builtins (Builtins/Builtins.String*.cs,
