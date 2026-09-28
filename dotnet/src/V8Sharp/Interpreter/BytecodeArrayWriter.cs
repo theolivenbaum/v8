@@ -280,18 +280,6 @@ public sealed class BytecodeArrayWriter
 
     void InvalidateLastBytecode() => _lastBytecode = Bytecode.Illegal;
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    Span<byte> Reserve(int count)
-    {
-        if (_size + count > _bytecodes.Length)
-        {
-            Array.Resize(ref _bytecodes, Math.Max(_bytecodes.Length * 2, _size + count));
-        }
-        Span<byte> span = _bytecodes.AsSpan(_size, count);
-        _size += count;
-        return span;
-    }
-
     void EmitBytecode(in BytecodeNode node)
     {
         Debug.Assert(node.Bytecode != Bytecode.Illegal);

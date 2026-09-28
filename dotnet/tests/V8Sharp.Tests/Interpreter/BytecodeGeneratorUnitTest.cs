@@ -44,7 +44,7 @@ public class BytecodeGeneratorUnitTest
         Path.Combine(BytecodeExpectationsParser.GoldenFileDirectory(), name + ".golden");
 
     /// <summary>CompareTexts: line by line, each line trimmed; both must end together.</summary>
-    public static void CompareTexts(string generated, string expected, string goldenFile, int startLine)
+    internal static void CompareTexts(string generated, string expected, string goldenFile, int startLine)
     {
         string[] generated_lines = SplitLines(generated);
         string[] expected_lines = SplitLines(expected);

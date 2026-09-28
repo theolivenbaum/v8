@@ -18,9 +18,9 @@ public class BytecodeRegisterOptimizerUnitTest : BytecodeRegisterOptimizer.IByte
                                                            this);
     }
 
-    public void EmitLdar(Register input) => _output.Add(new(Bytecode.Ldar, input, Register.InvalidValue()));
-    public void EmitStar(Register output) => _output.Add(new(Bytecode.Star, Register.InvalidValue(), output));
-    public void EmitMov(Register input, Register output) => _output.Add(new(Bytecode.Mov, input, output));
+    void BytecodeRegisterOptimizer.IBytecodeWriter.EmitLdar(Register input) => _output.Add(new(Bytecode.Ldar, input, Register.InvalidValue()));
+    void BytecodeRegisterOptimizer.IBytecodeWriter.EmitStar(Register output) => _output.Add(new(Bytecode.Star, Register.InvalidValue(), output));
+    void BytecodeRegisterOptimizer.IBytecodeWriter.EmitMov(Register input, Register output) => _output.Add(new(Bytecode.Mov, input, output));
 
     BytecodeRegisterAllocator allocator() => _registerAllocator;
     BytecodeRegisterOptimizer optimizer() => _registerOptimizer;
