@@ -75,6 +75,71 @@ public class MathBuiltinsTest : IntrinsicsTestBase
     }
 
     [Fact]
+    public void ExactFunctionsDifferentialAgainstOracle()
+    {
+        var rng = new Random(3);
+        var values = new List<double> { 0, -0.0, 0.5, -0.5, 1.5, -1.5, 2.5, 0.49999999999999994, -0.49999999999999994,
+            double.NaN, double.PositiveInfinity, double.NegativeInfinity, 4294967295, 4294967296.5, -2147483648.7, 65504, 65520,
+            5.960464477539063e-8, 2.980232238769531e-8, 1e308, 5e-324, 1.0000000596046448, 3.4028235677973366e38 };
+        for (int i = 0; i < 200; i++)
+        {
+            values.Add(rng.Next(3) switch
+            {
+                0 => rng.NextDouble() * Math.Pow(2, rng.Next(-60, 70)) * (rng.Next(2) == 0 ? 1 : -1),
+                1 => rng.Next(-1000, 1000) / 4.0,
+                _ => BitConverter.Int64BitsToDouble(rng.NextInt64()),
+            });
+        }
+        string[] unary = ["abs", "ceil", "floor", "round", "trunc", "sign", "clz32", "fround", "f16round", "sqrt"];
+        var js = new System.Text.StringBuilder("const vs = [");
+        foreach (double v in values) js.Append(double.IsNaN(v) ? "NaN" : v == 0 && double.IsNegative(v) ? "-0" : D(v)).Append(',');
+        js.Append("];\nconst f = (x) => Object.is(x, -0) ? '-0' : String(x);\nconst out = [];\n");
+        js.Append("for (let i = 0; i < vs.length; i++) { const v = vs[i], w = vs[(i * 7 + 3) % vs.length];\n");
+        foreach (string u in unary) js.Append($"  out.push(f(Math.{u}(v)));\n");
+        js.Append("  out.push(f(Math.max(v, w)), f(Math.min(v, w)), f(Math.imul(v, w)), f(Math.pow(v, w)), f(Math.pow(v, 2)), f(Math.pow(2, v)), f(Math.hypot(v, w)), f(Math.hypot(v, w, 3)), f(Math.hypot(v, w, 1, 2)), f(Math.atan2(v, w)));\n}\n");
+        js.Append("print(out.join('\\n'));");
+        string[] expected;
+        using (var v8 = new V8Sharp.Oracle.ReferenceV8())
+        {
+            expected = v8.Run(js.ToString()).TrimEnd('\n').Split('\n');
+        }
+        string F(double x) => x == 0 && double.IsNegative(x) ? "-0" : D(x);
+        var actual = new List<string>();
+        for (int i = 0; i < values.Count; i++)
+        {
+            double v = values[i], w = values[(i * 7 + 3) % values.Count];
+            foreach (string u in unary) actual.Add(F(M(u, v)));
+            actual.Add(F(M("max", v, w)));
+            actual.Add(F(M("min", v, w)));
+            actual.Add(F(M("imul", v, w)));
+            actual.Add(F(M("pow", v, w)));
+            actual.Add(F(M("pow", v, 2)));
+            actual.Add(F(M("pow", 2, v)));
+            actual.Add(F(M("hypot", v, w)));
+            actual.Add(F(M("hypot", v, w, 3)));
+            actual.Add(F(M("hypot", v, w, 1, 2)));
+            actual.Add(F(M("atan2", v, w)));
+        }
+        Assert.Equal(expected.Length, actual.Count);
+        var report = new System.Text.StringBuilder();
+        int mismatches = 0;
+        int perValue = unary.Length + 10;
+        for (int i = 0; i < expected.Length; i++)
+        {
+            if (expected[i] == actual[i]) continue;
+            // atan2 is correctly rounded here and fdlibm in the 14.7 oracle: allow one ulp.
+            if (i % perValue == perValue - 1 &&
+                Math.Abs(BitConverter.DoubleToInt64Bits(double.Parse(expected[i], System.Globalization.CultureInfo.InvariantCulture)) -
+                         BitConverter.DoubleToInt64Bits(double.Parse(actual[i], System.Globalization.CultureInfo.InvariantCulture))) <= 1)
+            {
+                continue;
+            }
+            if (mismatches++ < 10) report.Append($"{i} ({values[i / perValue]}): oracle {expected[i]} v8sharp {actual[i]}\n");
+        }
+        Assert.True(mismatches == 0, report.ToString());
+    }
+
+    [Fact]
     public void Random()
     {
         for (int i = 0; i < 1000; i++)

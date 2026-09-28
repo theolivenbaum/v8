@@ -362,12 +362,18 @@ BigInt
 JSON
 - Strings are UTF-16: the parser is V8's two-byte instantiation, and the
   string scan uses SearchValues (V8: Highway on one-byte strings).
-- JSON.parse builds objects with CreateDataProperty in source order
-  (elements first) instead of JSDataObjectBuilder with the previous array
-  element's map as feedback, and without the recursive ParseJsonValueRecursive
+- JSON.parse builds objects from the object literal map for their named
+  property count (as JSDataObjectBuilder does) with CreateDataProperty in
+  source order (elements first), instead of JSDataObjectBuilder's direct
+  field writes with the previous array element's map as feedback, and
+  without the recursive ParseJsonValueRecursive
   / numeric-array fast path (one iterative parser for all inputs). Keys,
   order, values, duplicate handling and elements kinds of arrays are the
   same; only backing-store choices (e.g. dictionary elements) can differ.
+- JSON.parse numbers with at most 15 significant digits and a decimal
+  exponent within [-22, 22] take Clinger's fast path in the parser before
+  StringToDouble (fast_float's first step, same results; checked against
+  StringToDouble on 20000 random numbers). Parse stacks are pooled.
 - JSON.parse internalizes only property keys; V8 also internalizes short
   one-byte values within a heuristic budget. Not observable.
 - JSON.parse always passes the context argument to the reviver; V8 skips
