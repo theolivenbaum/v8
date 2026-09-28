@@ -77,7 +77,9 @@ namespace V8Sharp
         InterpreterFrameRecord[]? _interpreterFrames;
 
         /// <summary>The frame records of the live frames; index 0 is the outermost.</summary>
-        public InterpreterFrameRecord[] InterpreterFrames => _interpreterFrames ??= new InterpreterFrameRecord[kMaxInterpreterFrames];
+        // Pinned (the pinned object heap) like the register stack: see Isolate.RegisterStack.
+        public InterpreterFrameRecord[] InterpreterFrames =>
+            _interpreterFrames ??= GC.AllocateArray<InterpreterFrameRecord>(kMaxInterpreterFrames, pinned: true);
 
         /// <summary>The number of live frame records.</summary>
         public int InterpreterFrameDepth;
