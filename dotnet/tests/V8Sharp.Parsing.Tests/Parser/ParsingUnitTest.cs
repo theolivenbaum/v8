@@ -4,8 +4,8 @@
 // Parser and check that they agree, as in V8. Where V8 reads the parser's
 // error through the exception ReportErrors throws, the port reads the same
 // message from the PendingCompilationErrorHandler. Tests that run JavaScript
-// or inspect heap objects have no counterpart here; they are listed at the
-// end of the file with the reason.
+// to reach a function (RunJS) compile that function lazily instead, with the
+// outer ScopeInfo chain built by TestScopeInfo.
 
 #nullable disable
 
@@ -7848,6 +7848,435 @@ public partial class ParsingTest
         RunModuleParserSyncTest(context_data, kErrorSources, kError);
     }
 
+    private static void CheckEntry(SourceTextModuleDescriptor.Entry entry, string export_name, string local_name,
+                                   string import_name, int module_request)
+    {
+        Assert.NotNull(entry);
+        if (export_name == null)
+        {
+            Assert.Null(entry.export_name);
+        }
+        else
+        {
+            Assert.Equal(export_name, entry.export_name.ToString());
+        }
+        if (local_name == null)
+        {
+            Assert.Null(entry.local_name);
+        }
+        else
+        {
+            Assert.Equal(local_name, entry.local_name.ToString());
+        }
+        if (import_name == null)
+        {
+            Assert.Null(entry.import_name);
+        }
+        else
+        {
+            Assert.Equal(import_name, entry.import_name.ToString());
+        }
+        Assert.Equal(module_request, entry.module_request);
+    }
+
+    // The entries of the regular-export multimap with key |name|, in order
+    // (std::multimap::equal_range).
+    private static List<SourceTextModuleDescriptor.Entry> RegularExports(SourceTextModuleDescriptor descriptor,
+                                                                        AstRawString name)
+    {
+        var result = new List<SourceTextModuleDescriptor.Entry>();
+        foreach (KeyValuePair<AstRawString, SourceTextModuleDescriptor.Entry> pair in descriptor.regular_exports())
+        {
+            if (pair.Key == name) result.Add(pair.Value);
+        }
+        return result;
+    }
+
+    private ModuleScope ParseModule(string source)
+    {
+        var script = new SourceScript(source, 1);
+        UnoptimizedCompileFlags flags = NewScriptFlags();
+        flags.set_is_module(true);
+        ParseInfo info = NewParseInfo(flags);
+        CHECK_PARSE_PROGRAM(info, script);
+        _lastModuleParseInfo = info;
+        return info.literal().scope().AsModuleScope();
+    }
+
+    private ParseInfo _lastModuleParseInfo;
+
+    [Fact]
+    public void ModuleParsingInternals()
+    {
+        const string kSource =
+            "let x = 5;" +
+            "export { x as y };" +
+            "import { q as z } from 'm.js';" +
+            "import n from 'n.js';" +
+            "export { a as b } from 'm.js';" +
+            "export * from 'p.js';" +
+            "export var foo;" +
+            "export function goo() {};" +
+            "export let hoo;" +
+            "export const joo = 42;" +
+            "export default (function koo() {});" +
+            "import 'q.js';" +
+            "let nonexport = 42;" +
+            "import {m as mm} from 'm.js';" +
+            "import {aa} from 'm.js';" +
+            "export {aa as bb, x};" +
+            "import * as loo from 'bar.js';" +
+            "import * as foob from 'bar.js';" +
+            "export {foob};";
+        ModuleScope module_scope = ParseModule(kSource);
+        ParseInfo info = _lastModuleParseInfo;
+
+        Scope outer_scope = module_scope.outer_scope();
+        Assert.True(outer_scope.is_script_scope());
+        Assert.Null(outer_scope.outer_scope());
+        Assert.True(module_scope.is_module_scope());
+        SourceTextModuleDescriptor.Entry entry;
+        ThreadedList<Declaration> declarations = module_scope.declarations();
+        Assert.Equal(13, declarations.LengthForTest());
+
+        void CheckDecl(int i, string name, VariableMode? mode, bool needs_init, VariableLocation location,
+                       bool location_equal = true)
+        {
+            Variable var = declarations.AtForTest(i).var();
+            Assert.Equal(name, var.raw_name().ToString());
+            if (mode != null) Assert.Equal(mode.Value, var.mode());
+            Assert.Equal(needs_init, var.binding_needs_init());
+            if (location_equal)
+            {
+                Assert.Equal(location, var.location());
+            }
+            else
+            {
+                Assert.NotEqual(location, var.location());
+            }
+        }
+
+        CheckDecl(0, "x", VariableMode.Let, true, VariableLocation.MODULE);
+        CheckDecl(1, "z", VariableMode.Const, true, VariableLocation.MODULE);
+        CheckDecl(2, "n", VariableMode.Const, true, VariableLocation.MODULE);
+        CheckDecl(3, "foo", VariableMode.Var, false, VariableLocation.MODULE);
+        CheckDecl(4, "goo", VariableMode.Let, false, VariableLocation.MODULE);
+        CheckDecl(5, "hoo", VariableMode.Let, true, VariableLocation.MODULE);
+        CheckDecl(6, "joo", VariableMode.Const, true, VariableLocation.MODULE);
+        CheckDecl(7, ".default", VariableMode.Const, true, VariableLocation.MODULE);
+        CheckDecl(8, "nonexport", null, false, VariableLocation.LOCAL);
+        CheckDecl(9, "mm", VariableMode.Const, true, VariableLocation.MODULE);
+        CheckDecl(10, "aa", VariableMode.Const, true, VariableLocation.MODULE);
+        CheckDecl(11, "loo", VariableMode.Const, false, VariableLocation.MODULE, location_equal: false);
+        CheckDecl(12, "foob", VariableMode.Const, false, VariableLocation.MODULE,
+                  location_equal: !v8_flags.js_esm_ns_reexport);
+
+        SourceTextModuleDescriptor descriptor = module_scope.module();
+        Assert.NotNull(descriptor);
+
+        Assert.Equal(5, descriptor.module_requests().Count);
+        foreach (SourceTextModuleDescriptor.AstModuleRequest elem in descriptor.module_requests())
+        {
+            switch (elem.specifier().ToString())
+            {
+                case "m.js":
+                    Assert.Equal(0, elem.index());
+                    Assert.Equal(51, elem.position());
+                    break;
+                case "n.js":
+                    Assert.Equal(1, elem.index());
+                    Assert.Equal(72, elem.position());
+                    break;
+                case "p.js":
+                    Assert.Equal(2, elem.index());
+                    Assert.Equal(123, elem.position());
+                    break;
+                case "q.js":
+                    Assert.Equal(3, elem.index());
+                    Assert.Equal(249, elem.position());
+                    break;
+                case "bar.js":
+                    Assert.Equal(4, elem.index());
+                    Assert.Equal(370, elem.position());
+                    break;
+                default:
+                    Assert.Fail("UNREACHABLE");
+                    break;
+            }
+        }
+
+        Assert.Equal(v8_flags.js_esm_ns_reexport ? 4 : 3, descriptor.special_exports().Count);
+        CheckEntry(descriptor.special_exports()[0], "b", null, "a", 0);
+        CheckEntry(descriptor.special_exports()[1], null, null, null, 2);
+        CheckEntry(descriptor.special_exports()[2], "bb", null, "aa", 0);  // !!!
+
+        Assert.Equal(v8_flags.js_esm_ns_reexport ? 7 : 8, descriptor.regular_exports().Count);
+        entry = RegularExports(descriptor, declarations.AtForTest(3).var().raw_name())[0];
+        CheckEntry(entry, "foo", "foo", null, -1);
+        entry = RegularExports(descriptor, declarations.AtForTest(4).var().raw_name())[0];
+        CheckEntry(entry, "goo", "goo", null, -1);
+        entry = RegularExports(descriptor, declarations.AtForTest(5).var().raw_name())[0];
+        CheckEntry(entry, "hoo", "hoo", null, -1);
+        entry = RegularExports(descriptor, declarations.AtForTest(6).var().raw_name())[0];
+        CheckEntry(entry, "joo", "joo", null, -1);
+        entry = RegularExports(descriptor, declarations.AtForTest(7).var().raw_name())[0];
+        CheckEntry(entry, "default", ".default", null, -1);
+        AstRawString name_x = declarations.AtForTest(0).var().raw_name();
+        List<SourceTextModuleDescriptor.Entry> x_exports = RegularExports(descriptor, name_x);
+        Assert.Equal(2, x_exports.Count);
+        entry = x_exports[0];
+        if (entry.export_name.ToString() == "y")
+        {
+            CheckEntry(entry, "y", "x", null, -1);
+            CheckEntry(x_exports[1], "x", "x", null, -1);
+        }
+        else
+        {
+            CheckEntry(entry, "x", "x", null, -1);
+            CheckEntry(x_exports[1], "y", "x", null, -1);
+        }
+
+        Assert.Equal(2, descriptor.namespace_imports().Count);
+        if (v8_flags.js_esm_ns_reexport)
+        {
+            AstRawString loo_string = info.ast_value_factory().GetOneByteString("loo");
+            AstRawString foob_string = info.ast_value_factory().GetOneByteString("foob");
+            CheckEntry(descriptor.namespace_imports()[loo_string], null, "loo", null, 4);
+            CheckEntry(descriptor.namespace_imports()[foob_string], null, "foob", null, 4);
+        }
+
+        Assert.Equal(4, descriptor.regular_imports().Count);
+        entry = descriptor.regular_imports()[declarations.AtForTest(1).var().raw_name()];
+        CheckEntry(entry, null, "z", "q", 0);
+        entry = descriptor.regular_imports()[declarations.AtForTest(2).var().raw_name()];
+        CheckEntry(entry, null, "n", "default", 1);
+        entry = descriptor.regular_imports()[declarations.AtForTest(9).var().raw_name()];
+        CheckEntry(entry, null, "mm", "m", 0);
+        entry = descriptor.regular_imports()[declarations.AtForTest(10).var().raw_name()];
+        CheckEntry(entry, null, "aa", "aa", 0);
+    }
+
+    [Fact]
+    public void ModuleParsingInternalsWithImportAttributes()
+    {
+        v8_flags.harmony_import_attributes = true;
+        const string kSource =
+            "import { q as z } from 'm.js';" +
+            "import { q as z2 } from 'm.js' with { foo: 'bar'};" +
+            "import { q as z3 } from 'm.js' with { foo2: 'bar'};" +
+            "import { q as z4 } from 'm.js' with { foo: 'bar2'};" +
+            "import { q as z5 } from 'm.js' with { foo: 'bar', foo2: 'bar'};" +
+            "import { q as z6 } from 'n.js' with { foo: 'bar'};" +
+            "import 'm.js' with { foo: 'bar'};" +
+            "export * from 'm.js' with { foo: 'bar', foo2: 'bar'};";
+        ModuleScope module_scope = ParseModule(kSource);
+        ParseInfo info = _lastModuleParseInfo;
+        Assert.True(module_scope.is_module_scope());
+
+        SourceTextModuleDescriptor descriptor = module_scope.module();
+        Assert.NotNull(descriptor);
+
+        AstRawString foo_string = info.ast_value_factory().GetOneByteString("foo");
+        AstRawString foo2_string = info.ast_value_factory().GetOneByteString("foo2");
+        Assert.Equal(6, descriptor.module_requests().Count);
+        foreach (SourceTextModuleDescriptor.AstModuleRequest elem in descriptor.module_requests())
+        {
+            ImportAttributes attributes = elem.import_attributes();
+            switch (elem.index())
+            {
+                case 0:
+                    Assert.Equal("m.js", elem.specifier().ToString());
+                    Assert.Empty(attributes);
+                    Assert.Equal(23, elem.position());
+                    break;
+                case 1:
+                    Assert.Equal("m.js", elem.specifier().ToString());
+                    Assert.Single(attributes);
+                    Assert.Equal(54, elem.position());
+                    Assert.Equal("bar", attributes[foo_string].value.ToString());
+                    Assert.Equal(68, attributes[foo_string].location.beg_pos);
+                    break;
+                case 2:
+                    Assert.Equal("m.js", elem.specifier().ToString());
+                    Assert.Single(attributes);
+                    Assert.Equal(104, elem.position());
+                    Assert.Equal("bar", attributes[foo2_string].value.ToString());
+                    Assert.Equal(118, attributes[foo2_string].location.beg_pos);
+                    break;
+                case 3:
+                    Assert.Equal("m.js", elem.specifier().ToString());
+                    Assert.Single(attributes);
+                    Assert.Equal(155, elem.position());
+                    Assert.Equal("bar2", attributes[foo_string].value.ToString());
+                    Assert.Equal(169, attributes[foo_string].location.beg_pos);
+                    break;
+                case 4:
+                    Assert.Equal("m.js", elem.specifier().ToString());
+                    Assert.Equal(2, attributes.Count);
+                    Assert.Equal(206, elem.position());
+                    Assert.Equal("bar", attributes[foo_string].value.ToString());
+                    Assert.Equal(220, attributes[foo_string].location.beg_pos);
+                    Assert.Equal("bar", attributes[foo2_string].value.ToString());
+                    Assert.Equal(232, attributes[foo2_string].location.beg_pos);
+                    break;
+                case 5:
+                    Assert.Equal("n.js", elem.specifier().ToString());
+                    Assert.Single(attributes);
+                    Assert.Equal(269, elem.position());
+                    Assert.Equal("bar", attributes[foo_string].value.ToString());
+                    Assert.Equal(283, attributes[foo_string].location.beg_pos);
+                    break;
+                default:
+                    Assert.Fail("UNREACHABLE");
+                    break;
+            }
+        }
+    }
+
+    [Fact]
+    public void ModuleParsingModuleRequestOrdering()
+    {
+        v8_flags.harmony_import_attributes = true;
+        const string kSource =
+            "import 'foo' with { };" +
+            "import 'baaaaaar' with { };" +
+            "import 'aa' with { };" +
+            "import 'a' with { a: 'b' };" +
+            "import 'b' with { };" +
+            "import 'd' with { a: 'b' };" +
+            "import 'c' with { };" +
+            "import 'f' with { };" +
+            "import 'f' with { a: 'b'};" +
+            "import 'g' with { a: 'b' };" +
+            "import 'g' with { };" +
+            "import 'h' with { a: 'd' };" +
+            "import 'h' with { b: 'c' };" +
+            "import 'i' with { b: 'c' };" +
+            "import 'i' with { a: 'd' };" +
+            "import 'j' with { a: 'b' };" +
+            "import 'j' with { a: 'c' };" +
+            "import 'k' with { a: 'c' };" +
+            "import 'k' with { a: 'b' };" +
+            "import 'l' with { a: 'b', e: 'f' };" +
+            "import 'l' with { a: 'c', d: 'g' };" +
+            "import 'm' with { a: 'c', d: 'g' };" +
+            "import 'm' with { a: 'b', e: 'f' };" +
+            "import 'n' with { 'd': '' };" +
+            "import 'n' with { 'a': 'b' };" +
+            "import 'o' with { 'a': 'b' };" +
+            "import 'o' with { 'd': '' };" +
+            "import 'p' with { 'z': 'c' };" +
+            "import 'p' with { 'a': 'c', 'b': 'c' };";
+        ModuleScope module_scope = ParseModule(kSource);
+        ParseInfo info = _lastModuleParseInfo;
+        Assert.True(module_scope.is_module_scope());
+
+        SourceTextModuleDescriptor descriptor = module_scope.module();
+        Assert.NotNull(descriptor);
+
+        AstValueFactory avf = info.ast_value_factory();
+        // (specifier, attribute count or -1 when V8 does not check it,
+        //  expected attributes)
+        (string specifier, int count, (string key, string value)[] attributes)[] expected =
+        [
+            ("a", -1, []),
+            ("aa", -1, []),
+            ("b", -1, []),
+            ("baaaaaar", -1, []),
+            ("c", -1, []),
+            ("d", -1, []),
+            ("f", 0, []),
+            ("f", 1, []),
+            ("foo", -1, []),
+            ("g", 0, []),
+            ("g", 1, []),
+            ("h", 1, [("a", "d")]),
+            ("h", 1, [("b", "c")]),
+            ("i", 1, [("a", "d")]),
+            ("i", 1, [("b", "c")]),
+            ("j", 1, [("a", "b")]),
+            ("j", 1, [("a", "c")]),
+            ("k", 1, [("a", "b")]),
+            ("k", 1, [("a", "c")]),
+            ("l", 2, [("a", "b"), ("e", "f")]),
+            ("l", 2, [("a", "c"), ("d", "g")]),
+            ("m", 2, [("a", "b"), ("e", "f")]),
+            ("m", 2, [("a", "c"), ("d", "g")]),
+            ("n", 1, [("a", "b")]),
+            ("n", 1, [("d", "")]),
+            ("o", 1, [("a", "b")]),
+            ("o", 1, [("d", "")]),
+            ("p", 2, [("a", "c"), ("b", "c")]),
+            ("p", 1, [("z", "c")]),
+        ];
+        Assert.Equal(29, descriptor.module_requests().Count);
+        int index = 0;
+        foreach (SourceTextModuleDescriptor.AstModuleRequest request in descriptor.module_requests())
+        {
+            var e = expected[index++];
+            Assert.Equal(e.specifier, request.specifier().ToString());
+            if (e.count >= 0) Assert.Equal(e.count, request.import_attributes().Count);
+            foreach ((string key, string value) in e.attributes)
+            {
+                Assert.Equal(value, request.import_attributes()[avf.GetOneByteString(key)].value.ToString());
+            }
+        }
+    }
+
+    [Fact]
+    public void ModuleParsingImportAttributesKeySorting()
+    {
+        v8_flags.harmony_import_attributes = true;
+        const string kSource =
+            "import 'a' with { 'b':'z', 'a': 'c' };" +
+            "import 'b' with { 'aaaaaa': 'c', 'b': 'z' };" +
+            "import 'c' with { '': 'c', 'b': 'z' };" +
+            "import 'd' with { 'aabbbb': 'c', 'aaabbb': 'z' };" +
+            // zzzz\u0005 is a one-byte string, yyyyĀ is a two-byte string.
+            "import 'e' with { 'zzzz\\u0005': 'second', 'yyyy\\u0100': 'first' };" +
+            // Both keys are two-byte strings.
+            "import 'f' with { 'xxxx\\u0005\\u0101': 'first', " +
+            "'xxxx\\u0100\\u0101': 'second' };";
+        ModuleScope module_scope = ParseModule(kSource);
+        Assert.True(module_scope.is_module_scope());
+
+        SourceTextModuleDescriptor descriptor = module_scope.module();
+        Assert.NotNull(descriptor);
+
+        // (specifier, keys in order (null: not checked), values in order)
+        (string specifier, string[] keys, string[] values)[] expected =
+        [
+            ("a", ["a", "b"], ["c", "z"]),
+            ("b", ["aaaaaa", "b"], ["c", "z"]),
+            ("c", ["", "b"], ["c", "z"]),
+            ("d", ["aaabbb", "aabbbb"], ["z", "c"]),
+            ("e", null, ["first", "second"]),
+            ("f", null, ["first", "second"]),
+        ];
+        Assert.Equal(6, descriptor.module_requests().Count);
+        int index = 0;
+        foreach (SourceTextModuleDescriptor.AstModuleRequest request in descriptor.module_requests())
+        {
+            var e = expected[index++];
+            Assert.Equal(e.specifier, request.specifier().ToString());
+            Assert.Equal(2, request.import_attributes().Count);
+            int i = 0;
+            foreach (KeyValuePair<AstRawString, (AstRawString value, Scanner.Location location)> attribute in
+                     request.import_attributes())
+            {
+                if (e.keys != null) Assert.Equal(e.keys[i], attribute.Key.ToString());
+                Assert.Equal(e.values[i], attribute.Value.value.ToString());
+                i++;
+            }
+        }
+    }
+
+
+
+
+
+
+
     [Fact]
     public void DuplicateProtoError()
     {
@@ -8479,6 +8908,27 @@ public partial class ParsingTest
             // clang-format on
             RunParserSyncTest(context_data, data, kError);
         }
+    }
+
+    [Fact]
+    public void ObjectRestNegativeTestSlow()
+    {
+        string[][] context_data = [["var { ", " } = { a: 1};"], [null, null]];
+
+        // Code::kMaxArguments (src/objects/code.h).
+        const int kMaxArguments = (1 << 16) - 10;
+        var statement = new StringBuilder();
+        for (int i = 0; i < kMaxArguments; ++i)
+        {
+            statement.Append(i).Append(" : ").Append("x, ");
+        }
+        statement.Append("...y");
+
+        string[] statement_data = [statement.ToString(), null];
+
+        // The test is quite slow, so run it with a reduced set of flags.
+        ParserFlag[] flags = [kAllowLazy];
+        RunParserSyncTest(context_data, statement_data, kError, null, 0, flags, flags.Length);
     }
 
     [Fact]
@@ -10651,6 +11101,251 @@ public partial class ParsingTest
     }
 
     [Fact]
+    public void NoPessimisticContextAllocation()
+    {
+        const string prefix = "(function outer() { var my_var; ";
+        const string suffix = " })();";
+
+        // Test both normal inner functions and inner arrow functions.
+        string[] inner_functions = ["function inner({0}) {{ {1} }}", "({0}) => {{ {1} }}"];
+
+        (string @params, string source, bool ctxt_allocate)[] inners =
+        [
+            // Context allocating because we need to:
+            ("", "my_var;", true),
+            ("", "if (true) { let my_var; } my_var;", true),
+            ("", "eval('foo');", true),
+            ("", "function inner2() { my_var; }", true),
+            ("", "function inner2() { eval('foo'); }", true),
+            ("", "var {my_var : a} = {my_var};", true),
+            ("", "let {my_var : a} = {my_var};", true),
+            ("", "const {my_var : a} = {my_var};", true),
+            ("", "var [a, b = my_var] = [1, 2];", true),
+            ("", "var [a, b = my_var] = [1, 2]; my_var;", true),
+            ("", "let [a, b = my_var] = [1, 2];", true),
+            ("", "let [a, b = my_var] = [1, 2]; my_var;", true),
+            ("", "const [a, b = my_var] = [1, 2];", true),
+            ("", "const [a, b = my_var] = [1, 2]; my_var;", true),
+            ("", "var {a = my_var} = {}", true),
+            ("", "var {a: b = my_var} = {}", true),
+            ("", "let {a = my_var} = {}", true),
+            ("", "let {a: b = my_var} = {}", true),
+            ("", "const {a = my_var} = {}", true),
+            ("", "const {a: b = my_var} = {}", true),
+            ("a = my_var", "", true),
+            ("a = my_var", "let my_var;", true),
+            ("", "function inner2(a = my_var) { }", true),
+            ("", "(a = my_var) => { }", true),
+            ("{a} = {a: my_var}", "", true),
+            ("", "function inner2({a} = {a: my_var}) { }", true),
+            ("", "({a} = {a: my_var}) => { }", true),
+            ("[a] = [my_var]", "", true),
+            ("", "function inner2([a] = [my_var]) { }", true),
+            ("", "([a] = [my_var]) => { }", true),
+            ("", "function inner2(a = eval('')) { }", true),
+            ("", "(a = eval('')) => { }", true),
+            ("", "try { } catch (my_var) { } my_var;", true),
+            ("", "for (my_var in {}) { my_var; }", true),
+            ("", "for (my_var in {}) { }", true),
+            ("", "for (my_var of []) { my_var; }", true),
+            ("", "for (my_var of []) { }", true),
+            ("", "for ([a, my_var, b] in {}) { my_var; }", true),
+            ("", "for ([a, my_var, b] of []) { my_var; }", true),
+            ("", "for ({x: my_var} in {}) { my_var; }", true),
+            ("", "for ({x: my_var} of []) { my_var; }", true),
+            ("", "for ({my_var} in {}) { my_var; }", true),
+            ("", "for ({my_var} of []) { my_var; }", true),
+            ("", "for ({y, x: my_var} in {}) { my_var; }", true),
+            ("", "for ({y, x: my_var} of []) { my_var; }", true),
+            ("", "for ({a, my_var} in {}) { my_var; }", true),
+            ("", "for ({a, my_var} of []) { my_var; }", true),
+            ("", "for (let my_var in {}) { } my_var;", true),
+            ("", "for (let my_var of []) { } my_var;", true),
+            ("", "for (let [a, my_var, b] in {}) { } my_var;", true),
+            ("", "for (let [a, my_var, b] of []) { } my_var;", true),
+            ("", "for (let {x: my_var} in {}) { } my_var;", true),
+            ("", "for (let {x: my_var} of []) { } my_var;", true),
+            ("", "for (let {my_var} in {}) { } my_var;", true),
+            ("", "for (let {my_var} of []) { } my_var;", true),
+            ("", "for (let {y, x: my_var} in {}) { } my_var;", true),
+            ("", "for (let {y, x: my_var} of []) { } my_var;", true),
+            ("", "for (let {a, my_var} in {}) { } my_var;", true),
+            ("", "for (let {a, my_var} of []) { } my_var;", true),
+            ("", "for (let my_var = 0; my_var < 1; ++my_var) { } my_var;", true),
+            ("", "'use strict'; if (true) { function my_var() {} } my_var;", true),
+            ("", "'use strict'; function inner2() { if (true) { function my_var() {} }  my_var; }", true),
+            ("", "function inner2() { 'use strict'; if (true) { function my_var() {} }  my_var; }", true),
+            ("", "() => { 'use strict'; if (true) { function my_var() {} }  my_var; }", true),
+            ("", "if (true) { let my_var; if (true) { function my_var() {} } } my_var;", true),
+            ("", "function inner2(a = my_var) {}", true),
+            ("", "function inner2(a = my_var) { let my_var; }", true),
+            ("", "(a = my_var) => {}", true),
+            ("", "(a = my_var) => { let my_var; }", true),
+            // No pessimistic context allocation:
+            ("", "var my_var; my_var;", false),
+            ("", "var my_var;", false),
+            ("", "var my_var = 0;", false),
+            ("", "if (true) { var my_var; } my_var;", false),
+            ("", "let my_var; my_var;", false),
+            ("", "let my_var;", false),
+            ("", "let my_var = 0;", false),
+            ("", "const my_var = 0; my_var;", false),
+            ("", "const my_var = 0;", false),
+            ("", "var [a, my_var] = [1, 2]; my_var;", false),
+            ("", "let [a, my_var] = [1, 2]; my_var;", false),
+            ("", "const [a, my_var] = [1, 2]; my_var;", false),
+            ("", "var {a: my_var} = {a: 3}; my_var;", false),
+            ("", "let {a: my_var} = {a: 3}; my_var;", false),
+            ("", "const {a: my_var} = {a: 3}; my_var;", false),
+            ("", "var {my_var} = {my_var: 3}; my_var;", false),
+            ("", "let {my_var} = {my_var: 3}; my_var;", false),
+            ("", "const {my_var} = {my_var: 3}; my_var;", false),
+            ("my_var", "my_var;", false),
+            ("my_var", "", false),
+            ("my_var = 5", "my_var;", false),
+            ("my_var = 5", "", false),
+            ("...my_var", "my_var;", false),
+            ("...my_var", "", false),
+            ("[a, my_var, b]", "my_var;", false),
+            ("[a, my_var, b]", "", false),
+            ("[a, my_var, b] = [1, 2, 3]", "my_var;", false),
+            ("[a, my_var, b] = [1, 2, 3]", "", false),
+            ("{x: my_var}", "my_var;", false),
+            ("{x: my_var}", "", false),
+            ("{x: my_var} = {x: 0}", "my_var;", false),
+            ("{x: my_var} = {x: 0}", "", false),
+            ("{my_var}", "my_var;", false),
+            ("{my_var}", "", false),
+            ("{my_var} = {my_var: 0}", "my_var;", false),
+            ("{my_var} = {my_var: 0}", "", false),
+            ("", "function inner2(my_var) { my_var; }", false),
+            ("", "function inner2(my_var) { }", false),
+            ("", "function inner2(my_var = 5) { my_var; }", false),
+            ("", "function inner2(my_var = 5) { }", false),
+            ("", "function inner2(...my_var) { my_var; }", false),
+            ("", "function inner2(...my_var) { }", false),
+            ("", "function inner2([a, my_var, b]) { my_var; }", false),
+            ("", "function inner2([a, my_var, b]) { }", false),
+            ("", "function inner2([a, my_var, b] = [1, 2, 3]) { my_var; }", false),
+            ("", "function inner2([a, my_var, b] = [1, 2, 3]) { }", false),
+            ("", "function inner2({x: my_var}) { my_var; }", false),
+            ("", "function inner2({x: my_var}) { }", false),
+            ("", "function inner2({x: my_var} = {x: 0}) { my_var; }", false),
+            ("", "function inner2({x: my_var} = {x: 0}) { }", false),
+            ("", "function inner2({my_var}) { my_var; }", false),
+            ("", "function inner2({my_var}) { }", false),
+            ("", "function inner2({my_var} = {my_var: 8}) { my_var; } ", false),
+            ("", "function inner2({my_var} = {my_var: 8}) { }", false),
+            ("", "my_var => my_var;", false),
+            ("", "my_var => { }", false),
+            ("", "(my_var = 5) => my_var;", false),
+            ("", "(my_var = 5) => { }", false),
+            ("", "(...my_var) => my_var;", false),
+            ("", "(...my_var) => { }", false),
+            ("", "([a, my_var, b]) => my_var;", false),
+            ("", "([a, my_var, b]) => { }", false),
+            ("", "([a, my_var, b] = [1, 2, 3]) => my_var;", false),
+            ("", "([a, my_var, b] = [1, 2, 3]) => { }", false),
+            ("", "({x: my_var}) => my_var;", false),
+            ("", "({x: my_var}) => { }", false),
+            ("", "({x: my_var} = {x: 0}) => my_var;", false),
+            ("", "({x: my_var} = {x: 0}) => { }", false),
+            ("", "({my_var}) => my_var;", false),
+            ("", "({my_var}) => { }", false),
+            ("", "({my_var} = {my_var: 5}) => my_var;", false),
+            ("", "({my_var} = {my_var: 5}) => { }", false),
+            ("", "({a, my_var}) => my_var;", false),
+            ("", "({a, my_var}) => { }", false),
+            ("", "({a, my_var} = {a: 0, my_var: 5}) => my_var;", false),
+            ("", "({a, my_var} = {a: 0, my_var: 5}) => { }", false),
+            ("", "({y, x: my_var}) => my_var;", false),
+            ("", "({y, x: my_var}) => { }", false),
+            ("", "({y, x: my_var} = {y: 0, x: 0}) => my_var;", false),
+            ("", "({y, x: my_var} = {y: 0, x: 0}) => { }", false),
+            ("", "try { } catch (my_var) { my_var; }", false),
+            ("", "try { } catch ([a, my_var, b]) { my_var; }", false),
+            ("", "try { } catch ({x: my_var}) { my_var; }", false),
+            ("", "try { } catch ({y, x: my_var}) { my_var; }", false),
+            ("", "try { } catch ({my_var}) { my_var; }", false),
+            ("", "for (let my_var in {}) { my_var; }", false),
+            ("", "for (let my_var in {}) { }", false),
+            ("", "for (let my_var of []) { my_var; }", false),
+            ("", "for (let my_var of []) { }", false),
+            ("", "for (let [a, my_var, b] in {}) { my_var; }", false),
+            ("", "for (let [a, my_var, b] of []) { my_var; }", false),
+            ("", "for (let {x: my_var} in {}) { my_var; }", false),
+            ("", "for (let {x: my_var} of []) { my_var; }", false),
+            ("", "for (let {my_var} in {}) { my_var; }", false),
+            ("", "for (let {my_var} of []) { my_var; }", false),
+            ("", "for (let {y, x: my_var} in {}) { my_var; }", false),
+            ("", "for (let {y, x: my_var} of []) { my_var; }", false),
+            ("", "for (let {a, my_var} in {}) { my_var; }", false),
+            ("", "for (let {a, my_var} of []) { my_var; }", false),
+            ("", "for (var my_var in {}) { my_var; }", false),
+            ("", "for (var my_var in {}) { }", false),
+            ("", "for (var my_var of []) { my_var; }", false),
+            ("", "for (var my_var of []) { }", false),
+            ("", "for (var [a, my_var, b] in {}) { my_var; }", false),
+            ("", "for (var [a, my_var, b] of []) { my_var; }", false),
+            ("", "for (var {x: my_var} in {}) { my_var; }", false),
+            ("", "for (var {x: my_var} of []) { my_var; }", false),
+            ("", "for (var {my_var} in {}) { my_var; }", false),
+            ("", "for (var {my_var} of []) { my_var; }", false),
+            ("", "for (var {y, x: my_var} in {}) { my_var; }", false),
+            ("", "for (var {y, x: my_var} of []) { my_var; }", false),
+            ("", "for (var {a, my_var} in {}) { my_var; }", false),
+            ("", "for (var {a, my_var} of []) { my_var; }", false),
+            ("", "for (var my_var in {}) { } my_var;", false),
+            ("", "for (var my_var of []) { } my_var;", false),
+            ("", "for (var [a, my_var, b] in {}) { } my_var;", false),
+            ("", "for (var [a, my_var, b] of []) { } my_var;", false),
+            ("", "for (var {x: my_var} in {}) { } my_var;", false),
+            ("", "for (var {x: my_var} of []) { } my_var;", false),
+            ("", "for (var {my_var} in {}) { } my_var;", false),
+            ("", "for (var {my_var} of []) { } my_var;", false),
+            ("", "for (var {y, x: my_var} in {}) { } my_var;", false),
+            ("", "for (var {y, x: my_var} of []) { } my_var;", false),
+            ("", "for (var {a, my_var} in {}) { } my_var;", false),
+            ("", "for (var {a, my_var} of []) { } my_var;", false),
+            ("", "for (let my_var = 0; my_var < 1; ++my_var) { my_var; }", false),
+            ("", "for (var my_var = 0; my_var < 1; ++my_var) { my_var; }", false),
+            ("", "for (var my_var = 0; my_var < 1; ++my_var) { } my_var; ", false),
+            ("", "for (let a = 0, my_var = 0; my_var < 1; ++my_var) { my_var }", false),
+            ("", "for (var a = 0, my_var = 0; my_var < 1; ++my_var) { my_var }", false),
+            ("", "class my_var {}; my_var; ", false),
+            ("", "function my_var() {} my_var;", false),
+            ("", "if (true) { function my_var() {} }  my_var;", false),
+            ("", "function inner2() { if (true) { function my_var() {} }  my_var; }", false),
+            ("", "() => { if (true) { function my_var() {} }  my_var; }", false),
+            ("", "if (true) { var my_var; if (true) { function my_var() {} } }  my_var;", false),
+        ];
+
+        foreach (string inner_function in inner_functions)
+        {
+            for (int i = 0; i < inners.Length; ++i)
+            {
+                string program = prefix +
+                                 string.Format(System.Globalization.CultureInfo.InvariantCulture, inner_function,
+                                               inners[i].@params, inners[i].source) +
+                                 suffix;
+
+                var script = new SourceScript(program, 1);
+                ParseInfo info = NewParseInfo(NewScriptFlags());
+
+                CHECK_PARSE_PROGRAM(info, script);
+
+                Scope scope = info.literal().scope().inner_scope();
+                Assert.NotNull(scope);
+                Assert.Null(scope.sibling());
+                Assert.True(scope.is_function_scope());
+                AstRawString var_name = info.ast_value_factory().GetOneByteString("my_var");
+                Variable var = scope.LookupForTesting(var_name);
+                Assert.True(inners[i].ctxt_allocate == ScopeTestHelper.MustAllocateInContext(var), program);
+            }
+        }
+    }
+
+    [Fact]
     public void EscapedStrictReservedWord()
     {
         // Test that identifiers which are both escaped and only reserved in the
@@ -11166,6 +11861,196 @@ public partial class ParsingTest
     }
 
     [Fact]
+    public void LexicalLoopVariable()
+    {
+        void TestProgram(string program, Action<ParseInfo, DeclarationScope> test)
+        {
+            var script = new SourceScript(program, 1);
+            UnoptimizedCompileFlags flags = NewScriptFlags();
+            flags.set_allow_lazy_parsing(false);
+            ParseInfo info = NewParseInfo(flags);
+            info.set_scope_info_provider(TestScopeInfoProvider.Instance);
+            CHECK_PARSE_PROGRAM(info, script);
+
+            DeclarationScope.AllocateScopeInfos(info, TestScopeInfoProvider.Instance);
+            Assert.NotNull(info.literal());
+
+            DeclarationScope script_scope = info.literal().scope();
+            Assert.True(script_scope.is_script_scope());
+
+            test(info, script_scope);
+        }
+
+        // Check `let` loop variables is a stack local when not captured by
+        // an eval or closure within the area of the loop body.
+        string[] local_bindings =
+        [
+            "function loop() {" +
+            "  for (let loop_var = 0; loop_var < 10; ++loop_var) {" +
+            "  }" +
+            "  eval('0');" +
+            "}",
+
+            "function loop() {" +
+            "  for (let loop_var = 0; loop_var < 10; ++loop_var) {" +
+            "  }" +
+            "  function foo() {}" +
+            "  foo();" +
+            "}",
+        ];
+        foreach (string source in local_bindings)
+        {
+            TestProgram(source, (info, s) =>
+            {
+                Scope fn = s.inner_scope();
+                Assert.True(fn.is_function_scope());
+
+                Scope loop_block = fn.inner_scope();
+                if (loop_block.is_function_scope()) loop_block = loop_block.sibling();
+                Assert.True(loop_block.is_block_scope());
+
+                AstRawString var_name = info.ast_value_factory().GetOneByteString("loop_var");
+                Variable loop_var = loop_block.LookupLocal(var_name);
+                Assert.NotNull(loop_var);
+                Assert.True(loop_var.IsStackLocal());
+                Assert.Equal(0, loop_block.ContextLocalCount());
+                Assert.Null(loop_block.inner_scope());
+            });
+        }
+
+        // Check `let` loop variable is not a stack local, and is duplicated in the
+        // loop body to ensure capturing can work correctly.
+        // In this version of the test, the inner loop block's duplicate `loop_var`
+        // binding is not captured, and is a local.
+        string[] context_bindings1 =
+        [
+            "function loop() {" +
+            "  for (let loop_var = eval('0'); loop_var < 10; ++loop_var) {" +
+            "  }" +
+            "}",
+
+            "function loop() {" +
+            "  for (let loop_var = (() => (loop_var, 0))(); loop_var < 10;" +
+            "       ++loop_var) {" +
+            "  }" +
+            "}",
+        ];
+        foreach (string source in context_bindings1)
+        {
+            TestProgram(source, (info, s) =>
+            {
+                Scope fn = s.inner_scope();
+                Assert.True(fn.is_function_scope());
+
+                Scope loop_block = fn.inner_scope();
+                Assert.True(loop_block.is_block_scope());
+
+                AstRawString var_name = info.ast_value_factory().GetOneByteString("loop_var");
+                Variable loop_var = loop_block.LookupLocal(var_name);
+                Assert.NotNull(loop_var);
+                Assert.True(loop_var.IsContextSlot());
+                Assert.Equal(1, loop_block.ContextLocalCount());
+
+                Variable loop_var2 = loop_block.inner_scope().LookupLocal(var_name);
+                Assert.NotSame(loop_var, loop_var2);
+                Assert.True(loop_var2.IsStackLocal());
+                Assert.Equal(0, loop_block.inner_scope().ContextLocalCount());
+            });
+        }
+
+        // Check `let` loop variable is not a stack local, and is duplicated in the
+        // loop body to ensure capturing can work correctly.
+        // In this version of the test, the inner loop block's duplicate `loop_var`
+        // binding is captured, and must be context allocated.
+        string[] context_bindings2 =
+        [
+            "function loop() {" +
+            "  for (let loop_var = 0; loop_var < 10; ++loop_var) {" +
+            "    eval('0');" +
+            "  }" +
+            "}",
+
+            "function loop() {" +
+            "  for (let loop_var = 0; loop_var < eval('10'); ++loop_var) {" +
+            "  }" +
+            "}",
+
+            "function loop() {" +
+            "  for (let loop_var = 0; loop_var < 10; eval('++loop_var')) {" +
+            "  }" +
+            "}",
+        ];
+
+        foreach (string source in context_bindings2)
+        {
+            TestProgram(source, (info, s) =>
+            {
+                Scope fn = s.inner_scope();
+                Assert.True(fn.is_function_scope());
+
+                Scope loop_block = fn.inner_scope();
+                Assert.True(loop_block.is_block_scope());
+
+                AstRawString var_name = info.ast_value_factory().GetOneByteString("loop_var");
+                Variable loop_var = loop_block.LookupLocal(var_name);
+                Assert.NotNull(loop_var);
+                Assert.True(loop_var.IsContextSlot());
+                Assert.Equal(1, loop_block.ContextLocalCount());
+
+                Variable loop_var2 = loop_block.inner_scope().LookupLocal(var_name);
+                Assert.NotSame(loop_var, loop_var2);
+                Assert.True(loop_var2.IsContextSlot());
+                Assert.Equal(1, loop_block.inner_scope().ContextLocalCount());
+            });
+        }
+
+        // Similar to the above, but the first block scope's variables are not
+        // captured due to the closure occurring in a nested scope.
+        string[] context_bindings3 =
+        [
+            "function loop() {" +
+            "  for (let loop_var = 0; loop_var < 10; ++loop_var) {" +
+            "    (() => loop_var)();" +
+            "  }" +
+            "}",
+
+            "function loop() {" +
+            "  for (let loop_var = 0; loop_var < (() => (loop_var, 10))();" +
+            "       ++loop_var) {" +
+            "  }" +
+            "}",
+
+            "function loop() {" +
+            "  for (let loop_var = 0; loop_var < 10; (() => ++loop_var)()) {" +
+            "  }" +
+            "}",
+        ];
+
+        foreach (string source in context_bindings3)
+        {
+            TestProgram(source, (info, s) =>
+            {
+                Scope fn = s.inner_scope();
+                Assert.True(fn.is_function_scope());
+
+                Scope loop_block = fn.inner_scope();
+                Assert.True(loop_block.is_block_scope());
+
+                AstRawString var_name = info.ast_value_factory().GetOneByteString("loop_var");
+                Variable loop_var = loop_block.LookupLocal(var_name);
+                Assert.NotNull(loop_var);
+                Assert.True(loop_var.IsStackLocal());
+                Assert.Equal(0, loop_block.ContextLocalCount());
+
+                Variable loop_var2 = loop_block.inner_scope().LookupLocal(var_name);
+                Assert.NotSame(loop_var, loop_var2);
+                Assert.True(loop_var2.IsContextSlot());
+                Assert.Equal(1, loop_block.inner_scope().ContextLocalCount());
+            });
+        }
+    }
+
+    [Fact]
     public void PrivateNamesSyntaxErrorEarly()
     {
         string[][] context_data = [
@@ -11207,6 +12092,63 @@ public partial class ParsingTest
     }
 
     [Fact]
+    public void HashbangSyntaxErrors()
+    {
+        string[][] file_context_data = [["", ""], [null, null]];
+        string[][] other_context_data =
+        [
+            ["/**/", ""],
+            ["//---\n", ""],
+            [";", ""],
+            ["function fn() {", "}"],
+            ["function* fn() {", "}"],
+            ["async function fn() {", "}"],
+            ["async function* fn() {", "}"],
+            ["() => {", "}"],
+            ["() => ", ""],
+            ["function fn(a = ", ") {}"],
+            ["function* fn(a = ", ") {}"],
+            ["async function fn(a = ", ") {}"],
+            ["async function* fn(a = ", ") {}"],
+            ["(a = ", ") => {}"],
+            ["(a = ", ") => a"],
+            ["class k {", "}"],
+            ["[", "]"],
+            ["{", "}"],
+            ["({", "})"],
+            [null, null],
+        ];
+
+        string[] invalid_hashbang_data =
+        [
+            // Encoded characters are not allowed
+            "#\\u0021\n" + "#\\u{21}\n",
+            "#\\x21\n",
+            "#\\041\n",
+            "\\u0023!\n",
+            "\\u{23}!\n",
+            "\\x23!\n",
+            "\\043!\n",
+            "\\u0023\\u0021\n",
+
+            "\n#!---IGNORED---\n",
+            " #!---IGNORED---\n",
+            null,
+        ];
+        string[] hashbang_data = ["#!\n", "#!---IGNORED---\n", null];
+
+        void SyntaxErrorTest(string[][] context_data, string[] data)
+        {
+            RunParserSyncTest(context_data, data, kError);
+            RunParserSyncTest(context_data, data, kError, null, 0, null, 0, null, 0, true);
+        }
+
+        SyntaxErrorTest(file_context_data, invalid_hashbang_data);
+        SyntaxErrorTest(other_context_data, invalid_hashbang_data);
+        SyntaxErrorTest(other_context_data, hashbang_data);
+    }
+
+    [Fact]
     public void LogicalAssignmentDestructuringErrors()
     {
         // clang-format off
@@ -11234,7 +12176,4 @@ public partial class ParsingTest
         // clang-format on
         RunParserSyncTest(context_data, error_data, kError);
     }
-
-    // Not ported: these tests run JavaScript or inspect heap objects, which the
-    // parser alone cannot do.
 }
