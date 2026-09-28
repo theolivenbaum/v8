@@ -97,7 +97,15 @@ implement, e.g. `intl402/Temporal/**  # SKIP: intl402 needs ICU` in
   dispatcher; `gc`, `%` natives and `v8GC` come from the engine's flags.
   d8's `--bundle` (`TryExecuteBundle`: scripts, modules and module entry
   points in one file) and `--compile-only` (v8sharp engine only) are
-  supported.
+  supported, as are `--json FILE` (`LoadJSON`), `--enable-tracing
+  --trace-config=FILE` (the file is parsed; there is no tracing), a missing
+  command-line file (`Error loading file`), and module completion
+  (`EmptyMessageQueues`, then a rejected or stalled top-level await). On the
+  v8sharp engine the console is d8's `D8Console` (V8Sharp.D8) behind the
+  engine's console builtins, runtime output (`%DebugPrint`,
+  `%DebugTraceMinimal`) goes into the test's stdout, and exceptions the
+  engine reports to message listeners (microtask and FinalizationRegistry
+  callbacks) are printed as d8's `PrintMessageCallback` does.
 - **Workers** (`Execution/`): V8 flags are process-global, so tests are
   grouped by (V8 flags, environment) and each group runs in a worker process
   (`--worker`) that sets the flags once and then runs its tests one at a time,

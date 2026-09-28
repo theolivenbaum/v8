@@ -3,7 +3,7 @@
 namespace V8Sharp.TestRunner.Shell;
 
 /// <summary>One script to run: a file (classic or module) or <c>-e</c> source.</summary>
-public sealed record ShellSource(string? Path, bool IsModule = false, string? EvalSource = null);
+public sealed record ShellSource(string? Path, bool IsModule = false, string? EvalSource = null, bool IsJson = false);
 
 public sealed class D8Options
 {
@@ -25,6 +25,10 @@ public sealed class D8Options
     public bool Bundle { get; set; }
     /// <summary>d8's --compile-only: scripts and modules are compiled, not run.</summary>
     public bool CompileOnly { get; set; }
+    /// <summary>--enable-tracing.</summary>
+    public bool EnableTracing { get; set; }
+    /// <summary>--trace-config=FILE: read and parsed with --enable-tracing (tracing itself is not implemented).</summary>
+    public string? TraceConfig { get; set; }
 
     /// <summary>Options d8 understands that the host ignores (reported for diagnostics).</summary>
     public List<string> Ignored { get; } = [];
@@ -34,7 +38,7 @@ public sealed class D8Options
     {
         "--test", "--notest", "--no-test", "--send-idle-notification", "--no-wait-for-background-tasks",
         "--dump-counters", "--dump-counters-nvp", "--dump-system-memory-stats", "--streaming-compile",
-        "--no-streaming-compile", "--nostreaming-compile", "--enable-tracing", "--enable-inspector",
+        "--no-streaming-compile", "--nostreaming-compile", "--enable-inspector",
         "--disable-in-process-stack-traces", "--enable-os-system", "--no-apply-priority", "--stress-delay-tasks",
         "--cpu-profiler", "--cpu-profiler-print", "--stress-deserialize",
         "--no-fuzzy-module-file-extensions", "--enable-etw-stack-walking", "--enable-system-instrumentation",
@@ -46,7 +50,7 @@ public sealed class D8Options
     // d8 options of the form --name=value.
     static readonly string[] s_ignoredD8OptionsWithValue =
     [
-        "--icu-data-file=", "--icu-locale=", "--snapshot_blob=", "--cache=", "--trace-path=", "--trace-config=",
+        "--icu-data-file=", "--icu-locale=", "--snapshot_blob=", "--cache=", "--trace-path=",
         "--lcov=", "--thread-pool-size=", "--repeat-compile=", "--max-serializer-memory=", "--perf-ctl-fd=",
         "--perf-ack-fd=", "--read-from-tcp-port=", "--scope-linux-perf-to-mark-measure=",
     ];
@@ -73,6 +77,12 @@ public sealed class D8Options
                 o.Sources.Add(new ShellSource(args[++i], IsModule: true));
                 continue;
             }
+            if (a == "--json" && i + 1 < args.Count)
+            {
+                // Treat the next file as a JSON file.
+                o.Sources.Add(new ShellSource(args[++i], IsJson: true));
+                continue;
+            }
             if (!a.StartsWith('-'))
             {
                 o.Sources.Add(new ShellSource(a, IsModule: a.EndsWith(".mjs", StringComparison.Ordinal)));
@@ -91,6 +101,12 @@ public sealed class D8Options
                 case "--invoke-weak-callbacks": o.InvokeWeakCallbacks = true; continue;
                 case "--bundle": o.Bundle = true; continue;
                 case "--compile-only": o.CompileOnly = true; continue;
+                case "--enable-tracing": o.EnableTracing = true; continue;
+            }
+            if (n.StartsWith("--trace-config=", StringComparison.Ordinal))
+            {
+                o.TraceConfig = a["--trace-config=".Length..];
+                continue;
             }
             if (s_ignoredD8Options.Contains(n) || Array.Exists(s_ignoredD8OptionsWithValue, p => n.StartsWith(p, StringComparison.Ordinal)))
             {

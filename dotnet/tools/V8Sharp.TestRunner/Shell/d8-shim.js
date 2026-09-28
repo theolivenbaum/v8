@@ -292,7 +292,7 @@
   // D8Console (src/d8/d8-console.cc), the console delegate behind V8's own
   // console object: the methods d8 implements print; the rest stay no-ops.
   const console = global.console;
-  if (console !== null && typeof console === 'object') {
+  if (!options.nativeConsole && console !== null && typeof console === 'object') {
     const timers = new Map();
     const origin = host('performanceNow');
     const label = (args) => args.length === 0 ? 'default' : `${args[0]}`;
