@@ -290,6 +290,19 @@ for now, to be revisited when the reason goes away.
   without a .NET frame; generators, async functions, class and derived
   constructors, builtins and wide-operand calls take the ordinary path through
   `Execution`/`InterpreterExecution.Invoke`.
+- Builtin calls: a builtin runs under a frame record of kind Builtin (V8's
+  builtin frame, so it shows in stack traces), in its function's context,
+  with register-stack slots reserved for recursion. A [[Call]] of a leaf
+  builtin (Math.*, the String.prototype searching and slicing methods,
+  Array.prototype.indexOf/includes/lastIndexOf/at on packed arrays,
+  Number.prototype.toString, String(), Number(), parseInt ...) whose receiver
+  and arguments are primitives that convert without side effects cannot call
+  JavaScript, throw or depend on the realm, so it skips all three
+  (Builtins/BuiltinFramelessCalls.cs). The call handlers first try the
+  Torque/CSA fast paths of the hottest builtins directly
+  (Builtins/BuiltinFastPaths.cs: Math.floor/ceil/round/trunc/abs/sqrt/max/min/
+  pow/atan2 on numbers, charCodeAt/charAt on a String and a Smi index,
+  toString() of a number, push/pop/shift), without BuiltinArguments.
 - Stack limit: V8's limit is on the machine stack; V8Sharp limits the
   register stack to `--stack-size` KB / 8 slots and reserves 16 slots for the
   construct stub, which puts the RangeError at about the recursion depth V8

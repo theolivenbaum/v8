@@ -605,11 +605,8 @@ public static partial class InterpreterExecution
             InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, 0, 0, default, default, pc + 1 + 3 * S);
             return true;
         }
-        // a.pop() / a.shift(): the builtins' CSA fast paths (BuiltinsArray.TryFastPop).
-        if (callee._obj is JSFunction { Shared.BuiltinId: Builtin.ArrayPrototypePop or Builtin.ArrayPrototypeShift } builtin &&
-            (builtin.Shared.BuiltinId == Builtin.ArrayPrototypePop
-                ? BuiltinsArray.TryFastPop(isolate, receiver, out JSValue fastResult)
-                : BuiltinsArray.TryFastShift(isolate, receiver, out fastResult)))
+        // a.pop(), a.shift(), n.toString(): the builtins' CSA fast paths.
+        if (BuiltinFastPaths.TryCall0(isolate, callee, receiver, out JSValue fastResult))
         {
             st.Accumulator = fastResult;
             return false;
@@ -645,11 +642,10 @@ public static partial class InterpreterExecution
                 return true;
             }
         }
-        // a.push(x): the builtin's CSA fast path (BuiltinsArray.TryFastPush).
-        if (callee._obj is JSFunction { Shared.BuiltinId: Builtin.ArrayPrototypePush } push &&
-            BuiltinsArray.TryFastPush(isolate, push, receiver, Reg<TS>(ref fp, ref code, pc + 1 + 2 * S), out JSValue pushResult))
+        // a.push(x), Math.floor(x), s.charCodeAt(i) ...: the builtins' CSA fast paths.
+        if (BuiltinFastPaths.TryCall1(isolate, callee, receiver, Reg<TS>(ref fp, ref code, pc + 1 + 2 * S), out JSValue fastResult))
         {
-            st.Accumulator = pushResult;
+            st.Accumulator = fastResult;
             return false;
         }
         st.Accumulator = InterpreterCalls.Call(isolate, callee, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
@@ -692,6 +688,13 @@ public static partial class InterpreterExecution
             {
                 return true;
             }
+        }
+        // Math.max(a, b), Math.pow(a, b) ...: the builtins' CSA fast paths.
+        if (BuiltinFastPaths.TryCall2(callee, Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1),
+                out JSValue fastResult))
+        {
+            st.Accumulator = fastResult;
+            return false;
         }
         st.Accumulator = InterpreterCalls.Call2(isolate, callee, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
             Unsafe.Subtract(ref fp, kRegBase + arg1), st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0, arg1 == arg0 - 1,
@@ -753,6 +756,11 @@ public static partial class InterpreterExecution
                 default, default, pc + 1 + 3 * S);
             return true;
         }
+        if (BuiltinFastPaths.TryCall1(isolate, callee, default(JSValue), Unsafe.Subtract(ref fp, kRegBase + argOperand), out JSValue fastResult))
+        {
+            st.Accumulator = fastResult;
+            return false;
+        }
         st.Accumulator = InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand,
             1, ConvertReceiverMode.NullOrUndefined);
         return false;
@@ -775,6 +783,12 @@ public static partial class InterpreterExecution
                 arg1 == arg0 - 1 ? st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0 : -1, 2,
                 Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1), pc + 1 + 4 * S);
             return true;
+        }
+        if (BuiltinFastPaths.TryCall2(callee, Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1),
+                out JSValue fastResult))
+        {
+            st.Accumulator = fastResult;
+            return false;
         }
         st.Accumulator = InterpreterCalls.Call2(isolate, callee, default(JSValue), Unsafe.Subtract(ref fp, kRegBase + arg0),
             Unsafe.Subtract(ref fp, kRegBase + arg1), st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0, arg1 == arg0 - 1,
