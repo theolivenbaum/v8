@@ -133,7 +133,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       InitializeExperimentalGlobal (Iterator.concat/zip/zipKeyed,
       Iterator.prototype.join/includes, queueMicrotask behind
       --enable-queue-microtask; Init/Genesis.{Iterator,Promise}.cs).
-      Missing: Intl, Temporal, shared structs, extras, extensions,
+      Temporal (lazily, Init/Genesis.Temporal.cs).
+      Missing: Intl, shared structs, extras, extensions,
       the TemplateLiteral map (interpreter port)
 - [x] interpreter: bytecodes, operands, array builder/writer, register
       optimizer, constant array builder, handler tables, control-flow builders,
@@ -290,8 +291,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       string formats and getters/setters (also run under TZ=America/New_York,
       Europe/London, Asia/Kolkata, America/Sao_Paulo), 770 JSON texts through
       parse+stringify. test262 (v8sharp, 2026-09-28): built-ins/{Number,Math,
-      BigInt,JSON,Date}/** 100% (Temporal's Date.prototype.toTemporalInstant
-      skipped). JSON revivers, replacer
+      BigInt,JSON,Date}/** 100% (Date.prototype.toTemporalInstant: see
+      Temporal below). JSON revivers, replacer
       functions and toJSON are checked against the oracle with API functions.
       Not ported: FastJsonStringifier and JSDataObjectBuilder (see
       deviations.md, JSON), the typed-array fast path of IterableForEach.
@@ -368,6 +369,7 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | 2026-09-28 | test262 | 84670 | 94901 | 89.2% | interpreter port complete (async, modules, eval); 98.8% without Temporal (9210). Remaining: import defer and source phase imports (not ported), ShadowRealm (124), Array.fromAsync, Atomics.waitAsync; expectations: tools/V8Sharp.TestRunner/expectations/test262.v8sharp.txt |
 | 2026-09-28 | mjsunit | 7074 | 7597 | 93.1% | clusters: Worker and d8 host features, optimization-status asserts, import defer (43), ShadowRealm/Wasm/shared structs; expectations: mjsunit.v8sharp.txt |
 | 2026-09-28 | test262 | 85199 | 85891 | 99.2% | engine conformance pass; left: import defer (180), dynamic-import/catch (128, modules), decorators (34, not in V8 either), bytes imports, ShadowRealm importValue, RegExp legacy accessors; expectations regenerated |
+| 2026-09-28 | test262 | 94545 | 95123 | 99.4% | Temporal ported: built-ins/Temporal 9210/9210, staging/Temporal 4/4, Date.prototype.toTemporalInstant 16/16; Temporal SKIP globs removed (intl402 still not run without i18n); 0 newly failing elsewhere |
 | 2026-09-28 | mjsunit | 7259 | 7597 | 95.6% | engine conformance pass (Sparkplug off by default: opt-proto-seq/* fail); see "Engine-side conformance: what is left"; expectations regenerated |
 
 Octane, interpreter only, after the interpreter performance pass
@@ -427,10 +429,30 @@ Crypto, RegExp). RayTrace, Splay and EarleyBoyer are dominated by allocation
 and GC (object = JSObject + JSValue[] fields) and by runtime paths
 (instanceof's @@hasInstance lookup), which the tier does not change.
 
-- [ ] Temporal: V8 15.6 implements it as a binding layer
-      (`src/objects/js-temporal-objects.cc`, `builtins-temporal.cc`) over the
-      Rust crate temporal_rs (`third_party/rust/temporal_capi`, not in this
-      checkout). Needs a C# implementation of the temporal_rs surface V8 uses.
+- [x] Temporal (`--harmony-temporal`, shipped and on by default in this
+      revision). The binding layer is ported from
+      `src/objects/js-temporal-objects.{h,cc,tq}` and
+      `src/builtins/builtins-temporal.cc` (`Objects/JSTemporalObjects.cs`,
+      `Builtins/Builtins.Temporal*.cs`: argument processing, option reading
+      order, MessageTemplate errors, CHECK_RECEIVER names), the Genesis install
+      and the lazy `Temporal` / `Date.prototype.toTemporalInstant` accessors
+      from `bootstrapper.cc` (`Init/Genesis.Temporal.cs`, including
+      InitializeLazyPartOfContext for GetDerivedMap), and
+      Date.prototype.toTemporalInstant from builtins-date.cc. The engine V8
+      calls (the Rust crate temporal_rs, not in this checkout) is implemented
+      in C# from the Temporal specification (`Temporal/`: ISO date/time
+      records and arithmetic, exact Int128/BigInteger durations, rounding
+      modes, the relative rounding machinery, the ISO 8601 / RFC 9557
+      grammar, formatting, offset and named time zones). test262
+      (v8sharp, 2026-09-28): built-ins/Temporal 9210/9210 runs,
+      staging/Temporal 4/4, built-ins/Date/prototype/toTemporalInstant 16/16,
+      staging/sm/Date/to-temporal-instant 2/2; mjsunit's temporal tests
+      (regress-temporal-zoneinfo, regress-46*, regress-49*, harmony/builtins-harmony-*)
+      pass. Missing / deviating (deviations.md "Temporal"): calendars other
+      than iso8601 (V8 has them from ICU4X), time zone data from .NET's
+      TimeZoneInfo instead of zoneinfo64, engine error message texts,
+      toLocaleString without Intl (as V8 without V8_INTL_SUPPORT), the
+      embedder's temporal_get_epoch_nanoseconds_callback.
 
 ### Engine-side conformance: what is left (2026-09-28)
 

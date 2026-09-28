@@ -748,3 +748,53 @@ Date
   forwarding `IteratorHelpers` class remains until every caller is switched
   (TODO(merge)).
 
+## Temporal
+
+- **The engine behind the binding.** V8 implements Temporal as a binding
+  layer (`js-temporal-objects.cc`, `builtins-temporal.cc`) over the Rust
+  crate temporal_rs (`third_party/rust/temporal_capi`), which is not in this
+  checkout. The binding is ported; everything V8 hands to temporal_rs
+  ("Rest of the steps handled in Rust") is implemented in C# from the
+  Temporal specification's abstract operations in `src/V8Sharp/Temporal/`
+  (`temporal_rs::Foo` becomes `V8Sharp.Temporal.Foo`). A JSTemporal* object
+  holds the engine value directly instead of a CppGCManaged pointer, and an
+  engine error is a `TemporalError` exception that the builtins' wrapper
+  turns into the JS error ExtractRustResult would create. Where test262 and
+  an older spec text disagree, test262 wins (PlainYearMonth.prototype.add
+  rejects units below months, the rounding window of
+  proposal-temporal#3168, month-day strings ignore the year).
+- **Engine error messages.** The kTemporal messages of the binding are V8's
+  text; the messages of errors raised inside the engine are V8Sharp's own
+  (temporal_rs's texts are not available). The error types match.
+- **Calendars.** Only `iso8601` is available. V8 builds temporal_rs with
+  ICU4X's calendar data even without `V8_INTL_SUPPORT`, so it also accepts
+  `gregory`, `japanese`, `hebrew` ...; V8Sharp has no calendar data (no ICU,
+  architecture.md section 2) and throws RangeError for them. test262's
+  built-ins/Temporal uses only iso8601; the other calendars are tested in
+  intl402, which does not run without i18n.
+- **Time zone data.** V8 reads the IANA database from ICU's zoneinfo64.res
+  (compiled into the binary for no-ICU builds, js-temporal-zoneinfo64.cc)
+  through temporal_rs's provider. V8Sharp uses .NET's `TimeZoneInfo` (the
+  host's /usr/share/zoneinfo on Linux); the available identifiers are
+  TimeZoneInfo's plus the zoneinfo directory's names. Consequences: the
+  data version is the host's; offsets are TimeZoneInfo's (local mean time
+  offsets such as New York's -4:56:02 come out rounded to whole minutes, and
+  so do the transitions out of them); instants after
+  9999 reuse the rules of the same point in the 400-year Gregorian cycle and
+  instants before year 1 the offset of year 1; transitions
+  (getTimeZoneTransition, GetStartOfDay in a gap) are found by scanning the
+  offsets day by day from 1800 to 450 years ahead and bisecting, so
+  transitions less than a day apart can be merged; link names are not
+  resolved to their primary identifier for TimeZoneEquals, except the
+  aliases of UTC. UTC and offset time zones do not use the provider and are
+  exact.
+- **System time zone and clock.** As in V8 without `V8_INTL_SUPPORT`,
+  `Temporal.Now.timeZoneId()` is "UTC". The embedder's
+  `temporal_get_epoch_nanoseconds_callback` (v8::Isolate API) is not ported;
+  SystemUTCEpochNanoseconds reads `DateTime.UtcNow` (100 ns resolution).
+- **toLocaleString** is toString with default options, as in V8 without
+  `V8_INTL_SUPPORT`.
+- **Builtin registration.** The Temporal builtins are registered by
+  reflection over `TemporalBuiltins` (method name = Builtin id) instead of
+  233 explicit Register lines.
+

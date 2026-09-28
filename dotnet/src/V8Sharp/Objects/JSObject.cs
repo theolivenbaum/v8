@@ -458,6 +458,8 @@ public partial class JSObject
                 return new JSRawJson(map);
             case InstanceType.JSShadowRealmType:
                 return new JSShadowRealm(map);
+            case >= InstanceType.JSTemporalDurationType and <= InstanceType.JSTemporalZonedDateTimeType:
+                return JSTemporalObject.AllocateTemporalForMap(map);
             case InstanceType.JSExternalObjectType:
                 return new JSExternalObject(map);
             case InstanceType.JSProxyType:
@@ -599,6 +601,8 @@ public partial class JSObject
             case InstanceType.JSExternalObjectType:
                 return kHeaderSize + 2 * kTagged;
             case InstanceType.JSShadowRealmType:
+                return kHeaderSize + kTagged;
+            case >= InstanceType.JSTemporalDurationType and <= InstanceType.JSTemporalZonedDateTimeType:
                 return kHeaderSize + kTagged;
             case InstanceType.JSStringIteratorType:
                 return kHeaderSize + 2 * kTagged;
