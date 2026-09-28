@@ -27,3 +27,7 @@ mjsunit/iterable-foreach
 mjsunit/harmony/shadowrealm-evaluate
 mjsunit/harmony/shadowrealm-callsite-throw
 mjsunit/regexp-lookahead-experimental
+mjsunit/realm-property-access
+mjsunit/global-proxy-globalThis
+mjsunit/regress/regress-crbug-1321899-1
+mjsunit/regress/regress-crbug-1339722-4

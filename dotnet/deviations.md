@@ -228,8 +228,14 @@ Execution
 - The `Builtin` enum includes the Torque builtins; implementations are
   registered by id in `BuiltinRegistry`. Calling an unregistered builtin throws
   `NotImplementedException`.
-- Interceptors, access checks, API templates beyond `FunctionTemplateInfo` and
+- Interceptors and API templates beyond `FunctionTemplateInfo` and
   signatures are not ported (no embedder API).
+- Access checks (`Isolate::MayAccess`, `ReportFailedAccessCheck`,
+  `DetachGlobal`) are ported for global proxies only: with no embedder API
+  there is no `AccessCheckInfo`, so an access is allowed exactly when the
+  security tokens match and a failed check always throws TypeError kNoAccess
+  (V8's behaviour without a FailedAccessCheckCallback). `DetachGlobal` does
+  not create V8's `global_proxy_for_api` copy.
 - `ElementsAccessor` uses virtual dispatch instead of CRTP; shared-array and
   Atomics entry points are not ported.
 - `KeyAccumulator` does not use the prototype-info enum cache.
@@ -522,8 +528,8 @@ Date
   to move to the promise (MoveMessageToPromise): the message travels with the
   JavaScriptException. Debug events and async stack tagging are not ported.
 - **Promise constructor**: V8 checks Builtins::AllowDynamicFunction for the
-  executor's context (access checks); V8Sharp has no access checks, so the
-  check is omitted.
+  executor's context through the embedder's code-generation callback;
+  V8Sharp has no such callback, so the check is omitted.
 - **Collection constructors**: V8's GotoIfInitialAddFunctionModified checks
   the prototype map and the constness of the add function's descriptor;
   V8Sharp checks the prototype map and the current property value, which is

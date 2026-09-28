@@ -303,10 +303,12 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
         }
     }
 
-    // Deviation: V8Sharp has no detached global proxies yet; Realm.detachGlobal
-    // and Realm.navigate leave the old global reachable.
     public void DetachGlobal()
     {
+        using (owner.Enter())
+        {
+            Isolate.DetachGlobal(Context);
+        }
     }
 
     public void Dispose()

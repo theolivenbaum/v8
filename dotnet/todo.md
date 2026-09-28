@@ -110,7 +110,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Tests: object-unittest, test-field-type-tracking, dictionary-unittest,
       hashcode-unittest, test-orderedhashtable (OrderedHashMap/Set),
       test-strings (non-JS), elements-kind-unittest, test-transitions.
-      Missing: interceptors and access checks, shared/Atomics elements,
+      Missing: interceptors (access checks: global proxies only), shared/Atomics elements,
       SmallOrderedHashTable, the JS-running tests of those files
       (StoreToConstantField_*, HoleyHeapNumber, the JS parts of test-strings)
 - [~] Isolate, Factory, roots, StringTable, MessageTemplate, error creation,

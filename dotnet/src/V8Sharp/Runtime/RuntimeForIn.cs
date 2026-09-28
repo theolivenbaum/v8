@@ -112,7 +112,9 @@ public static class RuntimeForIn
                 case LookupIterator.StateKind.INTERCEPTOR:
                     continue;
                 case LookupIterator.StateKind.ACCESS_CHECK:
-                    continue;
+                    if (it.HasAccess()) continue;
+                    // JSObject::GetPropertyAttributesWithFailedAccessCheck (no interceptors).
+                    return isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
                 case LookupIterator.StateKind.TYPED_ARRAY_INDEX_NOT_FOUND:
                     // TypedArray out-of-bounds access.
                     return JSValue.Undefined;

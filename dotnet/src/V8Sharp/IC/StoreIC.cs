@@ -240,6 +240,12 @@ public sealed class StoreIC : IC
                     // Runtime_DefineNamedOwnIC_Slow.
                     JSReceiver.CreateDataProperty(isolate, receiver, new PropertyKey(isolate, name), value, null);
                 }
+                else if (FeedbackMetadata.IsDefineKeyedOwnICKind(kind))
+                {
+                    // Runtime_DefineKeyedOwnIC_Slow: private names must throw when
+                    // already defined (the global proxy's slow handler relies on it).
+                    RuntimeObject.DefineObjectOwnProperty(isolate, receiver, name, value, StoreOrigin.MaybeKeyed);
+                }
                 else
                 {
                     RuntimeObject.SetObjectProperty(isolate, receiver, name, value, StoreOrigin.MaybeKeyed);
@@ -275,7 +281,9 @@ public sealed class StoreIC : IC
                 case LookupIterator.StateKind.INTERCEPTOR:
                     return true;
                 case LookupIterator.StateKind.ACCESS_CHECK:
-                    continue;
+                    // ICs know how to perform access checks on global proxies.
+                    if (!_isolate.IsAccessCheckNeeded(it.GetHolder<JSObject>())) continue;
+                    return false;
                 case LookupIterator.StateKind.ACCESSOR:
                     return !it.IsReadOnly;
                 case LookupIterator.StateKind.TYPED_ARRAY_INDEX_NOT_FOUND:

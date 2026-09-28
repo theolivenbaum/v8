@@ -33,6 +33,8 @@ public abstract partial class JSReceiver
                     continue;
                 case LookupIterator.StateKind.ACCESS_CHECK:
                     if (it.HasAccess()) continue;
+                    // JSObject::GetPropertyAttributesWithFailedAccessCheck.
+                    it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
                     return false;
                 case LookupIterator.StateKind.TYPED_ARRAY_INDEX_NOT_FOUND:
                     // TypedArray out-of-bounds access.
@@ -194,6 +196,11 @@ public abstract partial class JSReceiver
             switch (it.State)
             {
                 case LookupIterator.StateKind.ACCESS_CHECK:
+                    if (!it.HasAccess())
+                    {
+                        isolate.ReportFailedAccessCheck(it.GetReceiver().As<JSObject>());
+                        return false;
+                    }
                     continue;
                 case LookupIterator.StateKind.DATA:
                     if (isDefine)
@@ -591,6 +598,8 @@ public abstract partial class JSReceiver
                     continue;
                 case LookupIterator.StateKind.ACCESS_CHECK:
                     if (it.HasAccess()) continue;
+                    // JSObject::GetPropertyAttributesWithFailedAccessCheck.
+                    it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
                     return PropertyAttributes.ABSENT;
                 case LookupIterator.StateKind.TYPED_ARRAY_INDEX_NOT_FOUND:
                     return PropertyAttributes.ABSENT;
@@ -678,6 +687,7 @@ public abstract partial class JSReceiver
                     return ObjectOps.ReturnFailure(isolate, ShouldThrow.ThrowOnError, MessageTemplate.WasmObjectsAreOpaque);
                 case LookupIterator.StateKind.ACCESS_CHECK:
                     if (it.HasAccess()) continue;
+                    isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
                     return false;
                 case LookupIterator.StateKind.INTERCEPTOR:
                     continue;
@@ -837,7 +847,11 @@ public abstract partial class JSReceiver
         var it = new LookupIterator(isolate, obj, key, LookupIterator.Configuration.OWN);
 
         // Deal with access checks first.
-        while (it.State == LookupIterator.StateKind.ACCESS_CHECK) it.Next();
+        if (it.State == LookupIterator.StateKind.ACCESS_CHECK)
+        {
+            if (!it.HasAccess()) isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
+            it.Next();
+        }
 
         // 1. Let current be O.[[GetOwnProperty]](P).
         var current = new PropertyDescriptor();
@@ -1143,8 +1157,12 @@ public abstract partial class JSReceiver
             return JSProxy.GetOwnPropertyDescriptor(isolate, proxy, it.GetName(), ref desc);
         }
 
-        // Skip access checks (they always succeed) before the property itself.
-        while (it.State == LookupIterator.StateKind.ACCESS_CHECK) it.Next();
+        // Request to deal with access checks through GetPropertyAttributes if needed.
+        if (it.State == LookupIterator.StateKind.ACCESS_CHECK)
+        {
+            if (!it.HasAccess()) it.Isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
+            it.Next();
+        }
 
         // 2. If O does not have an own property with key P, return undefined.
         PropertyAttributes attrs = JSObject.GetPropertyAttributes(ref it);

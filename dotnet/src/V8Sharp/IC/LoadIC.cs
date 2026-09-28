@@ -265,7 +265,9 @@ public sealed class LoadIC : IC
                     // Interceptors are not ported (no embedder API).
                     continue;
                 case LookupIterator.StateKind.ACCESS_CHECK:
-                    continue;
+                    // ICs know how to perform access checks on global proxies.
+                    if (!it.Isolate.IsAccessCheckNeeded(it.GetHolder<JSObject>())) continue;
+                    return;
                 case LookupIterator.StateKind.MODULE_NAMESPACE:
                     continue;
                 case LookupIterator.StateKind.ACCESSOR:

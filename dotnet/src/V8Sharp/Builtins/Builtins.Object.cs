@@ -583,7 +583,9 @@ public static class BuiltinsObject
                     throw new InvalidOperationException("unreachable");
 
                 case LookupIterator.StateKind.ACCESS_CHECK:
-                    continue;
+                    if (it.HasAccess()) continue;
+                    isolate.ReportFailedAccessCheck(it.GetHolder<JSObject>());
+                    return JSValue.Undefined;
 
                 case LookupIterator.StateKind.JSPROXY:
                 {

@@ -434,8 +434,14 @@ public struct LookupIterator
         ObjectOps.GetPrototypeChainRootMap(_lookupStartObject, _isolate).Prototype
         ?? throw new InvalidOperationException("null prototype chain root");
 
-    /// <summary>LookupIterator::HasAccess: the embedder's security check (always true: one security token).</summary>
-    public readonly bool HasAccess() => true;
+    /// <summary>LookupIterator::HasAccess: Isolate::MayAccess from the current native context.</summary>
+    public readonly bool HasAccess()
+    {
+        // ICs and builtins can run a lookup without a context (the bootstrapper);
+        // V8 DCHECKs a context, V8Sharp grants access then.
+        Context? context = _isolate.Context;
+        return context is null || _isolate.MayAccess(context.NativeContext, GetHolder<JSObject>());
+    }
 
     readonly JSReceiver? NextHolder(Map map)
     {
