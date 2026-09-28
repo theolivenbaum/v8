@@ -7,9 +7,10 @@
 // CreateJSProxyMaps, CreateNewGlobals, InitializeMapCaches, InitializeGlobal
 // (Genesis.InitializeGlobal.cs), InitializeIteratorFunctions,
 // InitializeCallSiteBuiltins and InstallABunchOfRandomThings.
-// Not ported yet (see todo.md): Intl, Temporal, ArrayBuffer, SharedArrayBuffer,
-// Atomics, TypedArrays, DataView, DisposableStack, shared structs, extras
-// bindings, extensions and API global templates.
+// ArrayBuffer, SharedArrayBuffer, Atomics, TypedArrays and DataView are in
+// Genesis.TypedArrays.cs. Not ported yet (see todo.md): Intl, Temporal,
+// DisposableStack, shared structs, extras bindings, extensions and API global
+// templates.
 namespace V8Sharp.Init;
 
 sealed partial class Genesis
@@ -50,6 +51,9 @@ sealed partial class Genesis
         InstallErrorStackAccessorFunctions();
 
         _nativeContext.MicrotaskQueue = microtaskQueue ?? isolate.DefaultMicrotaskQueue;
+
+        // Install experimental natives (Genesis::InitializeExperimentalGlobal).
+        InitializeExperimentalGlobalTypedArrays();
 
         // Store String.prototype's map again in case it has been changed by
         // experimental natives.
