@@ -241,6 +241,20 @@ public class PromiseBuiltinsTest : CoreBuiltinsTest
     }
 
     [Fact]
+    public void ResolveProtector()
+    {
+        Assert.True(Protectors.IsPromiseResolveLookupChainIntact(i_isolate));
+        Assert.Same(ReadOnlyRoots.resolve_string, factory.InternalizeString("resolve"));
+        Assert.False(i_isolate.BootstrapperActive);
+        Assert.NotNull(((JSFunction)G("Promise").Object).GetCreationContext());
+        LookupIterator.UpdateProtector(i_isolate, G("Promise"), ReadOnlyRoots.resolve_string);
+        Assert.False(Protectors.IsPromiseResolveLookupChainIntact(i_isolate));
+        Assert.Equal(InstanceType.JSPromiseConstructorType, ((JSFunction)G("Promise").Object).Map.InstanceType);
+        Set(G("Promise"), "resolve", Fn((_, _) => default));
+        Assert.False(Protectors.IsPromiseResolveLookupChainIntact(i_isolate));
+    }
+
+    [Fact]
     public void ContextPromiseHooks()
     {
         var hooks = new List<string>();

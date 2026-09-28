@@ -1151,6 +1151,9 @@ public struct LookupIterator
         if (isolate.BootstrapperActive) return;
         if (receiverGeneric.HeapObjectOrNull is not JSObject receiver) return;
         NativeContext? nc = receiver.GetCreationContext();
+        // The checks read receiver.Map.InstanceType: HeapObject.InstanceType is
+        // fixed at allocation, and Genesis retypes the Array, Promise and RegExp
+        // constructors' maps (SetConstructorInstanceType) afterwards.
 
         if (ReferenceEquals(name, ReadOnlyRoots.constructor_string))
         {
@@ -1199,25 +1202,25 @@ public struct LookupIterator
         }
         else if (ReferenceEquals(name, ReadOnlyRoots.next_string))
         {
-            if (receiver.InstanceType == InstanceType.JSArrayIteratorType ||
+            if (receiver.Map.InstanceType == InstanceType.JSArrayIteratorType ||
                 (nc is not null && IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.INITIAL_ARRAY_ITERATOR_PROTOTYPE_INDEX])))
             {
                 // Setting the next property of %ArrayIteratorPrototype% also needs to
                 // invalidate the array iterator protector.
                 if (Protectors.IsArrayIteratorLookupChainIntact(isolate)) Protectors.InvalidateArrayIteratorLookupChain(isolate);
             }
-            else if (receiver.InstanceType is InstanceType.JSMapKeyIteratorType or InstanceType.JSMapKeyValueIteratorType
+            else if (receiver.Map.InstanceType is InstanceType.JSMapKeyIteratorType or InstanceType.JSMapKeyValueIteratorType
                          or InstanceType.JSMapValueIteratorType ||
                      (nc is not null && IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.INITIAL_MAP_ITERATOR_PROTOTYPE_INDEX])))
             {
                 if (Protectors.IsMapIteratorLookupChainIntact(isolate)) Protectors.InvalidateMapIteratorLookupChain(isolate);
             }
-            else if (receiver.InstanceType is InstanceType.JSSetKeyValueIteratorType or InstanceType.JSSetValueIteratorType ||
+            else if (receiver.Map.InstanceType is InstanceType.JSSetKeyValueIteratorType or InstanceType.JSSetValueIteratorType ||
                      (nc is not null && IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.INITIAL_SET_ITERATOR_PROTOTYPE_INDEX])))
             {
                 if (Protectors.IsSetIteratorLookupChainIntact(isolate)) Protectors.InvalidateSetIteratorLookupChain(isolate);
             }
-            else if (receiver.InstanceType == InstanceType.JSStringIteratorType ||
+            else if (receiver.Map.InstanceType == InstanceType.JSStringIteratorType ||
                      (nc is not null && IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.INITIAL_STRING_ITERATOR_PROTOTYPE_INDEX])))
             {
                 // Setting the next property of %StringIteratorPrototype% invalidates the
@@ -1229,7 +1232,7 @@ public struct LookupIterator
         {
             // Setting the Symbol.species property of any Array, Promise or TypedArray
             // constructor invalidates the @@species protector
-            InstanceType t = receiver.InstanceType;
+            InstanceType t = receiver.Map.InstanceType;
             if (t == InstanceType.JSArrayConstructorType)
             {
                 if (Protectors.IsArraySpeciesLookupChainIntact(isolate)) Protectors.InvalidateArraySpeciesLookupChain(isolate);
@@ -1261,14 +1264,14 @@ public struct LookupIterator
                 if (oldValue is JSValue o && value is JSValue v && o.IsIdenticalTo(v)) return;
                 Protectors.InvalidateArrayIteratorLookupChain(isolate);
             }
-            else if (receiver.InstanceType is InstanceType.JSSetType or InstanceType.JSSetKeyValueIteratorType
+            else if (receiver.Map.InstanceType is InstanceType.JSSetType or InstanceType.JSSetKeyValueIteratorType
                          or InstanceType.JSSetValueIteratorType ||
                      (nc is not null && (IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.INITIAL_SET_ITERATOR_PROTOTYPE_INDEX]) ||
                                          IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.INITIAL_SET_PROTOTYPE_INDEX]))))
             {
                 if (Protectors.IsSetIteratorLookupChainIntact(isolate)) Protectors.InvalidateSetIteratorLookupChain(isolate);
             }
-            else if (receiver.InstanceType is InstanceType.JSMapKeyIteratorType or InstanceType.JSMapKeyValueIteratorType
+            else if (receiver.Map.InstanceType is InstanceType.JSMapKeyIteratorType or InstanceType.JSMapKeyValueIteratorType
                          or InstanceType.JSMapValueIteratorType ||
                      (nc is not null && IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.INITIAL_MAP_ITERATOR_PROTOTYPE_INDEX])))
             {
@@ -1293,7 +1296,7 @@ public struct LookupIterator
             if (!Protectors.IsPromiseResolveLookupChainIntact(isolate)) return;
             // Setting the "resolve" property on any %Promise% intrinsic object
             // invalidates the Promise.resolve protector.
-            if (receiver.InstanceType == InstanceType.JSPromiseConstructorType)
+            if (receiver.Map.InstanceType == InstanceType.JSPromiseConstructorType)
             {
                 Protectors.InvalidatePromiseResolveLookupChain(isolate);
             }
