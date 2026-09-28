@@ -79,11 +79,11 @@ public enum InstanceType : ushort
 
     // JSReceivers. Keep JSProxyType first: FIRST_JS_RECEIVER_TYPE.
     JSProxyType,
+    // FIRST_JS_OBJECT_TYPE: everything from here is a JSObject.
     JSGlobalObjectType,
     JSGlobalProxyType,
     JSSpecialApiObjectType,
     JSPrimitiveWrapperType,
-    // FIRST_JS_OBJECT_TYPE: everything from here is a JSObject.
     JSApiObjectType,
     JSObjectType,
     JSArgumentsObjectType,
@@ -139,6 +139,7 @@ public enum InstanceType : ushort
     JSBoundFunctionType,
     // FIRST_JS_FUNCTION_TYPE: JSFunction and its subtypes.
     JSFunctionType,
+    JSFunctionWithoutPrototypeType,
     JSClassConstructorType,
     JSPromiseConstructorType,
     JSArrayConstructorType,
@@ -153,7 +154,7 @@ public static class InstanceTypeChecks
     public const InstanceType LastString = InstanceType.ThinStringType;
     public const InstanceType LastName = InstanceType.SymbolType;
     public const InstanceType FirstJSReceiver = InstanceType.JSProxyType;
-    public const InstanceType FirstJSObject = InstanceType.JSApiObjectType;
+    public const InstanceType FirstJSObject = InstanceType.JSGlobalObjectType;
     public const InstanceType FirstJSFunction = InstanceType.JSFunctionType;
     public const InstanceType LastJSFunction = InstanceType.JSRegExpConstructorType;
 
