@@ -207,7 +207,18 @@ public sealed class MicrotaskQueue(Isolate isolate)
                 _size--;
                 _start = (_start + 1) & (_capacity - 1);
 
-                RunSingleMicrotask(isolate, currentContext, microtask);
+                // Stash the microtask for async stack trace captures
+                // (RootIndex::kCurrentMicrotask), cleared again afterwards.
+                Microtask? previousMicrotask = isolate.CurrentMicrotask;
+                isolate.CurrentMicrotask = microtask;
+                try
+                {
+                    RunSingleMicrotask(isolate, currentContext, microtask);
+                }
+                finally
+                {
+                    isolate.CurrentMicrotask = previousMicrotask;
+                }
                 _finishedMicrotaskCount++;
             }
         }

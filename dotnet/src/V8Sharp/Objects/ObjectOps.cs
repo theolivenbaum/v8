@@ -741,7 +741,7 @@ public static class ObjectOps
             else if (x.HeapObjectOrNull is JSReceiver xr)
             {
                 if (y.IsJSReceiver) return x.IsIdenticalTo(y);
-                // null and undefined are undetectable oddballs in V8.
+                // V8: null and undefined are undetectable oddballs.
                 if (IsUndetectableOrNullish(y)) return IsUndetectable(x);
                 if (y.IsBoolean)
                 {

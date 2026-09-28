@@ -75,6 +75,7 @@ public sealed class Map : HeapObject
         {
             _inobjectPropertiesStartOrConstructorFunctionIndex = 0;
         }
+        BitField2 = Bits2.NewTargetIsBaseBit;
         BitField3 = Bits3.EnumLength.Encode(kInvalidEnumCacheSentinel) | Bits3.OwnsDescriptorsBit | Bits3.IsExtensibleBit;
         SetElementsKind(elementsKind);
         SetInObjectUnusedPropertyFields(inobjectProperties);

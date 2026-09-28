@@ -202,7 +202,7 @@ public sealed partial class ScopeInfo : IScopeInfo
         // The inferred function name is taken from the SFI.
         if (hasInferredFunctionName) scopeInfo.InferredFunctionNameValue = ReadOnlyRoots.empty_string;
 
-        if (scope.is_module_scope()) scopeInfo.ModuleInfo = scope.AsModuleScope().module();
+        if (scope.is_module_scope()) scopeInfo.ModuleInfo = SourceTextModuleInfo.New(factory, scope.AsModuleScope().module()!);
 
         if (scope.is_function_scope())
         {

@@ -146,6 +146,18 @@ public readonly struct JSValue : IEquatable<JSValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public T As<T>() where T : HeapObject => (T)_obj!;
 
+    /// <summary>
+    /// <see cref="As{T}"/> without the type check, for values whose type an
+    /// invariant guarantees (bytecode constants and the registers the bytecode
+    /// generator reserves): the checked cast of a non-sealed class is a helper call.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal T UncheckedAs<T>() where T : HeapObject
+    {
+        Debug.Assert(_obj is T);
+        return Unsafe.As<T>(_obj!);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public T? AsOrNull<T>() where T : HeapObject => _obj as T;
 

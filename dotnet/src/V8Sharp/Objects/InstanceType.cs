@@ -66,6 +66,7 @@ public enum InstanceType : ushort
     SourceTextModuleType,
     SyntheticModuleType,
     ModuleRequestType,
+    SourceTextModuleInfoEntryType,
     CallSiteInfoType,
     ErrorStackDataType,
     InterpreterDataType,

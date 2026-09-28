@@ -6,9 +6,8 @@
 // path), plus TemplateObjectDescription::GetTemplateObject
 // (src/objects/template-objects.cc) behind GetTemplateObject.
 //
-// V8Sharp has no allocation mementos: the AllocationSites are created and
-// hold the boilerplates, but elements-kind transitions of literal copies are
-// not fed back into them (see deviations.md).
+// V8's AllocationMementos are the JSArray.AllocationMementoSite field (see
+// deviations.md).
 using V8Sharp.Interpreter;
 using V8Sharp.RegExp;
 
@@ -83,7 +82,9 @@ public static class RuntimeLiterals
         }
 
         // Copy the existing boilerplate.
-        return DeepCopy(isolate, boilerplate);
+        bool enableMementos = (flags & kDisableMementos) == 0;
+        var usageContext = new AllocationSiteUsageContext(site, enableMementos);
+        return DeepCopy(isolate, boilerplate, ref usageContext);
     }
 
     /// <summary>
@@ -160,13 +161,47 @@ public static class RuntimeLiterals
         return nested;
     }
 
+    /// <summary>
+    /// AllocationSiteUsageContext: walks the nested sites in the order
+    /// DeepWalk created them, and decides which copies get a memento.
+    /// </summary>
+    struct AllocationSiteUsageContext(AllocationSite topSite, bool activated)
+    {
+        AllocationSite? _current;
+
+        public AllocationSite EnterNewScope()
+        {
+            // Advance to the next nested site (the first scope is the top site).
+            _current = _current is null ? topSite : _current.NestedSite!;
+            return _current;
+        }
+
+        public readonly bool ShouldCreateMemento(JSObject obj) =>
+            activated && AllocationSite.CanTrack(obj.Map.InstanceType) && AllocationSite.ShouldTrack(obj.GetElementsKind());
+    }
+
     /// <summary>DeepCopy with the AllocationSiteUsageContext (JSObjectWalkVisitor with kCopying).</summary>
-    public static JSObject DeepCopy(Isolate isolate, JSObject obj)
+    static JSObject DeepCopy(Isolate isolate, JSObject obj, ref AllocationSiteUsageContext siteContext) =>
+        StructureWalk(isolate, obj, ref siteContext, siteContext.EnterNewScope());
+
+    /// <summary>JSObjectWalkVisitor::VisitElementOrProperty: nested object literals get no site of their own.</summary>
+    static JSObject VisitElementOrProperty(Isolate isolate, JSObject value, ref AllocationSiteUsageContext siteContext) =>
+        value is JSArray
+            ? StructureWalk(isolate, value, ref siteContext, siteContext.EnterNewScope())
+            : StructureWalk(isolate, value, ref siteContext, null);
+
+    /// <summary>JSObjectWalkVisitor::StructureWalk (kCopying).</summary>
+    static JSObject StructureWalk(Isolate isolate, JSObject obj, ref AllocationSiteUsageContext siteContext, AllocationSite? site)
     {
         isolate.StackGuard.StackCheck(isolate);
         if (obj.Map.IsDeprecated) JSObject.MigrateInstance(isolate, obj);
 
         JSObject copy = isolate.Factory.CopyJSObject(obj);
+        // CopyJSObjectWithAllocationSite: the memento of the copy.
+        if (copy is JSArray copyArray)
+        {
+            copyArray.AllocationMementoSite = site is not null && siteContext.ShouldCreateMemento(obj) ? site : null;
+        }
 
         // Deep copy own properties. Arrays only have 1 property "length".
         if (copy is not JSArray)
@@ -183,7 +218,7 @@ public static class RuntimeLiterals
                     FieldIndex index = FieldIndex.ForDetails(map, details);
                     if (copy.RawFastPropertyAt(index).HeapObjectOrNull is JSObject value)
                     {
-                        copy.FastPropertyAtPut(index, DeepCopy(isolate, value));
+                        copy.FastPropertyAtPut(index, VisitElementOrProperty(isolate, value, ref siteContext));
                     }
                 }
             }
@@ -194,7 +229,10 @@ public static class RuntimeLiterals
                 {
                     if (!dict.IsKey(k)) continue;
                     var i = new InternalIndex(k);
-                    if (dict.ValueAt(i).HeapObjectOrNull is JSObject value) dict.ValueAtPut(i, DeepCopy(isolate, value));
+                    if (dict.ValueAt(i).HeapObjectOrNull is JSObject value)
+                    {
+                        dict.ValueAtPut(i, VisitElementOrProperty(isolate, value, ref siteContext));
+                    }
                 }
             }
 
@@ -209,7 +247,10 @@ public static class RuntimeLiterals
             {
                 for (int i = 0; i < elements.Length; i++)
                 {
-                    if (elements._data[i].HeapObjectOrNull is JSObject value) elements._data[i] = DeepCopy(isolate, value);
+                    if (elements._data[i].HeapObjectOrNull is JSObject value)
+                    {
+                        elements._data[i] = VisitElementOrProperty(isolate, value, ref siteContext);
+                    }
                 }
             }
         }
@@ -221,7 +262,7 @@ public static class RuntimeLiterals
                 var i = new InternalIndex(k);
                 if (elementDictionary.ValueAt(i).HeapObjectOrNull is JSObject value)
                 {
-                    elementDictionary.ValueAtPut(i, DeepCopy(isolate, value));
+                    elementDictionary.ValueAtPut(i, VisitElementOrProperty(isolate, value, ref siteContext));
                 }
             }
         }
@@ -374,7 +415,10 @@ public static class RuntimeLiterals
                 vector.Slots[slot] = new AllocationSite { ElementsKind = kind };
             }
         }
-        return isolate.Factory.NewJSArray(kind, 0, 0);
+        JSArray array = isolate.Factory.NewJSArray(kind, 0, 0);
+        // AllocateJSArray with the site: the array gets a memento.
+        if (vector is not null && AllocationSite.ShouldTrack(kind)) array.AllocationMementoSite = vector.Slots[slot].As<AllocationSite>();
+        return array;
     }
 
     /// <summary>CreateEmptyObjectLiteral: an object with the Object function's initial map.</summary>

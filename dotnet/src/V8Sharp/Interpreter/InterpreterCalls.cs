@@ -35,7 +35,9 @@ public static class InterpreterCalls
         JSValue[] slots = fv.Slots;
         // IncrementCallCount.
         ref JSValue count = ref slots[slot + 1];
-        count = JSValue.FromNumber(count._num + kCallCountIncrement);
+        // The slot always holds a number: bump it without storing the tag (and
+        // paying the GC write barrier of a reference store).
+        Unsafe.AsRef(in count._num) += kCallCountIncrement;
         // IsMonomorphic.
         if (ReferenceEquals(slots[slot]._obj, target._obj)) return;
         CollectCallFeedbackSlow(isolate, fv, slot, target, receiver);
@@ -123,12 +125,14 @@ public static class InterpreterCalls
     }
 
     /// <summary>CollectConstructFeedback (ic-callable.tq); returns the AllocationSite for Array construction.</summary>
-    static AllocationSite? CollectConstructFeedback(Isolate isolate, FeedbackVector? fv, int slot, JSValue target, JSValue newTarget)
+    internal static AllocationSite? CollectConstructFeedback(Isolate isolate, FeedbackVector? fv, int slot, JSValue target, JSValue newTarget)
     {
         if (fv is null) return null;
         JSValue[] slots = fv.Slots;
         ref JSValue count = ref slots[slot + 1];
-        count = JSValue.FromNumber(count._num + kCallCountIncrement);
+        // The slot always holds a number: bump it without storing the tag (and
+        // paying the GC write barrier of a reference store).
+        Unsafe.AsRef(in count._num) += kCallCountIncrement;
         ref JSValue feedback = ref slots[slot];
         HeapObject? feedbackObject = feedback.HeapObjectOrNull;
         if (ReferenceEquals(feedbackObject, newTarget.HeapObjectOrNull)) return null;
@@ -290,7 +294,7 @@ public static class InterpreterCalls
     {
         JSValue receiver = receiverAndArgs[0];
         ReadOnlySpan<JSValue> args = receiverAndArgs[1..];
-        JSValue[] spread = SpreadArguments(isolate, args);
+        JSValue[] spread = SpreadArguments(isolate, args, callee);
         if (callee.HeapObjectOrNull is JSFunction function)
         {
             SharedFunctionInfo shared = function.Shared;
@@ -312,15 +316,25 @@ public static class InterpreterCalls
     /// the elements of a fast JSArray directly when the array iterator is
     /// untouched, else iterates (IterableToList).
     /// </summary>
-    public static JSValue[] SpreadArguments(Isolate isolate, ReadOnlySpan<JSValue> args)
+    public static JSValue[] SpreadArguments(Isolate isolate, ReadOnlySpan<JSValue> args, JSValue target)
     {
         int fixedCount = args.Length - 1;
         JSValue spreadValue = args[fixedCount];
         FixedArray list = InterpreterIterators.IterableToList(isolate, spreadValue);
         int total = fixedCount + list.Length;
+        // CallOrConstructWithSpread pushes the arguments with a stack check
+        // (there is no argument count limit): the RangeError is a stack overflow.
         if (total > InterpreterConstants.kMaxArguments)
         {
             isolate.ThrowRangeError(MessageTemplate.TooManyArguments);
+        }
+        // Runtime_VarargStackOverflow: with --superspreading the builtins of
+        // SUPERSPREAD_BUILTINS take the merged argument list instead (V8Sharp's
+        // builtins read their arguments from the heap array anyway).
+        if (total > isolate.RegisterStackLimit - isolate.RegisterStackTop &&
+            !(isolate.Flags.superspreading && target.HeapObjectOrNull is JSFunction { Shared.BuiltinId: Builtin.ArrayPrototypePush }))
+        {
+            isolate.StackOverflow();
         }
         var result = new JSValue[total];
         args[..fixedCount].CopyTo(result);
@@ -351,7 +365,7 @@ public static class InterpreterCalls
     /// for base constructors, runs the bytecode, and picks the result.
     /// </summary>
     /// <summary>The stack slots of V8's construct stub frame, measured against --jitless V8.</summary>
-    const int kConstructStubFrameSlots = 16;
+    internal const int kConstructStubFrameSlots = 16;
 
     static JSValue ConstructInterpreted(Isolate isolate, JSFunction function, JSValue newTarget, int argsStart, int argc,
         ReadOnlySpan<JSValue> spanArgs, bool useSpan = false)
@@ -398,6 +412,23 @@ public static class InterpreterCalls
         return implicitReceiver;
     }
 
+    /// <summary>
+    /// The allocation-site part of ArrayConstructorImpl (builtins-array.cc /
+    /// ArrayConstructorImpl): the array starts in the site's elements kind and
+    /// keeps a memento while the site tracks it. V8 allocates with the site's
+    /// kind directly; V8Sharp transitions the array the Array builtin made.
+    /// </summary>
+    static void ApplyArrayAllocationSite(Isolate isolate, JSArray array, AllocationSite site)
+    {
+        ElementsKind kind = array.GetElementsKind();
+        if (!ElementsKinds.IsFastElementsKind(kind)) return;
+        ElementsKind toKind = site.ElementsKind;
+        if (ElementsKinds.IsHoleyElementsKind(kind)) toKind = ElementsKinds.GetHoleyElementsKind(toKind);
+        if (ElementsKinds.IsMoreGeneralElementsKindTransition(kind, toKind)) JSObject.TransitionElementsKind(isolate, array, toKind);
+        // If we don't care to track arrays of this kind, don't keep a memento.
+        if (AllocationSite.ShouldTrack(site.ElementsKind)) array.AllocationMementoSite = site;
+    }
+
     /// <summary>Builtins::Construct for everything but bytecode functions.</summary>
     public static JSValue ConstructGeneric(Isolate isolate, JSValue constructor, JSValue newTarget, ReadOnlySpan<JSValue> args,
         AllocationSite? site = null)
@@ -408,7 +439,9 @@ public static class InterpreterCalls
             if (shared.HasBuiltinId && shared.BuiltinId != Builtin.CompileLazy)
             {
                 // JSBuiltinsConstructStub: the builtin creates its own receiver.
-                return CallBuiltin(isolate, function, JSValue.TheHole, args, newTarget);
+                JSValue result = CallBuiltin(isolate, function, JSValue.TheHole, args, newTarget);
+                if (site is not null && result.HeapObjectOrNull is JSArray array) ApplyArrayAllocationSite(isolate, array, site);
+                return result;
             }
             if (!shared.IsCompiled && !shared.HasBuiltinId)
             {
@@ -424,7 +457,7 @@ public static class InterpreterCalls
         ReadOnlySpan<JSValue> args)
     {
         CollectConstructWithSpreadFeedback(isolate, fv, slot, newTarget);
-        JSValue[] spread = SpreadArguments(isolate, args);
+        JSValue[] spread = SpreadArguments(isolate, args, constructor);
         if (constructor.HeapObjectOrNull is JSFunction function && function.Map.IsConstructor)
         {
             SharedFunctionInfo shared = function.Shared;
@@ -442,7 +475,9 @@ public static class InterpreterCalls
         if (fv is null) return;
         JSValue[] slots = fv.Slots;
         ref JSValue count = ref slots[slot + 1];
-        count = JSValue.FromNumber(count._num + kCallCountIncrement);
+        // The slot always holds a number: bump it without storing the tag (and
+        // paying the GC write barrier of a reference store).
+        Unsafe.AsRef(in count._num) += kCallCountIncrement;
         ref JSValue feedback = ref slots[slot];
         if (ReferenceEquals(feedback.HeapObjectOrNull, newTarget.HeapObjectOrNull)) return;
         if (ReferenceEquals(feedback.HeapObjectOrNull, ReadOnlyRoots.megamorphic_symbol)) return;
