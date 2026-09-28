@@ -1,4 +1,7 @@
 // Port of test/unittests/interpreter/bytecode-array-iterator-unittest.cc.
+using V8Sharp.Ast;
+using V8Sharp.Common;
+using V8Sharp.Parsing;
 using V8Sharp.Interpreter;
 
 namespace V8Sharp.Tests.Interpreter;
@@ -48,10 +51,10 @@ public class BytecodeArrayIteratorUnitTest
             .LoadLiteral(smi_1)
             .StoreAccumulatorInRegister(reg_16)
             .LoadAccumulatorWithRegister(reg_0)
-            .BinaryOperation(Token.Value.Add, reg_0, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Add, reg_0, kFeedbackIsEmbedded)
             .StoreAccumulatorInRegister(reg_16)
             .LoadNamedProperty(reg_16, name, (int)load_feedback_slot)
-            .BinaryOperation(Token.Value.Add, reg_0, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Add, reg_0, kFeedbackIsEmbedded)
             .StoreAccumulatorInRegister(param)
             .CallRuntimeForPair(RuntimeFunctionId.LoadLookupSlotForCall, param, pair)
             .ForInPrepare(triple, (int)forin_feedback_slot)
