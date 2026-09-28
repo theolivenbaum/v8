@@ -64,7 +64,7 @@ committed.
 A glob line whose reason starts with `SKIP` does not only expect the tests
 to fail: they are not run on that engine at all (reported as skipped, and
 `--list` shows the reason). This is for a whole feature the engine does not
-implement, e.g. `built-ins/Temporal/**  # SKIP: Temporal is not ported` in
+implement, e.g. `intl402/Temporal/**  # SKIP: intl402 needs ICU` in
 `test262.v8sharp.txt`, so that full runs do not spend time on it.
 
 ## How it runs tests

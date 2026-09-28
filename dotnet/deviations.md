@@ -751,7 +751,9 @@ Date
   through temporal_rs's provider. V8Sharp uses .NET's `TimeZoneInfo` (the
   host's /usr/share/zoneinfo on Linux); the available identifiers are
   TimeZoneInfo's plus the zoneinfo directory's names. Consequences: the
-  data version is the host's; offsets are whole seconds; instants after
+  data version is the host's; offsets are TimeZoneInfo's (local mean time
+  offsets such as New York's -4:56:02 come out rounded to whole minutes, and
+  so do the transitions out of them); instants after
   9999 reuse the rules of the same point in the 400-year Gregorian cycle and
   instants before year 1 the offset of year 1; transitions
   (getTimeZoneTransition, GetStartOfDay in a gap) are found by scanning the
