@@ -513,6 +513,7 @@ public sealed partial class JSRegExp
         RegExpEngine.s_enableExperimentalRegExpEngineOnExcessiveBacktracks =
             f.enable_experimental_regexp_engine_on_excessive_backtracks;
         RegExpEngine.s_regexpBacktracksBeforeFallback = f.regexp_backtracks_before_fallback;
+        RegExpParser.JsRegExpBufferBoundaries = f.js_regexp_buffer_boundaries;
         V8Sharp.RegExp.Experimental.ExperimentalCompiler.s_experimentalRegExpEngineCaptureGroupOpt = f.experimental_regexp_engine_capture_group_opt;
     }
 

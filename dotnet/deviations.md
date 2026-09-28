@@ -273,7 +273,10 @@ for now, to be revisited when the reason goes away.
 - Runtime: `%` functions are delegates in `RuntimeTable`; functions only an
   optimizing tier or the debugger uses are not registered (their calls throw
   "runtime function %X is not implemented"). Tier queries (%IsTurbofanEnabled,
-  %GetOptimizationStatus ...) answer as --jitless V8 does.
+  %GetOptimizationStatus ...) and %GetFeedback answer as --jitless V8 does.
+- The TestRunner's v8sharp engine runs the microtask checkpoint when the
+  outermost script execution returns (d8's kAuto policy); a nested
+  `Realm.eval` leaves its microtasks queued.
 - Compiler: source positions are collected eagerly (no lazy source
   positions); there is no compilation cache and no preparse data (inner
   functions are reparsed); every lazy function has UncompiledData without
@@ -376,7 +379,10 @@ Bootstrapper
   (`RegExpMatchInfo.Get`), not by InitializeGlobal.
 - The error stack getter and setter are JSFunctions created eagerly per native
   context (`NativeContext.ErrorStackGetterFun`/`ErrorStackSetterFun`), not
-  FunctionTemplateInfo roots instantiated lazily.
+  FunctionTemplateInfo roots instantiated lazily. They run in their own realm
+  (V8's run in the caller's), so the CallSite objects Error.prepareStackTrace
+  receives are made in the error's creation context rather than the current
+  one (`Messages.GetStackFrames`).
 - The empty function uses the bootstrapping ScopeInfo.
 - `V8_FUNCTION_ARGUMENTS_CALLER_ARE_OWN_PROPS` is off, as in V8's default build.
 

@@ -46,9 +46,12 @@ namespace V8Sharp.Codegen
         {
             if (isolate.CompilerParsingFlags is { } cached) return cached;
             FlagList f = isolate.Flags;
+            // The regexp literal syntax check of the parser reads it (process-wide).
+            V8Sharp.RegExp.RegExpParser.JsRegExpBufferBoundaries = f.js_regexp_buffer_boundaries;
             var flags = new ParsingFlags
             {
                 allow_natives_syntax = f.allow_natives_syntax,
+                stack_size = f.stack_size,
                 lazy = f.lazy,
                 max_lazy = f.max_lazy,
                 // Deviation: source positions are always collected (V8 collects them lazily).

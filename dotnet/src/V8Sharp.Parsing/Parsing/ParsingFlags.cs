@@ -27,6 +27,8 @@ public sealed class ParsingFlags
     public bool parallel_compile_tasks_for_eager_toplevel { get; init; }
     public bool parallel_compile_tasks_for_lazy { get; init; }
     public bool fuzzing { get; init; }
+    // --stack-size in KB: the parser's stack budget (stack_limit_).
+    public int stack_size { get; init; } = 984;
     // Read by Runtime::IsEnabledForFuzzing (RuntimeFuzzing) under --fuzzing.
     public bool allow_natives_for_differential_fuzzing { get; init; }
     public bool hole_fuzzing { get; init; }

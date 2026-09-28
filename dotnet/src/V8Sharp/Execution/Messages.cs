@@ -671,7 +671,7 @@ public static class ErrorUtils
                 isolate.FormattingStackTrace = true;
                 try
                 {
-                    JSArray sites = GetStackFrames(isolate, callSiteInfos);
+                    JSArray sites = GetStackFrames(isolate, errorContext, callSiteInfos);
                     return callback(isolate, errorContext, error, sites);
                 }
                 finally
@@ -689,7 +689,7 @@ public static class ErrorUtils
                 isolate.FormattingStackTrace = true;
                 try
                 {
-                    JSArray sites = GetStackFrames(isolate, callSiteInfos);
+                    JSArray sites = GetStackFrames(isolate, errorContext, callSiteInfos);
                     JSValue receiverArg = error is JSGlobalObject global ? JSValue.FromObject(global.GlobalProxy) : error;
                     return Execution.Call(isolate, prepareStackTrace, globalError, [receiverArg, sites]);
                 }
@@ -761,10 +761,18 @@ public static class ErrorUtils
     }
 
     // Convert the CallSiteInfos into a JSArray of JSCallSite objects.
-    static JSArray GetStackFrames(Isolate isolate, FixedArray callSiteInfos)
+    //
+    // V8 takes isolate->callsite_function(): the error.stack getter is a
+    // FunctionTemplateInfo in the AccessorPair, which runs in the caller's
+    // context. V8Sharp's getter is a JSFunction of the realm that installed it
+    // (deviations.md, Bootstrapper), so it runs in that realm; the CallSites are
+    // made in the error's creation context instead, which is the caller's in
+    // the usual case and keeps the CallSite builtins' security token checks
+    // against the realm that reads the stack (cross-realm-callsite).
+    static JSArray GetStackFrames(Isolate isolate, NativeContext errorContext, FixedArray callSiteInfos)
     {
         int frameCount = callSiteInfos.Length;
-        JSFunction constructor = isolate.NativeContext.CallSiteFunction;
+        JSFunction constructor = errorContext.CallSiteFunction;
         var sites = new FixedArray(frameCount);
         for (int i = 0; i < frameCount; ++i)
         {
