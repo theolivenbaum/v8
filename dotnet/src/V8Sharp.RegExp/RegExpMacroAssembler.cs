@@ -1,10 +1,10 @@
 // Port of src/regexp/regexp-macro-assembler.h and
 // src/regexp/regexp-macro-assembler.cc (the architecture-independent parts).
 //
-// The native backends (x64, arm64 ...) are not ported. The bytecode generator
-// (RegExpBytecodeGenerator) is one implementation of this abstraction; a later
-// tier can add an assembler that emits .NET IL, so the virtual surface is kept
-// exactly as V8 has it. ByteArray tables are byte[] of kTableSize entries.
+// Two implementations: the bytecode generator (RegExpBytecodeGenerator) and
+// the native tier, which emits .NET IL (RegExpMacroAssemblerIL, a port of the
+// x64 assembler) instead of machine code. The virtual surface is kept exactly
+// as V8 has it. ByteArray tables are byte[] of kTableSize entries.
 
 using V8Sharp.RegExp.Unicode;
 

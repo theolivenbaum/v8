@@ -107,6 +107,28 @@ for now, to be revisited when the reason goes away.
 - RegExp: no interrupt/stack-guard polling in the bytecode interpreter or the
   NFA interpreter (no isolate), so they never return RETRY; the backtrack
   stack is limited to V8's 64 MB (EXCEPTION on overflow).
+- RegExp native tier: RegExpMacroAssemblerIL has no CheckPreemption at
+  backtracks and no JS stack guard check in the prologue (no isolate), like
+  the interpreter above. Positions are absolute char indices where x64 keeps
+  negative byte offsets from the subject end; backtrack targets are label ids
+  dispatched by an IL `switch` where x64 pushes code offsets and jumps
+  indirectly; registers past 1024 live in a per-execution int[] instead of
+  the frame.
+- RegExp native tier: the SIMD scans (SkipUntilChar/CharOrChar/CharAnd/
+  BitInTable, under x64's *UseSimd predicates) call a helper over
+  `IndexOfAny(SearchValues<char>)` instead of emitting SSE code; it stops
+  exactly where the scalar loop would, so V8's scalar tail never runs.
+  SkipUntilOneOfMasked(3) use the portable lowering. Back references
+  (including the LATIN1 case-insensitive one x64 inlines) and range arrays
+  call C# helpers.
+- RegExp tiering: the V8 flags --regexp-interpret-all, --regexp-tier-up and
+  --regexp-tier-up-ticks are static fields (RegExpEngine.s_regexp*) that
+  RegExpEngine.Compile snapshots into the regexp (RegExpTierPolicy, also a
+  Compile parameter), where V8 reads the global flags at each exec. This lets
+  tests run tiers side by side; with unchanged flags the behaviour is V8's.
+  `CompiledRegExp.Exec` fills a multi-match register span only for global
+  regexps (V8 never passes one otherwise; native code would stop after one
+  match where the interpreter keeps going).
 - RegExp: `AddNonBmpSurrogatePairs` emits its grouped alternatives in
   insertion order where V8 iterates a ZoneUnorderedMap; the alternatives match
   disjoint code points, so only code order differs.

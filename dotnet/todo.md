@@ -88,7 +88,16 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       built-ins/RegExp and language/literals/regexp, experimental engine):
       100% agreement once the oracle's older V8/Unicode version is accounted
       for (reports in dotnet/artifacts/regexp-differential/)
-- [ ] native backends: an IL-emitting RegExpMacroAssembler (tier-up)
+- [x] native tier: RegExpMacroAssemblerIL (port of
+      regexp-macro-assembler-x64.cc) emits IL into a collectible
+      DynamicMethod, LATIN1 and UC16; V8's tier-up policy
+      (--regexp-interpret-all, --regexp-tier-up, --regexp-tier-up-ticks,
+      eager tier-up for long subjects and global execs) as RegExpTierPolicy.
+      The native assembler unittests run on both backends; the differential
+      corpora run on the native, interpreter and tier-up configurations
+      (100%, modulo the known oracle-age cases). Benchmark on Octane
+      regexp.js: tools/V8Sharp.RegExp.Bench (results in
+      dotnet/artifacts/regexp-bench/results.md)
 - [ ] TODO(merge): switch Unicode/*.cs to the shared unibrow port in
       V8Sharp.Base once it lands
 

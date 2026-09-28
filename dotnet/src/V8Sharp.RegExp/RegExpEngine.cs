@@ -10,10 +10,12 @@
 //   Span<int> regs = stackalloc int[re.RegistersPerMatch];   // (captures + 1) * 2
 //   int n = re.Exec(subject, lastIndex, regs);
 //     n >= 1                         match; regs[2i], regs[2i + 1] = capture i
-//                                    (-1 for unmatched captures). A span that
-//                                    holds k * RegistersPerMatch registers is
-//                                    filled with up to k successive (global)
-//                                    matches and n is their count.
+//                                    (-1 for unmatched captures). For a global
+//                                    regexp, a span that holds
+//                                    k * RegistersPerMatch registers is filled
+//                                    with up to k successive matches and n is
+//                                    their count (a non-global regexp fills
+//                                    one match).
 //     n == 0                         no match (also when the backtrack limit was
 //                                    hit and no experimental fallback applies)
 //     n == RegExpResult.RE_EXCEPTION the backtrack stack or the NFA memory
@@ -720,6 +722,12 @@ public sealed class CompiledRegExp
     public int Exec(ReadOnlySpan<char> subject, int index, Span<int> registers, bool isOneByte)
     {
         if ((uint)index > (uint)subject.Length) throw new ArgumentOutOfRangeException(nameof(index));
+        // V8 passes a result vector of more than one match only for global
+        // regexps (RegExpGlobalExecRunner). Native code for a non-global regexp
+        // stops after one match while the interpreter and the atom and
+        // experimental engines would fill the vector, so limit it here to keep
+        // the result independent of the tier.
+        if (!Flags.IsGlobal() && registers.Length > RegistersPerMatch) registers = registers.Slice(0, RegistersPerMatch);
         switch (Kind)
         {
             case RegExpKind.Atom:
