@@ -135,7 +135,11 @@ public enum InstanceType : ushort
     JSIteratorDropHelperType,
     JSIteratorFlatMapHelperType,
     JSIteratorConcatHelperType,
+    JSIteratorZipHelperType,
+    JSIteratorZipKeyedHelperType,
     JSValidIteratorWrapperType,
+    JSDisposableStackBaseType,
+    /// <summary>JS_SYNC_DISPOSABLE_STACK_TYPE.</summary>
     JSDisposableStackType,
     JSAsyncDisposableStackType,
     JSSharedArrayType,

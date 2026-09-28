@@ -90,7 +90,16 @@ sealed class V8SharpJsIsolate : IJsIsolate
         Isolate.CancelTerminateExecution();
     }
 
-    public void CollectGarbage() => GC.Collect();
+    public void CollectGarbage()
+    {
+        using (Enter()) Isolate.CollectGarbage();
+    }
+
+    public bool PumpMessageLoop()
+    {
+        if (Terminating || !Isolate.HasPendingTasks) return false;
+        using (Enter()) return Isolate.RunPendingTasks();
+    }
 
     void OnPromiseReject(JSPromise promise, JSValue value, PromiseRejectEvent e)
     {

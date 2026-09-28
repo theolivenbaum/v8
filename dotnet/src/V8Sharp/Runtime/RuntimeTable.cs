@@ -29,6 +29,7 @@ public static partial class RuntimeTable
         RegisterInternal();
         RegisterCompiler();
         RegisterTest();
+        RegisterPromiseCollectionsAndWeakRefs();
         RegisterIntrinsics();
 
         // %_Foo uses Foo's entry when it is not an interpreter intrinsic.

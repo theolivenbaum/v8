@@ -1276,6 +1276,9 @@ sealed partial class Genesis
             nativeContext.CallAsConstructorDelegate = @delegate;
         }
 
+        // -- D i s p o s a b l e S t a c k (Genesis.DisposableStack.cs)
+        InstallDisposableStack(global);
+
         // ---- bootstrapper.cc 5824-5871
         {  // --- W r a p p e d F u n c t i o n
             Map map = _factory.NewContextfulMapForCurrentContext(InstanceType.JSWrappedFunctionType, JSObject.GetHeaderSize(InstanceType.JSWrappedFunctionType), ElementsKind.TERMINAL_FAST_ELEMENTS_KIND, 0);

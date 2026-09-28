@@ -127,8 +127,13 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       (FunctionTemplateInfo, HandleApiCallOrConstruct), ArrayBuffer/
       SharedArrayBuffer/Atomics, typed arrays, DataView
       (Init/Genesis.TypedArrays.cs, incl. the js_immutable_arraybuffer and
-      sharedarraybuffer flag sections). Missing: Intl, Temporal,
-      DisposableStack, shared structs, extras, extensions,
+      sharedarraybuffer flag sections), DisposableStack/AsyncDisposableStack
+      and Iterator.prototype[Symbol.dispose]/%AsyncIteratorPrototype%
+      [Symbol.asyncDispose] (Init/Genesis.DisposableStack.cs),
+      InitializeExperimentalGlobal (Iterator.concat/zip/zipKeyed,
+      Iterator.prototype.join/includes, queueMicrotask behind
+      --enable-queue-microtask; Init/Genesis.{Iterator,Promise}.cs).
+      Missing: Intl, Temporal, shared structs, extras, extensions,
       the TemplateLiteral map (interpreter port)
 - [x] interpreter: bytecodes, operands, array builder/writer, register
       optimizer, constant array builder, handler tables, control-flow builders,
@@ -166,9 +171,48 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler), which the
       compiler port must register. The proxy trap stubs (ProxyGetProperty ...)
       and CallProxy/ConstructProxy are not registered: callers use JSProxy.
-      Still to do: Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry,
-      Promise, generators/iterators, Iterator helpers, DisposableStack
-      (in progress in a separate port).
+      Still to do: generators (interpreter port)
+- [~] Map, Set, WeakMap, WeakSet, WeakRef, FinalizationRegistry, Promise,
+      Iterator, DisposableStack builtins and the microtask queue
+      (Builtins/Builtins.{Collections,Set,WeakRefs,Promise*,Iterator*,
+      DisposableStack}.cs, Objects/{JSCollection,JSPromise,JSWeakRefs,
+      JSIteratorHelpers,JSDisposableStack}.cs, Execution/MicrotaskQueue.cs).
+      Every builtin of builtins-collections-gen.cc, collections.tq,
+      map-groupby.tq, set-*.tq, builtins-weak-refs.cc, weak-ref.tq,
+      finalization-registry.tq, promise-*.tq (all, any, allSettled, race,
+      finally, try, withResolvers, jobs, resolving functions, hooks,
+      rejection tracking), iterator.tq, iterator-helpers.tq (incl.
+      concat/zip/zipKeyed/join/includes), iterator-from.tq,
+      builtins-async-iterator-gen.cc (%AsyncFromSyncIteratorPrototype%),
+      async-disposable-stack.tq, builtins-disposable-stack.cc and
+      GlobalQueueMicrotask is registered. The interpreter-facing APIs:
+      PromiseBuiltins.{NewJSPromise, ResolvePromise, RejectPromise,
+      PerformPromiseThen(Impl), NewPromiseCapability, PromiseResolve,
+      EnqueueMicrotask, AsyncAwaitNonThenableFastPath}, the generator
+      resume hooks (ResumeGeneratorTrampoline, AsyncGeneratorResumeNext,
+      AsyncGeneratorResolve), IteratorBuiltins.{GetIterator, IteratorStep,
+      IteratorStepValue, IteratorClose, CreateIterResultObject,
+      IterableToList...}, AsyncFromSyncIteratorBuiltins.
+      CreateAsyncFromSyncIterator, Isolate.{CollectGarbage, RunPendingTasks}.
+      Also the runtime functions of runtime-promise.cc, runtime-collections.cc,
+      runtime-weak-refs.cc and the protector queries of runtime-test.cc
+      (Runtime/Runtime.Promise.cs), and gc() (src/extensions/gc-extension.cc,
+      Init/GCExtension.cs); d8sharp and the runner's D8Shell pump the
+      isolate's foreground tasks. 50 xUnit tests
+      (tests/V8Sharp.Tests/Builtins/{Promise,Collections,Iterator,WeakRefs,
+      DisposableStack}BuiltinsTest.cs), expectations from the oracle.
+      test262 (v8sharp): built-ins/{Promise,Map,Set,WeakMap,WeakSet,WeakRef,
+      FinalizationRegistry,Iterator,DisposableStack}/** 100% (4414 tests);
+      AsyncDisposableStack 150/208, AsyncIteratorPrototype 18/26,
+      AsyncFromSyncIteratorPrototype 0/76: every failure needs async
+      functions/generators or for-await (Interpreter/InterpreterAsync.cs
+      stubs). mjsunit: the remaining failures of es6/promise*, collection*,
+      weakrefs/**, harmony/iterator* are the same async stubs, plus
+      es6/collections-constructor-with-modified-protoype (an IC bug: the
+      second `arr.length = 1` store with feedback does not truncate), the
+      d8 Realm microtask-queue/onerror tests (runner d8 shim) and
+      iterator-join (%ArrayBufferDetach). Missing: the `IteratorHelpers`
+      forwarding shim in Builtins.Iterator.cs (remove once no caller uses it)
 - [~] Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
       builtins and the array iterators (Builtins/Builtins.{Array,ArrayBuffer,
       TypedArray,DataView,Atomics}*.cs; Objects/JSArrayBuffer.cs,

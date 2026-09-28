@@ -470,3 +470,55 @@ Date
   port of DateParseLegacyUseCounter; Isolate.CountUsage is a no-op).
 - The isolate's DateCache, date cache stamp and DateTimeConfigurationChange-
   Notification are a partial Isolate in Date/TimezoneCache.cs.
+
+## Collections, weak references, Promise, Iterator, DisposableStack
+
+- **Weak references.** V8's GC clears dead WeakRef and WeakCell targets in
+  its atomic pause (MarkCompactCollector::ClearJSWeakRefs). V8Sharp holds the
+  targets through CLR `WeakReference<HeapObject>`s and notices the clearing
+  afterwards: at the end of each microtask checkpoint
+  (`Isolate.ClearKeptObjects`), if `GC.CollectionCount(0)` changed since the
+  last check, the active cells of every tracked FinalizationRegistry are
+  walked, cells whose target died move to the cleared list, and the dirty
+  registries are queued. `Isolate.CollectGarbage()` (d8's `gc()`,
+  `RequestGarbageCollectionForTesting`) runs a blocking
+  `GC.Collect`/`WaitForPendingFinalizers`/`GC.Collect` and then the same
+  processing, so tests observe clearing deterministically. The cleanup task
+  (FinalizationRegistryCleanupTask) is posted to a per-isolate foreground
+  task queue (`Isolate.PostNonNestableTask`, `ForegroundTaskPosted`); the
+  embedder runs it with `Isolate.RunPendingTasks()`, which performs a
+  microtask checkpoint after each task as d8's message loop does. Registries
+  are tracked weakly once they get their first cell; a registry that dies
+  never runs its cleanup (as in V8). The unregister-token map is a
+  `Dictionary<int, WeakCell>` keyed by the token's identity hash, chained
+  through KeyListPrev/Next like V8's SimpleNumberDictionary.
+- **WeakMap / WeakSet** use a `ConditionalWeakTable` keyed by the key object
+  instead of an EphemeronHashTable; the CLR table has ephemeron semantics.
+  Nothing observable differs (weak collections are not enumerable).
+- **PromiseReaction** is one class that also plays PromiseReactionJobTask:
+  V8 morphs the reaction's map in place (MorphAndEnqueuePromiseReaction),
+  V8Sharp changes its `State` field; no allocation either way.
+- **Promise rejection** always goes through JSPromise::Reject (the runtime
+  path V8 takes for unhandled rejections and hooks); the CSA fast path only
+  skips steps that have no effect in that case. There is no pending message
+  to move to the promise (MoveMessageToPromise): the message travels with the
+  JavaScriptException. Debug events and async stack tagging are not ported.
+- **Promise constructor**: V8 checks Builtins::AllowDynamicFunction for the
+  executor's context (access checks); V8Sharp has no access checks, so the
+  check is omitted.
+- **Collection constructors**: V8's GotoIfInitialAddFunctionModified checks
+  the prototype map and the constness of the add function's descriptor;
+  V8Sharp checks the prototype map and the current property value, which is
+  the same condition without field constness tracking.
+- **Generators and async functions**: the promise jobs resume generators
+  through static hooks (`PromiseBuiltins.ResumeGeneratorTrampoline`,
+  `AsyncGeneratorResumeNext`, `AsyncGeneratorResolve`) that the interpreter
+  sets, instead of calling the ResumeGeneratorTrampoline builtin by id.
+- **AsyncFromSyncIterator**: V8 CSA_CHECKs the receiver type (a crash on
+  failure); V8Sharp throws InvalidOperationException, which is equally
+  unreachable from script.
+- **IteratorHelpers**: the pre-port iteration helpers in
+  Builtins.Object.cs moved to `IteratorBuiltins` (Builtins.Iterator.cs); a
+  forwarding `IteratorHelpers` class remains until every caller is switched
+  (TODO(merge)).
+

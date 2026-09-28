@@ -426,19 +426,30 @@ public partial class JSObject
                 return new JSRegExpStringIterator(map);
             case InstanceType.JSAsyncFromSyncIteratorType:
                 return new JSAsyncFromSyncIterator(map);
-            case InstanceType.JSIteratorHelperType:
             case InstanceType.JSIteratorMapHelperType:
+                return new JSIteratorMapHelper(map);
             case InstanceType.JSIteratorFilterHelperType:
+                return new JSIteratorFilterHelper(map);
             case InstanceType.JSIteratorTakeHelperType:
+                return new JSIteratorTakeHelper(map);
             case InstanceType.JSIteratorDropHelperType:
+                return new JSIteratorDropHelper(map);
             case InstanceType.JSIteratorFlatMapHelperType:
+                return new JSIteratorFlatMapHelper(map);
             case InstanceType.JSIteratorConcatHelperType:
-                return new JSIteratorHelper(map);
+                return new JSIteratorConcatHelper(map);
+            case InstanceType.JSIteratorZipHelperType:
+                return new JSIteratorZipHelper(map);
+            case InstanceType.JSIteratorZipKeyedHelperType:
+                return new JSIteratorZipKeyedHelper(map);
             case InstanceType.JSValidIteratorWrapperType:
                 return new JSValidIteratorWrapper(map);
-            case InstanceType.JSDisposableStackType:
-            case InstanceType.JSAsyncDisposableStackType:
+            case InstanceType.JSDisposableStackBaseType:
                 return new JSDisposableStackBase(map);
+            case InstanceType.JSDisposableStackType:
+                return new JSSyncDisposableStack(map);
+            case InstanceType.JSAsyncDisposableStackType:
+                return new JSAsyncDisposableStack(map);
             case InstanceType.JSModuleNamespaceType:
                 return new JSModuleNamespace(map);
             case InstanceType.JSRawJsonType:
@@ -547,10 +558,10 @@ public partial class JSObject
                 return kHeaderSize + kTagged;
             case InstanceType.JSDateType:
                 return kHeaderSize + 10 * kTagged;
+            case InstanceType.JSDisposableStackBaseType:
             case InstanceType.JSDisposableStackType:
-                return kHeaderSize + 4 * kTagged;
             case InstanceType.JSAsyncDisposableStackType:
-                return kHeaderSize + 6 * kTagged;
+                return kHeaderSize + 4 * kTagged;
             case InstanceType.JSArrayType:
                 return kHeaderSize + kTagged;
             case InstanceType.JSArrayBufferType:
@@ -596,6 +607,8 @@ public partial class JSObject
             case InstanceType.JSIteratorDropHelperType:
             case InstanceType.JSIteratorFlatMapHelperType:
             case InstanceType.JSIteratorConcatHelperType:
+            case InstanceType.JSIteratorZipHelperType:
+            case InstanceType.JSIteratorZipKeyedHelperType:
                 return kHeaderSize + 5 * kTagged;
             case InstanceType.JSModuleNamespaceType:
                 return kHeaderSize + kTagged;
