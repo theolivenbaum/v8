@@ -519,6 +519,12 @@ public sealed partial class Factory(Isolate isolate)
         JSObject result = NewJSObjectFromMap(strictModeCallee ? nc.StrictArgumentsMap : nc.SloppyArgumentsMap);
         ObjectOps.SetProperty(_isolate, result, ReadOnlyRoots.length_string, JSValue.FromInt(length),
             StoreOrigin.MaybeKeyed, ShouldThrow.ThrowOnError);
+        // NewSloppyArgumentsObject also stores the callee.
+        if (!strictModeCallee)
+        {
+            ObjectOps.SetProperty(_isolate, result, ReadOnlyRoots.callee_string, callee,
+                StoreOrigin.MaybeKeyed, ShouldThrow.ThrowOnError);
+        }
         return result;
     }
 

@@ -473,7 +473,7 @@ public static partial class RuntimeTable
             return obj;
         });
         Register(FunctionId.SetForceSlowPath, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.DebugTraceMinimal, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.DebugTraceMinimal, static (i, a) => RuntimeTest.DebugTraceMinimal(i));
         Register(FunctionId.SetDispatchTableGCInterval, RuntimeTest.ReturnUndefined);
         Register(FunctionId.VerifyType, static (i, a) => a[0]);
     }

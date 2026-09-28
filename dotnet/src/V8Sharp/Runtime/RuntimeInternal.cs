@@ -114,7 +114,7 @@ public static class RuntimeInternal
     {
         if (isolate.Flags.disable_abortjs)
         {
-            Console.Out.WriteLine("[disabled] abort: " + message.As<JSString>().ToString());
+            isolate.StdOut.WriteLine("[disabled] abort: " + message.As<JSString>().ToString());
             return JSValue.Undefined;
         }
         throw new InvalidOperationException("abort: " + message.As<JSString>().ToString());
