@@ -133,7 +133,23 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       optimizer, constant array builder, handler tables, control-flow builders,
       decoder, iterators, source-position table (292 tests; 100 golden files
       round-trip). Open: embedded operation hints, feedback-kind checks.
-- [ ] bytecode generator (matches golden files)
+- [x] bytecode generator: bytecode-generator.cc, prototype-assignment-sequence-
+      builder, block-coverage-builder.h, the unoptimized compile driver
+      (`UnoptimizedCompiler.Compile`, `InterpreterCompilationJob`). All 100
+      golden files match byte for byte (557/557 snippets);
+      bytecode-generator-unittest.cc ported; oracle comparison on 72
+      mjsunit-style snippets (176 functions) matches except for listed V8
+      14.7 differences (`OracleBytecodeGeneratorTest`). Heap-facing parts sit
+      behind `IBytecodeGeneratorHeap` (constants, SharedFunctionInfo,
+      boilerplates, template objects, CoverageInfo) and `IScopeInfoProvider`.
+      Open: ClassBoilerplate::New (the generator emits a
+      `ClassBoilerplateDescription` stand-in); a heap-backed
+      `IBytecodeGeneratorHeap` and real ScopeInfo; the lazy/parallel compile
+      dispatcher (should_parallel_compile literals are compiled eagerly or not
+      at all); eval code is compiled by the engine at run time (the golden
+      harness compiles direct evals of string literals itself); block
+      coverage is ported but has no golden coverage (only the oracle can
+      check it).
 - [ ] feedback vectors and ICs (load/store/keyed/global/call/binary op/compare)
 - [ ] interpreter dispatch loop, generators, async functions
 - [ ] runtime functions (`%` intrinsics used by bytecode and by mjsunit)
@@ -156,10 +172,17 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 
 ## Merge cleanups
 
-- TODO(merge) from the Ignition port: `InterpreterCommon.cs` duplicates Token,
-  LanguageMode and other shared enums; `RuntimeFunctionId` and
-  `NativeContextFields` move to the runtime/objects code; the constant pool is
-  `object[]` until heap constants exist.
+- TODO(merge) from the Ignition port: `NativeContextFields` moves to the
+  objects code (Context::Field); the constant pool is `object[]` until heap
+  constants exist. (Token, LanguageMode and the other shared enums now come
+  from V8Sharp.Parsing; runtime ids are `V8Sharp.Runtime.FunctionId`.)
+- TODO(merge) from the bytecode generator port: the object model implements
+  `IBytecodeGeneratorHeap` (replacing `DefaultBytecodeGeneratorHeap`,
+  `SharedFunctionInfoDescription`, the boilerplate `*Data` descriptions and
+  `ClassBoilerplateDescription`); `FeedbackVectorSpec.cs` moves to
+  src/objects/feedback-vector; `UnoptimizedCompilationInfo` and
+  `UnoptimizedCompiler` move to the codegen/compiler port;
+  `BytecodeGeneratorFlags` routes through the isolate's FlagList.
 - TODO(merge): Parsing's `NumberConversions` and string hashing should use
   V8Sharp.Base (`Conversions`, `StringHasher`).
 

@@ -5,13 +5,14 @@
 // Variable is the ContextSlotVariable the builder reads from it. The script
 // scope and the first function scope have context cells (the V8 test sets
 // --script-context-cells and --function-context-cells).
+using V8Sharp.Ast;
+using V8Sharp.Common;
+using V8Sharp.Parsing;
+using V8Sharp.Runtime;
 using V8Sharp.Codegen;
 using V8Sharp.Interpreter;
 using ToBooleanMode = V8Sharp.Interpreter.BytecodeArrayBuilder.ToBooleanMode;
 
-// TODO(merge): drop once InterpreterCommon.cs duplicates are removed.
-using LanguageMode = V8Sharp.Interpreter.LanguageMode;
-using MaybeAssignedFlag = V8Sharp.Interpreter.MaybeAssignedFlag;
 
 namespace V8Sharp.Tests.Interpreter;
 
@@ -20,11 +21,10 @@ public class BytecodeArrayBuilderUnitTest
     const int kFeedbackIsEmbedded = InterpreterConstants.kFeedbackIsEmbedded;
     const int kSystemPointerSize = 8;
 
-    sealed class FeedbackSpec : IFeedbackVectorSpec
+    sealed class FeedbackSpec
     {
         int _slots;
         public int AddSlot() => _slots++;
-        public int AddJumpLoopSlot() => _slots++;
     }
 
     [Fact]
@@ -47,15 +47,15 @@ public class BytecodeArrayBuilderUnitTest
         RegisterList reg_list = BytecodeUtils.NewRegisterList(0, 10);
 
         // Emit argument creation operations.
-        builder.CreateArguments(CreateArgumentsType.MappedArguments)
-            .CreateArguments(CreateArgumentsType.UnmappedArguments)
-            .CreateArguments(CreateArgumentsType.RestParameter);
+        builder.CreateArguments(CreateArgumentsType.kMappedArguments)
+            .CreateArguments(CreateArgumentsType.kUnmappedArguments)
+            .CreateArguments(CreateArgumentsType.kRestParameter);
 
         // Emit constant loads.
         builder.LoadLiteral(Smi.Zero)
             .StoreAccumulatorInRegister(reg)
             .LoadLiteral(Smi.FromInt(8))
-            .CompareOperation(Token.Value.Eq, reg, kFeedbackIsEmbedded) // Prevent peephole optimization
+            .CompareOperation(Token.Eq, reg, kFeedbackIsEmbedded) // Prevent peephole optimization
                                                                          // LdaSmi, Star -> LdrSmi.
             .StoreAccumulatorInRegister(reg)
             .LoadLiteral(Smi.FromInt(10000000))
@@ -77,7 +77,7 @@ public class BytecodeArrayBuilderUnitTest
 
         // Emit Ldar and Star taking care to foil the register optimizer.
         builder.LoadAccumulatorWithRegister(other)
-            .BinaryOperation(Token.Value.Add, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Add, reg, kFeedbackIsEmbedded)
             .StoreAccumulatorInRegister(reg)
             .LoadNull();
 
@@ -109,9 +109,9 @@ public class BytecodeArrayBuilderUnitTest
             .StoreGlobal(name, sloppy_store_global_slot);
 
         // Emit context operations.
-        var var1 = new ContextSlotVariable(1, MaybeAssignedFlag.MaybeAssigned, ScopeHasContextCells: true);
-        var var2 = new ContextSlotVariable(1, MaybeAssignedFlag.NotAssigned, ScopeHasContextCells: true);
-        var var3 = new ContextSlotVariable(3, MaybeAssignedFlag.NotAssigned, ScopeHasContextCells: true);
+        var var1 = new ContextSlotVariable(1, MaybeAssignedFlag.kMaybeAssigned, ScopeHasContextCells: true);
+        var var2 = new ContextSlotVariable(1, MaybeAssignedFlag.kNotAssigned, ScopeHasContextCells: true);
+        var var3 = new ContextSlotVariable(3, MaybeAssignedFlag.kNotAssigned, ScopeHasContextCells: true);
 
         // Emit context operations which operate on the script context.
         builder.PushContext(reg)
@@ -130,9 +130,9 @@ public class BytecodeArrayBuilderUnitTest
 
         // Emit context operations.
         object fun_scope = new();
-        var fun_var1 = new ContextSlotVariable(1, MaybeAssignedFlag.MaybeAssigned, ScopeHasContextCells: true);
-        var fun_var2 = new ContextSlotVariable(1, MaybeAssignedFlag.NotAssigned, ScopeHasContextCells: true);
-        var fun_var3 = new ContextSlotVariable(3, MaybeAssignedFlag.NotAssigned, ScopeHasContextCells: true);
+        var fun_var1 = new ContextSlotVariable(1, MaybeAssignedFlag.kMaybeAssigned, ScopeHasContextCells: true);
+        var fun_var2 = new ContextSlotVariable(1, MaybeAssignedFlag.kNotAssigned, ScopeHasContextCells: true);
+        var fun_var3 = new ContextSlotVariable(3, MaybeAssignedFlag.kNotAssigned, ScopeHasContextCells: true);
         builder.CreateFunctionContext(fun_scope, 3, scopeHasContextCells: true)
             .StoreAccumulatorInRegister(reg)
             .LoadContextSlot(reg, fun_var1, 0)
@@ -147,7 +147,7 @@ public class BytecodeArrayBuilderUnitTest
             .PopContext(reg);
 
         object fun_scope2 = new(); // No context cells.
-        var fun2_var1 = new ContextSlotVariable(1, MaybeAssignedFlag.MaybeAssigned, ScopeHasContextCells: false);
+        var fun2_var1 = new ContextSlotVariable(1, MaybeAssignedFlag.kMaybeAssigned, ScopeHasContextCells: false);
         builder.CreateFunctionContext(fun_scope2, 1, scopeHasContextCells: false)
             .StoreAccumulatorInRegister(reg)
             .LoadContextSlot(reg, fun2_var1, 0)
@@ -181,9 +181,9 @@ public class BytecodeArrayBuilderUnitTest
         // Emit load / store lookup slots.
         builder.LoadLookupSlot(name, TypeofMode.NotInside)
             .LoadLookupSlot(name, TypeofMode.Inside)
-            .StoreLookupSlot(name, LanguageMode.Sloppy, LookupHoistingMode.Normal)
-            .StoreLookupSlot(name, LanguageMode.Sloppy, LookupHoistingMode.LegacySloppy)
-            .StoreLookupSlot(name, LanguageMode.Strict, LookupHoistingMode.Normal);
+            .StoreLookupSlot(name, LanguageMode.Sloppy, LookupHoistingMode.kNormal)
+            .StoreLookupSlot(name, LanguageMode.Sloppy, LookupHoistingMode.kLegacySloppy)
+            .StoreLookupSlot(name, LanguageMode.Strict, LookupHoistingMode.kNormal);
 
         // Emit load / store lookup slots with context fast paths.
         builder.LoadLookupContextSlot(name, TypeofMode.NotInside, ContextMode.NoContextCells, 1, 0)
@@ -223,49 +223,49 @@ public class BytecodeArrayBuilderUnitTest
             .CallUndefinedReceiver(reg, empty, 1)
             .CallUndefinedReceiver(reg, single, 1)
             .CallUndefinedReceiver(reg, pair, 1)
-            .CallRuntime(RuntimeFunctionId.IsArray, reg)
-            .CallRuntimeForPair(RuntimeFunctionId.LoadLookupSlotForCall, reg_list, pair)
+            .CallRuntime(FunctionId.IsArray, reg)
+            .CallRuntimeForPair(FunctionId.LoadLookupSlotForCall, reg_list, pair)
             .CallJSRuntime(NativeContextFields.PROMISE_THEN_INDEX, reg_list)
             .CallWithSpread(reg, reg_list, 1);
 
         // Emit binary operator invocations.
-        builder.BinaryOperation(Token.Value.Add, reg, kFeedbackIsEmbedded)
-            .BinaryOperation(Token.Value.Sub, reg, kFeedbackIsEmbedded)
-            .BinaryOperation(Token.Value.Mul, reg, kFeedbackIsEmbedded)
-            .BinaryOperation(Token.Value.Div, reg, kFeedbackIsEmbedded)
-            .BinaryOperation(Token.Value.Mod, reg, kFeedbackIsEmbedded)
-            .BinaryOperation(Token.Value.Exp, reg, kFeedbackIsEmbedded);
+        builder.BinaryOperation(Token.Add, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Sub, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Mul, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Div, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Mod, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Exp, reg, kFeedbackIsEmbedded);
 
-        builder.Add_StringConstant_Internalize(Token.Value.Add, reg, 1,
+        builder.Add_StringConstant_Internalize(Token.Add, reg, 1,
                                                AddStringConstantAndInternalizeVariant.LhsIsStringConstant);
 
         // Emit bitwise operator invocations
-        builder.BinaryOperation(Token.Value.BitOr, reg, kFeedbackIsEmbedded)
-            .BinaryOperation(Token.Value.BitXor, reg, kFeedbackIsEmbedded)
-            .BinaryOperation(Token.Value.BitAnd, reg, kFeedbackIsEmbedded);
+        builder.BinaryOperation(Token.BitOr, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.BitXor, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.BitAnd, reg, kFeedbackIsEmbedded);
 
         // Emit shift operator invocations
-        builder.BinaryOperation(Token.Value.Shl, reg, kFeedbackIsEmbedded)
-            .BinaryOperation(Token.Value.Sar, reg, kFeedbackIsEmbedded)
-            .BinaryOperation(Token.Value.Shr, reg, kFeedbackIsEmbedded);
+        builder.BinaryOperation(Token.Shl, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Sar, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Shr, reg, kFeedbackIsEmbedded);
 
         // Emit Smi binary operations.
-        foreach (Token.Value op in new[]
+        foreach (Token op in new[]
                  {
-                     Token.Value.Add, Token.Value.Sub, Token.Value.Mul, Token.Value.Div, Token.Value.Mod,
-                     Token.Value.Exp, Token.Value.BitOr, Token.Value.BitXor, Token.Value.BitAnd, Token.Value.Shl,
-                     Token.Value.Sar, Token.Value.Shr,
+                     Token.Add, Token.Sub, Token.Mul, Token.Div, Token.Mod,
+                     Token.Exp, Token.BitOr, Token.BitXor, Token.BitAnd, Token.Shl,
+                     Token.Sar, Token.Shr,
                  })
         {
             builder.BinaryOperationSmiLiteral(op, Smi.FromInt(42), kFeedbackIsEmbedded);
         }
 
         // Emit unary and count operator invocations.
-        builder.UnaryOperation(Token.Value.Inc, kFeedbackIsEmbedded)
-            .UnaryOperation(Token.Value.Dec, kFeedbackIsEmbedded)
-            .UnaryOperation(Token.Value.Add, 1)
-            .UnaryOperation(Token.Value.Sub, kFeedbackIsEmbedded)
-            .UnaryOperation(Token.Value.BitNot, kFeedbackIsEmbedded);
+        builder.UnaryOperation(Token.Inc, kFeedbackIsEmbedded)
+            .UnaryOperation(Token.Dec, kFeedbackIsEmbedded)
+            .UnaryOperation(Token.Add, 1)
+            .UnaryOperation(Token.Sub, kFeedbackIsEmbedded)
+            .UnaryOperation(Token.BitNot, kFeedbackIsEmbedded);
 
         // Emit unary operator invocations.
         builder.LogicalNot(ToBooleanMode.ConvertToBoolean)
@@ -281,15 +281,15 @@ public class BytecodeArrayBuilderUnitTest
             .ConstructForwardAllArgs(reg, 1);
 
         // Emit test operator invocations.
-        builder.CompareOperation(Token.Value.Eq, reg, kFeedbackIsEmbedded)
-            .CompareOperation(Token.Value.EqStrict, reg, kFeedbackIsEmbedded)
-            .CompareOperation(Token.Value.LessThan, reg, kFeedbackIsEmbedded)
-            .CompareOperation(Token.Value.GreaterThan, reg, kFeedbackIsEmbedded)
-            .CompareOperation(Token.Value.LessThanEq, reg, kFeedbackIsEmbedded)
-            .CompareOperation(Token.Value.GreaterThanEq, reg, kFeedbackIsEmbedded)
+        builder.CompareOperation(Token.Eq, reg, kFeedbackIsEmbedded)
+            .CompareOperation(Token.EqStrict, reg, kFeedbackIsEmbedded)
+            .CompareOperation(Token.LessThan, reg, kFeedbackIsEmbedded)
+            .CompareOperation(Token.GreaterThan, reg, kFeedbackIsEmbedded)
+            .CompareOperation(Token.LessThanEq, reg, kFeedbackIsEmbedded)
+            .CompareOperation(Token.GreaterThanEq, reg, kFeedbackIsEmbedded)
             .CompareTypeOf(TestTypeOfFlags.LiteralFlag.Number)
-            .CompareOperation(Token.Value.InstanceOf, reg, 2)
-            .CompareOperation(Token.Value.In, reg, 3)
+            .CompareOperation(Token.InstanceOf, reg, 2)
+            .CompareOperation(Token.In, reg, 3)
             .CompareReference(reg)
             .CompareUndetectable()
             .CompareUndefined()
@@ -398,15 +398,15 @@ public class BytecodeArrayBuilderUnitTest
         builder.DefineKeyedOwnPropertyInLiteral(reg, reg, DefineKeyedOwnPropertyInLiteralFlags.NoFlags, 0);
 
         // Emit wide context operations.
-        var var = new ContextSlotVariable(1024, MaybeAssignedFlag.MaybeAssigned, ScopeHasContextCells: true);
+        var var = new ContextSlotVariable(1024, MaybeAssignedFlag.kMaybeAssigned, ScopeHasContextCells: true);
         builder.LoadContextSlot(reg, var, 0).StoreContextSlot(reg, var, 0);
 
         // Emit wide load / store lookup slots.
         builder.LoadLookupSlot(wide_name, TypeofMode.NotInside)
             .LoadLookupSlot(wide_name, TypeofMode.Inside)
-            .StoreLookupSlot(wide_name, LanguageMode.Sloppy, LookupHoistingMode.Normal)
-            .StoreLookupSlot(wide_name, LanguageMode.Sloppy, LookupHoistingMode.LegacySloppy)
-            .StoreLookupSlot(wide_name, LanguageMode.Strict, LookupHoistingMode.Normal);
+            .StoreLookupSlot(wide_name, LanguageMode.Sloppy, LookupHoistingMode.kNormal)
+            .StoreLookupSlot(wide_name, LanguageMode.Sloppy, LookupHoistingMode.kLegacySloppy)
+            .StoreLookupSlot(wide_name, LanguageMode.Strict, LookupHoistingMode.kNormal);
 
         // CreateClosureWide
         builder.CreateClosure(1000, 321, 0);
@@ -442,7 +442,7 @@ public class BytecodeArrayBuilderUnitTest
         builder.SwitchOnGeneratorState(reg, gen_jump_table).Bind(gen_jump_table, 0);
 
         // Intrinsics handled by the interpreter.
-        builder.CallRuntime(RuntimeFunctionId.InlineAsyncFunctionReject, reg_list);
+        builder.CallRuntime(FunctionId.InlineAsyncFunctionReject, reg_list);
 
         // Emit debugger bytecode.
         builder.Debugger();
@@ -611,13 +611,13 @@ public class BytecodeArrayBuilderUnitTest
         builder.JumpIfNull(after_jump_near0)
             .Jump(near0)
             .Bind(after_jump_near0)
-            .CompareOperation(Token.Value.Eq, reg, kFeedbackIsEmbedded)
+            .CompareOperation(Token.Eq, reg, kFeedbackIsEmbedded)
             .JumpIfTrue(ToBooleanMode.AlreadyBoolean, near1)
-            .CompareOperation(Token.Value.Eq, reg, kFeedbackIsEmbedded)
+            .CompareOperation(Token.Eq, reg, kFeedbackIsEmbedded)
             .JumpIfFalse(ToBooleanMode.AlreadyBoolean, near2)
-            .BinaryOperation(Token.Value.Add, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Add, reg, kFeedbackIsEmbedded)
             .JumpIfTrue(ToBooleanMode.ConvertToBoolean, near3)
-            .BinaryOperation(Token.Value.Add, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Add, reg, kFeedbackIsEmbedded)
             .JumpIfFalse(ToBooleanMode.ConvertToBoolean, near4)
             .Bind(near0)
             .Bind(near1)
@@ -627,13 +627,13 @@ public class BytecodeArrayBuilderUnitTest
             .JumpIfNull(after_jump_far0)
             .Jump(far0)
             .Bind(after_jump_far0)
-            .CompareOperation(Token.Value.Eq, reg, kFeedbackIsEmbedded)
+            .CompareOperation(Token.Eq, reg, kFeedbackIsEmbedded)
             .JumpIfTrue(ToBooleanMode.AlreadyBoolean, far1)
-            .CompareOperation(Token.Value.Eq, reg, kFeedbackIsEmbedded)
+            .CompareOperation(Token.Eq, reg, kFeedbackIsEmbedded)
             .JumpIfFalse(ToBooleanMode.AlreadyBoolean, far2)
-            .BinaryOperation(Token.Value.Add, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Add, reg, kFeedbackIsEmbedded)
             .JumpIfTrue(ToBooleanMode.ConvertToBoolean, far3)
-            .BinaryOperation(Token.Value.Add, reg, kFeedbackIsEmbedded)
+            .BinaryOperation(Token.Add, reg, kFeedbackIsEmbedded)
             .JumpIfFalse(ToBooleanMode.ConvertToBoolean, far4);
         for (int i = 0; i < kFarJumpDistance - 22; i++) builder.Debugger();
         builder.Bind(far0).Bind(far1).Bind(far2).Bind(far3).Bind(far4);

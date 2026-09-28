@@ -2,6 +2,7 @@
 //
 // V8 walks raw pointers (and re-bases them after a moving GC); the port keeps
 // integer offsets into the managed byte[], which the GC never invalidates.
+using V8Sharp.Runtime;
 using System.Collections;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -255,13 +256,13 @@ public class BytecodeArrayIterator
         return Bytecodes.GetNumberOfRegistersRepresentedBy(operand_type);
     }
 
-    public RuntimeFunctionId GetRuntimeIdOperand(int operandIndex) =>
-        (RuntimeFunctionId)GetUnsignedOperand(operandIndex, OperandType.RuntimeId);
+    public FunctionId GetRuntimeIdOperand(int operandIndex) =>
+        (FunctionId)GetUnsignedOperand(operandIndex, OperandType.RuntimeId);
 
     public uint GetNativeContextIndexOperand(int operandIndex) =>
         GetUnsignedOperand(operandIndex, OperandType.NativeContextIndex);
 
-    public RuntimeFunctionId GetIntrinsicIdOperand(int operandIndex)
+    public FunctionId GetIntrinsicIdOperand(int operandIndex)
     {
         uint raw_id = GetUnsignedOperand(operandIndex, OperandType.IntrinsicId);
         return IntrinsicsHelper.ToRuntimeId((IntrinsicsHelper.IntrinsicId)raw_id);

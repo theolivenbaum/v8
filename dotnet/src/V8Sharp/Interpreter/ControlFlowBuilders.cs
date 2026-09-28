@@ -3,47 +3,13 @@
 //
 // V8's builders do their final work in destructors; here they are
 // IDisposable and the bytecode generator uses them with `using`.
-// AST nodes are only needed for block coverage and are passed as `object`
-// keys to an ISourceRangeMap.
-// TODO(merge): the BytecodeGenerator port supplies ISourceRangeMap from the
-// parser's SourceRangeMap (src/ast/ast-source-ranges.h).
+using V8Sharp.Ast;
 using V8Sharp.Codegen;
 
 namespace V8Sharp.Interpreter;
 
-/// <summary>A source range (src/ast/ast-source-ranges.h SourceRange).</summary>
-public readonly record struct SourceRange(int Start, int End)
-{
-    public const int kNoSourcePosition = InterpreterConstants.kNoSourcePosition;
-    public const int kFunctionLiteralSourceRangeKey = -2;
-
-    public static SourceRange Empty => new(kNoSourcePosition, kNoSourcePosition);
-    public bool IsEmpty() => Start == kNoSourcePosition;
-}
-
-/// <summary>The AST's SourceRangeMap as the block coverage builder sees it.</summary>
-public interface ISourceRangeMap
-{
-    /// <summary>The range of |kind| recorded for |node|, or null if the node has no ranges.</summary>
-    SourceRange? GetRange(object node, SourceRangeKind kind);
-
-    /// <summary>NaryOperationSourceRanges::GetRangeAtIndex, or null if the node has no ranges.</summary>
-    SourceRange? GetNaryRangeAtIndex(object node, int index);
-
-    /// <summary>ConditionalChainSourceRanges::GetRangeAtIndex, or null if the node has no ranges.</summary>
-    SourceRange? GetConditionalChainRangeAtIndex(object node, SourceRangeKind kind, int index);
-}
-
-/// <summary>The FeedbackVectorSpec as the loop builder sees it.</summary>
-// TODO(merge): implemented by the feedback-vector port's FeedbackVectorSpec.
-public interface IFeedbackVectorSpec
-{
-    /// <summary>AddJumpLoopSlot().ToInt().</summary>
-    int AddJumpLoopSlot();
-}
-
 /// <summary>Generates IncBlockCounter bytecodes and the {source range, slot}
-/// mapping for block coverage.</summary>
+/// mapping for block coverage (src/interpreter/block-coverage-builder.h).</summary>
 public sealed class BlockCoverageBuilder
 {
     public const int kNoCoverageArraySlot = -1;
@@ -52,30 +18,40 @@ public sealed class BlockCoverageBuilder
     // slots. Slot i covers range slots_[i].
     readonly List<SourceRange> _slots = [];
     readonly BytecodeArrayBuilder _builder;
-    readonly ISourceRangeMap _sourceRangeMap;
+    readonly SourceRangeMap _sourceRangeMap;
 
-    public BlockCoverageBuilder(BytecodeArrayBuilder builder, ISourceRangeMap sourceRangeMap)
+    public BlockCoverageBuilder(BytecodeArrayBuilder builder, SourceRangeMap sourceRangeMap)
     {
         _builder = builder;
         _sourceRangeMap = sourceRangeMap;
     }
 
-    int AllocateSlot(SourceRange? range)
+    int AllocateSlot(SourceRange range)
     {
-        if (range is not { } r || r.IsEmpty()) return kNoCoverageArraySlot;
+        if (range.IsEmpty()) return kNoCoverageArraySlot;
         int slot = _slots.Count;
-        _slots.Add(r);
+        _slots.Add(range);
         return slot;
     }
 
-    public int AllocateBlockCoverageSlot(object node, SourceRangeKind kind) =>
-        AllocateSlot(_sourceRangeMap.GetRange(node, kind));
+    public int AllocateBlockCoverageSlot(object node, SourceRangeKind kind)
+    {
+        AstNodeSourceRanges? ranges = _sourceRangeMap.Find(node);
+        if (ranges is null) return kNoCoverageArraySlot;
+        return AllocateSlot(ranges.GetRange(kind));
+    }
 
-    public int AllocateNaryBlockCoverageSlot(object node, int index) =>
-        AllocateSlot(_sourceRangeMap.GetNaryRangeAtIndex(node, index));
+    public int AllocateNaryBlockCoverageSlot(NaryOperation node, int index)
+    {
+        if (_sourceRangeMap.Find(node) is not NaryOperationSourceRanges ranges) return kNoCoverageArraySlot;
+        return AllocateSlot(ranges.GetRangeAtIndex(index));
+    }
 
-    public int AllocateConditionalChainBlockCoverageSlot(object node, SourceRangeKind kind, int index) =>
-        AllocateSlot(_sourceRangeMap.GetConditionalChainRangeAtIndex(node, kind, index));
+    public int AllocateConditionalChainBlockCoverageSlot(ConditionalChain node, SourceRangeKind kind, int index)
+    {
+        if (_sourceRangeMap.Find(node) is not ConditionalChainSourceRanges ranges) return kNoCoverageArraySlot;
+        return AllocateSlot(ranges.GetRangeAtIndex(kind, index));
+    }
 
     public void IncrementBlockCounter(int coverageArraySlot)
     {
@@ -118,7 +94,7 @@ public abstract class BreakableControlFlowBuilder(BytecodeArrayBuilder builder,
         Debug.Assert(_breakLabels.Empty || _breakLabels.IsBound);
         if (_blockCoverageBuilder is not null && _node is not null)
         {
-            _blockCoverageBuilder.IncrementBlockCounter(_node, SourceRangeKind.Continuation);
+            _blockCoverageBuilder.IncrementBlockCounter(_node, SourceRangeKind.kContinuation);
         }
         base.Dispose();
     }
@@ -173,17 +149,17 @@ public sealed class LoopBuilder : BreakableControlFlowBuilder
 
     readonly int _blockCoverageBodySlot = BlockCoverageBuilder.kNoCoverageArraySlot;
     readonly int _sourcePosition;
-    readonly IFeedbackVectorSpec _feedbackVectorSpec;
+    readonly FeedbackVectorSpec _feedbackVectorSpec;
 
     /// <param name="nodePosition">node->position(), or kNoSourcePosition when there is no node.</param>
     public LoopBuilder(BytecodeArrayBuilder builder, BlockCoverageBuilder? blockCoverageBuilder, object? node,
-                       int nodePosition, IFeedbackVectorSpec feedbackVectorSpec)
+                       int nodePosition, FeedbackVectorSpec feedbackVectorSpec)
         : base(builder, blockCoverageBuilder, node)
     {
         _feedbackVectorSpec = feedbackVectorSpec;
         if (_blockCoverageBuilder is not null && node is not null)
         {
-            _blockCoverageBodySlot = _blockCoverageBuilder.AllocateBlockCoverageSlot(node, SourceRangeKind.Body);
+            _blockCoverageBodySlot = _blockCoverageBuilder.AllocateBlockCoverageSlot(node, SourceRangeKind.kBody);
         }
         _sourcePosition = node is not null ? nodePosition : InterpreterConstants.kNoSourcePosition;
     }
@@ -227,7 +203,7 @@ public sealed class LoopBuilder : BreakableControlFlowBuilder
             //
             // The loop must have closed form, i.e. all loop elements are within the
             // loop, the loop header precedes the body and next elements in the loop.
-            int slot_index = _feedbackVectorSpec.AddJumpLoopSlot();
+            int slot_index = _feedbackVectorSpec.AddJumpLoopSlot().ToInt();
             Builder.JumpLoop(_loopHeader, Math.Min(loopDepth, InterpreterConstants.kMaxOsrUrgency - 1),
                              _sourcePosition, slot_index);
         }
@@ -326,7 +302,7 @@ public sealed class SwitchBuilder : BreakableControlFlowBuilder
     {
         if (_blockCoverageBuilder is not null && clause is not null)
         {
-            _blockCoverageBuilder.IncrementBlockCounter(clause, SourceRangeKind.Body);
+            _blockCoverageBuilder.IncrementBlockCounter(clause, SourceRangeKind.kBody);
         }
     }
 }
@@ -343,7 +319,7 @@ public sealed class TryCatchBuilder(BytecodeArrayBuilder builder, BlockCoverageB
     {
         if (blockCoverageBuilder is not null && statement is not null)
         {
-            blockCoverageBuilder.IncrementBlockCounter(statement, SourceRangeKind.Continuation);
+            blockCoverageBuilder.IncrementBlockCounter(statement, SourceRangeKind.kContinuation);
         }
         base.Dispose();
     }
@@ -359,7 +335,7 @@ public sealed class TryCatchBuilder(BytecodeArrayBuilder builder, BlockCoverageB
             Builder.MarkHandler(_handlerId, catchPrediction);
             if (blockCoverageBuilder is not null && statement is not null)
             {
-                blockCoverageBuilder.IncrementBlockCounter(statement, SourceRangeKind.Catch);
+                blockCoverageBuilder.IncrementBlockCounter(statement, SourceRangeKind.kCatch);
             }
         }
         else
@@ -367,7 +343,7 @@ public sealed class TryCatchBuilder(BytecodeArrayBuilder builder, BlockCoverageB
             Builder.DropHandlerEntry(_handlerId);
             if (blockCoverageBuilder is not null && statement is not null)
             {
-                blockCoverageBuilder.AllocateBlockCoverageSlot(statement, SourceRangeKind.Catch);
+                blockCoverageBuilder.AllocateBlockCoverageSlot(statement, SourceRangeKind.kCatch);
             }
         }
     }
@@ -390,7 +366,7 @@ public sealed class TryFinallyBuilder(BytecodeArrayBuilder builder, BlockCoverag
     {
         if (blockCoverageBuilder is not null && statement is not null)
         {
-            blockCoverageBuilder.IncrementBlockCounter(statement, SourceRangeKind.Continuation);
+            blockCoverageBuilder.IncrementBlockCounter(statement, SourceRangeKind.kContinuation);
         }
         base.Dispose();
     }
@@ -412,7 +388,7 @@ public sealed class TryFinallyBuilder(BytecodeArrayBuilder builder, BlockCoverag
         _finalizationSites.Bind(Builder);
         if (blockCoverageBuilder is not null && statement is not null)
         {
-            blockCoverageBuilder.IncrementBlockCounter(statement, SourceRangeKind.Finally);
+            blockCoverageBuilder.IncrementBlockCounter(statement, SourceRangeKind.kFinally);
         }
     }
 
@@ -434,7 +410,7 @@ public sealed class ConditionalChainControlFlowBuilder : ControlFlowBuilder
     readonly BlockCoverageBuilder? _blockCoverageBuilder;
 
     public ConditionalChainControlFlowBuilder(BytecodeArrayBuilder builder, BlockCoverageBuilder? blockCoverageBuilder,
-                                              object node, int thenCount)
+                                              ConditionalChain node, int thenCount)
         : base(builder)
     {
         _thenCount = thenCount;
@@ -453,9 +429,9 @@ public sealed class ConditionalChainControlFlowBuilder : ControlFlowBuilder
             for (int i = 0; i < thenCount; ++i)
             {
                 _blockCoverageThenSlots[i] =
-                    blockCoverageBuilder.AllocateConditionalChainBlockCoverageSlot(node, SourceRangeKind.Then, i);
+                    blockCoverageBuilder.AllocateConditionalChainBlockCoverageSlot(node, SourceRangeKind.kThen, i);
                 _blockCoverageElseSlots[i] =
-                    blockCoverageBuilder.AllocateConditionalChainBlockCoverageSlot(node, SourceRangeKind.Else, i);
+                    blockCoverageBuilder.AllocateConditionalChainBlockCoverageSlot(node, SourceRangeKind.kElse, i);
             }
         }
     }
@@ -524,8 +500,8 @@ public sealed class ConditionalControlFlowBuilder : ControlFlowBuilder
         _blockCoverageBuilder = blockCoverageBuilder;
         if (blockCoverageBuilder is not null)
         {
-            _blockCoverageThenSlot = blockCoverageBuilder.AllocateBlockCoverageSlot(node, SourceRangeKind.Then);
-            _blockCoverageElseSlot = blockCoverageBuilder.AllocateBlockCoverageSlot(node, SourceRangeKind.Else);
+            _blockCoverageThenSlot = blockCoverageBuilder.AllocateBlockCoverageSlot(node, SourceRangeKind.kThen);
+            _blockCoverageElseSlot = blockCoverageBuilder.AllocateBlockCoverageSlot(node, SourceRangeKind.kElse);
         }
     }
 
@@ -542,7 +518,7 @@ public sealed class ConditionalControlFlowBuilder : ControlFlowBuilder
         // can only contain expressions).
         if (_blockCoverageBuilder is not null && _nodeIsIfStatement)
         {
-            _blockCoverageBuilder.IncrementBlockCounter(_node, SourceRangeKind.Continuation);
+            _blockCoverageBuilder.IncrementBlockCounter(_node, SourceRangeKind.kContinuation);
         }
         base.Dispose();
     }
