@@ -814,7 +814,7 @@ public sealed partial class FlagList
     public bool sampling_heap_profiler_suppress_randomness = false;
     public bool log_ic = false;
     public bool fast_map_update = false;
-    public int max_valid_polymorphic_map_count = 0;  // build default; V8: DEFAULT_MAX_POLYMORPHIC_MAP_COUNT
+    public int max_valid_polymorphic_map_count = 4;  // V8: DEFAULT_MAX_POLYMORPHIC_MAP_COUNT
     public bool clone_object_sidestep_transitions = true;
     public int fast_properties_soft_limit = unchecked((int)(12));
     public bool native_code_counters = false;

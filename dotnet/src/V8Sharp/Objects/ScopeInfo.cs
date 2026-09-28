@@ -14,7 +14,7 @@ using V8Sharp.Common;
 namespace V8Sharp.Objects;
 
 /// <summary>V8's ScopeInfo: the static description of a scope's context layout.</summary>
-public sealed class ScopeInfo : HeapObject
+public sealed partial class ScopeInfo : HeapObject
 {
     public const int kScopeInfoMaxInlinedLocalNamesSize = 75;
     public const int kFunctionNameEntries = 2;

@@ -45,7 +45,7 @@ public static class Execution
         SharedFunctionInfo shared = function.Shared;
         if (Globals.IsClassConstructor(shared.Kind))
         {
-            return isolate.ThrowTypeError(MessageTemplate.ConstructorNonCallable, shared.Name());
+            return V8Sharp.Runtime.RuntimeClasses.ThrowConstructorNonCallableError(isolate, function);
         }
 
         // Enter the context of the function; ToObject has to run in the

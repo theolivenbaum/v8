@@ -75,6 +75,9 @@ public sealed class BytecodeArray
 
     public object[] ConstantPool { get; set; }
 
+    /// <summary>The constant pool as values, materialized by the interpreter on first execution.</summary>
+    public V8Sharp.Objects.JSValue[]? ConstantPoolValues;
+
     /// <summary>The handler table (range encoding, see <see cref="Codegen.HandlerTable"/>).</summary>
     public byte[] HandlerTable { get; set; }
 
