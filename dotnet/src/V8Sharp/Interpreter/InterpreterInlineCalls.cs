@@ -141,8 +141,9 @@ internal static class InterpreterInlineCalls
         Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset) = function;
         Unsafe.Add(ref fpRef, InterpreterRuntime.kArgcOffset) = JSValue.FromInt(argc);
 
-        // The trampoline fills the register file with undefined.
-        MemoryMarshal.CreateSpan(ref fpRef, registerCount).Clear();
+        // The trampoline fills the register file with undefined: the register
+        // stack above its top is always clear (released slots are cleared).
+        Debug.Assert(MemoryMarshal.CreateSpan(ref fpRef, registerCount).IndexOfAnyExcept(default(JSValue)) < 0);
         if (isConstruct)
         {
             Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;

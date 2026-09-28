@@ -234,7 +234,11 @@ public static partial class InterpreterExecution
         // Frames above this one are gone (their finally blocks popped them), and
         // so is any stack space reserved above this frame's register file.
         isolate.InterpreterFrameDepth = state.FrameIndex + 1;
-        isolate.RegisterStackTop = state.Fp + state.Bytecode.RegisterCount;
+        // Released slots are cleared: the register stack above its top is
+        // always undefined (InterpreterInlineCalls relies on it).
+        int top = state.Fp + state.Bytecode.RegisterCount;
+        if (isolate.RegisterStackTop > top) isolate.ReleaseRegisters(top);
+        else isolate.RegisterStackTop = top;
         return true;
     }
 

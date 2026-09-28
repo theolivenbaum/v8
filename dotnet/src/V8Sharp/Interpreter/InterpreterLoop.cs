@@ -569,33 +569,27 @@ public static partial class InterpreterExecution
                     pc += 2 + S;
                     continue;
                 case Bytecode.BitwiseOr:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.BitwiseOr, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.Binary<BitwiseOrOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
                 case Bytecode.BitwiseXor:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.BitwiseXor, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.Binary<BitwiseXorOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
                 case Bytecode.BitwiseAnd:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.BitwiseAnd, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.Binary<BitwiseAndOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
                 case Bytecode.ShiftLeft:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.ShiftLeft, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.Binary<ShiftLeftOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
                 case Bytecode.ShiftRight:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.ShiftRight, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.Binary<ShiftRightOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
                 case Bytecode.ShiftRightLogical:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.ShiftRightLogical, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)),
-                        acc, ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.Binary<ShiftRightLogicalOp>(isolate, Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc, ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
                 case Bytecode.Add_StringConstant_Internalize:
@@ -661,33 +655,27 @@ public static partial class InterpreterExecution
                     pc += 2 + S;
                     continue;
                 case Bytecode.BitwiseOrSmi:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.BitwiseOr, acc, JSValue.FromInt(Signed<TS>(ref code, pc + 1)),
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.WithSmi<BitwiseOrOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
                 case Bytecode.BitwiseXorSmi:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.BitwiseXor, acc, JSValue.FromInt(Signed<TS>(ref code, pc + 1)),
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.WithSmi<BitwiseXorOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
                 case Bytecode.BitwiseAndSmi:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.BitwiseAnd, acc, JSValue.FromInt(Signed<TS>(ref code, pc + 1)),
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.WithSmi<BitwiseAndOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
                 case Bytecode.ShiftLeftSmi:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.ShiftLeft, acc, JSValue.FromInt(Signed<TS>(ref code, pc + 1)),
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.WithSmi<ShiftLeftOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
                 case Bytecode.ShiftRightSmi:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.ShiftRight, acc, JSValue.FromInt(Signed<TS>(ref code, pc + 1)),
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.WithSmi<ShiftRightOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
                 case Bytecode.ShiftRightLogicalSmi:
-                    acc = InterpreterOps.Bitwise(isolate, Operation.ShiftRightLogical, acc,
-                        JSValue.FromInt(Signed<TS>(ref code, pc + 1)), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = InterpreterBitwise.WithSmi<ShiftRightLogicalOp>(isolate, acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
                     pc += 2 + S;
                     continue;
 

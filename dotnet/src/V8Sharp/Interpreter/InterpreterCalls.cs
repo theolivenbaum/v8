@@ -35,7 +35,9 @@ public static class InterpreterCalls
         JSValue[] slots = fv.Slots;
         // IncrementCallCount.
         ref JSValue count = ref slots[slot + 1];
-        count = JSValue.FromNumber(count._num + kCallCountIncrement);
+        // The slot always holds a number: bump it without storing the tag (and
+        // paying the GC write barrier of a reference store).
+        Unsafe.AsRef(in count._num) += kCallCountIncrement;
         // IsMonomorphic.
         if (ReferenceEquals(slots[slot]._obj, target._obj)) return;
         CollectCallFeedbackSlow(isolate, fv, slot, target, receiver);
@@ -128,7 +130,9 @@ public static class InterpreterCalls
         if (fv is null) return null;
         JSValue[] slots = fv.Slots;
         ref JSValue count = ref slots[slot + 1];
-        count = JSValue.FromNumber(count._num + kCallCountIncrement);
+        // The slot always holds a number: bump it without storing the tag (and
+        // paying the GC write barrier of a reference store).
+        Unsafe.AsRef(in count._num) += kCallCountIncrement;
         ref JSValue feedback = ref slots[slot];
         HeapObject? feedbackObject = feedback.HeapObjectOrNull;
         if (ReferenceEquals(feedbackObject, newTarget.HeapObjectOrNull)) return null;
@@ -422,7 +426,9 @@ public static class InterpreterCalls
         if (fv is null) return;
         JSValue[] slots = fv.Slots;
         ref JSValue count = ref slots[slot + 1];
-        count = JSValue.FromNumber(count._num + kCallCountIncrement);
+        // The slot always holds a number: bump it without storing the tag (and
+        // paying the GC write barrier of a reference store).
+        Unsafe.AsRef(in count._num) += kCallCountIncrement;
         ref JSValue feedback = ref slots[slot];
         if (ReferenceEquals(feedback.HeapObjectOrNull, newTarget.HeapObjectOrNull)) return;
         if (ReferenceEquals(feedback.HeapObjectOrNull, ReadOnlyRoots.megamorphic_symbol)) return;

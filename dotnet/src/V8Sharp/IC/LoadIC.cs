@@ -33,10 +33,19 @@ public sealed class LoadIC : IC
             {
                 JSValue[] slots = vector.Slots;
                 var r = Unsafe.As<JSReceiver>(o);
-                if (ReferenceEquals(slots[slot]._obj, r.Map) && slots[slot + 1]._obj is LoadHandler handler &&
-                    handler.HandlerKind == LoadHandler.Kind.kField && handler.Holder is null)
+                if (ReferenceEquals(slots[slot]._obj, r.Map) && slots[slot + 1]._obj is LoadHandler handler)
                 {
-                    return r._fields[handler.FieldIndex];
+                    // The monomorphic hits of AccessorAssembler::HandleLoadICHandlerCase:
+                    // an own field, and a constant on the prototype chain (methods).
+                    if (handler.HandlerKind == LoadHandler.Kind.kField && handler.Holder is null)
+                    {
+                        return r._fields[handler.FieldIndex];
+                    }
+                    if (handler.HandlerKind == LoadHandler.Kind.kConstantFromPrototype && !handler.LookupOnLookupStartObject &&
+                        handler.IsValid)
+                    {
+                        return handler.Data;
+                    }
                 }
             }
         }
