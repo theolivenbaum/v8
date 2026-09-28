@@ -1164,6 +1164,13 @@ public static class IteratorHelpers
             for (uint k = 0; k < length; k++) values[(int)k] = JSReceiver.GetElement(isolate, array, k);
             return isolate.Factory.NewJSArrayWithElements(values);
         }
+        // FastIterableToList: a string primitive with unmodified iteration
+        // goes through StringToList (BranchIfStringPrimitiveWithNoCustomIteration).
+        if (iterable.HeapObjectOrNull is JSString s && Protectors.IsStringIteratorLookupChainIntact(isolate) &&
+            (uint)s.Length <= JSArray.kMaxFastArrayLength)
+        {
+            return BuiltinsString.StringToList(isolate, s);
+        }
 
         IteratorRecord iteratorRecord = GetIterator(isolate, iterable);
         var list = new List<JSValue>();

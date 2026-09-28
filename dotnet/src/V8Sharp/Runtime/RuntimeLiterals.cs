@@ -10,6 +10,7 @@
 // hold the boilerplates, but elements-kind transitions of literal copies are
 // not fed back into them (see deviations.md).
 using V8Sharp.Interpreter;
+using V8Sharp.RegExp;
 
 namespace V8Sharp.Runtime;
 
@@ -382,34 +383,30 @@ public static class RuntimeLiterals
 
     // ---- RegExp literals ----------------------------------------------------------------------
 
-    /// <summary>JSRegExp::Flags to the flags string ("dgimsuvy" order, as JSRegExp::StringFromFlags).</summary>
-    static JSString FlagsToString(Isolate isolate, int flags)
-    {
-        Span<char> buffer = stackalloc char[9];
-        int n = 0;
-        if ((flags & (1 << 7)) != 0) buffer[n++] = 'd';  // kHasIndices
-        if ((flags & (1 << 0)) != 0) buffer[n++] = 'g';  // kGlobal
-        if ((flags & (1 << 1)) != 0) buffer[n++] = 'i';  // kIgnoreCase
-        if ((flags & (1 << 6)) != 0) buffer[n++] = 'l';  // kLinear
-        if ((flags & (1 << 2)) != 0) buffer[n++] = 'm';  // kMultiline
-        if ((flags & (1 << 5)) != 0) buffer[n++] = 's';  // kDotAll
-        if ((flags & (1 << 4)) != 0) buffer[n++] = 'u';  // kUnicode
-        if ((flags & (1 << 8)) != 0) buffer[n++] = 'v';  // kUnicodeSets
-        if ((flags & (1 << 3)) != 0) buffer[n++] = 'y';  // kSticky
-        return isolate.Factory.NewStringFromUtf16(new string(buffer[..n]));
-    }
-
     /// <summary>
-    /// CreateRegExpLiteral: Runtime_CreateRegExpLiteral.
-    /// Deviation: V8 caches a RegExpBoilerplateDescription (the compiled
-    /// RegExpData) in the literal slot and clones it; V8Sharp creates each
-    /// instance through the intrinsic RegExp constructor, which compiles
-    /// through the regexp compilation cache.
+    /// CreateRegExpLiteral bytecode: the CSA fast path of
+    /// ConstructorBuiltinsAssembler::CreateRegExpLiteral (copy the boilerplate
+    /// when the slot has one) and Runtime_CreateRegExpLiteral (a fresh regexp;
+    /// literal sites go Uninitialized, Preinitialized, then Initialized with a
+    /// RegExpBoilerplateDescription). The flags operand is JSRegExp::Flags,
+    /// which has RegExpFlags' bit layout.
     /// </summary>
     public static JSValue CreateRegExpLiteral(Isolate isolate, FeedbackVector? vector, int slot, JSString pattern, int flags)
     {
-        JSValue regexp = Execution.New(isolate, isolate.NativeContext.RegExpFunction, [pattern, FlagsToString(isolate, flags)]);
-        if (vector is not null && IsUninitializedLiteralSite(vector.Slots[slot])) PreInitializeLiteralSite(vector, slot);
+        if (vector is null) return JSRegExp.New(isolate, pattern, (RegExpFlags)flags);
+        JSValue literalSite = vector.Slots[slot];
+        if (literalSite.HeapObjectOrNull is RegExpBoilerplateDescription boilerplate)
+        {
+            return JSRegExp.CreateFromBoilerplate(isolate, (RegExpData)boilerplate.Data, (RegExpFlags)boilerplate.Flags);
+        }
+
+        JSRegExp regexp = JSRegExp.New(isolate, pattern, (RegExpFlags)flags);
+        if (IsUninitializedLiteralSite(literalSite))
+        {
+            PreInitializeLiteralSite(vector, slot);
+            return regexp;
+        }
+        vector.Slots[slot] = new RegExpBoilerplateDescription(regexp.Data!, pattern, (int)regexp.Flags);
         return regexp;
     }
 

@@ -6,6 +6,7 @@
 //
 // Each area registers its functions in Register<Area>() below; a function
 // without an implementation throws when called.
+using V8Sharp.Base.Numbers;
 using V8Sharp.Codegen;
 
 namespace V8Sharp.Runtime;
@@ -30,6 +31,7 @@ public static partial class RuntimeTable
         RegisterCompiler();
         RegisterTest();
         RegisterIntrinsics();
+        RegisterRegExpAndStrings();
 
         // %_Foo uses Foo's entry when it is not an interpreter intrinsic.
         ReadOnlySpan<RuntimeFunction> all = Runtime.AllFunctions;
@@ -290,5 +292,54 @@ public static partial class RuntimeTable
         Register(FunctionId.CreateJSGeneratorObject,
             static (i, a) => Interpreter.InterpreterGenerators.CreateJSGeneratorObject(i, a[0].As<JSFunction>(), a[1]));
         Register(FunctionId.GeneratorGetFunction, static (i, a) => a[0].As<JSGeneratorObject>().Function);
+    }
+
+    /// <summary>runtime-regexp.cc, runtime-strings.cc and the regexp entries of runtime-test.cc.
+    /// Runtime_RegExpExec takes a raw result-offsets pointer, so only the
+    /// builtins call it (through RuntimeRegExp.RegExpExec) and it has no entry.</summary>
+    static void RegisterRegExpAndStrings()
+    {
+        Register(FunctionId.RegExpExecMultiple, static (i, a) =>
+            RuntimeRegExp.RegExpExecMultiple(i, a[0].As<JSRegExp>(), a[1].As<JSString>(), a[2].As<RegExpMatchInfo>()) is { } r
+                ? r : JSValue.Null);
+        Register(FunctionId.RegExpReplaceRT, static (i, a) =>
+            RuntimeRegExp.RegExpReplaceRT(i, a[0].As<JSReceiver>(), a[1].As<JSString>(), a[2]));
+        Register(FunctionId.RegExpSplit, static (i, a) =>
+            RuntimeRegExp.RegExpSplit(i, a[0].As<JSReceiver>(), a[1].As<JSString>(), a[2]));
+        Register(FunctionId.StringSplit, static (i, a) =>
+            RuntimeRegExp.StringSplit(i, a[0].As<JSString>(), a[1].As<JSString>(), Conversions.NumberToUint32(a[2].Number),
+                Conversions.NumberToInt32(a[3].Number)));
+        Register(FunctionId.StringReplaceNonGlobalRegExpWithFunction, static (i, a) =>
+            RuntimeRegExp.StringReplaceNonGlobalRegExpWithFunction(i, a[0].As<JSString>(), a[1].As<JSRegExp>(), a[2].As<JSReceiver>()));
+        Register(FunctionId.RegExpMatchGlobalAtom, static (i, a) =>
+            RuntimeRegExp.RegExpMatchGlobalAtom(i, a[0].As<JSRegExp>(), a[1].As<JSString>(), a[2].As<RegExpData>()));
+        Register(FunctionId.RegExpInitializeAndCompile, static (i, a) =>
+            RuntimeRegExp.RegExpInitializeAndCompile(i, a[0].As<JSRegExp>(), a[1].As<JSString>(), a[2].As<JSString>()));
+        Register(FunctionId.RegExpStringFromFlags, static (i, a) => RuntimeRegExp.RegExpStringFromFlags(i, a[0].As<JSRegExp>()));
+        Register(FunctionId.RegExpBuildIndices, static (i, a) =>
+            RuntimeRegExp.RegExpBuildIndices(i, a[0].As<JSRegExp>(), a[1].As<RegExpMatchInfo>()));
+        Register(FunctionId.StringBuilderConcat, static (i, a) =>
+            RuntimeRegExp.StringBuilderConcat(i, a[0].As<FixedArray>(), Conversions.NumberToInt32(a[1].Number), a[2].As<JSString>()));
+        Register(FunctionId.RegexpHasBytecode, static (i, a) =>
+            JSValue.FromBoolean(RuntimeRegExp.RegexpHasBytecode(a[0].As<JSRegExp>(), a[1].IsTrue)));
+        Register(FunctionId.RegexpHasNativeCode, static (i, a) =>
+            JSValue.FromBoolean(RuntimeRegExp.RegexpHasNativeCode(a[0].As<JSRegExp>(), a[1].IsTrue)));
+        Register(FunctionId.RegexpQuickCheckRejects, static (i, a) =>
+            JSValue.FromBoolean(RuntimeRegExp.RegexpQuickCheckRejects(a[0].As<JSRegExp>(), a[1].As<JSString>())));
+        Register(FunctionId.RegexpTypeTag, static (i, a) => RuntimeRegExp.RegexpTypeTag(i, a[0].As<JSRegExp>()));
+        Register(FunctionId.RegexpIsUnmodified, static (i, a) =>
+            JSValue.FromBoolean(RuntimeRegExp.RegexpIsUnmodified(i, a[0].As<JSRegExp>())));
+
+        Register(FunctionId.GetSubstitution, static (i, a) =>
+            RuntimeStrings.GetSubstitution(i, a[0].As<JSString>(), a[1].As<JSString>(), Conversions.NumberToInt32(a[2].Number),
+                a[3].As<JSString>(), Conversions.NumberToInt32(a[4].Number)));
+        Register(FunctionId.StringReplaceOneCharWithString, static (i, a) =>
+            RuntimeStrings.StringReplaceOneCharWithString(i, a[0].As<JSString>(), a[1].As<JSString>(), a[2].As<JSString>()));
+        Register(FunctionId.StringToArray, static (i, a) =>
+            RuntimeStrings.StringToArray(i, a[0].As<JSString>(), Conversions.NumberToUint32(a[1].Number)));
+        Register(FunctionId.StringEscapeQuotes, static (i, a) => RuntimeStrings.StringEscapeQuotes(i, a[0].As<JSString>()));
+        Register(FunctionId.StringIsWellFormed, static (i, a) =>
+            JSValue.FromBoolean(RuntimeStrings.StringIsWellFormed(a[0].As<JSString>())));
+        Register(FunctionId.StringToWellFormed, static (i, a) => RuntimeStrings.StringToWellFormed(i, a[0].As<JSString>()));
     }
 }
