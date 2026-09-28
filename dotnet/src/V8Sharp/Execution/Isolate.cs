@@ -447,7 +447,185 @@ public sealed partial class Isolate
                 builder.AppendJavaScriptFrame(summary);
             }
         }
+        // If --async-stack-traces are enabled and the "current microtask" is a
+        // PromiseReactionJobTask, we try to enrich the stack trace with async
+        // frames.
+        if (isolate.Flags.async_stack_traces) CaptureAsyncStackTrace(isolate, ref builder);
         return builder.Build();
+    }
+
+    /// <summary>The microtask being run (V8: the current_microtask root), or null.</summary>
+    public Microtask? CurrentMicrotask;
+
+    static bool IsBuiltinFunction(JSValue obj, Builtin builtin) =>
+        obj.HeapObjectOrNull is JSFunction function && function.Shared.BuiltinId == builtin;
+
+    // Check if the function is one of the known async function or
+    // async generator fulfill handlers.
+    static bool IsBuiltinAsyncFulfillHandler(JSValue obj) =>
+        IsBuiltinFunction(obj, Builtin.AsyncFunctionAwaitResolveClosure) ||
+        IsBuiltinFunction(obj, Builtin.AsyncGeneratorAwaitResolveClosure) ||
+        IsBuiltinFunction(obj, Builtin.AsyncGeneratorYieldWithAwaitResolveClosure);
+
+    // Check if the function is one of the known async function or
+    // async generator reject handlers.
+    static bool IsBuiltinAsyncRejectHandler(JSValue obj) =>
+        IsBuiltinFunction(obj, Builtin.AsyncFunctionAwaitRejectClosure) ||
+        IsBuiltinFunction(obj, Builtin.AsyncGeneratorAwaitRejectClosure);
+
+    static JSGeneratorObject? TryGetAsyncGenerator(PromiseReaction reaction)
+    {
+        JSValue fulfillHandler = reaction.FulfillHandler;
+        if (fulfillHandler.HeapObjectOrNull is JSGeneratorObject generator) return generator;
+        // Check if the {reaction} has one of the known async function or
+        // async generator continuations as its fulfill handler.
+        if (IsBuiltinAsyncFulfillHandler(fulfillHandler))
+        {
+            // Now peek into the handlers' AwaitContext to get to
+            // the JSGeneratorObject for the async function.
+            return fulfillHandler.As<JSFunction>().Context.Extension.As<JSGeneratorObject>();
+        }
+        return null;
+    }
+
+    static void CaptureAsyncStackTrace(Isolate isolate, JSPromise promise, ref CallSiteBuilder builder)
+    {
+        while (!builder.Full)
+        {
+            // Check that the {promise} is not settled.
+            if (promise.Status != PromiseState.kPending) return;
+
+            // Check that we have exactly one PromiseReaction on the {promise}.
+            if (promise.Reactions.HeapObjectOrNull is not PromiseReaction reaction) return;
+            if (!reaction.Next.IsSmi) return;
+
+            JSGeneratorObject? generatorObject = TryGetAsyncGenerator(reaction);
+            if (generatorObject is not null)
+            {
+                // Append async frame corresponding to the {generator_object}.
+                builder.AppendAsyncFrame(generatorObject);
+
+                // Try to continue from here.
+                if (generatorObject is JSAsyncFunctionObject asyncFunctionObject)
+                {
+                    promise = asyncFunctionObject.Promise;
+                }
+                else
+                {
+                    var asyncGeneratorObject = (JSAsyncGeneratorObject)generatorObject;
+                    if (asyncGeneratorObject.Queue.HeapObjectOrNull is not Interpreter.AsyncGeneratorRequest request) return;
+                    promise = request.Promise;
+                }
+                continue;
+            }
+
+            bool isAll = IsBuiltinFunction(reaction.FulfillHandler, Builtin.PromiseAllResolveElementClosure);
+            bool isAllSettled = !isAll && IsBuiltinFunction(reaction.FulfillHandler, Builtin.PromiseAllSettledResolveElementClosure);
+            bool isAny = !isAll && !isAllSettled && IsBuiltinFunction(reaction.RejectHandler, Builtin.PromiseAnyRejectElementClosure);
+            if (isAll || isAllSettled || isAny)
+            {
+                JSFunction function = (isAny ? reaction.RejectHandler : reaction.FulfillHandler).As<JSFunction>();
+                Context context = function.Context;
+                NativeContext nativeContext = context.NativeContext;
+                JSFunction combinator = isAll ? nativeContext.PromiseAll
+                    : isAllSettled ? nativeContext.PromiseAllSettled
+                    : nativeContext.PromiseAny;
+                builder.AppendPromiseCombinatorFrame(function, combinator);
+
+                // NativeContext is used as a marker that the closure was already
+                // called. We can't access the element context any more.
+                if (context is NativeContext) return;
+
+                // Now peek into the resolve (reject) element context to find the
+                // promise capability that's being resolved when all (any of) the
+                // concurrent promises resolve.
+                int index = isAny
+                    ? PromiseBuiltins.kPromiseAnyRejectElementCapabilitySlot
+                    : PromiseBuiltins.kPromiseAllResolveElementCapabilitySlot;
+                if (context[index].HeapObjectOrNull is not PromiseCapability capability) return;
+                if (capability.Promise.HeapObjectOrNull is not JSPromise next) return;
+                promise = next;
+            }
+            else if (IsBuiltinFunction(reaction.FulfillHandler, Builtin.PromiseCapabilityDefaultResolve))
+            {
+                Context context = reaction.FulfillHandler.As<JSFunction>().Context;
+                if (context[PromiseBuiltins.kPromiseIfNotResolvedSlot].HeapObjectOrNull is not JSPromise next) return;
+                promise = next;
+            }
+            else
+            {
+                // We have some generic promise chain here, so try to
+                // continue with the chained promise on the reaction
+                // (only works for native promise chains).
+                switch (reaction.PromiseOrCapability.HeapObjectOrNull)
+                {
+                    case JSPromise next:
+                        promise = next;
+                        break;
+                    case PromiseCapability capability:
+                        if (capability.Promise.HeapObjectOrNull is not JSPromise capabilityPromise) return;
+                        promise = capabilityPromise;
+                        break;
+                    default:
+                        // Otherwise the {promise_or_capability} must be undefined here.
+                        return;
+                }
+            }
+        }
+    }
+
+    static JSPromise? TryGetCurrentTaskPromise(Isolate isolate)
+    {
+        switch (isolate.CurrentMicrotask)
+        {
+            case PromiseReaction task when task.State != PromiseReaction.Kind.Reaction:
+            {
+                // Check if the {reaction} has one of the known async function or
+                // async generator continuations as its fulfill handler.
+                JSGeneratorObject? generatorObject = null;
+                JSValue handler = task.Handler;
+                if (handler.HeapObjectOrNull is JSGeneratorObject g)
+                {
+                    generatorObject = g;
+                }
+                else if (IsBuiltinAsyncFulfillHandler(handler) || IsBuiltinAsyncRejectHandler(handler))
+                {
+                    // Now peek into the handlers' AwaitContext to get to
+                    // the JSGeneratorObject for the async function.
+                    generatorObject = handler.As<JSFunction>().Context.Extension.As<JSGeneratorObject>();
+                }
+                if (generatorObject is not null)
+                {
+                    return generatorObject.IsExecuting ? ExecutingGeneratorPromise(generatorObject) : null;
+                }
+                // The {promise_reaction_job_task} doesn't belong to an await (or
+                // yield inside an async generator), but we might still be able to
+                // find an async frame if we follow along the chain of promises on
+                // the {promise_reaction_job_task}.
+                return task.PromiseOrCapability.HeapObjectOrNull as JSPromise;
+            }
+            case PromiseResolveThenableJobTask thenableTask:
+                return thenableTask.PromiseToResolve;
+            case AsyncResumeTask resumeTask:
+                return resumeTask.Generator.IsExecuting ? ExecutingGeneratorPromise(resumeTask.Generator) : null;
+            default:
+                return null;
+        }
+    }
+
+    static JSPromise? ExecutingGeneratorPromise(JSGeneratorObject generatorObject)
+    {
+        if (generatorObject is JSAsyncFunctionObject asyncFunctionObject) return asyncFunctionObject.Promise;
+        // The queue may legitimately be empty here (a yield that resumed
+        // straight into a queued return or throw).
+        var asyncGeneratorObject = (JSAsyncGeneratorObject)generatorObject;
+        return asyncGeneratorObject.Queue.HeapObjectOrNull is Interpreter.AsyncGeneratorRequest request ? request.Promise : null;
+    }
+
+    static void CaptureAsyncStackTrace(Isolate isolate, ref CallSiteBuilder builder)
+    {
+        JSPromise? promise = TryGetCurrentTaskPromise(isolate);
+        if (promise is not null) CaptureAsyncStackTrace(isolate, promise, ref builder);
     }
 
     /// <summary>CallSiteBuilder (isolate.cc).</summary>
@@ -471,6 +649,31 @@ public sealed partial class Isolate
             // The source position is resolved by the frame provider.
             flags |= CallSiteInfo.kIsSourcePositionComputed;
             _elements.Add(new CallSiteInfo(summary.Receiver, function, summary.SourcePosition, flags));
+        }
+
+        public void AppendAsyncFrame(JSGeneratorObject generatorObject)
+        {
+            JSFunction function = generatorObject.Function;
+            if (!IsVisibleInStackTrace(function)) return;
+            int flags = CallSiteInfo.kIsAsync | CallSiteInfo.kIsSourcePositionComputed;
+            if (IsStrictFrame(function)) flags |= CallSiteInfo.kIsStrict;
+            // input_or_debug_pos holds the bytecode offset of the suspend;
+            // V8Sharp resolves it to a source position when capturing.
+            int position = function.Shared.FunctionData is Interpreter.BytecodeArray code && generatorObject.InputOrDebugPos.IsSmi
+                ? code.SourcePosition((int)generatorObject.InputOrDebugPos.Number)
+                : function.Shared.StartPosition();
+            _elements.Add(new CallSiteInfo(generatorObject.Receiver, function, position, flags));
+        }
+
+        public void AppendPromiseCombinatorFrame(JSFunction elementFunction, JSFunction combinator)
+        {
+            if (!IsVisibleInStackTrace(combinator)) return;
+            int flags = CallSiteInfo.kIsAsync | CallSiteInfo.kIsSourcePositionComputed;
+            JSFunction receiver = combinator.NativeContext.PromiseFunction;
+            // We store the offset of the promise into the element function's
+            // hash field for element callbacks.
+            int promiseIndex = (int)elementFunction.GetIdentityHash().Number - 1;
+            _elements.Add(new CallSiteInfo(receiver, combinator, promiseIndex, flags));
         }
 
         public readonly FixedArray Build() => _elements.Count == 0 ? FixedArray.Empty : new FixedArray(_elements.ToArray());

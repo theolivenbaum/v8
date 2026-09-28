@@ -285,6 +285,8 @@ public sealed class SharedFunctionInfo : HeapObject
         {
             scopeInfo.SetFunctionName(_sharedName);
         }
+        JSString inferred = InferredName();
+        if (inferred.Length != 0 && scopeInfo.HasInferredFunctionName) scopeInfo.SetInferredFunctionName(inferred);
         NameOrScopeInfo = scopeInfo;
     }
 
