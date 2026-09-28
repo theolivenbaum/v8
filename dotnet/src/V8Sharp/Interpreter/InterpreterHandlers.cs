@@ -77,6 +77,10 @@ public static partial class InterpreterExecution
     static bool IsFunctionPrototypeCall(JSValue callee) =>
         callee._obj is JSFunction function && function.Shared.BuiltinId == Builtin.FunctionPrototypeCall;
 
+    /// <summary>The handler for <paramref name="map"/> in polymorphic (map, handler) feedback (LoadIC.FindPolymorphicHandler).</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static HeapObject? FindPolymorphicHandler(FixedArray feedback, Map map) => LoadIC.FindPolymorphicHandler(feedback, map);
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void ThrowNestedPrefix() => throw new InvalidOperationException("V8Sharp: nested operand scale prefix");
 

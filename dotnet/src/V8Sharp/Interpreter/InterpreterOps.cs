@@ -46,8 +46,29 @@ public static class InterpreterOps
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void UpdateBinaryFeedbackSlow(ref byte feedback, BOF.TypeIndex type)
     {
-        var combined = BOF.CombineTypeIndex((BOF.TypeIndex)feedback, type);
-        if ((byte)combined != feedback) feedback = (byte)combined;
+        byte current = feedback;
+        byte combined = current < BOF.kNumTypeIndices
+            ? s_binaryCombine[current * (int)BOF.kNumTypeIndices + (int)type]
+            : (byte)BOF.CombineTypeIndex((BOF.TypeIndex)current, type);
+        if (combined != current) feedback = combined;
+    }
+
+    /// <summary>BOF.CombineTypeIndex for every pair of type indices (the embedded feedback of hot operations changes rarely but is combined on every run).</summary>
+    static readonly byte[] s_binaryCombine = BuildCombineTable(BOF.kNumTypeIndices,
+        static (a, b) => (byte)BOF.CombineTypeIndex((BOF.TypeIndex)a, (BOF.TypeIndex)b));
+
+    /// <summary>COF.CombineTypeIndex for every pair of type indices.</summary>
+    static readonly byte[] s_compareCombine = BuildCombineTable(COF.kNumTypeIndices,
+        static (a, b) => (byte)COF.CombineTypeIndex((COF.TypeIndex)a, (COF.TypeIndex)b));
+
+    static byte[] BuildCombineTable(uint count, Func<int, int, byte> combine)
+    {
+        var table = new byte[count * count];
+        for (int a = 0; a < count; a++)
+        {
+            for (int b = 0; b < count; b++) table[a * count + b] = combine(a, b);
+        }
+        return table;
     }
 
     /// <summary>UpdateEmbeddedFeedback for compare operations.</summary>
@@ -61,8 +82,11 @@ public static class InterpreterOps
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void UpdateCompareFeedbackSlow(ref byte feedback, COF.TypeIndex type)
     {
-        var combined = COF.CombineTypeIndex((COF.TypeIndex)feedback, type);
-        if ((byte)combined != feedback) feedback = (byte)combined;
+        byte current = feedback;
+        byte combined = current < COF.kNumTypeIndices
+            ? s_compareCombine[current * (int)COF.kNumTypeIndices + (int)type]
+            : (byte)COF.CombineTypeIndex((COF.TypeIndex)current, type);
+        if (combined != current) feedback = combined;
     }
 
     static BOF.TypeIndex BinaryIndex(BOF.Type type) => BOF.CalculateTypeIndex((uint)type);
@@ -586,6 +610,17 @@ public static class InterpreterOps
             return d != 0 && !double.IsNaN(d);
         }
         return ObjectOps.BooleanValue(value);
+    }
+
+    /// <summary>The feedback of ToNumber / ToNumeric on a number (which converts to itself).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void ToNumberFeedbackForNumber(FeedbackVector? fv, int slot, double value)
+    {
+        if (fv is null) return;
+        ref JSValue feedback = ref fv.Slots[slot];
+        int current = feedback.IsNumber ? (int)feedback._num : 0;
+        int combined = current | (int)(IsSmiDouble(value) ? BOF.Type.SignedSmall : BOF.Type.Number);
+        if (combined != current) feedback = JSValue.FromInt(combined);
     }
 
     /// <summary>ToNumber / ToNumeric with binary-op feedback in the slot (InterpreterAssembler::ToNumberOrNumeric).</summary>

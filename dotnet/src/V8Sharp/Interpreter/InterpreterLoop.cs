@@ -85,19 +85,35 @@ public static partial class InterpreterExecution
                     // LdaSmi with a 16/32-bit immediate (loop bounds, constants)
                     // is by far the most frequent prefixed bytecode: it is
                     // handled here rather than by a call into the scaled loop.
-                    if ((Bytecode)Unsafe.Add(ref code, pc + 1) == Bytecode.LdaSmi)
+                    // The same for the bitwise operators with a wide immediate
+                    // (masks such as 0x3fff and 0xfffffff in Crypto).
                     {
-                        if ((Bytecode)Unsafe.Add(ref code, pc) == Bytecode.Wide)
+                        bool isWide = (Bytecode)Unsafe.Add(ref code, pc) == Bytecode.Wide;
+                        int immediate = isWide ? Signed<DoubleScale>(ref code, pc + 2) : Signed<QuadrupleScale>(ref code, pc + 2);
+                        int immediateEnd = pc + 2 + (isWide ? 2 : 4);
+                        JSValue result = default;
+                        switch ((Bytecode)Unsafe.Add(ref code, pc + 1))
                         {
-                            acc = JSValue.FromInt(Signed<DoubleScale>(ref code, pc + 2));
-                            pc += 4;
+                            case Bytecode.LdaSmi:
+                                acc = JSValue.FromInt(immediate);
+                                pc = immediateEnd;
+                                continue;
+                            case Bytecode.BitwiseAndSmi:
+                                result = InterpreterBitwise.TryWithSmi<BitwiseAndOp>(acc, immediate, ref Unsafe.Add(ref code, immediateEnd));
+                                break;
+                            case Bytecode.BitwiseOrSmi:
+                                result = InterpreterBitwise.TryWithSmi<BitwiseOrOp>(acc, immediate, ref Unsafe.Add(ref code, immediateEnd));
+                                break;
+                            case Bytecode.BitwiseXorSmi:
+                                result = InterpreterBitwise.TryWithSmi<BitwiseXorOp>(acc, immediate, ref Unsafe.Add(ref code, immediateEnd));
+                                break;
                         }
-                        else
+                        if (result._obj is not null)
                         {
-                            acc = JSValue.FromInt(Signed<QuadrupleScale>(ref code, pc + 2));
-                            pc += 6;
+                            acc = result;
+                            pc = immediateEnd + 1;
+                            continue;
                         }
-                        continue;
                     }
                     st.Pc = pc + 1;
                     st.Accumulator = acc;
@@ -356,8 +372,9 @@ public static partial class InterpreterExecution
                 }
                 case Bytecode.GetKeyedProperty:
                 {
-                    // KeyedLoadIC.Load's monomorphic element hit: an in-bounds,
-                    // non-hole element of a fast elements kind.
+                    // KeyedLoadIC.Load's element hits (monomorphic, or polymorphic
+                    // as KeyedLoadIC.LoadSlow): an in-bounds, non-hole element of a
+                    // fast elements kind.
                     HeapObject? o = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1))._obj;
                     FeedbackVector? fv = st.FeedbackVector;
                     if (fv is not null && acc._obj == NumberTag.Instance && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
@@ -365,8 +382,11 @@ public static partial class InterpreterExecution
                         JSValue[] slots = fv.Slots;
                         int slot = Unsigned<TS>(ref code, pc + 1 + S);
                         int index = (int)acc._num;
-                        if (ReferenceEquals(slots[slot]._obj, Unsafe.As<JSReceiver>(o).Map) && slots[slot + 1]._obj is LoadHandler handler &&
-                            handler.FastElementsMode != 0 && index == acc._num && index >= 0)
+                        HeapObject? feedback = slots[slot]._obj;
+                        Map map = Unsafe.As<JSReceiver>(o).Map;
+                        HeapObject? found = ReferenceEquals(feedback, map) ? slots[slot + 1]._obj
+                            : feedback is FixedArray polymorphic ? FindPolymorphicHandler(polymorphic, map) : null;
+                        if (found is LoadHandler handler && handler.FastElementsMode != 0 && index == acc._num && index >= 0)
                         {
                             // The map matched the handler's receiver map: {o} is a JSObject.
                             FixedArrayBase elements = Unsafe.As<JSObject>(o).Elements;
@@ -498,15 +518,63 @@ public static partial class InterpreterExecution
                 }
                 case Bytecode.Div:
                 case Bytecode.Mod:
-                case Bytecode.BitwiseOr:
-                case Bytecode.BitwiseXor:
-                case Bytecode.BitwiseAnd:
-                case Bytecode.ShiftLeft:
-                case Bytecode.ShiftRight:
-                case Bytecode.ShiftRightLogical:
                     acc = BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                case Bytecode.BitwiseOr:
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<BitwiseOrOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
+                case Bytecode.BitwiseXor:
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<BitwiseXorOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
+                case Bytecode.BitwiseAnd:
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<BitwiseAndOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
+                case Bytecode.ShiftLeft:
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<ShiftLeftOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
+                case Bytecode.ShiftRight:
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<ShiftRightOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
+                case Bytecode.ShiftRightLogical:
+                {
+                    JSValue result = InterpreterBitwise.TryBinary<ShiftRightLogicalOp>(
+                        Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
+                        ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
 
                 // ---- Binary operators with an immediate ---------------------------------------------------------
                 case Bytecode.AddSmi:
@@ -534,15 +602,51 @@ public static partial class InterpreterExecution
                 case Bytecode.MulSmi:
                 case Bytecode.DivSmi:
                 case Bytecode.ModSmi:
-                case Bytecode.BitwiseOrSmi:
-                case Bytecode.BitwiseXorSmi:
-                case Bytecode.BitwiseAndSmi:
-                case Bytecode.ShiftLeftSmi:
-                case Bytecode.ShiftRightSmi:
-                case Bytecode.ShiftRightLogicalSmi:
                     acc = BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                case Bytecode.BitwiseOrSmi:
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<BitwiseOrOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
+                case Bytecode.BitwiseXorSmi:
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<BitwiseXorOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
+                case Bytecode.BitwiseAndSmi:
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<BitwiseAndOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
+                case Bytecode.ShiftLeftSmi:
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<ShiftLeftOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
+                case Bytecode.ShiftRightSmi:
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<ShiftRightOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
+                case Bytecode.ShiftRightLogicalSmi:
+                {
+                    JSValue result = InterpreterBitwise.TryWithSmi<ShiftRightLogicalOp>(acc, Signed<TS>(ref code, pc + 1), ref Unsafe.Add(ref code, pc + 1 + S));
+                    acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    pc += 2 + S;
+                    continue;
+                }
 
                 // ---- Unary operators ------------------------------------------------------------------------------
                 case Bytecode.Inc:
@@ -701,7 +805,14 @@ public static partial class InterpreterExecution
                     continue;
                 case Bytecode.ToNumber:
                 case Bytecode.ToNumeric:
-                    acc = ToNumberOrNumeric<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    if (acc._obj == NumberTag.Instance)
+                    {
+                        InterpreterOps.ToNumberFeedbackForNumber(st.FeedbackVector, Unsigned<TS>(ref code, pc + 1), acc._num);
+                    }
+                    else
+                    {
+                        acc = ToNumberOrNumeric<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                    }
                     pc += 1 + S;
                     continue;
                 case Bytecode.ToBoolean:
