@@ -128,9 +128,15 @@ public sealed class D8Shell : IJsHost
         return new RealmState(realm, helpers!);
     }
 
-    static object? Check(Completion c, string what) => c.Kind == CompletionKind.Normal
-        ? c.Value
-        : throw new InvalidOperationException($"{what} failed: {c.Kind} {c.Exception?.Exception}");
+    static object? Check(Completion c, string what) => c.Kind switch
+    {
+        CompletionKind.Normal => c.Value,
+        // Installing into a realm Realm.create made can throw (a stack overflow
+        // when Realm.create runs at the stack limit); it is the exception of
+        // the Realm.create call, as in d8.
+        CompletionKind.Throw => throw new JsThrowValue(c.Exception?.Exception),
+        _ => throw new InvalidOperationException($"{what} failed: {c.Kind} {c.Exception?.Exception}"),
+    };
 
     // --- SourceGroup::Execute ---
 

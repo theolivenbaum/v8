@@ -302,10 +302,9 @@ public static class InterpreterCalls
         JSValue spreadValue = args[fixedCount];
         FixedArray list = InterpreterIterators.IterableToList(isolate, spreadValue);
         int total = fixedCount + list.Length;
-        if (total > InterpreterConstants.kMaxArguments)
-        {
-            isolate.ThrowRangeError(MessageTemplate.TooManyArguments);
-        }
+        // CallOrConstructWithSpread pushes the arguments with a stack check
+        // (there is no argument count limit): the RangeError is a stack overflow.
+        if (total > isolate.RegisterStackLimit - isolate.RegisterStackTop) isolate.StackOverflow();
         var result = new JSValue[total];
         args[..fixedCount].CopyTo(result);
         list.Data.AsSpan(0, list.Length).CopyTo(result.AsSpan(fixedCount));

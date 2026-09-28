@@ -99,7 +99,18 @@ sealed class V8SharpJsIsolate : IJsIsolate
     public bool PumpMessageLoop()
     {
         if (Terminating || !Isolate.HasPendingTasks) return false;
-        using (Enter()) return Isolate.RunPendingTasks();
+        using (Enter())
+        {
+            try
+            {
+                return Isolate.RunPendingTasks();
+            }
+            catch (TerminationException)
+            {
+                // A task's callbacks called quit() or d8.terminate().
+                return false;
+            }
+        }
     }
 
     void OnPromiseReject(JSPromise promise, JSValue value, PromiseRejectEvent e)

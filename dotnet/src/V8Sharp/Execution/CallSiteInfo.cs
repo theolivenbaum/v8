@@ -141,7 +141,7 @@ public sealed class CallSiteInfo : HeapObject
                     if (evalScript.Name.HeapObjectOrNull is JSString evalScriptName)
                     {
                         builder.AppendString(evalScriptName);
-                        if (evalScript.GetPositionInfo(script.EvalFromPosition, out Script.PositionInfo info, Script.OffsetFlag.NoOffset))
+                        if (evalScript.GetPositionInfo(script.GetEvalPosition(), out Script.PositionInfo info, Script.OffsetFlag.NoOffset))
                         {
                             builder.AppendCharacter(':');
                             builder.AppendInt(info.Line + 1);

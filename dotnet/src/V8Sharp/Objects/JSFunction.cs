@@ -83,6 +83,31 @@ public sealed partial class Script : HeapObject
             : [];
     }
 
+    /// <summary>
+    /// Script::GetEvalPosition: the eval position, translated from the negated
+    /// bytecode offset an indirect eval or dynamic function stored.
+    /// </summary>
+    public int GetEvalPosition()
+    {
+        int position = EvalFromPosition;
+        if (position < 0)
+        {
+            // Due to laziness, the position may not have been translated from code
+            // offset yet, which would be encoded as negative integer. In that case,
+            // translate and set the position.
+            if (EvalFromShared?.FunctionData is Interpreter.BytecodeArray bytecode)
+            {
+                position = bytecode.SourcePosition(-position);
+            }
+            else
+            {
+                position = 0;
+            }
+            EvalFromPosition = position;
+        }
+        return position;
+    }
+
     public Script GetEvalOrigin()
     {
         Script originScript = this;

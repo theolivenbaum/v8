@@ -183,6 +183,62 @@ for now, to be revisited when the reason goes away.
   declarations, and the Smi range of the ClearScript build (32-bit Smis). The
   test normalizes the first two and lists the rest per function.
 
+## Interpreter execution, ICs, runtime, compiler and modules
+
+- Dispatch: one C# loop specialized per operand scale
+  (`InterpreterExecution.Loop<TS>`) instead of generated handlers; the rare
+  bytecodes sit in `LoopCold<TS>` so the JIT's inlining budget goes to the
+  frequent ones. Wide/ExtraWide run one bytecode in the scaled loop.
+- Frames: the register file, receiver, arguments and fixed slots live on the
+  isolate's `RegisterStack` (a `JSValue[]`) in V8's layout, not on the machine
+  stack; each frame also has an `InterpreterFrameRecord` the stack walker
+  reads. The argument count slot (fp - 4) is not written by inline calls
+  (nothing reads it).
+- Calls: a call or `new` from bytecode to an ordinary compiled bytecode
+  function runs in the caller's dispatch loop (`InterpreterInlineCalls`)
+  without a .NET frame; generators, async functions, class and derived
+  constructors, builtins and wide-operand calls take the ordinary path through
+  `Execution`/`InterpreterExecution.Invoke`.
+- Stack limit: V8's limit is on the machine stack; V8Sharp limits the
+  register stack to `--stack-size` KB / 8 slots and reserves 16 slots for the
+  construct stub, which puts the RangeError at about the recursion depth V8
+  reaches (12593 vs 12456 plain calls, 4844 vs 4790 constructs). The .NET
+  stack is checked with `TryEnsureSufficientExecutionStack` on ordinary entries.
+- Exceptions are .NET exceptions (`JavaScriptException`); a frame's handler is
+  found in an exception filter, so frames without a handler do not catch and
+  rethrow. `Throw`/`ReThrow` dispatch to a handler in the same frame without a
+  .NET exception. Termination is `TerminationException`, never catchable.
+- Feedback: the embedded binary/compare feedback bytes of this tree's
+  bytecode are updated in place in the bytecode array; call counts are bumped
+  in place. No ContextCells (the cell and no-cell context slot bytecodes are
+  the same load/store; --jitless V8 does not use them either).
+- ICs: handlers are C# objects (`LoadHandler`/`StoreHandler`) instead of Smi
+  handlers and code; the megamorphic stub cache holds them. `LoadSuperIC` is
+  the generic path. `CloneObjectIC` always takes the slow path. No allocation
+  mementos / allocation-site pretenuring feedback.
+- Runtime: `%` functions are delegates in `RuntimeTable`; functions only an
+  optimizing tier or the debugger uses are not registered (their calls throw
+  "runtime function %X is not implemented"). Tier queries (%IsTurbofanEnabled,
+  %GetOptimizationStatus ...) answer as --jitless V8 does.
+- Compiler: source positions are collected eagerly (no lazy source
+  positions); there is no compilation cache and no preparse data (inner
+  functions are reparsed); every lazy function has UncompiledData without
+  preparse data. `DefineClass` builds the class sequentially from the class
+  boilerplate stand-in. The template object cache is per SharedFunctionInfo.
+- Async functions and generators follow builtins-async-*-gen.cc; the debugger
+  parts (Runtime_DebugAsyncFunctionSuspended's debug events, async stack
+  trace annotations for the inspector) are not ported.
+- Modules: the SourceTextModuleInfo parts, regular exports/imports and
+  requested modules are typed arrays instead of FixedArrays; the embedder API
+  (ResolveModuleCallback, SyntheticModuleEvaluationSteps, the dynamic import
+  and import.meta callbacks) are delegates. Not ported: source phase imports
+  and `import defer` (JSDeferredModuleNamespace), both behind harmony flags;
+  WebAssembly, bytes modules and bundles in the d8 loader.
+- Test natives: `%ConstructThinString` returns a cons string with the same
+  contents (V8Sharp has no thin strings), `%DetachGlobal`-like realm operations are no-ops in the
+  TestRunner engine, and `RunModule` checks a rejected top-level promise once
+  after a microtask checkpoint, like the oracle engine.
+
 ## V8Sharp engine: objects and execution
 
 Heap and object model

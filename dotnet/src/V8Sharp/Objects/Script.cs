@@ -29,7 +29,7 @@ public sealed partial class Script : IParsingScript
     int IParsingScript.line_offset() => LineOffset;
     int IParsingScript.column_offset() => ColumnOffset;
 
-    int IScriptEvalOrigin.eval_from_position() => EvalFromPosition;
+    int IScriptEvalOrigin.eval_from_position() => GetEvalPosition();
     bool IScriptEvalOrigin.has_eval_from_shared() => HasEvalFromShared;
     IScriptEvalOrigin? IScriptEvalOrigin.eval_from_shared_script() => EvalFromShared?.Script;
 

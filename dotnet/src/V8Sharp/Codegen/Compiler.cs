@@ -353,7 +353,21 @@ namespace V8Sharp.Codegen
             Script script = isolate.Factory.NewScript(source);
             script.Compilation = Script.CompilationType.Eval;
             script.EvalFromShared = outerInfo;
-            if (evalPosition == Globals.kNoSourcePosition) evalPosition = 0;
+            if (evalPosition == Globals.kNoSourcePosition)
+            {
+                // If the position is missing, attempt to get the code offset by
+                // walking the stack. Do not translate the code offset into source
+                // position, but store it as negative value for lazy translation.
+                evalPosition = 0;
+                InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
+                for (int i = isolate.InterpreterFrameDepth - 1; i >= 0; i--)
+                {
+                    if (frames[i].Kind != InterpreterFrameKind.Interpreted) continue;
+                    script.EvalFromShared = frames[i].Function.Shared;
+                    evalPosition = -frames[i].Pc;
+                    break;
+                }
+            }
             script.EvalFromPosition = evalPosition;
             if (outerInfo.Script is { } outerScript)
             {

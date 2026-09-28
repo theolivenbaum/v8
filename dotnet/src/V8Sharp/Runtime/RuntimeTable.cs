@@ -59,7 +59,26 @@ public static partial class RuntimeTable
     {
         RuntimeFunctionImpl? impl = s_table[(int)id];
         if (impl is null) return NotImplemented(id);
+        if (isolate.Flags.fuzzing) return CallFuzzing(isolate, impl, args);
         return impl(isolate, args);
+    }
+
+    /// <summary>
+    /// CrashUnlessFuzzing: under --fuzzing, a test native called with too few
+    /// arguments (V8's args.length() checks) returns undefined instead of
+    /// crashing. The implementations index their arguments directly, so the
+    /// missing argument shows up as an IndexOutOfRangeException.
+    /// </summary>
+    static JSValue CallFuzzing(Isolate isolate, RuntimeFunctionImpl impl, ReadOnlySpan<JSValue> args)
+    {
+        try
+        {
+            return impl(isolate, args);
+        }
+        catch (IndexOutOfRangeException)
+        {
+            return JSValue.Undefined;
+        }
     }
 
     /// <summary>CallRuntimeForPair.</summary>
