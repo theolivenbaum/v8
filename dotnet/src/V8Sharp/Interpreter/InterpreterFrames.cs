@@ -53,6 +53,11 @@ namespace V8Sharp
         /// <summary>The frame was entered by [[Construct]].</summary>
         public bool IsConstructor;
         /// <summary>
+        /// An interpreted frame that runs baseline (Sparkplug) code: V8's
+        /// BaselineFrame, which has the interpreter frame's layout.
+        /// </summary>
+        public bool IsBaseline;
+        /// <summary>
         /// The frame was entered by a call from the dispatch loop of its caller
         /// without a new .NET frame (InterpreterInlineCalls); Return resumes the
         /// caller in the same loop.

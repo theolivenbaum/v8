@@ -300,7 +300,7 @@ public static partial class RuntimeTable
         Register(FunctionId.NeverOptimizeFunction, RuntimeTest.ReturnUndefined);
         Register(FunctionId.DeoptimizeFunction, RuntimeTest.ReturnUndefined);
         Register(FunctionId.DeoptimizeNow, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.CompileBaseline, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.CompileBaseline, static (i, a) => RuntimeTest.CompileBaseline(i, a[0]));
         Register(FunctionId.WaitForBackgroundOptimization, RuntimeTest.ReturnUndefined);
         Register(FunctionId.FinalizeOptimization, RuntimeTest.ReturnUndefined);
         Register(FunctionId.SetAllocationTimeout, RuntimeTest.ReturnUndefined);
@@ -410,15 +410,15 @@ public static partial class RuntimeTable
         Register(FunctionId.CollectGarbage, static (i, a) => RuntimeTest.CollectGarbage());
         Register(FunctionId.MajorGCForCompilerTesting, static (i, a) => RuntimeTest.CollectGarbage());
 
-        // Tiering and heap-layout queries, as a --jitless V8 answers them.
+        // Tiering and heap-layout queries, as a V8 without Maglev and Turbofan answers them.
         Register(FunctionId.ICsAreEnabled, static (i, a) => JSValue.FromBoolean(i.Flags.use_ic));
         Register(FunctionId.IsMaglevEnabled, RuntimeTest.ReturnFalse);
-        Register(FunctionId.IsSparkplugEnabled, RuntimeTest.ReturnFalse);
+        Register(FunctionId.IsSparkplugEnabled, static (i, a) => JSValue.FromBoolean(i.Flags.sparkplug));
         Register(FunctionId.IsUndefinedDoubleEnabled, RuntimeTest.ReturnFalse);
         Register(FunctionId.RunningInSimulator, RuntimeTest.ReturnFalse);
         Register(FunctionId.ActiveTierIsTurbofan, RuntimeTest.ReturnFalse);
         Register(FunctionId.ActiveTierIsMaglev, RuntimeTest.ReturnFalse);
-        Register(FunctionId.ActiveTierIsSparkplug, RuntimeTest.ReturnFalse);
+        Register(FunctionId.ActiveTierIsSparkplug, static (i, a) => RuntimeTest.ActiveTierIsSparkplug(a[0]));
         Register(FunctionId.CurrentFrameIsTurbofan, RuntimeTest.ReturnFalse);
         Register(FunctionId.InYoungGeneration, RuntimeTest.ReturnFalse);
         Register(FunctionId.InLargeObjectSpace, RuntimeTest.ReturnFalse);
@@ -426,7 +426,7 @@ public static partial class RuntimeTable
         Register(FunctionId.IsSharedString, RuntimeTest.ReturnFalse);
         Register(FunctionId.HasCowElements, static (i, a) => JSValue.FromBoolean(a[0].HeapObjectOrNull is JSObject { Elements.IsCowArray: true }));
         Register(FunctionId.AssertNotPeeled, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.BaselineOsr, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.BaselineOsr, static (i, a) => RuntimeTest.BaselineOsr(i));
         Register(FunctionId.DisableOptimizationFinalization, RuntimeTest.ReturnUndefined);
         Register(FunctionId.PretenureAllocationSite, RuntimeTest.ReturnUndefined);
         Register(FunctionId.ForceFlush, RuntimeTest.ReturnUndefined);

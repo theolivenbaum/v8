@@ -1034,20 +1034,9 @@ public static class JSFunctionFeedback
     public static int ScaleInterruptBudget(long invocations, int bytecodeLength) =>
         (int)Math.Clamp(invocations * bytecodeLength, 0, kMaxInterruptBudget);
 
-    /// <summary>
-    /// TieringManager::InterruptBudgetFor: until a feedback vector exists the
-    /// budget is invocation_count_for_feedback_allocation times the bytecode
-    /// length. V8Sharp has no optimizing tiers yet, so a function with a vector
-    /// gets the maximum budget (as V8 --jitless does).
-    /// </summary>
-    public static int InterruptBudgetFor(Isolate isolate, JSFunction function)
-    {
-        if (!HasFeedbackVector(function) && function.Shared.FunctionData is BytecodeArray bytecode)
-        {
-            return ScaleInterruptBudget(isolate.Flags.invocation_count_for_feedback_allocation, bytecode.Length);
-        }
-        return kMaxInterruptBudget;
-    }
+    /// <summary>TieringManager::InterruptBudgetFor (Execution/TieringManager.cs).</summary>
+    public static int InterruptBudgetFor(Isolate isolate, JSFunction function) =>
+        TieringManager.InterruptBudgetFor(isolate, function);
 
     /// <summary>JSFunction::SetInterruptBudget (kRaise when <paramref name="raise"/>, else kReset).</summary>
     public static void SetInterruptBudget(Isolate isolate, JSFunction function, bool raise)
@@ -1104,7 +1093,8 @@ public static class JSFunctionFeedback
     {
         if (HasFeedbackVector(function)) return;
         bool hasClosureFeedbackCellArray = HasClosureFeedbackCellArray(function);
-        bool needsFeedbackVector = !isolate.Flags.lazy_feedback_allocation;
+        bool needsFeedbackVector = !isolate.Flags.lazy_feedback_allocation ||
+                                   function.Shared.CachedTieringDecision != CachedTieringDecision.kPending;
         if (needsFeedbackVector)
         {
             CreateAndAttachFeedbackVector(isolate, function);
@@ -1116,6 +1106,15 @@ public static class JSFunctionFeedback
         else
         {
             EnsureClosureFeedbackCellArray(isolate, function);
+        }
+        // V8_ENABLE_SPARKPLUG: a function whose SharedFunctionInfo already tiered
+        // up goes straight to baseline.
+        if (function.Shared.CachedTieringDecision != CachedTieringDecision.kPending &&
+            Baseline.BaselineSupport.CanCompileWithBaseline(isolate, function.Shared) &&
+            TieringManager.ActiveTierIsIgnition(function))
+        {
+            if (isolate.Flags.baseline_batch_compilation) isolate.BaselineBatchCompiler.EnqueueFunction(function);
+            else Codegen.Compiler.CompileBaseline(isolate, function);
         }
     }
 }

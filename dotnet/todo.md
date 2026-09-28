@@ -350,6 +350,9 @@ Failures the mjsunit/test262 runs show in code owned by other ports
 |---|---|---|---|---|---|
 | 2026-09-28 | test262 | 67759 | 94901 | 71.4% | first run; 79.1% without Temporal. Failing: async functions/generators/for-await, modules, dynamic import (interpreter, in progress); Promise/Iterator/Map/Set/Weak*/DisposableStack (collections port, in progress); Temporal (9210) |
 | 2026-09-28 | mjsunit | 6412 | 7597 | 84.4% | first run; clusters: regress (337), harmony (199, mostly async), maglev/compiler/turbolev (168, optimization-status asserts until the tiers exist), d8 (45) |
+| 2026-09-28 | test262 | 82005 | 94901 | 86.4% | --no-sparkplug and --always-sparkplug: identical results (0 differences) |
+| 2026-09-28 | mjsunit | 6767 | 7581 | 89.3% | --no-sparkplug (the interpreter only) |
+| 2026-09-28 | mjsunit | 6822 | 7582 | 90.0% | --always-sparkplug: +60 (opt-proto-seq tests call %CompileBaseline, which needs Sparkplug), -6: element-read-only, ic-lookup-on-receiver, regress-4296, regress-crbug-1003732, -1259950, -662907 fail in the interpreter too with --no-lazy-feedback-allocation (IC bugs that eager feedback exposes) |
 | 2026-09-28 | test262 built-ins+annexB+staging (no Temporal) | 39189 | 39268 | 99.8% | builtins conformance pass, after merging the interpreter branch (was 98.1%, 760 unexpected). Left: modules, `accessor`, two realm cases (see "Interpreter failures seen by the builtins conformance pass") |
 | 2026-09-28 | test262 | 82412 | 85669 | 96.2% | Temporal marked SKIP in test262.v8sharp.txt (11448 skipped with the status file's); expectations regenerated |
 | 2026-09-28 | mjsunit | 6953 | 7597 | 91.5% | builtins conformance pass (6926 in the full run, +27 on rerunning its failures after access checks landed); expectations file mjsunit.v8sharp.txt generated |
@@ -374,6 +377,26 @@ RayTrace 645 / 2771, EarleyBoyer 806 / 3996, NavierStokes 549 / 1078
 (20-23% of jitless V8, NavierStokes 51%). The 2x target needs the baseline
 tier; the interpreter profile is dominated by the dispatch loop (~70%) and
 frame push/pop (~15%).
+
+Performance with the baseline tier (Octane, 2026-09-28, 4-core container
+shared with other jobs, mean of 2 runs; V8Sharp.Bench):
+
+| benchmark | v8sharp:jitless | v8sharp (tiering) | v8sharp:always-sparkplug | V8 --jitless | V8 sparkplug |
+|---|---|---|---|---|---|
+| Richards | 158 | 425 | 415 | 1248 | 1695 |
+| DeltaBlue | 174 | 382 | 381 | 1314 | 1694 |
+| Crypto | 173 | 384 | 407 | 1074 | 1444 |
+| RayTrace | 474 | 689 | 669 | 2792 | 3609 |
+| EarleyBoyer | 709 | 1049 | 831 | 4541 | 7075 |
+| RegExp | 552 | 1122 | 1134 | 2072 | 3150 |
+| Splay | 753 | 1152 | 1515 | 2529 | 1910 |
+| NavierStokes | 594 | 1000 | 806 | 1287 | 1646 |
+| geomean | 442 | 798 | 781 | 1953 | 2353 |
+
+Baseline is 1.8x the interpreter (geomean; 2.2-2.7x on Richards, DeltaBlue,
+Crypto, RegExp). RayTrace, Splay and EarleyBoyer are dominated by allocation
+and GC (object = JSObject + JSValue[] fields) and by runtime paths
+(instanceof's @@hasInstance lookup), which the tier does not change.
 
 - [ ] Temporal: V8 15.6 implements it as a binding layer
       (`src/objects/js-temporal-objects.cc`, `builtins-temporal.cc`) over the
@@ -429,8 +452,41 @@ interpreter, compiler, ICs, modules or d8sharp rather than the builtins
 
 ## Phase 2: the fast tiers
 
-- [ ] TieringManager: interrupt budget, OSR triggers (port of tiering-manager.cc)
-- [ ] Baseline compiler: bytecode -> IL (Sparkplug analogue)
+Order (decided 2026-09-28): the interpreter is finished first — correctness
+(test262/mjsunit) and interpreter performance (target: within 2x of V8
+--jitless) — before any further work on the IL tiers. The baseline tier is
+merged but off by default until then; the optimizing tier has not started.
+
+- [x] TieringManager: interrupt budget, OnInterruptTick, feedback allocation
+      and the Sparkplug tier-up, InterruptBudgetFor with V8's flag defaults,
+      NotifyICChanged; no optimizing tier, so use_optimizer() is false
+      (Execution/TieringManager.cs). OSR urgency is ported but unused until
+      the optimizing tier exists.
+- [~] Baseline compiler: bytecode -> IL (Sparkplug analogue), src/V8Sharp/Baseline/
+      (architecture.md 9.1): every bytecode compiles; entry at function start,
+      exception handlers and loop headers (OSR from Ignition at JumpLoop);
+      batch compilation, --sparkplug (V8's default on; off in V8Sharp for now), --always-sparkplug,
+      --sparkplug-filter, %CompileBaseline, %ActiveTierIsSparkplug,
+      %BaselineOsr, %GetOptimizationStatus baseline bits; Smi fast paths for
+      arithmetic, a baseline-to-baseline call path (BaselineCalls). Tests:
+      tests/V8Sharp.Tests/Baseline (interpreter vs --always-sparkplug).
+      Open: see "Baseline: open items" below.
+      Temporarily OFF by default (--sparkplug=false): enable with --sparkplug
+      or --always-sparkplug. With it on (tiering, V8's defaults) mjsunit had 3
+      new failures against mjsunit.v8sharp.txt (harmony/global, which fails
+      interpreted too, and weakrefs/cleanup-from-different-realm,
+      cleanup-proxy-from-different-realm, not investigated).
+- Baseline: open items
+  - Bytecode flushing and baseline code flushing (mjsunit/baseline/flush-*)
+    are not implemented (no bytecode aging).
+  - No compilation cache, so closures from separately compiled identical
+    sources do not share baseline code (mjsunit/baseline/cross-realm).
+  - d8.test.verifySourcePositions (verify-bytecode-offsets) is not in the
+    test host.
+  - Concurrent Sparkplug (background compile) is not ported.
+  - Performance: calls still pay the interpreter frame's setup (register
+    file clear, frame record, write barriers); a leaner frame protocol
+    shared with the interpreter would help both tiers.
 - [ ] Optimizing compiler: SSA graph from bytecode + feedback, speculative
       representations, inlining, deoptimizer (Maglev analogue)
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays

@@ -11,7 +11,11 @@ namespace V8Sharp.TestRunner.Suites;
 public sealed record SuiteContext(
     string V8Root,
     string Test262Root,
-    IReadOnlyDictionary<string, object?> StatusVariables);
+    IReadOnlyDictionary<string, object?> StatusVariables)
+{
+    /// <summary>run-tests.py's --extra-flags: appended to every test's flags.</summary>
+    public IReadOnlyList<string> ExtraFlags { get; init; } = [];
+}
 
 public abstract class TestSuite
 {
@@ -61,6 +65,7 @@ public abstract class TestSuite
 
     TestCase Finish(TestCase t)
     {
+        if (Context.ExtraFlags.Count > 0) t.Flags = [.. t.Flags, .. Context.ExtraFlags];
         t.ExpectedOutcomes = OutcomeSets.FromStatus(t.StatusOutcomes, t.Flags);
         if (t.StatusOutcomes.Contains(Outcome.Skip)) t.SkipReason ??= "SKIP in " + Name + ".status";
         if (t.SkipReason is null && OutcomeSets.FlagContradiction(t.Flags, t.Variant, Context.StatusVariables) is { } why)

@@ -51,20 +51,22 @@ sealed class OracleHost : IBenchHost
 }
 
 /// <summary>
-/// V8Sharp, in --jitless terms (the interpreter only). The d8 surface is
-/// installed from API functions, as d8 does; scripts run on a thread with
-/// d8's deep stack.
+/// V8Sharp in-process, with the V8 flags of one mode (the tiers: Ignition
+/// only, Ignition + baseline IL). The d8 surface is installed from API
+/// functions, as d8 does; scripts run on a thread with d8's deep stack.
 /// </summary>
 sealed class V8SharpHost : IBenchHost
 {
     readonly Isolate _isolate;
     readonly string _workDir;
 
-    public V8SharpHost(string workDir)
+    public V8SharpHost(string flags, string workDir)
     {
         _workDir = workDir;
         Directory.SetCurrentDirectory(workDir);
-        _isolate = Isolate.New();
+        var flagList = new FlagList();
+        if (flags.Length > 0) flagList.SetFlagsFromString(flags);
+        _isolate = Isolate.New(flagList);
         using (_isolate.Enter())
         {
             NativeContext context = _isolate.NativeContext;

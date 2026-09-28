@@ -27,6 +27,8 @@ public static class Program
           --show-failures N          list at most N new failures (default 20)
           --rerun-failures N         run unexpected results again N times (default 1; flaky = passes on rerun)
           --list                     list the selected tests and their d8 command lines
+          --extra-flags "FLAGS"      flags appended to every test (as run-tests.py), e.g.
+                                     "--always-sparkplug"; compare against the plain run
 
         shell runs one d8 command line in-process, like d8 itself (run from the V8 root).
         """;
@@ -104,6 +106,9 @@ public static class Program
                 case "--show-failures": o.ShowFailures = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                 case "--rerun-failures": o.RerunFailures = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                 case "--list": o.ListOnly = true; break;
+                case "--extra-flags":
+                    o.ExtraFlags.AddRange(Next().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                    break;
                 case "-h" or "--help": Console.WriteLine(Usage); return 0;
                 default:
                     if (a.StartsWith('-')) throw new ArgumentException($"unknown option {a}");

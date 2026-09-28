@@ -28,8 +28,10 @@ internal static class InterpreterInlineCalls
         if (callee._obj is JSFunction f)
         {
             SharedFunctionInfo shared = f.Shared;
+            // A function with baseline code runs it (through InterpreterCalls.Call
+            // and InterpreterExecution.EnterFrame), not inline in the interpreter.
             if (shared.FunctionData is BytecodeArray && !shared.HasBuiltinId && !shared.IsClassConstructor &&
-                !Globals.IsResumableFunction(shared.Kind))
+                !Globals.IsResumableFunction(shared.Kind) && shared.BaselineCode is null)
             {
                 function = f;
                 return true;
@@ -75,7 +77,7 @@ internal static class InterpreterInlineCalls
         }
         SharedFunctionInfo shared = function.Shared;
         if (shared.FunctionData is not BytecodeArray || shared.HasBuiltinId || Globals.IsDerivedConstructor(shared.Kind) ||
-            Globals.IsResumableFunction(shared.Kind))
+            Globals.IsResumableFunction(shared.Kind) || shared.BaselineCode is not null)
         {
             return false;
         }
