@@ -59,7 +59,7 @@ public static partial class Program
               V8Sharp.Bench run --engine <engine> --suite <suite>
               V8Sharp.Bench list
             engines: v8:jit, v8:jitless, v8:sparkplug, v8:maglev, v8sharp
-            suites:  octane (all), octane:<name>, perf:<js-perf-test dir>
+            suites:  octane (all), octane:<name>, perf:<js-perf-test dir>, micro:<name> | micro:all
             Octane is fetched by tools/V8Sharp.Bench/fetch-octane.sh into dotnet/artifacts/octane.
             """);
         return 1;
@@ -127,6 +127,17 @@ public static partial class Program
                 });
                 """;
             return (dir, files.Select(f => Path.Combine(dir, f)).ToArray(), driver);
+        }
+        if (suite.StartsWith("micro:", StringComparison.Ordinal))
+        {
+            // tools/V8Sharp.Bench/micro/<name>.js (or "micro:all"): interpreter
+            // micro-benchmarks that print "<name>(Score): <ops per ms>".
+            string dir = Path.Combine(Paths.DotnetRoot, "tools", "V8Sharp.Bench", "micro");
+            string name = suite[6..];
+            string[] names = name == "all"
+                ? Directory.GetFiles(dir, "*.js").Select(f => Path.GetFileName(f)).Where(f => f != "harness.js").Order(StringComparer.Ordinal).ToArray()
+                : [name + ".js"];
+            return (dir, [Path.Combine(dir, "harness.js"), .. names.Select(n => Path.Combine(dir, n))], null);
         }
         if (suite.StartsWith("perf:", StringComparison.Ordinal))
         {
