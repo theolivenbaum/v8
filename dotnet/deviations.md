@@ -547,6 +547,12 @@ d8 host in the TestRunner (tools/V8Sharp.TestRunner/Shell)
 
 ## Builtins: Object, Function, Reflect, Proxy, global, Error, Boolean, Symbol
 
+- `instanceof` with an ordinary JSFunction (original @@hasInstance, the
+  prototype accessor) and a prototype chain without proxies or access checks
+  is decided without the builtin frame of Function.prototype[@@hasInstance]
+  (`ObjectOps.TryFastInstanceOf`, CodeStubAssembler::InstanceOf's walk);
+  nothing on that path can throw.
+
 - Object.assign: the CSA fast path that clones the source's layout into a
   fresh empty target through the object_assign side-step transition is not
   ported; JSReceiver::SetOrCopyDataProperties with its FastAssign descriptor
@@ -599,6 +605,13 @@ d8 host in the TestRunner (tools/V8Sharp.TestRunner/Shell)
 - `Isolate.CountUsage` is a no-op (no use counters).
 
 ## Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
+
+- `a.push(x)`, `a.pop()` and `a.shift()` on a fast JSArray run the builtins'
+  fast paths from the interpreter's call handlers (`BuiltinsArray.TryFastPush`
+  / `TryFastPop` / `TryFastShift`) without CallBuiltin's frame record, as the
+  CSA/Torque builtins do their fast paths without calling out. Nothing on
+  those paths throws or runs JavaScript, so the missing frame is not
+  observable.
 
 - Backing stores are managed `byte[]` arrays (`BackingStore`). A growable
   SharedArrayBuffer allocates its maximum length up front (the array cannot
