@@ -30,6 +30,7 @@ public static partial class RuntimeTable
         RegisterInternal();
         RegisterCompiler();
         RegisterTest();
+        RegisterPromiseCollectionsAndWeakRefs();
         RegisterIntrinsics();
         RegisterRegExpAndStrings();
         RegisterOperators();

@@ -90,7 +90,7 @@ public static class BuiltinsError
 
         // 4. Let errorsList be ? IterableToList(errors).
         JSValue errors = args.AtOrUndefined(1);
-        JSArray errorsList = IteratorHelpers.IterableToListWithSymbolLookup(isolate, errors);
+        JSArray errorsList = IteratorBuiltins.IterableToListWithSymbolLookup(isolate, errors);
 
         // 5. Perform ! DefinePropertyOrThrow(_O_, `"errors"`, Property Descriptor {
         // [[Configurable]]: *true*, [[Enumerable]]: *false*, [[Writable]]: *true*,

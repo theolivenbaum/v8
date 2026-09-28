@@ -235,8 +235,6 @@ Execution
 - `KeyAccumulator` does not use the prototype-info enum cache.
 - Hash tables use local copies of V8's hashers (`Hashing.ComputeSeededHash`
   and friends) until V8Sharp.Base lands.
-- `BigInt` operations go through `System.Numerics.BigInteger`
-  (`BigIntOps.cs`) until the port of `src/bigint` lands.
 
 Bootstrapper
 - No snapshot: `Bootstrapper.CreateEnvironment` builds every native context
@@ -333,4 +331,194 @@ Bootstrapper
   function, as in V8); their builtins (NumberParseInt, NumberParseFloat) are
   registered by the global functions' area.
 - `Isolate.CountUsage` is a no-op (no use counters).
+
+## Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
+
+- Backing stores are managed `byte[]` arrays (`BackingStore`). A growable
+  SharedArrayBuffer allocates its maximum length up front (the array cannot
+  move while other threads read it); a resizable ArrayBuffer allocates its
+  current length and reallocates when resized past it. Allocations above
+  `Array.MaxLength` fail with "Array buffer allocation failed", although
+  `kMaxByteLength` is V8's 32GB - 1 (the sandbox build's limit).
+- Typed arrays are always off-heap (no on-heap JSTypedArray elements below
+  `typed_array_max_size_in_heap`), and the data pointer is recomputed from the
+  buffer and byte offset on each access. Array buffers do not keep a list of
+  their views: a view checks `buffer.WasDetached` instead of being marked.
+- The typed array constructors keep JS_FUNCTION_TYPE maps (V8 gives them
+  JS_*_TYPED_ARRAY_CONSTRUCTOR_TYPE); nothing observable depends on it.
+- `v8_enable_undefined_double` is not modelled: double elements never hold
+  undefined, so holey double arrays read holes as undefined as without the
+  flag. Only elements kinds (%DebugPrint) can tell.
+- V8's CSA/Torque fast loops over fast JSArrays (forEach/map/filter/every/
+  some/reduce/find*, splice/slice/copyWithin/reverse/lastIndexOf/flat/
+  toSpliced/with/toReversed) are not ported one to one; their results are
+  unobservable, so the generic continuations run with a fast element probe
+  (`TryGetFastElement`), and slice/splice/copyWithin/reverse/includes/indexOf
+  keep a direct fast path over the backing store.
+- The join Buffer is one growable array of entries instead of a linked list of
+  FixedArray chunks; the result string is built flat.
+- Array.prototype.toLocaleString and %TypedArray%.prototype.toLocaleString
+  follow the !V8_INTL_SUPPORT build: element toLocaleString methods are called
+  without the locales and options arguments. The oracle is an ICU build.
+- Array.prototype.sort is the PowerSort of this tree (third_party/v8/builtins/
+  array-sort.tq). The oracle's V8 14.7 still runs TimSort (no
+  kMaxInlineSortLength shortcut, different run merging), so user comparefn
+  call orders differ from the oracle's; they match the tree's algorithm.
+- Float16 conversions use a port of V8's DoubleToFloat16 bit manipulation
+  (`TypedArrayScalars.DoubleToFloat16`), not `System.Half`, so double rounding
+  through float cannot occur; Float16 to double uses `System.Half`, which is
+  exact.
+- NaN: `JSValue.NaN` (the value of the NaN globals) has the sign bit set
+  (C#'s `double.NaN`), while V8's NaN constant is 0x7FF8000000000000; storing
+  the constant into a Float64Array or with DataView.setFloat64 writes
+  different bytes. Computed NaNs (0/0) have the same bits in both.
+- `%TypedArray%.prototype.map`/`set`/Atomics report write failures with
+  kTypedArrayValidateErrorOperation unless --js-immutable-arraybuffer is on
+  (`JSTypedArray.ValidateErrorMessage`): the generated message table has the
+  flag-dependent text of kTypedArrayValidateWriteErrorOperation only for the
+  flag-on case.
+- Uint8Array base64: fromBase64 follows the proposal's FromBase64 (V8's
+  simdutf fast path agrees for complete input). setFromBase64 into a buffer
+  that fills up models simdutf::base64_to_binary_safe: it keeps parsing chunk
+  by chunk past the point where the proposal stops (`TailDecode`), so later
+  bad characters and invalid final chunks are still reported. simdutf's
+  trailing-garbage lookahead (test262 trailing-garbage, skipped in
+  test262.status) is not modelled. simdutf is not in the checkout; the model
+  is fitted to the oracle.
+- Atomics: element operations use `Interlocked`/`Volatile` on the managed
+  array (8- and 16-bit read-modify-write as compare-exchange loops). The
+  isolate always allows Atomics.wait (V8's default; there is no
+  allow_atomics_wait setting). FutexEmulation keeps synchronous waiters only:
+  Atomics.waitAsync returns its synchronous results ("not-equal", immediate
+  "timed-out") and throws NotImplementedException where it would suspend.
+- Array.fromAsync is not registered (needs async functions and promises).
+
+## Builtins: Number, Math, BigInt, JSON, Date
+
+Number and Math
+- Math.random: V8's Genesis calls MathRandom::InitializeContext; here the
+  state object of the native context (MATH_RANDOM_STATE_INDEX) is created on
+  first use. The isolate's random number generator (seeded from
+  --random-seed or the OS) lives in a table keyed by the isolate.
+- Math.sumPrecise: IterableForEach (builtins-iterator-inl.h) is ported
+  without the typed-array fast path (no typed arrays in the object model)
+  and the JSSetIterator medium fast path; both only skip the iteration
+  protocol when its lookup chain is intact, so the generic path gives the
+  same result. Visitors are a struct interface instead of lambdas.
+- The Float64* machine operations are V8Sharp.Base's Ieee754 kernels
+  (correctly rounded, like the llvm-libc functions this tree uses); the
+  oracle (14.7, fdlibm) can differ by one ulp (see V8Sharp.Base).
+
+BigInt
+- MutableBigInt is the BigInt under construction (digits array plus a
+  length that Canonicalize trims) instead of a separate heap type; a
+  canonical 0n instance is shared (V8 allocates one per result; BigInt
+  identity is not observable).
+- MutableBigInt_AbsoluteModAndCanonicalize's cached-divisor fast path
+  (heap->cached_bigint_divisor) is not used: the modulus always takes
+  ModuloSmall/ModuloLarge (same result).
+- The isolate's bigint::Processor is kept in a table keyed by the isolate;
+  it polls TerminateExecution like V8's.
+
+JSON
+- Strings are UTF-16: the parser is V8's two-byte instantiation, and the
+  string scan uses SearchValues (V8: Highway on one-byte strings).
+- JSON.parse builds objects from the object literal map for their named
+  property count (as JSDataObjectBuilder does) with CreateDataProperty in
+  source order (elements first), instead of JSDataObjectBuilder's direct
+  field writes with the previous array element's map as feedback, and
+  without the recursive ParseJsonValueRecursive
+  / numeric-array fast path (one iterative parser for all inputs). Keys,
+  order, values, duplicate handling and elements kinds of arrays are the
+  same; only backing-store choices (e.g. dictionary elements) can differ.
+- JSON.parse numbers with at most 15 significant digits and a decimal
+  exponent within [-22, 22] take Clinger's fast path in the parser before
+  StringToDouble (fast_float's first step, same results; checked against
+  StringToDouble on 20000 random numbers). Parse stacks are pooled.
+- JSON.parse internalizes only property keys; V8 also internalizes short
+  one-byte values within a heuristic budget. Not observable.
+- JSON.parse always passes the context argument to the reviver; V8 skips
+  collecting source text when the reviver can only access fewer than three
+  formal parameters (unobservable by such a reviver).
+- JSON.stringify: FastJsonStringifier (a side-effect-free serializer that
+  restarts in JsonStringifier when it gives up) is not ported; the output is
+  the same. JsonStringifier always keeps the cycle-detection stack (V8
+  starts without it and restarts with one when needed) and has no
+  SimplePropertyKeyCache. Output goes into one pooled UTF-16 buffer.
+- A proxy in the prototype chain counts as "may have interesting
+  properties" (the toJSON lookup is always done for it).
+
+Date
+- The time zone without ICU: V8 asks localtime_r (tm_gmtoff, tm_isdst,
+  tm_zone); V8Sharp asks TimeZoneInfo.Local, which honours TZ and reads the
+  same tz database on Linux. DaylightSavingsOffset is one hour when the
+  instant is in DST and the local offset is the current standard offset, as
+  in V8's non-ICU build (so historical offset changes, 30-minute DST and LMT
+  are not reproduced, exactly like non-ICU V8). The zone name printed by
+  toString is TimeZoneInfo's StandardName/DaylightName, which are the tz
+  abbreviations tm_zone reports ("EST", "BST", "IST"), except that UTC zones
+  print "UTC"/"GMT" (.NET says "Coordinated Universal Time") and historical
+  abbreviations (LMT, EWT) are not available.
+- The oracle has ICU: its toString prints long names ("Coordinated Universal
+  Time", "Eastern Standard Time") and it applies historical offsets, so the
+  differential tests strip the name and compare local-time results only for
+  1971..2037 outside UTC. Europe/Moscow 2011-2014 (+4) is a known difference
+  (non-ICU V8 uses the current +3, as V8's own comment in
+  DateCache::GetLocalOffsetFromOS says).
+- DateParser is the two-byte instantiation; the kLegacyDateParser use count
+  is also reported through an out parameter of DateParser.Parse (for the
+  port of DateParseLegacyUseCounter; Isolate.CountUsage is a no-op).
+- The isolate's DateCache, date cache stamp and DateTimeConfigurationChange-
+  Notification are a partial Isolate in Date/TimezoneCache.cs.
+
+## Collections, weak references, Promise, Iterator, DisposableStack
+
+- **Weak references.** V8's GC clears dead WeakRef and WeakCell targets in
+  its atomic pause (MarkCompactCollector::ClearJSWeakRefs). V8Sharp holds the
+  targets through CLR `WeakReference<HeapObject>`s and notices the clearing
+  afterwards: at the end of each microtask checkpoint
+  (`Isolate.ClearKeptObjects`), if `GC.CollectionCount(0)` changed since the
+  last check, the active cells of every tracked FinalizationRegistry are
+  walked, cells whose target died move to the cleared list, and the dirty
+  registries are queued. `Isolate.CollectGarbage()` (d8's `gc()`,
+  `RequestGarbageCollectionForTesting`) runs a blocking
+  `GC.Collect`/`WaitForPendingFinalizers`/`GC.Collect` and then the same
+  processing, so tests observe clearing deterministically. The cleanup task
+  (FinalizationRegistryCleanupTask) is posted to a per-isolate foreground
+  task queue (`Isolate.PostNonNestableTask`, `ForegroundTaskPosted`); the
+  embedder runs it with `Isolate.RunPendingTasks()`, which performs a
+  microtask checkpoint after each task as d8's message loop does. Registries
+  are tracked weakly once they get their first cell; a registry that dies
+  never runs its cleanup (as in V8). The unregister-token map is a
+  `Dictionary<int, WeakCell>` keyed by the token's identity hash, chained
+  through KeyListPrev/Next like V8's SimpleNumberDictionary.
+- **WeakMap / WeakSet** use a `ConditionalWeakTable` keyed by the key object
+  instead of an EphemeronHashTable; the CLR table has ephemeron semantics.
+  Nothing observable differs (weak collections are not enumerable).
+- **PromiseReaction** is one class that also plays PromiseReactionJobTask:
+  V8 morphs the reaction's map in place (MorphAndEnqueuePromiseReaction),
+  V8Sharp changes its `State` field; no allocation either way.
+- **Promise rejection** always goes through JSPromise::Reject (the runtime
+  path V8 takes for unhandled rejections and hooks); the CSA fast path only
+  skips steps that have no effect in that case. There is no pending message
+  to move to the promise (MoveMessageToPromise): the message travels with the
+  JavaScriptException. Debug events and async stack tagging are not ported.
+- **Promise constructor**: V8 checks Builtins::AllowDynamicFunction for the
+  executor's context (access checks); V8Sharp has no access checks, so the
+  check is omitted.
+- **Collection constructors**: V8's GotoIfInitialAddFunctionModified checks
+  the prototype map and the constness of the add function's descriptor;
+  V8Sharp checks the prototype map and the current property value, which is
+  the same condition without field constness tracking.
+- **Generators and async functions**: the promise jobs resume generators
+  through static hooks (`PromiseBuiltins.ResumeGeneratorTrampoline`,
+  `AsyncGeneratorResumeNext`, `AsyncGeneratorResolve`) that the interpreter
+  sets, instead of calling the ResumeGeneratorTrampoline builtin by id.
+- **AsyncFromSyncIterator**: V8 CSA_CHECKs the receiver type (a crash on
+  failure); V8Sharp throws InvalidOperationException, which is equally
+  unreachable from script.
+- **IteratorHelpers**: the pre-port iteration helpers in
+  Builtins.Object.cs moved to `IteratorBuiltins` (Builtins.Iterator.cs); a
+  forwarding `IteratorHelpers` class remains until every caller is switched
+  (TODO(merge)).
 

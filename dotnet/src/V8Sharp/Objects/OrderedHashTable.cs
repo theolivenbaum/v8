@@ -97,6 +97,77 @@ public abstract class OrderedHashTable : HeapObject
         return InternalIndex.NotFound;
     }
 
+    /// <summary>
+    /// FindEntry that also returns the key's hash (-1 when the key has none,
+    /// i.e. it was never used as a key): the lookup half of
+    /// CollectionsBuiltinsAssembler::TryLookupOrderedHashTableIndex, so that an
+    /// insertion after a failed lookup does not hash the key again.
+    /// </summary>
+    public int FindEntryAndHash(JSValue key, out int hash)
+    {
+        JSValue hashValue = ObjectOps.GetHash(key);
+        if (hashValue.IsUndefined)
+        {
+            hash = -1;
+            return kNotFound;
+        }
+        hash = (int)hashValue.Number;
+        if (NumberOfElements == 0) return kNotFound;
+        for (int rawEntry = HashToEntryRaw(hash); rawEntry != kNotFound; rawEntry = NextChainEntryRaw(rawEntry))
+        {
+            JSValue candidateKey = _entries[rawEntry * _entrySize];
+            if (candidateKey.IsIdenticalTo(key) || ObjectOps.SameValueZero(candidateKey, key)) return rawEntry;
+        }
+        return kNotFound;
+    }
+
+    /// <summary>Whether the entry at <paramref name="entry"/> was deleted (its key is the hash-table hole).</summary>
+    public bool IsDeletedEntry(int entry) => ReferenceEquals(_entries[entry * _entrySize].HeapObjectOrNull, Oddball.HashTableHole);
+
+    /// <summary>The key of a raw entry index.</summary>
+    public JSValue KeyAtRaw(int entry) => _entries[entry * _entrySize];
+
+    /// <summary>Whether adding one more entry needs a new backing table (EnsureCapacityForAdding would rehash).</summary>
+    public bool NeedsGrowForAdding => UsedCapacity >= Capacity;
+
+    /// <summary>
+    /// Deletes the entry at <paramref name="entry"/> (the store half of
+    /// MapPrototypeDelete / DeleteFromSetTable): holes out the entry and
+    /// updates the element counts. Returns the new number of elements.
+    /// </summary>
+    public int DeleteEntry(int entry)
+    {
+        int index = entry * _entrySize;
+        JSValue hashTableHole = JSValue.FromObject(Oddball.HashTableHole);
+        for (int i = 0; i < _entrySize; ++i) _entries[index + i] = hashTableHole;
+        _numberOfElements--;
+        _numberOfDeletedElements++;
+        return _numberOfElements;
+    }
+
+    /// <summary>
+    /// Appends an entry for a key known to be absent, with its (already
+    /// created) hash; the table must have room (see NeedsGrowForAdding).
+    /// Returns the new entry index.
+    /// </summary>
+    public int AddNewEntry(int hash, JSValue key)
+    {
+        Debug.Assert(!IsObsolete && !NeedsGrowForAdding);
+        return AppendEntry(hash, key);
+    }
+
+    /// <summary>CloneFixedArray of the table: an independent copy (never obsolete).</summary>
+    protected T CloneInto<T>(T clone) where T : OrderedHashTable
+    {
+        Debug.Assert(!IsObsolete);
+        clone._buckets = (int[])_buckets.Clone();
+        clone._entries = (JSValue[])_entries.Clone();
+        clone._chain = (int[])_chain.Clone();
+        clone._numberOfElements = _numberOfElements;
+        clone._numberOfDeletedElements = _numberOfDeletedElements;
+        return clone;
+    }
+
     /// <summary>OrderedHashTable::HasKey.</summary>
     public static bool HasKey(Isolate isolate, OrderedHashTable table, JSValue key) => table.FindEntry(isolate, key).IsFound;
 
@@ -319,6 +390,9 @@ public sealed class OrderedHashSet : OrderedHashTable
 
     protected override OrderedHashTable AllocateLike(int capacity) => Allocate(capacity);
 
+    /// <summary>CloneFixedArray(table): a copy of the set's data.</summary>
+    public OrderedHashSet Clone() => CloneInto(new OrderedHashSet(0));
+
     /// <summary>OrderedHashSet::Add.</summary>
     public static OrderedHashSet Add(Isolate isolate, OrderedHashSet table, JSValue key)
     {
@@ -384,6 +458,15 @@ public sealed class OrderedHashMap : OrderedHashTable
     public JSValue ValueAt(InternalIndex entry) => ValueAtRaw(entry.AsInt, kValueOffset);
 
     public void SetValueAt(InternalIndex entry, JSValue value) => SetValueAtRaw(entry.AsInt, kValueOffset, value);
+
+    /// <summary>The value of a raw entry index.</summary>
+    public JSValue ValueAtRaw(int entry) => ValueAtRaw(entry, kValueOffset);
+
+    /// <summary>Stores the value of a raw entry index.</summary>
+    public void SetValueAtRaw(int entry, JSValue value) => SetValueAtRaw(entry, kValueOffset, value);
+
+    /// <summary>CloneFixedArray(table): a copy of the map's data.</summary>
+    public OrderedHashMap Clone() => CloneInto(new OrderedHashMap(0));
 
     /// <summary>OrderedHashMap::Add: adds key/value unless the key is present.</summary>
     public static OrderedHashMap Add(Isolate isolate, OrderedHashMap table, JSValue key, JSValue value)

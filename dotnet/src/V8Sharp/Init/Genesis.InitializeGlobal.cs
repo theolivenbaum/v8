@@ -863,6 +863,9 @@ sealed partial class Genesis
             Bootstrapper.InstallToStringTag(isolate, math, "Math");
         }
 
+        // ---- bootstrapper.cc 4120-4451 (Genesis.TypedArrays.cs)
+        InitializeGlobalTypedArrays(global);
+
         // ---- bootstrapper.cc 4453-4626
         {  // -- M a p
             JSFunction jsMapFun = Bootstrapper.InstallFunction(isolate, global, "Map", InstanceType.JSMapType, 0, 0, JSValue.TheHole, Builtin.MapConstructor, 0, false);
@@ -1272,6 +1275,9 @@ sealed partial class Genesis
             JSFunction @delegate = Bootstrapper.SimpleCreateFunction(isolate, ReadOnlyRoots.empty_string, Builtin.HandleApiCallAsConstructorDelegate, 0, false);
             nativeContext.CallAsConstructorDelegate = @delegate;
         }
+
+        // -- D i s p o s a b l e S t a c k (Genesis.DisposableStack.cs)
+        InstallDisposableStack(global);
 
         // ---- bootstrapper.cc 5824-5871
         {  // --- W r a p p e d F u n c t i o n

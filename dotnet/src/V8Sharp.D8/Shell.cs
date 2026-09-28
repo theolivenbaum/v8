@@ -154,11 +154,15 @@ public sealed class Shell
     /// <summary>The message loop: pending setTimeout callbacks, each followed by a microtask checkpoint.</summary>
     bool RunMessageLoop()
     {
-        while (_timeouts.Count > 0)
+        // Foreground tasks posted by the engine (FinalizationRegistry cleanup,
+        // asynchronous gc()) run before the next timeout, as d8 pumps the
+        // platform's task queue between them.
+        while (_timeouts.Count > 0 || _isolate.HasPendingTasks)
         {
-            JSFunction callback = _timeouts.Dequeue();
             try
             {
+                if (_isolate.RunPendingTasks()) continue;
+                JSFunction callback = _timeouts.Dequeue();
                 Execution.Call(_isolate, callback, JSValue.Undefined, []);
                 Execution.PerformMicrotaskCheckpoint(_isolate);
             }

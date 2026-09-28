@@ -124,9 +124,16 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Promise, RegExp, Errors, JSON, Math, Map/Set/WeakMap/WeakSet/WeakRef/
       FinalizationRegistry, BigInt, Iterator and helpers, Proxy, Reflect,
       bound/wrapped functions, arguments maps, API functions
-      (FunctionTemplateInfo, HandleApiCallOrConstruct). Missing: Intl, Temporal,
-      ArrayBuffer/SharedArrayBuffer/Atomics, typed arrays, DataView,
-      DisposableStack, shared structs, extras, extensions,
+      (FunctionTemplateInfo, HandleApiCallOrConstruct), ArrayBuffer/
+      SharedArrayBuffer/Atomics, typed arrays, DataView
+      (Init/Genesis.TypedArrays.cs, incl. the js_immutable_arraybuffer and
+      sharedarraybuffer flag sections), DisposableStack/AsyncDisposableStack
+      and Iterator.prototype[Symbol.dispose]/%AsyncIteratorPrototype%
+      [Symbol.asyncDispose] (Init/Genesis.DisposableStack.cs),
+      InitializeExperimentalGlobal (Iterator.concat/zip/zipKeyed,
+      Iterator.prototype.join/includes, queueMicrotask behind
+      --enable-queue-microtask; Init/Genesis.{Iterator,Promise}.cs).
+      Missing: Intl, Temporal, shared structs, extras, extensions,
       the TemplateLiteral map (interpreter port)
 - [x] interpreter: bytecodes, operands, array builder/writer, register
       optimizer, constant array builder, handler tables, control-flow builders,
@@ -164,10 +171,91 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler), which the
       compiler port must register. The proxy trap stubs (ProxyGetProperty ...)
       and CallProxy/ConstructProxy are not registered: callers use JSProxy.
-      Still to do: Array, Number (except parseInt/parseFloat), Math,
-      JSON, Date, Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry,
-      Promise, generators/iterators, ArrayBuffer/TypedArray/DataView/Atomics,
-      BigInt, Iterator helpers, DisposableStack
+      Still to do: generators (interpreter port)
+- [~] Map, Set, WeakMap, WeakSet, WeakRef, FinalizationRegistry, Promise,
+      Iterator, DisposableStack builtins and the microtask queue
+      (Builtins/Builtins.{Collections,Set,WeakRefs,Promise*,Iterator*,
+      DisposableStack}.cs, Objects/{JSCollection,JSPromise,JSWeakRefs,
+      JSIteratorHelpers,JSDisposableStack}.cs, Execution/MicrotaskQueue.cs).
+      Every builtin of builtins-collections-gen.cc, collections.tq,
+      map-groupby.tq, set-*.tq, builtins-weak-refs.cc, weak-ref.tq,
+      finalization-registry.tq, promise-*.tq (all, any, allSettled, race,
+      finally, try, withResolvers, jobs, resolving functions, hooks,
+      rejection tracking), iterator.tq, iterator-helpers.tq (incl.
+      concat/zip/zipKeyed/join/includes), iterator-from.tq,
+      builtins-async-iterator-gen.cc (%AsyncFromSyncIteratorPrototype%),
+      async-disposable-stack.tq, builtins-disposable-stack.cc and
+      GlobalQueueMicrotask is registered. The interpreter-facing APIs:
+      PromiseBuiltins.{NewJSPromise, ResolvePromise, RejectPromise,
+      PerformPromiseThen(Impl), NewPromiseCapability, PromiseResolve,
+      EnqueueMicrotask, AsyncAwaitNonThenableFastPath}, the generator
+      resume hooks (ResumeGeneratorTrampoline, AsyncGeneratorResumeNext,
+      AsyncGeneratorResolve), IteratorBuiltins.{GetIterator, IteratorStep,
+      IteratorStepValue, IteratorClose, CreateIterResultObject,
+      IterableToList...}, AsyncFromSyncIteratorBuiltins.
+      CreateAsyncFromSyncIterator, Isolate.{CollectGarbage, RunPendingTasks}.
+      Also the runtime functions of runtime-promise.cc, runtime-collections.cc,
+      runtime-weak-refs.cc and the protector queries of runtime-test.cc
+      (Runtime/Runtime.Promise.cs), and gc() (src/extensions/gc-extension.cc,
+      Init/GCExtension.cs); d8sharp and the runner's D8Shell pump the
+      isolate's foreground tasks. 50 xUnit tests
+      (tests/V8Sharp.Tests/Builtins/{Promise,Collections,Iterator,WeakRefs,
+      DisposableStack}BuiltinsTest.cs), expectations from the oracle.
+      test262 (v8sharp): built-ins/{Promise,Map,Set,WeakMap,WeakSet,WeakRef,
+      FinalizationRegistry,Iterator,DisposableStack}/** 100% (4414 tests);
+      AsyncDisposableStack 150/208, AsyncIteratorPrototype 18/26,
+      AsyncFromSyncIteratorPrototype 0/76: every failure needs async
+      functions/generators or for-await (Interpreter/InterpreterAsync.cs
+      stubs). mjsunit: the remaining failures of es6/promise*, collection*,
+      weakrefs/**, harmony/iterator* are the same async stubs, plus
+      es6/collections-constructor-with-modified-protoype (an IC bug: the
+      second `arr.length = 1` store with feedback does not truncate), the
+      d8 Realm microtask-queue/onerror tests (runner d8 shim) and
+      iterator-join (%ArrayBufferDetach). Missing: the `IteratorHelpers`
+      forwarding shim in Builtins.Iterator.cs (remove once no caller uses it)
+- [~] Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
+      builtins and the array iterators (Builtins/Builtins.{Array,ArrayBuffer,
+      TypedArray,DataView,Atomics}*.cs; Objects/JSArrayBuffer.cs,
+      JSTypedArray.cs, Elements.Typed.cs; Heap/Factory.TypedArrays.cs). Every
+      builtin Genesis installs for these areas is registered except
+      Array.fromAsync (needs async functions and promises). Array.prototype.sort
+      is the PowerSort of third_party/v8/builtins/array-sort.tq (the oracle's
+      V8 14.7 still sorts with TimSort, so comparison traces are checked
+      against the tree's algorithm, not the oracle); typed array sort, join
+      with the cycle stack, base64/hex (with V8's simdutf truncation
+      behaviour), resizable/growable buffers, transfer/detach, Float16.
+      Atomics.wait blocks on a process-wide FutexEmulation; Atomics.waitAsync
+      returns the synchronous results but throws NotImplementedException when
+      it would suspend. 69 xUnit tests (tests/V8Sharp.Tests/Builtins/{Array,
+      TypedArray,DataView}*.cs), expectations from the oracle. Missing: the
+      test262/mjsunit runs of built-ins/{Array,TypedArray*,ArrayBuffer,
+      DataView,Atomics}/** (wait for the interpreter), Array.fromAsync,
+      Atomics.waitAsync suspension, runtime functions (%ArrayBufferDetach,
+      %TypedArrayGetLength, ...) for mjsunit
+- [~] Number, Math, BigInt, JSON, Date builtins (Builtins/Builtins.{Number,
+      Math,BigInt,Json,Date}*.cs, Json/, Date/, Objects/BigInt*.cs): every
+      builtin of builtins-number.cc/number.tq (toString(radix), toFixed,
+      toExponential, toPrecision, toLocaleString without ICU, is*, valueOf,
+      the Number constructor), math.tq/builtins-math.cc (all functions,
+      hypot fast/slow paths, xorshift128+ Math.random with --random-seed,
+      Math.sumPrecise with Xsum, f16round), builtins-bigint.cc/.tq
+      (constructor, asIntN/asUintN, toString, operators with the NoThrow
+      stubs), src/objects/bigint.cc on V8Sharp.Base.BigInts (the System.Numerics
+      bridge is gone), src/json (parser with the reviver context argument,
+      stringifier, rawJSON/isRawJSON), src/date (DateCache with the offset
+      cache, dateparser, MakeDay/MakeTime/TimeClip, ToDateString) and
+      builtins-date.cc/-gen.cc. Tests (tests/V8Sharp.Tests/{Builtins,Date,
+      Json}): bigint-unittest CompareToDouble, date-unittest (DST cache,
+      legacy parser counter), json-unittest (seeded instead of fuzzed), and
+      oracle differentials: BigInt ops on random values up to 800 digits,
+      Date.parse over the mjsunit date strings plus extra formats, the Date
+      string formats and getters/setters (also run under TZ=America/New_York,
+      Europe/London, Asia/Kolkata, America/Sao_Paulo), 770 JSON texts through
+      parse+stringify. Waiting for the interpreter: the test262/mjsunit runs
+      of built-ins/{Number,Math,BigInt,JSON,Date}. JSON revivers, replacer
+      functions and toJSON are checked against the oracle with API functions.
+      Not ported: FastJsonStringifier and JSDataObjectBuilder (see
+      deviations.md, JSON), the typed-array fast path of IterableForEach.
 - [~] String and RegExp builtins (Builtins/Builtins.String*.cs,
       Builtins.RegExp*.cs, Runtime/Runtime.Regexp.cs, Runtime.Strings.cs,
       Objects/JSRegExp*.cs, Strings/StringSearch.cs): every String,
@@ -184,6 +272,17 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Intl-dependent behaviour (V8Sharp is the non-ICU build).
 - [ ] modules (import/export, dynamic import, top-level await)
 - [ ] eval / new Function / with
+
+## Conformance progress (V8Sharp engine)
+
+| date | suite | pass | run | rate | notes |
+|---|---|---|---|---|---|
+| 2026-09-28 | test262 | 67759 | 94901 | 71.4% | first run; 79.1% without Temporal. Failing: async functions/generators/for-await, modules, dynamic import (interpreter, in progress); Promise/Iterator/Map/Set/Weak*/DisposableStack (collections port, in progress); Temporal (9210) |
+
+- [ ] Temporal: V8 15.6 implements it as a binding layer
+      (`src/objects/js-temporal-objects.cc`, `builtins-temporal.cc`) over the
+      Rust crate temporal_rs (`third_party/rust/temporal_capi`, not in this
+      checkout). Needs a C# implementation of the temporal_rs surface V8 uses.
 
 ## Phase 2: the fast tiers
 
@@ -213,8 +312,6 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 Stand-ins in the engine that go away when the component they wait for merges
 (each marked `TODO(merge)` at the site):
 
-- `src/V8Sharp/Objects/BigIntOps.cs`: replace the System.Numerics bridge with
-  V8Sharp.Base.BigInts.
 - `src/V8Sharp/Objects/HashTable.cs` (`Hashing`) and
   `src/V8Sharp/Strings/StringHasher.cs`: use V8Sharp.Base's hashing
   (rapidhash with the isolate's hash seed).
@@ -226,6 +323,11 @@ Stand-ins in the engine that go away when the component they wait for merges
 - `src/V8Sharp/Objects/JSObjectShapes.cs`: module namespace as the module
   system's Module.
 
+
+- Engine-wide: replace `double.NaN` (0xFFF8..., sign bit set) with
+  `JSValue.QuietNaN` (V8's 0x7FF8...) wherever a NaN constant can reach a
+  Float64Array/DataView store (ToNumber of non-numeric strings, Math results,
+  Date invalid time value). `JSValue.NaN` is already fixed.
 
 ## Deviations
 

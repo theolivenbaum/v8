@@ -7,10 +7,8 @@
 // JSReceiverPreventExtensions*, JSReceiverGet/SetPrototypeOf*,
 // SetDataProperties).
 //
-// Also the small iteration helpers of builtins-iterator-gen.cc / iterator.tq
-// (GetIterator, IteratorStep, IteratorValue, IteratorCloseOnException) and
-// collections.tq LoadKeyValuePair that Object.fromEntries, Object.groupBy and
-// AggregateError need.
+// Also collections.tq LoadKeyValuePair, which Object.fromEntries needs. The
+// iteration helpers are IteratorBuiltins (Builtins.Iterator.cs).
 using System.Runtime.CompilerServices;
 
 namespace V8Sharp.Builtins;
@@ -832,27 +830,27 @@ public static class BuiltinsObject
         if (fast is not null) return fast;
 
         JSObject result = isolate.Factory.NewJSObject(isolate.NativeContext.ObjectFunction);
-        IteratorRecord i = IteratorHelpers.GetIterator(isolate, iterable);
+        IteratorRecord i = IteratorBuiltins.GetIterator(isolate, iterable);
         try
         {
             while (true)
             {
-                if (!IteratorHelpers.IteratorStep(isolate, i, out JSReceiver step)) return result;
-                JSValue iteratorValue = IteratorHelpers.IteratorValue(isolate, step);
+                if (!IteratorBuiltins.IteratorStep(isolate, i, out JSReceiver step)) return result;
+                JSValue iteratorValue = IteratorBuiltins.IteratorValue(isolate, step);
                 LoadKeyValuePair(isolate, iteratorValue, out JSValue key, out JSValue value);
                 CreateDataProperty(isolate, result, key, value);
             }
         }
         catch (JavaScriptException)
         {
-            IteratorHelpers.IteratorCloseOnException(isolate, i.Object);
+            IteratorBuiltins.IteratorCloseOnException(isolate, i.Object);
             throw;
         }
     }
 
     static JSObject? ObjectFromEntriesFastCase(Isolate isolate, JSValue iterable)
     {
-        if (iterable.HeapObjectOrNull is not JSArray array || !IteratorHelpers.IsFastJSArrayWithNoCustomIteration(isolate, array))
+        if (iterable.HeapObjectOrNull is not JSArray array || !IteratorBuiltins.IsFastJSArrayWithNoCustomIteration(isolate, array))
         {
             return null;
         }
@@ -887,7 +885,7 @@ public static class BuiltinsObject
     {
         key = JSValue.Undefined;
         value = JSValue.Undefined;
-        if (o.HeapObjectOrNull is not JSArray array || !IteratorHelpers.IsFastJSArrayForRead(isolate, array)) return false;
+        if (o.HeapObjectOrNull is not JSArray array || !IteratorBuiltins.IsFastJSArrayForRead(isolate, array)) return false;
         int length = (int)array.Length.Number;
         switch (array.Elements)
         {
@@ -963,7 +961,7 @@ public static class BuiltinsObject
         // 2. If IsCallable(callbackfn) is false, throw a TypeError exception.
         if (!ObjectOps.IsCallable(callback)) isolate.ThrowTypeError(MessageTemplate.CalledNonCallable, callback);
 
-        if (items.HeapObjectOrNull is JSArray array && IteratorHelpers.IsFastJSArrayWithNoCustomIteration(isolate, array))
+        if (items.HeapObjectOrNull is JSArray array && IteratorBuiltins.IsFastJSArrayWithNoCustomIteration(isolate, array))
         {
             // Per spec, the iterator and its next method are cached up front. This
             // means that we only need to check for no custom iteration once up
@@ -986,7 +984,7 @@ public static class BuiltinsObject
 
         // GroupByGeneric.
         // 4. Let iteratorRecord be ? GetIterator(items, sync).
-        IteratorRecord iteratorRecord = IteratorHelpers.GetIterator(isolate, items);
+        IteratorRecord iteratorRecord = IteratorBuiltins.GetIterator(isolate, items);
         // 5. Let k be 0.
         double k = 0;
         JSValue[] genericArgs = new JSValue[2];
@@ -995,9 +993,9 @@ public static class BuiltinsObject
         {
             // b. Let next be ? IteratorStep(iteratorRecord).
             // c. If next is false, then return groups.
-            if (!IteratorHelpers.IteratorStep(isolate, iteratorRecord, out JSReceiver next)) return;
+            if (!IteratorBuiltins.IteratorStep(isolate, iteratorRecord, out JSReceiver next)) return;
             // d. Let value be ? IteratorValue(next).
-            JSValue value = IteratorHelpers.IteratorValue(isolate, next);
+            JSValue value = IteratorBuiltins.IteratorValue(isolate, next);
             // e. Let key be Completion(Call(callbackfn, undefined, « value, 𝔽(k) »)).
             Name key;
             try
@@ -1011,7 +1009,7 @@ public static class BuiltinsObject
             {
                 // f. and g.ii.
                 // IfAbruptCloseIterator(key, iteratorRecord).
-                IteratorHelpers.IteratorCloseOnException(isolate, iteratorRecord.Object);
+                IteratorBuiltins.IteratorCloseOnException(isolate, iteratorRecord.Object);
                 throw;
             }
             // i. Perform AddValueToKeyedGroup(groups, key, value).
@@ -1059,147 +1057,4 @@ public static class BuiltinsObject
             group.Elements[group.Count++] = value;
         }
     }
-}
-
-/// <summary>Torque's iterator::IteratorRecord.</summary>
-public readonly record struct IteratorRecord(JSReceiver Object, JSValue Next);
-
-/// <summary>
-/// The iteration helpers of builtins-iterator-gen.cc and iterator.tq used by
-/// the Object/Error builtins (GetIterator, IteratorStep, IteratorValue,
-/// IteratorCloseOnException, IterableToListWithSymbolLookup) and the
-/// fast-array predicates of base.tq they rely on.
-/// </summary>
-public static class IteratorHelpers
-{
-    /// <summary>IteratorBuiltinsAssembler::GetIterator(object).</summary>
-    public static IteratorRecord GetIterator(Isolate isolate, JSValue obj)
-    {
-        JSValue method = ObjectOps.GetProperty(isolate, obj, ReadOnlyRoots.iterator_symbol);
-        return GetIterator(isolate, obj, method);
-    }
-
-    /// <summary>IteratorBuiltinsAssembler::GetIterator(object, method).</summary>
-    public static IteratorRecord GetIterator(Isolate isolate, JSValue obj, JSValue method)
-    {
-        if (!ObjectOps.IsCallable(method))
-        {
-            // Runtime_ThrowIteratorError.
-            isolate.Throw(ErrorUtils.NewIteratorError(isolate, obj));
-        }
-        JSValue iterator = Execution.Call(isolate, method, obj, []);
-        if (iterator.HeapObjectOrNull is not JSReceiver iteratorReceiver)
-        {
-            // Runtime_ThrowSymbolIteratorInvalid.
-            isolate.ThrowTypeError(MessageTemplate.SymbolIteratorInvalid);
-            return default;
-        }
-        JSValue next = ObjectOps.GetProperty(isolate, iteratorReceiver, ReadOnlyRoots.next_string);
-        return new IteratorRecord(iteratorReceiver, next);
-    }
-
-    /// <summary>
-    /// IteratorBuiltinsAssembler::IteratorStep: calls next and returns false
-    /// (the if_done label) when the result is done.
-    /// </summary>
-    public static bool IteratorStep(Isolate isolate, in IteratorRecord iterator, out JSReceiver result)
-    {
-        // IteratorStep is used at the top of iterator loops, so check for stack
-        // overflow and process pending interrupts here.
-        isolate.StackGuard.StackCheck(isolate);
-        // 1. a. Let result be ? Invoke(iterator, "next", « »).
-        JSValue value = Execution.Call(isolate, iterator.Next, iterator.Object, []);
-        // 3. If Type(result) is not Object, throw a TypeError exception.
-        if (value.HeapObjectOrNull is not JSReceiver receiver)
-        {
-            // Runtime_ThrowIteratorResultNotAnObject.
-            isolate.ThrowTypeError(MessageTemplate.IteratorResultNotAnObject, value);
-            result = null!;
-            return false;
-        }
-        result = receiver;
-        // IteratorComplete
-        // 2. Return ToBoolean(? Get(iterResult, "done")).
-        JSValue done = JSReceiver.GetProperty(isolate, receiver, ReadOnlyRoots.done_string);
-        return !ObjectOps.BooleanValue(done);
-    }
-
-    /// <summary>IteratorBuiltinsAssembler::IteratorValue.</summary>
-    public static JSValue IteratorValue(Isolate isolate, JSReceiver result) =>
-        JSReceiver.GetProperty(isolate, result, ReadOnlyRoots.value_string);
-
-    /// <summary>
-    /// iterator::IteratorCloseOnException: calls "return" and swallows any
-    /// exception it throws (the original exception remains bound).
-    /// </summary>
-    public static void IteratorCloseOnException(Isolate isolate, JSReceiver iteratorObject)
-    {
-        try
-        {
-            // 3. Let innerResult be GetMethod(iterator, "return").
-            JSValue method = JSReceiver.GetProperty(isolate, iteratorObject, ReadOnlyRoots.return_string);
-            // 4. If innerResult.[[Type]] is normal, then
-            //   a. Let return be innerResult.[[Value]].
-            //   b. If return is undefined, return Completion(completion).
-            if (method.IsNullOrUndefined) return;
-            //   c. Set innerResult to Call(return, iterator).
-            // If an exception occurs, the original exception remains bound
-            Execution.Call(isolate, method, iteratorObject, []);
-        }
-        catch (JavaScriptException)
-        {
-            // Swallow the exception.
-        }
-    }
-
-    /// <summary>iterator::IterableToListWithSymbolLookup: the values of an iterable as a JSArray.</summary>
-    public static JSArray IterableToListWithSymbolLookup(Isolate isolate, JSValue iterable)
-    {
-        // Fast path: a fast JSArray whose iteration is unmodified yields its
-        // elements (holes read as undefined).
-        if (iterable.HeapObjectOrNull is JSArray array && IsFastJSArrayWithNoCustomIteration(isolate, array))
-        {
-            uint length = (uint)array.Length.Number;
-            var values = new FixedArray((int)length);
-            for (uint k = 0; k < length; k++) values[(int)k] = JSReceiver.GetElement(isolate, array, k);
-            return isolate.Factory.NewJSArrayWithElements(values);
-        }
-        // FastIterableToList: a string primitive with unmodified iteration
-        // goes through StringToList (BranchIfStringPrimitiveWithNoCustomIteration).
-        if (iterable.HeapObjectOrNull is JSString s && Protectors.IsStringIteratorLookupChainIntact(isolate) &&
-            (uint)s.Length <= JSArray.kMaxFastArrayLength)
-        {
-            return BuiltinsString.StringToList(isolate, s);
-        }
-
-        IteratorRecord iteratorRecord = GetIterator(isolate, iterable);
-        var list = new List<JSValue>();
-        while (IteratorStep(isolate, iteratorRecord, out JSReceiver next))
-        {
-            list.Add(IteratorValue(isolate, next));
-        }
-        return isolate.Factory.NewJSArrayWithElements(new FixedArray(list.ToArray()));
-    }
-
-    /// <summary>
-    /// Cast&lt;FastJSArrayForRead&gt;: a JSArray with fast elements whose
-    /// prototype is the initial Array.prototype and no elements on the
-    /// prototype chain.
-    /// </summary>
-    public static bool IsFastJSArrayForRead(Isolate isolate, JSArray array)
-    {
-        Map map = array.Map;
-        if (!ElementsKinds.IsFastElementsKind(map.ElementsKind)) return false;
-        NativeContext nativeContext = isolate.NativeContext;
-        if (!ReferenceEquals(map.Prototype, nativeContext.InitialArrayPrototype)) return false;
-        return Protectors.IsNoElementsIntact(isolate);
-    }
-
-    /// <summary>
-    /// Cast&lt;FastJSArrayWithNoCustomIteration&gt;: a fast JSArray for read
-    /// whose iteration behaviour is the initial one (array iterator protector
-    /// intact).
-    /// </summary>
-    public static bool IsFastJSArrayWithNoCustomIteration(Isolate isolate, JSArray array) =>
-        IsFastJSArrayForRead(isolate, array) && Protectors.IsArrayIteratorLookupChainIntact(isolate);
 }

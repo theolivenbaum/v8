@@ -106,6 +106,11 @@ public interface IJsIsolate : IDisposable
 
     /// <summary>A full garbage collection (d8 runs one at exit with --invoke-weak-callbacks).</summary>
     void CollectGarbage();
+
+    /// <summary>v8::platform::PumpMessageLoop: runs the foreground tasks the
+    /// engine posted (FinalizationRegistry cleanup, asynchronous gc()).
+    /// Returns whether a task ran.</summary>
+    bool PumpMessageLoop();
 }
 
 public interface IJsRealm : IDisposable
