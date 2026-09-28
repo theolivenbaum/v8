@@ -266,6 +266,28 @@ public static class InterpreterOps
             UpdateBinaryFeedback(ref feedback, BOF.TypeIndex.String);
             return StringAdd(isolate, ls, rs);
         }
+        // A String and a Number: the Add builtin's StringAddConvertRight /
+        // StringAddConvertLeft (NumberToString through the number-string
+        // cache), with kAny feedback as BinaryOpAssembler records it.
+        if (lhs._obj == NumberTag.Instance || rhs._obj == NumberTag.Instance)
+        {
+            if (lhs.StringOrNull is JSString lstr && rhs._obj == NumberTag.Instance)
+            {
+                UpdateBinaryFeedback(ref feedback, BOF.TypeIndex.Any);
+                return StringAdd(isolate, lstr, isolate.Factory.NumberToString(rhs));
+            }
+            if (rhs.StringOrNull is JSString rstr && lhs._obj == NumberTag.Instance)
+            {
+                UpdateBinaryFeedback(ref feedback, BOF.TypeIndex.Any);
+                return StringAdd(isolate, isolate.Factory.NumberToString(lhs), rstr);
+            }
+        }
+        if (lhs.HeapObjectOrNull is BigInt lb && rhs.HeapObjectOrNull is BigInt rb)
+        {
+            UpdateBinaryFeedback(ref feedback,
+                BigIntOperations.FitsInInt64(lb) && BigIntOperations.FitsInInt64(rb) ? BOF.TypeIndex.BigInt64 : BOF.TypeIndex.BigInt);
+            return BigIntOperations.Add(isolate, lb, rb);
+        }
         bool lhsOddballOrNumber = lhs.IsNumber || lhs.IsOddball || lhs.IsUndefined;
         bool rhsOddballOrNumber = rhs.IsNumber || rhs.IsOddball || rhs.IsUndefined;
         if (lhsOddballOrNumber && rhsOddballOrNumber)
