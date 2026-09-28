@@ -262,7 +262,9 @@ for now, to be revisited when the reason goes away.
   large object heap every gen-0 collection took time proportional to their
   size. A popped inline frame's record keeps its Function and Bytecode (every
   push sets both), so a call of the same function at the same depth skips
-  those reference stores; they stay reachable until the record is reused.
+  those reference stores; they stay reachable until the record is reused or
+  an explicit collection (`gc()`, `Isolate.CollectGarbage`) clears the
+  records above the live frames.
 - Calls: a call or `new` from bytecode to an ordinary compiled bytecode
   function runs in the caller's dispatch loop (`InterpreterInlineCalls`)
   without a .NET frame; generators, async functions, class and derived

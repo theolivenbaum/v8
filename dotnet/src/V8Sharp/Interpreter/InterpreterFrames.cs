@@ -115,6 +115,21 @@ namespace V8Sharp
             for (int i = InterpreterFrameDepth - 1; i >= depth; i--) frames[i] = default;
             InterpreterFrameDepth = depth;
         }
+
+        /// <summary>
+        /// Clears the records above the live frames. InterpreterInlineCalls.PopFrame
+        /// leaves Function and Bytecode in a popped record (deviations.md,
+        /// Interpreter), which would keep a dead closure reachable across an
+        /// explicit collection (gc(), WeakRef tests); CollectGarbage drops them.
+        /// </summary>
+        internal void ClearStaleFrameRecords()
+        {
+            InterpreterFrameRecord[]? frames = _interpreterFrames;
+            if (frames is null) return;
+            // Popped records need not be contiguous (PopFramesTo clears its
+            // records), so clear the whole tail; this runs only on explicit GCs.
+            frames.AsSpan(InterpreterFrameDepth).Clear();
+        }
     }
 }
 
