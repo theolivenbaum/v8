@@ -82,6 +82,23 @@ public static partial class InterpreterExecution
                 case Bytecode.ExtraWide:
                 {
                     if ((typeof(TS) != typeof(SingleScale))) ThrowNestedPrefix();
+                    // LdaSmi with a 16/32-bit immediate (loop bounds, constants)
+                    // is by far the most frequent prefixed bytecode: it is
+                    // handled here rather than by a call into the scaled loop.
+                    if ((Bytecode)Unsafe.Add(ref code, pc + 1) == Bytecode.LdaSmi)
+                    {
+                        if ((Bytecode)Unsafe.Add(ref code, pc) == Bytecode.Wide)
+                        {
+                            acc = JSValue.FromInt(Signed<DoubleScale>(ref code, pc + 2));
+                            pc += 4;
+                        }
+                        else
+                        {
+                            acc = JSValue.FromInt(Signed<QuadrupleScale>(ref code, pc + 2));
+                            pc += 6;
+                        }
+                        continue;
+                    }
                     st.Pc = pc + 1;
                     st.Accumulator = acc;
                     if (RunPrefixed(st.Isolate, ref st)) return st.Accumulator;
@@ -264,9 +281,24 @@ public static partial class InterpreterExecution
                 // ---- Globals ---------------------------------------------------------------
                 case Bytecode.LdaGlobal:
                 case Bytecode.LdaGlobalInsideTypeof:
+                {
+                    // LoadGlobalIC.Load's hit on a global object PropertyCell.
+                    FeedbackVector? fv = st.FeedbackVector;
+                    if (fv is not null && fv.Slots[Unsigned<TS>(ref code, pc + 1 + S)]._obj is PropertyCell cell)
+                    {
+                        JSValue value = cell.Value;
+                        if (!ReferenceEquals(value._obj, Oddball.TheHole) && !ReferenceEquals(value._obj, Oddball.PropertyCellHole) &&
+                            cell.PropertyDetails.Kind == PropertyKind.Data)
+                        {
+                            acc = value;
+                            pc += 1 + 2 * S;
+                            continue;
+                        }
+                    }
                     acc = LdaGlobal<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 2 * S;
                     continue;
+                }
                 case Bytecode.StaGlobal:
                     StaGlobal<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 1 + 2 * S;
@@ -546,14 +578,23 @@ public static partial class InterpreterExecution
 
                 // ---- Compare operations -------------------------------------------------------------------------------
                 case Bytecode.TestEqual:
-                    acc = TestEqual<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
+                {
+                    JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
+                    acc = lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance
+                        ? InterpreterOps.EqualNumbers(lhs._num, acc._num, ref Unsafe.Add(ref code, pc + 1 + S))
+                        : TestEqual<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.TestEqualStrict:
-                    acc = InterpreterOps.StrictEqual(Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1)), acc,
-                        ref Unsafe.Add(ref code, pc + 1 + S));
+                {
+                    JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));
+                    acc = lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance
+                        ? InterpreterOps.EqualNumbers(lhs._num, acc._num, ref Unsafe.Add(ref code, pc + 1 + S))
+                        : TestEqualStrict<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
                     pc += 2 + S;
                     continue;
+                }
                 case Bytecode.TestLessThan:
                 {
                     JSValue lhs = Unsafe.Subtract(ref fpSlot, -InterpreterRuntime.kRegisterOperandBase + Signed<TS>(ref code, pc + 1));

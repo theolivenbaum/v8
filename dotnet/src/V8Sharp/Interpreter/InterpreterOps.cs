@@ -6,6 +6,8 @@
 // feedback vector for typeof and ToNumber/ToNumeric), plus the small
 // handlers helpers (TestTypeOf, super constructors, module variables).
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using V8Sharp.Base.Numbers;
 using V8Sharp.Runtime;
 using BOF = V8Sharp.Interpreter.BinaryOperationFeedback;
@@ -21,9 +23,11 @@ public static class InterpreterOps
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsSmiDouble(double d)
     {
-        int i = (int)d;
-        return i == d && i >= JSValue.SmiMinValue && i <= JSValue.SmiMaxValue &&
-               BitConverter.DoubleToInt64Bits(d) != kMinusZeroBits;
+        // cvttsd2si gives int.MinValue for NaN and out-of-range values, which
+        // fails the range check; C#'s (int) cast saturates with extra compares.
+        int i = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(d)) : (int)d;
+        return i == d && (uint)(i - JSValue.SmiMinValue) <= (uint)(JSValue.SmiMaxValue - JSValue.SmiMinValue) &&
+               (i != 0 || BitConverter.DoubleToInt64Bits(d) != kMinusZeroBits);
     }
 
     // ---- Embedded feedback ------------------------------------------------------------
@@ -470,16 +474,19 @@ public static class InterpreterOps
         UpdateCompareFeedback(ref feedback, COF.CalculateTypeIndex((uint)type));
     }
 
+    /// <summary>TestEqual / TestEqualStrict of two numbers, with feedback.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue EqualNumbers(double l, double r, ref byte feedback)
+    {
+        UpdateCompareFeedback(ref feedback,
+            IsSmiDouble(l) && IsSmiDouble(r) ? COF.TypeIndex.SignedSmall : COF.TypeIndex.Number);
+        return JSValue.FromBoolean(l == r);
+    }
+
     /// <summary>TestEqualStrict with feedback.</summary>
     public static JSValue StrictEqual(JSValue lhs, JSValue rhs, ref byte feedback)
     {
-        if (lhs.IsNumber && rhs.IsNumber)
-        {
-            double l = lhs.Number, r = rhs.Number;
-            UpdateCompareFeedback(ref feedback,
-                IsSmiDouble(l) && IsSmiDouble(r) ? COF.TypeIndex.SignedSmall : COF.TypeIndex.Number);
-            return JSValue.FromBoolean(l == r);
-        }
+        if (lhs.IsNumber && rhs.IsNumber) return EqualNumbers(lhs.Number, rhs.Number, ref feedback);
         RecordCompareFeedback(lhs, rhs, ref feedback);
         return JSValue.FromBoolean(ObjectOps.StrictEquals(lhs, rhs));
     }
@@ -487,13 +494,7 @@ public static class InterpreterOps
     /// <summary>TestEqual with feedback.</summary>
     public static JSValue Equal(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback)
     {
-        if (lhs.IsNumber && rhs.IsNumber)
-        {
-            double l = lhs.Number, r = rhs.Number;
-            UpdateCompareFeedback(ref feedback,
-                IsSmiDouble(l) && IsSmiDouble(r) ? COF.TypeIndex.SignedSmall : COF.TypeIndex.Number);
-            return JSValue.FromBoolean(l == r);
-        }
+        if (lhs.IsNumber && rhs.IsNumber) return EqualNumbers(lhs.Number, rhs.Number, ref feedback);
         RecordCompareFeedback(lhs, rhs, ref feedback);
         if (lhs.IsIdenticalTo(rhs) && !lhs.IsNumber) return JSValue.True;
         return JSValue.FromBoolean(ObjectOps.Equals(isolate, lhs, rhs));

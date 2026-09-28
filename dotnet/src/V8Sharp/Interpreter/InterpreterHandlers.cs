@@ -374,6 +374,14 @@ public static partial class InterpreterExecution
         return KeyedHasIC.Has(isolate, st.FeedbackVector, slot, acc, name);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue TestEqualStrict<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte code, int pc, JSValue acc)
+        where TS : struct, IOperandScale
+    {
+        int S = Scale<TS>();
+        return InterpreterOps.StrictEqual(Reg<TS>(ref fp, ref code, pc + 1), acc, ref Unsafe.Add(ref code, pc + 1 + S));
+    }
+
     // ---- Literals, closures, contexts, arguments ------------------------------------
 
     [MethodImpl(MethodImplOptions.NoInlining)]
