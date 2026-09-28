@@ -8,7 +8,7 @@ using V8Sharp.Tests.Builtins;
 
 namespace V8Sharp.Tests.Json;
 
-public class JsonTest : BuiltinsTestBase
+public class JsonTest : IntrinsicsTestBase
 {
     JSValue Parse(string s) => CallStatic("JSON.parse", Str(s));
 

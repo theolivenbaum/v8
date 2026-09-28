@@ -9,7 +9,7 @@ using V8Sharp.Tests.Builtins;
 
 namespace V8Sharp.Tests.Date;
 
-public class DateTest : BuiltinsTestBase
+public class DateTest : IntrinsicsTestBase
 {
     void CheckDST(long time)
     {

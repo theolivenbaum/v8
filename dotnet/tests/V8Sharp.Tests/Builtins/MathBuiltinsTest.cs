@@ -1,7 +1,7 @@
 // Tests of the Math builtins (src/builtins/math.tq, builtins-math.cc).
 namespace V8Sharp.Tests.Builtins;
 
-public class MathBuiltinsTest : BuiltinsTestBase
+public class MathBuiltinsTest : IntrinsicsTestBase
 {
     double M(string name, params double[] args)
     {

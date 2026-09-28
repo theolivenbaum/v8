@@ -1,7 +1,7 @@
 // Tests of the Number builtins (src/builtins/builtins-number.cc, number.tq).
 namespace V8Sharp.Tests.Builtins;
 
-public class NumberBuiltinsTest : BuiltinsTestBase
+public class NumberBuiltinsTest : IntrinsicsTestBase
 {
     string Proto(string method, double x, params JSValue[] args) => S(Call("Number.prototype." + method, Num(x), args));
 

@@ -7,7 +7,7 @@ using Op = V8Sharp.Builtins.BuiltinsBigInt.Operation;
 
 namespace V8Sharp.Tests.Builtins;
 
-public class BigIntBuiltinsTest : BuiltinsTestBase
+public class BigIntBuiltinsTest : IntrinsicsTestBase
 {
     BigInt B(string s) => s.StartsWith("-0x", StringComparison.Ordinal) ? BigInt.BigIntLiteral(i_isolate, s) : BigInt.FromObject(i_isolate, Str(s));
 
