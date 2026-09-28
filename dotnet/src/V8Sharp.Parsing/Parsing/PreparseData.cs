@@ -518,7 +518,7 @@ public sealed class ConsumedPreparseData
         private byte _storedQuarters;
         private byte _storedByte;
 
-        internal void SetData(byte[] data) => _data = data;
+        public void SetData(byte[] data) => _data = data;
 
         public void SetPosition(int position) => _index = position;
 
