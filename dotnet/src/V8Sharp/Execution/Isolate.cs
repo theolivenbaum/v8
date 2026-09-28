@@ -39,6 +39,9 @@ public sealed partial class Isolate
     /// <summary>The flags of this isolate (V8's v8_flags).</summary>
     public readonly FlagList Flags;
 
+    /// <summary>Isolate::MemorySaverModeEnabled (no embedder memory-saver hint in V8Sharp).</summary>
+    public bool MemorySaverModeEnabled() => Flags.optimize_for_size || Flags.memory_saver_mode == true;
+
     public readonly Factory Factory;
     public readonly StringTable StringTable;
     public readonly StackGuard StackGuard;

@@ -415,6 +415,9 @@ Weakness (no GC hooks)
 - Transition targets, `FieldType.Class` maps, prototype-user registries, the
   map cache and the normalized map cache hold their entries strongly. Nothing
   is cleared, so maps that V8 would collect stay reachable.
+- The number-string caches (`SmiStringCache`, `DoubleStringCache`,
+  Objects/NumberStringCache.cs) are not flushed by a full GC
+  (Heap::FlushNumberStringCache); their strings stay until overwritten.
 - WeakMap/WeakSet use `ConditionalWeakTable`; WeakRef uses a CLR `WeakReference`.
   FinalizationRegistry cleanup scheduling is not ported.
 

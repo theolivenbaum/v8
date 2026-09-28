@@ -38,6 +38,7 @@ internal static class RootsBuilder
     {
         // Touch ReadOnlyRoots so every root string exists.
         SeqString[] roots = ReadOnlyRoots.InternalizedStringRoots();
+        _ = ReadOnlyRoots.preallocated_number_string_table;
         lock (s_lock)
         {
             var all = new SeqString[s_strings.Count];

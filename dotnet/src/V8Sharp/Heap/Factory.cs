@@ -28,27 +28,67 @@ public sealed partial class Factory(Isolate isolate)
     public JSValue NewNumberFromUint(uint value) => JSValue.FromNumber(value);
     public JSValue NewNumberFromSize(ulong value) => JSValue.FromNumber(value);
 
-    /// <summary>Factory::NumberToString (without V8's number string cache).</summary>
-    public JSString NumberToString(JSValue number)
+    // The mutable roots smi_string_cache and double_string_cache (V8 keeps them
+    // in the heap's roots table; they are per isolate).
+    SmiStringCache _smiStringCache = SmiStringCache.New(SmiStringCache.kInitialSize);
+    DoubleStringCache _doubleStringCache = DoubleStringCache.New(DoubleStringCache.kInitialSize);
+
+    /// <summary>FactoryBase::NumberToString.</summary>
+    public JSString NumberToString(JSValue number, NumberCacheMode mode = NumberCacheMode.kBoth)
     {
         double d = number.Number;
-        if (number.IsSmi) return SmiToString((int)d);
-        return NewStringFromAsciiChecked(Conversions.DoubleToCString(d));
+        if (number.IsSmi) return SmiToString((int)d, mode);
+        // Try to canonicalize doubles.
+        return DoubleToString(d, true, mode);
     }
 
     public JSString NumberToString(double d) => NumberToString(JSValue.FromNumber(d));
 
-    /// <summary>Factory::SmiToString: sets the array-index hash like V8 does.</summary>
-    public JSString SmiToString(int value)
+    /// <summary>FactoryBase::DoubleToString.</summary>
+    public JSString DoubleToString(double value, bool canonicalize, NumberCacheMode mode = NumberCacheMode.kBoth)
     {
-        if ((uint)value < 10) return ReadOnlyRoots.SingleCharacterStringTable['0' + value];
-        var result = new SeqString(value.ToString(CultureInfo.InvariantCulture));
+        if (canonicalize && Interpreter.InterpreterOps.IsSmiDouble(value)) return SmiToString((int)value, mode);
+
+        uint entry = 0;
+        ulong valueBits = 0;
+        if (mode != NumberCacheMode.kIgnore)
+        {
+            valueBits = BitConverter.DoubleToUInt64Bits(value);
+            entry = _doubleStringCache.GetEntryFor(valueBits);
+        }
+        if (mode == NumberCacheMode.kBoth && _doubleStringCache.Get(entry, valueBits) is { } cached) return cached;
+
+        JSString result;
+        if (value == 0) result = ReadOnlyRoots.zero_string;
+        else if (double.IsNaN(value)) result = ReadOnlyRoots.NaN_string;
+        else result = NewStringFromAsciiChecked(Conversions.DoubleToCString(value));
+        if (mode != NumberCacheMode.kIgnore) _doubleStringCache = _doubleStringCache.Set(_isolate, entry, valueBits, result);
+        return result;
+    }
+
+    /// <summary>FactoryBase::SmiToString: sets the array-index hash like V8 does.</summary>
+    public JSString SmiToString(int value, NumberCacheMode mode = NumberCacheMode.kBoth)
+    {
+        if ((uint)value < kPreallocatedNumberStringTableSize) return ReadOnlyRoots.preallocated_number_string_table[value];
+
+        uint entry = 0;
+        if (mode != NumberCacheMode.kIgnore) entry = _smiStringCache.GetEntryFor(value);
+        if (mode == NumberCacheMode.kBoth && _smiStringCache.Get(entry, value) is { } cached) return cached;
+
+        var result = new SeqString(Conversions.IntToCString(value));
+        if (mode != NumberCacheMode.kIgnore) _smiStringCache = _smiStringCache.Set(_isolate, entry, value, result);
+
+        // Compute the hash here (rather than letting the caller take care of it)
+        // so that the "cache hit" case above doesn't have to bother with it.
         if (value >= 0)
         {
             result.RawHashField = StringHasher.MakeArrayIndexHash((uint)value, (uint)result.Length);
         }
         return result;
     }
+
+    /// <summary>kPreallocatedNumberStringTableSize (globals.h).</summary>
+    public const int kPreallocatedNumberStringTableSize = 100;
 
     /// <summary>Factory::SizeToString.</summary>
     public JSString SizeToString(ulong value)
