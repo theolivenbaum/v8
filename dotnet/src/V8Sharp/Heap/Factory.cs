@@ -45,7 +45,7 @@ public sealed partial class Factory(Isolate isolate)
         var result = new SeqString(value.ToString(CultureInfo.InvariantCulture));
         if (value >= 0)
         {
-            result.RawHashField = StringHasher.MakeArrayIndexHash((uint)value, result.Length);
+            result.RawHashField = StringHasher.MakeArrayIndexHash((uint)value, (uint)result.Length);
         }
         return result;
     }
@@ -57,7 +57,7 @@ public sealed partial class Factory(Isolate isolate)
         var result = new SeqString(value.ToString(CultureInfo.InvariantCulture));
         if (value <= JSArray.kMaxArrayIndex)
         {
-            result.RawHashField = StringHasher.MakeArrayIndexHash((uint)value, result.Length);
+            result.RawHashField = StringHasher.MakeArrayIndexHash((uint)value, (uint)result.Length);
         }
         return result;
     }
@@ -304,6 +304,124 @@ public sealed partial class Factory(Isolate isolate)
     public JSObject NewSlowJSObjectWithNullProto() =>
         NewSlowJSObjectFromMap(_isolate.NativeContext.SlowObjectWithNullPrototypeMap);
 
+    /// <summary>
+    /// Factory::ObjectLiteralMapFromCache. V8 keeps the cache in a
+    /// WeakFixedArray; V8Sharp's map_cache is a FixedArray of strong refs
+    /// (maps are not collected while their native context lives).
+    /// </summary>
+    public Map ObjectLiteralMapFromCache(NativeContext context, int numberOfProperties)
+    {
+        // Use initial slow object proto map for too many properties.
+        if (numberOfProperties >= JSObject.kMapCacheSize)
+        {
+            return context.SlowObjectWithObjectPrototypeMap;
+        }
+        if (numberOfProperties < 0) throw new ArgumentOutOfRangeException(nameof(numberOfProperties));
+
+        var cache = (FixedArray)context.MapCache.Object;
+
+        // Check to see whether there is a matching element in the cache.
+        if (cache[numberOfProperties].HeapObjectOrNull is Map cached)
+        {
+            Debug.Assert(!cached.IsDictionaryMap);
+            return cached;
+        }
+
+        // Create a new map and add it to the cache.
+        Map map = Map.Create(_isolate, numberOfProperties);
+        Debug.Assert(!map.IsDictionaryMap);
+        cache[numberOfProperties] = map;
+        return map;
+    }
+
+    /// <summary>Factory::NewNativeContext.</summary>
+    public NativeContext NewNativeContext()
+    {
+        var context = new NativeContext
+        {
+            ErrorsThrown = JSValue.Zero,
+            ScriptContextTable = new ScriptContextTable(),
+        };
+        return context;
+    }
+
+    /// <summary>
+    /// Factory::NewJSGlobalObject: the global object in dictionary mode, with the
+    /// accessors of its constructor's initial map moved into property cells.
+    /// </summary>
+    public JSGlobalObject NewJSGlobalObject(JSFunction constructor)
+    {
+        Map map = constructor.InitialMap;
+        Debug.Assert(map.IsDictionaryMap);
+
+        // Initial size of the backing store to avoid resize of the storage during
+        // bootstrapping. The size differs between the JS global object ad the
+        // builtins object.
+        const int initialSize = 64;
+
+        // Allocate a dictionary object for backing storage.
+        int atLeastSpaceFor = map.NumberOfOwnDescriptors * 2 + initialSize;
+        GlobalDictionary dictionary = GlobalDictionary.New(atLeastSpaceFor);
+
+        // The global object might be created from an object template with accessors.
+        // Fill these accessors into the dictionary.
+        DescriptorArray descs = map.InstanceDescriptors;
+        int count = map.NumberOfOwnDescriptors;
+        for (int i = 0; i < count; i++)
+        {
+            var index = new InternalIndex(i);
+            PropertyDetails details = descs.GetDetails(index);
+            // Only accessors are expected.
+            Debug.Assert(details.Kind == PropertyKind.Accessor);
+            var d = new PropertyDetails(PropertyKind.Accessor, details.Attributes, PropertyCellType.Mutable);
+            Name name = descs.GetKey(index);
+            JSValue value = descs.GetStrongValue(index);
+            PropertyCell cell = NewPropertyCell(name, d, value);
+            dictionary = GlobalDictionary.Add(_isolate, dictionary, name, cell, d, out _);
+        }
+
+        // Create a new map for the global object.
+        Map newMap = Map.CopyDropDescriptors(_isolate, map);
+        newMap.MayHaveInterestingProperties = true;
+        newMap.IsDictionaryMap = true;
+
+        // Allocate the global object and initialize it with the backing store.
+        var global = new JSGlobalObject(newMap) { GlobalDictionary = dictionary };
+        Debug.Assert(!global.HasFastProperties);
+        return global;
+    }
+
+    /// <summary>Factory::NewUninitializedJSGlobalProxy.</summary>
+    public JSGlobalProxy NewUninitializedJSGlobalProxy(int size)
+    {
+        // Create an empty shell of a JSGlobalProxy that needs to be reinitialized
+        // via ReinitializeJSGlobalProxy later.
+        Map map = NewMap(InstanceType.JSGlobalProxyType, size);
+        // Maintain invariant expected from any JSGlobalProxy.
+        map.IsAccessCheckNeeded = true;
+        map.MayHaveInterestingProperties = true;
+        return new JSGlobalProxy(map);
+    }
+
+    /// <summary>Factory::ReinitializeJSGlobalProxy.</summary>
+    public void ReinitializeJSGlobalProxy(JSGlobalProxy obj, JSFunction constructor)
+    {
+        Map map = constructor.InitialMap;
+        Map oldMap = obj.Map;
+
+        if (oldMap.IsPrototypeMap)
+        {
+            map = Map.Copy(_isolate, map, "CopyAsPrototypeForJSGlobalProxy");
+            map.IsPrototypeMap = true;
+        }
+        JSObject.NotifyMapChange(oldMap, map, _isolate);
+
+        // Reset the map for the object and reinitialize it from the constructor
+        // map; the identity hash is retained across reinitialization.
+        obj.Map = map;
+        JSObject.InitializeFromMap(obj, map);
+    }
+
     /// <summary>Factory::NewFunctionPrototype: the default .prototype of a function.</summary>
     public JSObject NewFunctionPrototype(JSFunction function)
     {
@@ -335,6 +453,17 @@ public sealed partial class Factory(Isolate isolate)
             JSObject.AddProperty(_isolate, prototype, ReadOnlyRoots.constructor_string, function, PropertyAttributes.DONT_ENUM);
         }
         return prototype;
+    }
+
+    /// <summary>Factory::NewArgumentsObject.</summary>
+    public JSObject NewArgumentsObject(JSFunction callee, int length)
+    {
+        bool strictModeCallee = callee.Shared.LanguageMode != LanguageMode.Sloppy || !callee.Shared.HasSimpleParameters;
+        NativeContext nc = _isolate.NativeContext;
+        JSObject result = NewJSObjectFromMap(strictModeCallee ? nc.StrictArgumentsMap : nc.SloppyArgumentsMap);
+        ObjectOps.SetProperty(_isolate, result, ReadOnlyRoots.length_string, JSValue.FromInt(length),
+            StoreOrigin.MaybeKeyed, ShouldThrow.ThrowOnError);
+        return result;
     }
 
     /// <summary>Factory::NewJSPrimitiveWrapper via the wrapper constructor of the value's type.</summary>

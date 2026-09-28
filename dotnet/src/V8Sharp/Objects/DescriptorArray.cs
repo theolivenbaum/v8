@@ -521,6 +521,9 @@ public sealed class AccessorInfo(Name name, AccessorNameGetter? getter, Accessor
     /// <summary>The property looks like a data property to JavaScript.</summary>
     public bool IsSpecialDataProperty { get; init; } = true;
 
+    /// <summary>getter_side_effect_type() == SideEffectType::kHasNoSideEffect.</summary>
+    public bool HasNoSideEffect { get; init; }
+
     public bool HasGetter => Getter is not null;
     public bool HasSetter => Setter is not null;
 }

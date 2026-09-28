@@ -428,7 +428,7 @@ public struct LookupIterator
     }
 
     readonly JSReceiver GetRootForNonJSReceiver() =>
-        ObjectOps.GetPrototypeChainRoot(_isolate, _lookupStartObject)
+        ObjectOps.GetPrototypeChainRoot(_lookupStartObject, _isolate)
         ?? throw new InvalidOperationException("null prototype chain root");
 
     /// <summary>LookupIterator::HasAccess: the embedder's security check (always true: one security token).</summary>
@@ -518,11 +518,11 @@ public struct LookupIterator
             _propertyDetails = accessor.GetDetails(jsObject, _number);
             if (map.HasFrozenElements)
             {
-                _propertyDetails = _propertyDetails.CopyAddAttributes(PropertyAttributes.FROZEN);
+                _propertyDetails = _propertyDetails.CopyAddAttributes(V8Sharp.Objects.PropertyAttributes.FROZEN);
             }
             else if (map.HasSealedElements)
             {
-                _propertyDetails = _propertyDetails.CopyAddAttributes(PropertyAttributes.SEALED);
+                _propertyDetails = _propertyDetails.CopyAddAttributes(V8Sharp.Objects.PropertyAttributes.SEALED);
             }
         }
         else if (!map.IsDictionaryMap)
@@ -1239,7 +1239,7 @@ public struct LookupIterator
             {
                 if (Protectors.IsRegExpSpeciesLookupChainIntact(isolate)) Protectors.InvalidateRegExpSpeciesLookupChain(isolate);
             }
-            else if (nc is not null && IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.TYPED_ARRAY_FUNCTION_INDEX]))
+            else if (nc is not null && IsInCreationContext(isolate, receiver, nc.Slots[(int)Context.Field.TYPED_ARRAY_FUN_INDEX]))
             {
                 if (Protectors.IsTypedArraySpeciesLookupChainIntact(isolate)) Protectors.InvalidateTypedArraySpeciesLookupChain(isolate);
             }

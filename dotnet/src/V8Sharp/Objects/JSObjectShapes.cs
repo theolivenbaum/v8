@@ -437,6 +437,9 @@ public sealed class JSDate(Map map) : JSObject(map)
 /// <summary>V8's JSRegExp. The compiled data (RegExpData) belongs to V8Sharp.RegExp.</summary>
 public sealed class JSRegExp(Map map) : JSObject(map)
 {
+    /// <summary>In-object fields of a JSRegExp: lastIndex.</summary>
+    public const int kInObjectFieldCount = 1;
+
     /// <summary>JSRegExp::Flag.</summary>
     [Flags]
     public enum Flags
@@ -604,8 +607,8 @@ public sealed class JSPromise(Map map) : JSObject(map)
             // undefined without triggering any side-effects.
             if (resolutionRecv is JSPromise && resolutionRecv.Map.Prototype is JSReceiver proto &&
                 proto.GetCreationContext() is { } protoContext &&
-                ReferenceEquals(proto, protoContext.PromisePrototype.HeapObjectOrNull) &&
-                isolate.Protectors.IsPromiseThenLookupChainIntact())
+                ReferenceEquals(proto, protoContext.PromisePrototype) &&
+                Protectors.IsPromiseThenLookupChainIntact(isolate))
             {
                 thenAction = protoContext.PromiseThen;
             }
@@ -1123,7 +1126,7 @@ public sealed partial class JSWrappedFunction
     /// <summary>The CallWrappedFunction builtin ([[Call]] of a wrapped function exotic object).</summary>
     public static JSValue Call(Isolate isolate, JSWrappedFunction function, JSValue receiver, ReadOnlySpan<JSValue> args)
     {
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
 
         // 1. Let target be F.[[WrappedTargetFunction]].
         JSReceiver target = function.WrappedTargetFunction;

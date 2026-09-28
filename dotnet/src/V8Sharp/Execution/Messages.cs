@@ -578,8 +578,8 @@ public static class ErrorUtils
         var desc = new PropertyDescriptor();
         desc.SetEnumerable(false);
         desc.SetConfigurable(true);
-        desc.SetGet(isolate.NativeContext.ErrorStackGetterFunTemplate());
-        desc.SetSet(isolate.NativeContext.ErrorStackSetterFunTemplate());
+        desc.SetGet(isolate.NativeContext.ErrorStackGetterFun!);
+        desc.SetSet(isolate.NativeContext.ErrorStackSetterFun!);
         JSReceiver.DefineOwnProperty(isolate, obj, name, ref desc, ShouldThrow.ThrowOnError);
 
         // Collect the stack trace and store it in |object|'s private

@@ -69,11 +69,11 @@ public sealed class JSArray(Map map) : JSObject(map)
     public static bool HasReadOnlyLengthSlowPath(JSArray array)
     {
         // Look at the object.
-        Isolate isolate = Isolate.Current;
+        Isolate isolate = Isolate.Current!;
         var it = new LookupIterator(isolate, array, ReadOnlyRoots.length_string, array,
             LookupIterator.Configuration.OWN_SKIP_INTERCEPTOR);
         Debug.Assert(it.State == LookupIterator.StateKind.ACCESSOR);
-        return it.IsReadOnly();
+        return it.IsReadOnly;
     }
 
     /// <summary>JSArray::WouldChangeReadOnlyLength.</summary>
@@ -87,7 +87,7 @@ public sealed class JSArray(Map map) : JSObject(map)
     /// <summary>JSArray::Initialize: storage for <paramref name="capacity"/> elements, filled with holes.</summary>
     public static void Initialize(Isolate isolate, JSArray array, int capacity, int length = 0) =>
         isolate.Factory.NewJSArrayStorage(array, length, capacity,
-            Heap.Factory.ArrayStorageAllocationMode.INITIALIZE_ARRAY_ELEMENTS_WITH_HOLE);
+            Factory.ArrayStorageAllocationMode.INITIALIZE_ARRAY_ELEMENTS_WITH_HOLE);
 
     /// <summary>JSArray::SetLengthWouldNormalize(heap, new_length).</summary>
     public static bool SetLengthWouldNormalizeForLength(uint newLength) => newLength > kMaxFastArrayLength;

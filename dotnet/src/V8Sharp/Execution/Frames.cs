@@ -24,6 +24,17 @@ public interface IJavaScriptFrames
 {
     /// <summary>Gets the summary of the JavaScript frame at depth <paramref name="index"/> (0 is the top-most).</summary>
     bool TryGetFrame(int index, out JavaScriptFrameSummary summary);
+
+    /// <summary>
+    /// Gets the actual arguments (without the receiver) of the frame at depth
+    /// <paramref name="index"/> (JavaScriptFrame::GetParameter), for the legacy
+    /// function.arguments accessor.
+    /// </summary>
+    bool TryGetArguments(int index, out JSValue[] arguments)
+    {
+        arguments = [];
+        return false;
+    }
 }
 
 /// <summary>V8's FrameSkipMode (messages.h).</summary>

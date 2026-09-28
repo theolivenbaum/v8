@@ -128,7 +128,7 @@ public abstract class OrderedHashTable : HeapObject
         capacity = (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)Math.Max(kInitialCapacity, capacity));
         if (capacity > MaxCapacity(entrySize))
         {
-            isolate ??= Isolate.Current;
+            isolate ??= Isolate.Current!;
             // Throw RangeError with a generic message.
             isolate.Throw(isolate.Factory.NewRangeError(MessageTemplate.CollectionGrowFailed, ReadOnlyRoots.empty_string));
         }

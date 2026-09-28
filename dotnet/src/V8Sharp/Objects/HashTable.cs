@@ -618,6 +618,9 @@ public sealed class NumberDictionary : HashTableBase
     public const uint kRequiresSlowElementsLimit = (1u << 29) - 1;
     public const uint kPreferFastElementsSizeFactor = 3;
 
+    /// <summary>NumberDictionaryShape::kEntrySize: key, value, details.</summary>
+    public const int kEntrySize = 3;
+
     readonly JSValue[] _values;
     readonly PropertyDetails[] _details;
 

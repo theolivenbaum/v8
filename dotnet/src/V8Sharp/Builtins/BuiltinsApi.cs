@@ -1,0 +1,34 @@
+// Port of the call path of src/builtins/builtins-api.cc (HandleApiCallHelper)
+// for API functions whose FunctionTemplateInfo is a C# callback. Instance
+// templates, signatures and access checks are not ported (no embedder API).
+using V8Sharp.Objects;
+
+namespace V8Sharp.Builtins;
+
+public static class BuiltinsApi
+{
+    /// <summary>Registers the API call builtins in <see cref="BuiltinRegistry"/>.</summary>
+    public static void Register()
+    {
+        BuiltinRegistry.Register(Builtin.HandleApiCallOrConstruct, HandleApiCallOrConstruct);
+    }
+
+    /// <summary>
+    /// Builtins::HandleApiCallOrConstruct: calls the API callback of the
+    /// target's FunctionTemplateInfo. A construct call gets a fresh ordinary
+    /// object as receiver (V8 instantiates the instance template).
+    /// </summary>
+    public static JSValue HandleApiCallOrConstruct(Isolate isolate, in BuiltinArguments args)
+    {
+        FunctionTemplateInfo funData = args.Target.Shared.GetApiFunctionData();
+        if (args.IsConstructCall)
+        {
+            var newTarget = (JSReceiver)args.NewTarget.Object;
+            JSObject jsReceiver = JSObject.New(isolate, isolate.NativeContext.ObjectFunction, newTarget, null);
+            var constructArgs = new BuiltinArguments(args.Target, args.NewTarget, jsReceiver, args.Arguments);
+            JSValue rawResult = funData.Callback(isolate, in constructArgs);
+            return rawResult.IsJSReceiver ? rawResult : jsReceiver;
+        }
+        return funData.Callback(isolate, in args);
+    }
+}

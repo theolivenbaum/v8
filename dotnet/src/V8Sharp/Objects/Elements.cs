@@ -354,7 +354,7 @@ public abstract class ElementsAccessor
         {
             if (ElementsKinds.IsSmiOrObjectElementsKind(Kind))
             {
-                JSObject.EnsureWritableFastElements(array);
+                JSObject.EnsureWritableFastElements(isolate, array);
                 if (!ReferenceEquals(array.Elements, backingStore)) backingStore = array.Elements;
             }
             DecreaseLength(isolate, backingStore, oldLength, length);
@@ -1558,7 +1558,7 @@ internal abstract class FastElementsAccessor(ElementsKind kind) : ElementsAccess
             }
             if (ElementsKinds.IsSmiOrObjectElementsKind(fromKind))
             {
-                JSObject.EnsureWritableFastElements(obj);
+                JSObject.EnsureWritableFastElements(isolate, obj);
             }
         }
         SetImpl(obj, new InternalIndex((int)index), value);
@@ -1574,7 +1574,7 @@ internal abstract class FastElementsAccessor(ElementsKind kind) : ElementsAccess
         }
         if (ElementsKinds.IsSmiOrObjectElementsKind(kind) || ElementsKinds.IsNonextensibleElementsKind(kind))
         {
-            JSObject.EnsureWritableFastElements(obj);
+            JSObject.EnsureWritableFastElements(isolate, obj);
         }
         DeleteCommon(isolate, obj, entry.AsUInt32, obj.Elements);
     }
@@ -1648,7 +1648,7 @@ internal abstract class FastElementsAccessor(ElementsKind kind) : ElementsAccess
         uint length = (uint)receiver.Length.Number;
         if (length == 0) return JSValue.Undefined;
 
-        if (ElementsKinds.IsSmiOrObjectElementsKind(kind)) JSObject.EnsureWritableFastElements(receiver);
+        if (ElementsKinds.IsSmiOrObjectElementsKind(kind)) JSObject.EnsureWritableFastElements(isolate, receiver);
 
         uint newLength = length - 1;
         uint removeIndex = removePosition == Where.AT_START ? 0 : newLength;
@@ -1863,7 +1863,7 @@ internal class FastSmiOrObjectElementsAccessor(ElementsKind kind) : FastElements
     internal override JSValue FillImpl(Isolate isolate, JSObject receiver, JSValue value, ulong start, ulong end)
     {
         // Make sure COW arrays are copied.
-        JSObject.EnsureWritableFastElements(receiver);
+        JSObject.EnsureWritableFastElements(isolate, receiver);
 
         EnsureFillRangeCapacity(isolate, receiver, start, end);
 
@@ -2649,7 +2649,7 @@ internal abstract class SloppyArgumentsElementsAccessor(ElementsKind kind, Eleme
             //  Entry is not context mapped defer to arguments.
             FixedArrayBase arguments = elements.Arguments;
             var argEntry = new InternalIndex(entry.AsInt - (int)length);
-            JSValue current = ArgumentsAccessor.GetImpl(Isolate.Current, arguments, argEntry);
+            JSValue current = ArgumentsAccessor.GetImpl(Isolate.Current!, arguments, argEntry);
             if (current.HeapObjectOrNull is AliasedArgumentsEntry alias)
             {
                 Context context = elements.Context;

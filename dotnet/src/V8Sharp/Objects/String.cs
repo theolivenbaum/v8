@@ -318,7 +318,7 @@ public abstract partial class JSString
     /// <summary>String::GetSubstitution: expands $$, $&amp;, $`, $', $n, $nn and $&lt;name&gt;.</summary>
     public static JSString GetSubstitution(Isolate isolate, Match match, JSString replacement, int startIndex = 0)
     {
-        Heap.Factory factory = isolate.Factory;
+        Factory factory = isolate.Factory;
         int replacementLength = replacement.Length;
         int capturesLength = match.CaptureCount();
         ReadOnlySpan<char> rep = replacement.FlatSpan();

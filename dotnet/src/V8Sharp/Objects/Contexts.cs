@@ -246,6 +246,13 @@ public sealed partial class NativeContext : Context
     /// <summary>NativeContext::microtask_queue.</summary>
     public MicrotaskQueue? MicrotaskQueue;
 
+    // V8 keeps error_stack_getter_fun_template and error_stack_setter_fun_template
+    // as isolate roots (FunctionTemplateInfos) and instantiates them per context on
+    // first use. V8Sharp has no function templates; the Bootstrapper creates the two
+    // JSFunctions eagerly for each native context.
+    public JSFunction? ErrorStackGetterFun;
+    public JSFunction? ErrorStackSetterFun;
+
     public Map? GetInitialJSArrayMap(ElementsKind kind)
     {
         if (!ElementsKinds.IsFastElementsKind(kind)) return null;

@@ -217,7 +217,8 @@ public sealed class SharedFunctionInfo : HeapObject
     public bool HasUncompiledData => FunctionData is UncompiledData;
     public UncompiledData UncompiledData => (UncompiledData)FunctionData!;
     public bool IsCompiled => !HasUncompiledData && (HasBuiltinId || FunctionData is not null);
-    public bool IsApiFunction => false;
+    public bool IsApiFunction => FunctionData is FunctionTemplateInfo;
+    public FunctionTemplateInfo GetApiFunctionData() => (FunctionTemplateInfo)FunctionData!;
 
     // --- name and scope info ----------------------------------------------
 
@@ -255,7 +256,7 @@ public sealed class SharedFunctionInfo : HeapObject
     /// <summary>SetScopeInfo moves the shared name onto the ScopeInfo, as V8 does.</summary>
     public void SetScopeInfo(ScopeInfo scopeInfo)
     {
-        if (NameOrScopeInfo is not ScopeInfo && scopeInfo.HasFunctionName() && !_sharedName.IsIdenticalTo(JSValue.Zero))
+        if (NameOrScopeInfo is not V8Sharp.Objects.ScopeInfo && scopeInfo.HasFunctionName() && !_sharedName.IsIdenticalTo(JSValue.Zero))
         {
             scopeInfo.SetFunctionName(_sharedName);
         }
@@ -355,6 +356,10 @@ public sealed class SharedFunctionInfo : HeapObject
     public bool HasSimpleParameters = true;
     public int FunctionMapIndex;
     public byte ExpectedNofProperties;
+
+    /// <summary>SharedFunctionInfo::UpdateFunctionMapIndex.</summary>
+    public void UpdateFunctionMapIndex() =>
+        FunctionMapIndex = Context.FunctionMapIndex(LanguageMode, Kind, HasSharedName);
 
     public bool IsWrapped => SyntaxKind == FunctionSyntaxKind.Wrapped;
     public bool IsClassConstructor => Globals.IsClassConstructor(Kind);
@@ -458,6 +463,9 @@ public sealed class Tuple2(HeapObject? value1, JSValue value2) : HeapObject(Inst
 /// <summary>V8's JSFunctionOrBoundFunctionOrWrappedFunction: the callable objects with name and length.</summary>
 public abstract class JSFunctionOrBoundFunctionOrWrappedFunction(Map map) : JSObject(map)
 {
+    public const int kLengthDescriptorIndex = 0;
+    public const int kNameDescriptorIndex = 1;
+
     /// <summary>
     /// CopyNameAndLength: sets up "length" and "name" of a bound or wrapped
     /// function from its target (Function.prototype.bind and ShadowRealm wrapping).
@@ -619,6 +627,9 @@ public sealed partial class JSWrappedFunction(Map map, JSReceiver wrappedTargetF
 /// <summary>V8's JSFunction: a closure (SharedFunctionInfo + Context + FeedbackCell).</summary>
 public sealed class JSFunction(Map map, SharedFunctionInfo shared, Context context) : JSFunctionOrBoundFunctionOrWrappedFunction(map)
 {
+    // Fast binding requires length and name accessors.
+    public const int kMinDescriptorsForFastBindAndWrap = 2;
+
     public SharedFunctionInfo Shared = shared;
     public Context Context = context;
     public FeedbackCell RawFeedbackCell = FeedbackCell.ManyClosuresCell;
@@ -918,7 +929,7 @@ public sealed class JSFunction(Map map, SharedFunctionInfo shared, Context conte
 
         NativeContext creationContext = function.NativeContext;
         Map map = isolate.Factory.NewContextfulMap(creationContext, instanceType, instanceSize,
-            ElementsKinds.TERMINAL_FAST_ELEMENTS_KIND, inobjectProperties);
+            ElementsKind.TERMINAL_FAST_ELEMENTS_KIND, inobjectProperties);
 
         // Fetch or allocate prototype.
         JSReceiver prototype;

@@ -127,6 +127,18 @@ public partial class JSObject : JSReceiver
         Elements = map.GetInitialElements();
     }
 
+    /// <summary>
+    /// Factory::InitializeJSObjectFromMap for an existing object: resets the
+    /// fields and elements to the fresh state of <paramref name="map"/>.
+    /// </summary>
+    internal static void InitializeFromMap(JSObject obj, Map map)
+    {
+        int inobject = map.GetInObjectProperties();
+        obj._fields = !map.IsDictionaryMap && inobject > 0 ? new JSValue[inobject] : EmptyFields;
+        obj._dictionary = map.IsDictionaryMap ? NameDictionary.New(NameDictionary.kInitialCapacity) : null;
+        obj.Elements = map.GetInitialElements();
+    }
+
     public static uint NewElementsCapacity(uint oldCapacity)
     {
         uint newCapacity = oldCapacity + (oldCapacity >> 1) + kMinAddedElementsCapacity;

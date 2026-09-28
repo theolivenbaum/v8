@@ -19,7 +19,7 @@ public enum PrivateSymbolKind : byte
 /// V8's Name: a string or a symbol, with the raw hash field (V8's layout,
 /// including the cached array index of short integer-index strings).
 /// </summary>
-public abstract class Name : HeapObject
+public abstract partial class Name : HeapObject
 {
     protected Name(InstanceType instanceType) : base(instanceType) { }
 

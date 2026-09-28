@@ -96,7 +96,7 @@ public sealed class JSProxy : JSReceiver
     {
         JSString trapName = ReadOnlyRoots.getPrototypeOf_string;
 
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
 
         // 1. Let handler be the value of the [[ProxyHandler]] internal slot.
         // 2. If handler is null, throw a TypeError exception.
@@ -136,7 +136,7 @@ public sealed class JSProxy : JSReceiver
     /// <summary>JSProxy::SetPrototype (ES6 9.5.2 [[SetPrototypeOf]]).</summary>
     public static bool SetPrototype(Isolate isolate, JSProxy proxy, JSReceiver? value, bool fromJavaScript, ShouldThrow shouldThrow)
     {
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
         JSString trapName = ReadOnlyRoots.setPrototypeOf_string;
         // 1. Assert: Either Type(V) is Object or Type(V) is Null.
         // 2. Let handler be the value of the [[ProxyHandler]] internal slot of O.
@@ -176,7 +176,7 @@ public sealed class JSProxy : JSReceiver
     /// <summary>JSProxy::IsExtensible (ES6 9.5.3 [[IsExtensible]]).</summary>
     public static bool IsExtensible(Isolate isolate, JSProxy proxy)
     {
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
         JSString trapName = ReadOnlyRoots.isExtensible_string;
 
         if (proxy.IsRevoked) ThrowRevoked(isolate, trapName);
@@ -201,7 +201,7 @@ public sealed class JSProxy : JSReceiver
     /// <summary>JSProxy::PreventExtensions (ES6 9.5.4 [[PreventExtensions]]).</summary>
     public static bool PreventExtensions(Isolate isolate, JSProxy proxy, ShouldThrow shouldThrow)
     {
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
         JSString trapName = ReadOnlyRoots.preventExtensions_string;
 
         if (proxy.IsRevoked) ThrowRevoked(isolate, trapName);
@@ -230,7 +230,7 @@ public sealed class JSProxy : JSReceiver
     public static bool GetOwnPropertyDescriptor(Isolate isolate, JSProxy proxy, Name name, ref PropertyDescriptor desc)
     {
         Debug.Assert(!name.IsAnyPrivate);
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
 
         JSString trapName = ReadOnlyRoots.getOwnPropertyDescriptor_string;
         // 1. (Assert)
@@ -300,7 +300,7 @@ public sealed class JSProxy : JSReceiver
         if (!desc.Configurable)
         {
             // 17a. If targetDesc is undefined or targetDesc.[[Configurable]] is true:
-            if (targetDesc.IsEmpty() || targetDesc.Configurable)
+            if (targetDesc.IsEmpty || targetDesc.Configurable)
             {
                 // 17a i. Throw a TypeError exception.
                 isolate.Throw(isolate.Factory.NewTypeError(MessageTemplate.ProxyGetOwnPropertyDescriptorNonConfigurable,
@@ -326,7 +326,7 @@ public sealed class JSProxy : JSReceiver
     public static bool DefineOwnProperty(Isolate isolate, JSProxy proxy, JSValue key, ref PropertyDescriptor desc,
         ShouldThrow? shouldThrow)
     {
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
         if (key.HeapObjectOrNull is Symbol symbol && symbol.IsPrivateInternal)
         {
             return SetPrivateSymbol(isolate, proxy, symbol, ref desc, shouldThrow);
@@ -454,7 +454,7 @@ public sealed class JSProxy : JSReceiver
     public static bool HasProperty(Isolate isolate, JSProxy proxy, Name name)
     {
         Debug.Assert(!name.IsAnyPrivate);
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
         // 1. (Assert)
         // 2. Let handler be the value of the [[ProxyHandler]] internal slot of O.
         // 3. If handler is null, throw a TypeError exception.
@@ -511,7 +511,7 @@ public sealed class JSProxy : JSReceiver
         wasFound = true;
 
         Debug.Assert(!name.IsAnyPrivate);
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
         JSString trapName = ReadOnlyRoots.get_string;
         // 1. Assert: IsPropertyKey(P) is true.
         // 2. Let handler be the value of the [[ProxyHandler]] internal slot of O.
@@ -599,7 +599,7 @@ public sealed class JSProxy : JSReceiver
         ShouldThrow? shouldThrow)
     {
         Debug.Assert(!name.IsAnyPrivate);
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
         JSString trapName = ReadOnlyRoots.set_string;
 
         if (proxy.IsRevoked) ThrowRevoked(isolate, trapName);
@@ -630,7 +630,7 @@ public sealed class JSProxy : JSReceiver
     {
         Debug.Assert(!name.IsAnyPrivate);
         ShouldThrow shouldThrow = languageMode == LanguageMode.Sloppy ? ShouldThrow.DontThrow : ShouldThrow.ThrowOnError;
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
         JSString trapName = ReadOnlyRoots.deleteProperty_string;
 
         if (proxy.IsRevoked) ThrowRevoked(isolate, trapName);
@@ -687,7 +687,7 @@ public sealed class JSProxy : JSReceiver
     /// <summary>The CallProxy builtin (ES6 9.5.12 [[Call]]).</summary>
     public static JSValue Call(Isolate isolate, JSProxy proxy, JSValue receiver, ReadOnlySpan<JSValue> args)
     {
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
 
         // 1. Let handler be the value of the [[ProxyHandler]] internal slot of O.
         // 2. If handler is null, throw a TypeError exception.
@@ -716,7 +716,7 @@ public sealed class JSProxy : JSReceiver
     /// <summary>The ConstructProxy builtin (ES6 9.5.13 [[Construct]]).</summary>
     public static JSValue Construct(Isolate isolate, JSProxy proxy, ReadOnlySpan<JSValue> args, JSValue newTarget)
     {
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
 
         // 1. Let handler be the value of the [[ProxyHandler]] internal slot of O.
         // 2. If handler is null, throw a TypeError exception.

@@ -34,6 +34,7 @@ public sealed class JavaScriptException : Exception
                 {
                     return MessageHandler.GetMessage(isolate, MessageObject).ToString();
                 }
+                if (isolate is null) return Value.ToString();
                 return Objects.ObjectOps.NoSideEffectsToString(isolate, Value).ToString();
             }
             catch (Exception)

@@ -261,7 +261,7 @@ public sealed class MapUpdater
         if (rootMap.IsDeprecated)
         {
             JSFunction constructor = (JSFunction)rootMap.GetConstructor()!;
-            Debug.Assert(constructor.HasInitialMap());
+            Debug.Assert(constructor.HasInitialMap);
             Debug.Assert(constructor.InitialMap.IsDictionaryMap);
             if (constructor.InitialMap.ElementsKind != oldMap.ElementsKind) return null;
             return constructor.InitialMap;

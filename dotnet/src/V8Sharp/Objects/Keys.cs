@@ -582,7 +582,7 @@ public sealed class KeyAccumulator(Isolate isolate, KeyCollectionMode mode, Prop
     /// <summary>KeyAccumulator::CollectOwnJSProxyKeys (ES #sec-proxy-object-internal-methods-and-internal-slots-ownpropertykeys).</summary>
     bool CollectOwnJSProxyKeys(JSReceiver receiver, JSProxy proxy)
     {
-        StackGuard.StackCheck(_isolate);
+        _isolate.StackGuard.StackCheck(_isolate);
         if (_filter == PropertyFilter.PRIVATE_NAMES_ONLY)
         {
             CollectKeysFromDictionary(proxy.PropertyDictionary);

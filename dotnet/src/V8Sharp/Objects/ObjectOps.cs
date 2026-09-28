@@ -866,7 +866,7 @@ public static class ObjectOps
         {
             // Since there is a mutual recursion here, we might run out of stack
             // space for long chains of bound functions.
-            StackGuard.StackCheck(isolate);
+            isolate.StackGuard.StackCheck(isolate);
             return InstanceOf(isolate, obj, bound.BoundTargetFunction);
         }
 
@@ -931,12 +931,13 @@ public static class ObjectOps
         {
             if (obj.HeapObjectOrNull is JSArray array)
             {
-                if (!array.HasArrayPrototype(isolate) || !ToUint32(array.Length, out uint length) ||
+                uint arrayLength = 0;
+                if (!array.HasArrayPrototype(isolate) || !ToUint32(array.Length, out arrayLength) ||
                     !array.HasFastElements || !JSObject.PrototypeHasNoElements(isolate, array))
                 {
                     return null;
                 }
-                return array.GetElementsAccessor().CreateListFromArrayLike(isolate, array, length);
+                return array.GetElementsAccessor().CreateListFromArrayLike(isolate, array, arrayLength);
             }
             if (obj.HeapObjectOrNull is JSTypedArray typedArray)
             {
@@ -1088,6 +1089,13 @@ public static class ObjectOps
         return GetProperty(ref it);
     }
 
+    /// <summary>Object::GetProperty with a PropertyKey (the LookupIterator overload).</summary>
+    public static JSValue GetPropertyOrElement(Isolate isolate, JSValue obj, in PropertyKey key)
+    {
+        var it = new LookupIterator(isolate, obj, key);
+        return GetProperty(ref it);
+    }
+
     /// <summary>Object::GetPropertyOrElement(isolate, receiver, name, holder).</summary>
     public static JSValue GetPropertyOrElement(Isolate isolate, JSValue receiver, Name name, JSReceiver holder)
     {
@@ -1198,7 +1206,7 @@ public static class ObjectOps
     public static JSValue GetPropertyWithDefinedGetter(Isolate isolate, JSValue receiver, JSReceiver getter)
     {
         // Break possible unbounded recursion through getters with a stack check.
-        StackGuard.StackCheck(isolate);
+        isolate.StackGuard.StackCheck(isolate);
         return Execution.Call(isolate, getter, receiver, []);
     }
 
@@ -1299,7 +1307,7 @@ public static class ObjectOps
         JSValue defaultSpecies = isolate.NativeContext.ArrayFunction;
         if (!isolate.Flags.builtin_subclassing) return defaultSpecies;
         if (originalArray.HeapObjectOrNull is JSArray array && array.HasArrayPrototype(isolate) &&
-            isolate.Protectors.IsArraySpeciesLookupChainIntact())
+            Protectors.IsArraySpeciesLookupChainIntact(isolate))
         {
             return defaultSpecies;
         }
@@ -1367,7 +1375,7 @@ public static class ObjectOps
 
         // Check that the ArrayPrototype hasn't been modified in a way that would
         // affect iteration.
-        if (!isolate.Protectors.IsArrayIteratorLookupChainIntact()) return true;
+        if (!Protectors.IsArrayIteratorLookupChainIntact(isolate)) return true;
 
         // For FastPacked kinds, iteration will have the same effect as simply
         // accessing each property in order.
@@ -1377,7 +1385,7 @@ public static class ObjectOps
         // For FastHoley kinds, an element access on a hole would cause a lookup on
         // the prototype. This could have different results if the prototype has been
         // changed.
-        if (ElementsKinds.IsHoleyElementsKind(arrayKind) && isolate.Protectors.IsNoElementsIntact()) return false;
+        if (ElementsKinds.IsHoleyElementsKind(arrayKind) && Protectors.IsNoElementsIntact(isolate)) return false;
         return true;
     }
 
@@ -1641,7 +1649,7 @@ public static class ObjectOps
                 }
                 case LookupIterator.StateKind.ACCESSOR:
                 {
-                    if (it.IsReadOnly()) return WriteToReadOnlyProperty(ref it, value, shouldThrow);
+                    if (it.IsReadOnly) return WriteToReadOnlyProperty(ref it, value, shouldThrow);
                     HeapObject accessors = it.GetAccessors();
                     if (accessors is AccessorInfo && !it.HolderIsReceiverOrHiddenPrototype()) return null;
                     return SetPropertyWithAccessor(ref it, value, shouldThrow);
@@ -1683,7 +1691,7 @@ public static class ObjectOps
                 }
 
                 case LookupIterator.StateKind.DATA:
-                    if (it.IsReadOnly()) return WriteToReadOnlyProperty(ref it, value, shouldThrow);
+                    if (it.IsReadOnly) return WriteToReadOnlyProperty(ref it, value, shouldThrow);
                     if (it.HolderIsReceiverOrHiddenPrototype()) return SetDataProperty(ref it, value);
                     return null;
                 case LookupIterator.StateKind.NOT_FOUND:
@@ -1763,7 +1771,7 @@ public static class ObjectOps
                 case LookupIterator.StateKind.ACCESSOR:
                     if (ownLookup.GetAccessors() is AccessorInfo)
                     {
-                        if (ownLookup.IsReadOnly()) return WriteToReadOnlyProperty(ref ownLookup, value, shouldThrow);
+                        if (ownLookup.IsReadOnly) return WriteToReadOnlyProperty(ref ownLookup, value, shouldThrow);
                         return SetPropertyWithAccessor(ref ownLookup, value, shouldThrow);
                     }
                     return RedefineIncompatibleProperty(isolate, it.GetName(), value, shouldThrow);
@@ -1774,7 +1782,7 @@ public static class ObjectOps
                     throw new InvalidOperationException("unreachable");
 
                 case LookupIterator.StateKind.DATA:
-                    if (ownLookup.IsReadOnly()) return WriteToReadOnlyProperty(ref ownLookup, value, shouldThrow);
+                    if (ownLookup.IsReadOnly) return WriteToReadOnlyProperty(ref ownLookup, value, shouldThrow);
                     return SetDataProperty(ref ownLookup, value);
 
                 case LookupIterator.StateKind.INTERCEPTOR:

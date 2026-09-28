@@ -76,6 +76,7 @@ public enum InstanceType : ushort
     ArrayListType,
     WeakFixedArrayType,
     FreeSpaceType,
+    FunctionTemplateInfoType,
 
     // JSReceivers. Keep JSProxyType first: FIRST_JS_RECEIVER_TYPE.
     JSProxyType,
@@ -116,6 +117,17 @@ public enum InstanceType : ushort
     JSRegExpStringIteratorType,
     JSStringIteratorType,
     JSIteratorPrototypeType,
+    // The special prototype types the bootstrapper assigns to intrinsic
+    // prototypes so protector checks can recognize them (Genesis).
+    JSObjectPrototypeType,
+    JSArrayIteratorPrototypeType,
+    JSPromisePrototypeType,
+    JSRegExpPrototypeType,
+    JSStringIteratorPrototypeType,
+    JSMapIteratorPrototypeType,
+    JSSetIteratorPrototypeType,
+    JSSetPrototypeType,
+    JSTypedArrayPrototypeType,
     JSIteratorHelperType,
     JSIteratorMapHelperType,
     JSIteratorFilterHelperType,

@@ -537,7 +537,7 @@ public abstract partial class JSReceiver
             {
                 case JSProxy proxy:
                     if (proxy.IsRevoked) isolate.ThrowTypeError(MessageTemplate.ProxyRevoked);
-                    current = proxy.Target!;
+                    current = (JSReceiver)proxy.Target.Object;
                     continue;
                 case JSFunction function:
                     return function.NativeContext;
@@ -564,7 +564,7 @@ public abstract partial class JSReceiver
             }
             else
             {
-                JSReceiver? target = ((JSProxy)receiver).Target;
+                JSReceiver? target = ((JSProxy)receiver).Target.HeapObjectOrNull as JSReceiver;
                 if (target is null) return null;
                 receiver = target;
             }
@@ -1041,7 +1041,7 @@ public abstract partial class JSReceiver
                 JSValue value = desc.HasValue ? desc.Value : current.HasValue ? current.Value : JSValue.Undefined;
                 return JSObject.DefineOwnPropertyIgnoreAttributes(ref it, value, attrs, shouldThrow,
                     JSObject.AccessorInfoHandling.DONT_FORCE_FIELD, EnforceDefineSemantics.Set, StoreOrigin.Named,
-                    current.HasValue ? current.Value : null);
+                    current.HasValue ? current.Value : (JSValue?)null);
             }
             else
             {

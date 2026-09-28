@@ -197,8 +197,9 @@ public sealed class CallSiteInfo : HeapObject
         Builtin.DataViewPrototypeSetUint32 => "DataView.prototype.setUint32",
         Builtin.DataViewPrototypeGetByteLength => "get DataView.prototype.byteLength",
         Builtin.StringPrototypeToLocaleLowerCase => "String.toLocaleLowerCase",
-        Builtin.StringPrototypeIndexOf or Builtin.ThrowIndexOfCalledOnNull => "String.indexOf",
-        Builtin.ThrowToLowerCaseCalledOnNull => "String.toLowerCase",
+        // V8 also maps the wasm builtins ThrowIndexOfCalledOnNull and
+        // ThrowToLowerCaseCalledOnNull here; V8Sharp has no wasm.
+        Builtin.StringPrototypeIndexOf => "String.indexOf",
         _ => null,
     };
 
@@ -269,9 +270,20 @@ public sealed class CallSiteInfo : HeapObject
             var entry = new InternalIndex(i);
             if (!dictionary.ToKey(entry, out JSValue key)) continue;
             if (key.IsSymbol) continue;
-            PropertyDetails details = dictionary.DetailsAt(entry);
+            PropertyDetails details;
+            JSValue value;
+            if (dictionary is GlobalDictionary global)
+            {
+                details = global.DetailsAt(entry);
+                value = global.ValueAt(entry);
+            }
+            else
+            {
+                var names = (NameDictionary)dictionary;
+                details = names.DetailsAt(entry);
+                value = names.ValueAt(entry);
+            }
             if (details.IsDontEnum) continue;
-            JSValue value = dictionary.ValueAt(entry);
             if (!ReferenceEquals(value.HeapObjectOrNull, fun))
             {
                 if (value.HeapObjectOrNull is not AccessorPair pair) continue;

@@ -240,7 +240,7 @@ public abstract partial class JSReceiver
                 // the object has a simple shape, and that the key is a name.
                 var it = new LookupIterator(isolate, obj, nextKey, LookupIterator.Configuration.OWN_SKIP_INTERCEPTOR);
                 if (!it.IsFound) continue;
-                if (!it.IsEnumerable()) continue;
+                if (!it.IsEnumerable) continue;
                 propValue = ObjectOps.GetProperty(ref it);
             }
 
@@ -507,6 +507,15 @@ public partial class JSObject
             case InstanceType.JSApiObjectType:
             case InstanceType.JSObjectType:
             case InstanceType.JSIteratorPrototypeType:
+            case InstanceType.JSObjectPrototypeType:
+            case InstanceType.JSArrayIteratorPrototypeType:
+            case InstanceType.JSPromisePrototypeType:
+            case InstanceType.JSRegExpPrototypeType:
+            case InstanceType.JSStringIteratorPrototypeType:
+            case InstanceType.JSMapIteratorPrototypeType:
+            case InstanceType.JSSetIteratorPrototypeType:
+            case InstanceType.JSSetPrototypeType:
+            case InstanceType.JSTypedArrayPrototypeType:
             case InstanceType.JSContextExtensionObjectType:
             case InstanceType.JSArgumentsObjectType:
             case InstanceType.JSErrorType:
@@ -617,10 +626,9 @@ public partial class JSObject
     // ---- Dictionary-mode properties ---------------------------------------------------
 
     /// <summary>JSObject::SetNormalizedProperty.</summary>
-    public static void SetNormalizedProperty(JSObject obj, Name name, JSValue value, PropertyDetails details)
+    public static void SetNormalizedProperty(Isolate isolate, JSObject obj, Name name, JSValue value, PropertyDetails details)
     {
         Debug.Assert(!obj.HasFastProperties);
-        Isolate isolate = Isolate.Current;
 
         if (obj is JSGlobalObject globalObj)
         {
@@ -632,7 +640,7 @@ public partial class JSObject
                 PropertyCellType cellType = value.IsUndefined ? PropertyCellType.Undefined : PropertyCellType.Constant;
                 details = details.SetCellType(cellType);
                 PropertyCell cell = isolate.Factory.NewPropertyCell(name, details, value);
-                dictionary = GlobalDictionary.Add(isolate, dictionary, name, cell, details);
+                dictionary = GlobalDictionary.Add(isolate, dictionary, name, cell, details, out _);
                 globalObj.GlobalDictionary = dictionary;
             }
             else
@@ -657,15 +665,14 @@ public partial class JSObject
                 details = details.SetIndex(enumerationIndex);
                 dictionary.SetEntry(entry, name, value, details);
             }
-            if (name.IsInteresting(isolate)) dictionary.MayHaveInterestingProperties = true;
+            if (name.IsInteresting()) dictionary.MayHaveInterestingProperties = true;
         }
     }
 
     /// <summary>JSObject::SetNormalizedElement.</summary>
-    public static void SetNormalizedElement(JSObject obj, uint index, JSValue value, PropertyDetails details)
+    public static void SetNormalizedElement(Isolate isolate, JSObject obj, uint index, JSValue value, PropertyDetails details)
     {
         Debug.Assert(obj.GetElementsKind() == ElementsKind.DICTIONARY_ELEMENTS);
-        Isolate isolate = Isolate.Current;
         NumberDictionary dictionary = (NumberDictionary)obj.Elements;
         dictionary = NumberDictionary.Set(isolate, dictionary, index, value, obj, details);
         obj.Elements = dictionary;
@@ -883,6 +890,32 @@ public partial class JSObject
         for (int i = 0; i < inobjectProperties; i++) obj._fields[i] = JSValue.Zero;
     }
 
+    /// <summary>JSObject::SetMapAndElements.</summary>
+    public static void SetMapAndElements(Isolate isolate, JSObject obj, Map newMap, FixedArrayBase value)
+    {
+        MigrateToMap(isolate, obj, newMap);
+        obj.Elements = value;
+    }
+
+    /// <summary>JSObject::PrototypeHasNoElements (js-objects-inl.h).</summary>
+    public static bool PrototypeHasNoElements(Isolate isolate, JSObject obj)
+    {
+        JSReceiver? prototype = obj.Map.Prototype;
+        while (prototype is not null)
+        {
+            Map map = prototype.Map;
+            if (Map.IsCustomElementsReceiverMap(map)) return false;
+            FixedArrayBase elements = ((JSObject)prototype).Elements;
+            if (!ReferenceEquals(elements, ReadOnlyRoots.empty_fixed_array) &&
+                !ReferenceEquals(elements, ReadOnlyRoots.empty_slow_element_dictionary))
+            {
+                return false;
+            }
+            prototype = map.Prototype;
+        }
+        return true;
+    }
+
     /// <summary>JSObject::MigrateToMap.</summary>
     public static void MigrateToMap(Isolate isolate, JSObject obj, Map newMap, int expectedAdditionalProperties = 0)
     {
@@ -892,7 +925,7 @@ public partial class JSObject
 
         if (oldMap.IsDictionaryMap)
         {
-            // For slow-to-fast migrations JSObject::MigrateSlowToFast()
+            // For slow-to-fast migrations JSObject::MigrateSlowToFast(isolate, )
             // must be used instead.
             if (!newMap.IsDictionaryMap) throw new InvalidOperationException("MigrateToMap: slow to fast needs MigrateSlowToFast");
 
@@ -1105,29 +1138,27 @@ public partial class JSObject
     }
 
     /// <summary>JSObject::SetOwnPropertyIgnoreAttributes.</summary>
-    public static JSValue SetOwnPropertyIgnoreAttributes(JSObject obj, Name name, JSValue value, PropertyAttributes attributes)
+    public static JSValue SetOwnPropertyIgnoreAttributes(Isolate isolate, JSObject obj, Name name, JSValue value, PropertyAttributes attributes)
     {
         Debug.Assert(!value.IsTheHole);
-        var it = new LookupIterator(Isolate.Current, obj, name, obj, LookupIterator.Configuration.OWN);
+        var it = new LookupIterator(isolate, obj, name, obj, LookupIterator.Configuration.OWN);
         DefineOwnPropertyIgnoreAttributes(ref it, value, attributes);
         return value;
     }
 
     /// <summary>JSObject::SetOwnElementIgnoreAttributes.</summary>
-    public static JSValue SetOwnElementIgnoreAttributes(JSObject obj, ulong index, JSValue value, PropertyAttributes attributes)
+    public static JSValue SetOwnElementIgnoreAttributes(Isolate isolate, JSObject obj, ulong index, JSValue value, PropertyAttributes attributes)
     {
         Debug.Assert(obj is not JSTypedArray);
-        Isolate isolate = Isolate.Current;
         var it = new LookupIterator(isolate, obj, index, obj, LookupIterator.Configuration.OWN);
         DefineOwnPropertyIgnoreAttributes(ref it, value, attributes);
         return value;
     }
 
     /// <summary>JSObject::DefinePropertyOrElementIgnoreAttributes.</summary>
-    public static JSValue DefinePropertyOrElementIgnoreAttributes(JSObject obj, Name name, JSValue value,
+    public static JSValue DefinePropertyOrElementIgnoreAttributes(Isolate isolate, JSObject obj, Name name, JSValue value,
         PropertyAttributes attributes = PropertyAttributes.NONE)
     {
-        Isolate isolate = Isolate.Current;
         var key = new PropertyKey(isolate, name);
         var it = new LookupIterator(isolate, obj, key, obj, LookupIterator.Configuration.OWN);
         DefineOwnPropertyIgnoreAttributes(ref it, value, attributes);
@@ -1152,11 +1183,10 @@ public partial class JSObject
         NormalizeProperties(isolate, obj, mode, expectedAdditionalProperties, true, reason);
 
     /// <summary>JSObject::MigrateSlowToFast.</summary>
-    public static void MigrateSlowToFast(JSObject obj, int unusedPropertyFields, string reason)
+    public static void MigrateSlowToFast(Isolate isolate, JSObject obj, int unusedPropertyFields, string reason)
     {
         if (obj.HasFastProperties) return;
         Debug.Assert(obj is not JSGlobalObject);
-        Isolate isolate = Isolate.Current;
 
         NameDictionary dictionary = obj.PropertyDictionary;
         int numberOfElements = dictionary.NumberOfElements;
@@ -1229,7 +1259,7 @@ public partial class JSObject
             PropertyDetails details = dictionary.DetailsAt(index);
 
             // Properly mark the {new_map} if the {key} is an "interesting symbol".
-            if (key.IsInteresting(isolate)) newMap.MayHaveInterestingProperties = true;
+            if (key.IsInteresting()) newMap.MayHaveInterestingProperties = true;
 
             Descriptor d;
             if (details.Kind == PropertyKind.Data)
@@ -1796,17 +1826,16 @@ public partial class JSObject
         }
     }
 
-    /// <summary>JSObject::DefineOwnAccessorIgnoreAttributes(object, name, getter, setter, attributes).</summary>
-    public static JSValue DefineOwnAccessorIgnoreAttributes(JSObject obj, Name name, JSValue getter, JSValue setter,
+    /// <summary>JSObject::DefineOwnAccessorIgnoreAttributes(isolate, object, name, getter, setter, attributes).</summary>
+    public static JSValue DefineOwnAccessorIgnoreAttributes(Isolate isolate, JSObject obj, Name name, JSValue getter, JSValue setter,
         PropertyAttributes attributes)
     {
-        Isolate isolate = Isolate.Current;
         var key = new PropertyKey(isolate, name);
         var it = new LookupIterator(isolate, obj, key, LookupIterator.Configuration.OWN_SKIP_INTERCEPTOR);
         return DefineOwnAccessorIgnoreAttributes(ref it, getter, setter, attributes);
     }
 
-    /// <summary>JSObject::DefineOwnAccessorIgnoreAttributes(LookupIterator*, ...).</summary>
+    /// <summary>JSObject::DefineOwnAccessorIgnoreAttributes(isolate, LookupIterator*, ...).</summary>
     public static JSValue DefineOwnAccessorIgnoreAttributes(ref LookupIterator it, JSValue getter, JSValue setter,
         PropertyAttributes attributes)
     {
@@ -1823,9 +1852,8 @@ public partial class JSObject
     }
 
     /// <summary>JSObject::SetAccessor: installs an AccessorInfo (a native data-like accessor).</summary>
-    public static JSValue SetAccessor(JSObject obj, Name name, AccessorInfo info, PropertyAttributes attributes)
+    public static JSValue SetAccessor(Isolate isolate, JSObject obj, Name name, AccessorInfo info, PropertyAttributes attributes)
     {
-        Isolate isolate = Isolate.Current;
         var key = new PropertyKey(isolate, name);
         var it = new LookupIterator(isolate, obj, key, LookupIterator.Configuration.OWN_SKIP_INTERCEPTOR);
 
@@ -1937,29 +1965,28 @@ public partial class JSObject
                 // prototypes will have been marked already as well.
                 if (currentMap.ShouldBeFastPrototypeMap) return;
                 Map.SetShouldBeFastPrototypeMap(currentMap, true, isolate);
-                OptimizeAsPrototype(currentObj);
+                OptimizeAsPrototype(isolate, currentObj);
             }
         }
     }
 
-    static bool PrototypeBenefitsFromNormalization(JSObject obj)
+    static bool PrototypeBenefitsFromNormalization(Isolate isolate, JSObject obj)
     {
         if (!obj.HasFastProperties) return false;
         if (obj is JSGlobalProxy) return false;
         // TODO(v8:11248) make bootstrapper create dict mode prototypes, too?
-        if (Isolate.Current.BootstrapperActive) return false;
+        if (isolate.BootstrapperActive) return false;
         return !obj.Map.IsPrototypeMap || !obj.Map.ShouldBeFastPrototypeMap;
     }
 
     /// <summary>JSObject::OptimizeAsPrototype.</summary>
-    public static void OptimizeAsPrototype(JSObject obj, bool enableSetupMode = true)
+    public static void OptimizeAsPrototype(Isolate isolate, JSObject obj, bool enableSetupMode = true)
     {
         if (obj is JSGlobalObject) return;
-        Isolate isolate = Isolate.Current;
 
         if (obj.Map.IsPrototypeMap)
         {
-            if (enableSetupMode && PrototypeBenefitsFromNormalization(obj))
+            if (enableSetupMode && PrototypeBenefitsFromNormalization(isolate, obj))
             {
                 // First normalize to ensure all JSFunctions are DATA_CONSTANT.
                 NormalizeProperties(isolate, obj, PropertyNormalizationMode.KEEP_INOBJECT_PROPERTIES, 0, true,
@@ -1967,13 +1994,13 @@ public partial class JSObject
             }
             if (obj.Map.ShouldBeFastPrototypeMap && !obj.HasFastProperties)
             {
-                MigrateSlowToFast(obj, 0, "OptimizeAsPrototype");
+                MigrateSlowToFast(isolate, obj, 0, "OptimizeAsPrototype");
             }
         }
         else
         {
             Map newMap;
-            if (enableSetupMode && PrototypeBenefitsFromNormalization(obj))
+            if (enableSetupMode && PrototypeBenefitsFromNormalization(isolate, obj))
             {
                 // First normalize to ensure all JSFunctions are DATA_CONSTANT. Don't use
                 // the cache, since we're going to use the normalized version directly,
@@ -2003,12 +2030,12 @@ public partial class JSObject
     }
 
     /// <summary>JSObject::ReoptimizeIfPrototype.</summary>
-    public static void ReoptimizeIfPrototype(JSObject obj)
+    public static void ReoptimizeIfPrototype(Isolate isolate, JSObject obj)
     {
         Map map = obj.Map;
         if (!map.IsPrototypeMap) return;
         if (!map.ShouldBeFastPrototypeMap) return;
-        OptimizeAsPrototype(obj);
+        OptimizeAsPrototype(isolate, obj);
     }
 
     /// <summary>
@@ -2217,7 +2244,7 @@ public partial class JSObject
         }
 
         // Set the new prototype of the object.
-        isolate.UpdateProtectorsOnSetPrototype(realReceiver, value);
+        isolate.UpdateProtectorsOnSetPrototype(realReceiver, JSValue.FromObject(value));
 
         Map newMap = new MapUpdater(isolate, map).ApplyPrototypeTransition(value);
 
@@ -2490,7 +2517,7 @@ public partial class JSObject
     }
 
     /// <summary>JSObject::EnsureWritableFastElements: copies copy-on-write elements.</summary>
-    public static void EnsureWritableFastElements(JSObject obj)
+    public static void EnsureWritableFastElements(Isolate isolate, JSObject obj)
     {
         Debug.Assert(obj.HasSmiOrObjectElements || obj.HasFastStringWrapperElements || obj.HasAnyNonextensibleElements);
         if (obj.Elements is not FixedArray raw || !raw.IsCowArray) return;

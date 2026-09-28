@@ -374,7 +374,7 @@ public readonly struct TransitionsAccessor
     public static void Insert(Isolate isolate, Map map, Name name, Map target, TransitionKindFlag flag) =>
         InsertHelper(isolate, map, name, target, flag);
 
-    static void ReplaceTransitions(Map map, object newTransitions) => map.RawTransitions = newTransitions;
+    static void ReplaceTransitions(Map map, HeapObject? newTransitions) => map.RawTransitions = newTransitions;
 
     static void InsertHelper(Isolate isolate, Map map, Name name, Map target, TransitionKindFlag flag)
     {
