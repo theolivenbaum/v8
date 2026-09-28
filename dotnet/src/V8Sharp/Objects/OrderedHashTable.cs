@@ -314,6 +314,9 @@ public sealed class OrderedHashSet : OrderedHashTable
     public static OrderedHashSet Allocate(int capacity, Isolate? isolate = null) =>
         new(CheckCapacity(isolate, capacity, kEntrySize));
 
+    /// <summary>OrderedHashSet::AllocateEmpty: the zero-capacity table (the empty_ordered_hash_set root).</summary>
+    public static OrderedHashSet AllocateEmpty() => new(0);
+
     protected override OrderedHashTable AllocateLike(int capacity) => Allocate(capacity);
 
     /// <summary>OrderedHashSet::Add.</summary>
@@ -336,6 +339,10 @@ public sealed class OrderedHashSet : OrderedHashTable
 
     public static OrderedHashSet Rehash(Isolate isolate, OrderedHashSet table, int newCapacity) =>
         (OrderedHashSet)RehashBase(isolate, table, newCapacity);
+
+    /// <summary>OrderedHashSet::Rehash(isolate, table): rehash at the current capacity.</summary>
+    public static OrderedHashSet Rehash(Isolate isolate, OrderedHashSet table) =>
+        (OrderedHashSet)RehashBase(isolate, table, table.Capacity);
 
     /// <summary>OrderedHashSet::ConvertToKeysArray.</summary>
     public static FixedArray ConvertToKeysArray(Isolate isolate, OrderedHashSet table, GetKeysConversion convert)
@@ -368,6 +375,9 @@ public sealed class OrderedHashMap : OrderedHashTable
     /// <summary>OrderedHashMap::Allocate.</summary>
     public static OrderedHashMap Allocate(int capacity, Isolate? isolate = null) =>
         new(CheckCapacity(isolate, capacity, kEntrySize));
+
+    /// <summary>OrderedHashMap::AllocateEmpty: the zero-capacity table (the empty_ordered_hash_map root).</summary>
+    public static OrderedHashMap AllocateEmpty() => new(0);
 
     protected override OrderedHashTable AllocateLike(int capacity) => Allocate(capacity);
 
@@ -408,6 +418,10 @@ public sealed class OrderedHashMap : OrderedHashTable
 
     public static OrderedHashMap Rehash(Isolate isolate, OrderedHashMap table, int newCapacity) =>
         (OrderedHashMap)RehashBase(isolate, table, newCapacity);
+
+    /// <summary>OrderedHashMap::Rehash(isolate, table): rehash at the current capacity.</summary>
+    public static OrderedHashMap Rehash(Isolate isolate, OrderedHashMap table) =>
+        (OrderedHashMap)RehashBase(isolate, table, table.Capacity);
 
     /// <summary>OrderedHashMap::GetHash: the key's hash, or -1 if it has none (never used as a key).</summary>
     public static int GetHash(Isolate isolate, JSValue key)

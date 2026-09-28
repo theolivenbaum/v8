@@ -334,6 +334,12 @@ public sealed partial class Factory(Isolate isolate)
         return map;
     }
 
+    /// <summary>Factory::NewOrderedHashSet.</summary>
+    public OrderedHashSet NewOrderedHashSet() => OrderedHashSet.Allocate(OrderedHashTable.kInitialCapacity, _isolate);
+
+    /// <summary>Factory::NewOrderedHashMap.</summary>
+    public OrderedHashMap NewOrderedHashMap() => OrderedHashMap.Allocate(OrderedHashTable.kInitialCapacity, _isolate);
+
     /// <summary>Factory::NewNativeContext.</summary>
     public NativeContext NewNativeContext()
     {

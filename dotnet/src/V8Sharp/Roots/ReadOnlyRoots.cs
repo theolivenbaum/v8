@@ -29,4 +29,10 @@ public static partial class ReadOnlyRoots
         dictionary.SetRequiresSlowElements();
         return dictionary;
     }
+
+    /// <summary><c>empty_ordered_hash_map</c>: the zero-capacity OrderedHashMap.</summary>
+    public static readonly OrderedHashMap empty_ordered_hash_map = OrderedHashMap.AllocateEmpty();
+
+    /// <summary><c>empty_ordered_hash_set</c>: the zero-capacity OrderedHashSet.</summary>
+    public static readonly OrderedHashSet empty_ordered_hash_set = OrderedHashSet.AllocateEmpty();
 }
