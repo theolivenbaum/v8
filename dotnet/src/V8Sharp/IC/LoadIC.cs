@@ -68,6 +68,20 @@ public sealed class LoadIC : IC
                     }
                 }
             }
+            else if (o is JSString str)
+            {
+                // A String receiver: the monomorphic hits on the (native
+                // context's) String map, string.length and String.prototype
+                // methods (LoadHandler::LoadStringLength and a constant on the
+                // prototype chain in HandleLoadICHandlerCase).
+                JSValue[] slots = vector.Slots;
+                if (slots[slot]._obj is Map feedbackMap && slots[slot + 1]._obj is LoadHandler handler &&
+                    ReferenceEquals(feedbackMap, isolate.Context?.NativeContext.ICPrimitiveMaps?.StringMap))
+                {
+                    if (handler.HandlerKind == LoadHandler.Kind.kStringLength) return JSValue.FromInt(str.Length);
+                    if (handler.IsPrototypeConstant && handler.IsValid) return handler.Data;
+                }
+            }
         }
         return LoadNamedSlow(isolate, vector, slot, receiver, name);
     }
