@@ -493,21 +493,25 @@ public static class InterpreterOps
     /// <summary>The compare feedback of one operand (CodeStubAssembler's CollectFeedbackForString and friends).</summary>
     static COF.Type CompareFeedbackFor(in JSValue value)
     {
-        if (value.IsNumber) return IsSmiDouble(value.Number) ? COF.Type.SignedSmall : COF.Type.Number;
-        switch (value.HeapObjectOrNull)
+        HeapObject? o = value._obj;
+        if (o is null) return COF.Type.NullOrUndefined;
+        if (ReferenceEquals(o, NumberTag.Instance)) return IsSmiDouble(value._num) ? COF.Type.SignedSmall : COF.Type.Number;
+        // Instance type ranges rather than type tests: JSString, BigInt and
+        // JSReceiver are not sealed, and a type test walks the class chain.
+        InstanceType type = o.InstanceType;
+        if (type >= InstanceTypeChecks.FirstJSReceiver) return COF.Type.Receiver;
+        if (InstanceTypeChecks.IsString(type))
         {
-            case null:
-                return COF.Type.NullOrUndefined;
-            case Oddball o:
-                return o.Kind == Oddball.OddballKind.Null ? COF.Type.NullOrUndefined : COF.Type.Boolean;
-            case JSString s:
-                return s.IsInternalized ? COF.Type.InternalizedString : COF.Type.String;
-            case Symbol:
+            return Unsafe.As<JSString>(o).IsInternalized ? COF.Type.InternalizedString : COF.Type.String;
+        }
+        switch (type)
+        {
+            case InstanceType.OddballType:
+                return Unsafe.As<Oddball>(o).Kind == Oddball.OddballKind.Null ? COF.Type.NullOrUndefined : COF.Type.Boolean;
+            case InstanceType.SymbolType:
                 return COF.Type.Symbol;
-            case BigInt b:
-                return BigIntOperations.FitsInInt64(b) ? COF.Type.BigInt64 : COF.Type.BigInt;
-            case JSReceiver:
-                return COF.Type.Receiver;
+            case InstanceType.BigIntType:
+                return BigIntOperations.FitsInInt64(Unsafe.As<BigInt>(o)) ? COF.Type.BigInt64 : COF.Type.BigInt;
             default:
                 return COF.Type.Any;
         }
