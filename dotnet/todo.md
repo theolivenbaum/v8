@@ -126,7 +126,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       bound/wrapped functions, arguments maps, API functions
       (FunctionTemplateInfo, HandleApiCallOrConstruct). Missing: Intl, Temporal,
       ArrayBuffer/SharedArrayBuffer/Atomics, typed arrays, DataView,
-      DisposableStack, shared structs, RegExpMatchInfo, extras, extensions,
+      DisposableStack, shared structs, extras, extensions,
       the TemplateLiteral map (interpreter port)
 - [x] interpreter: bytecodes, operands, array builder/writer, register
       optimizer, constant array builder, handler tables, control-flow builders,
@@ -164,10 +164,24 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       Isolate.DynamicFunctionCompiler (IDynamicFunctionCompiler), which the
       compiler port must register. The proxy trap stubs (ProxyGetProperty ...)
       and CallProxy/ConstructProxy are not registered: callers use JSProxy.
-      Still to do: Array, String, Number (except parseInt/parseFloat), Math,
-      JSON, RegExp, Date, Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry,
+      Still to do: Array, Number (except parseInt/parseFloat), Math,
+      JSON, Date, Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry,
       Promise, generators/iterators, ArrayBuffer/TypedArray/DataView/Atomics,
       BigInt, Iterator helpers, DisposableStack
+- [~] String and RegExp builtins (Builtins/Builtins.String*.cs,
+      Builtins.RegExp*.cs, Runtime/Runtime.Regexp.cs, Runtime.Strings.cs,
+      Objects/JSRegExp*.cs, Strings/StringSearch.cs): every String,
+      String.prototype, String Iterator, RegExp, RegExp.prototype, RegExp
+      String Iterator builtin and the legacy RegExp statics; JSRegExp::Initialize
+      (+ CreateFromBoilerplate for CreateRegExpLiteral), the regexp compilation
+      cache, RegExpMatchInfo, the fast-path checks (BranchIfFastRegExp,
+      IsUnmodifiedRegExp), the batched global exec, CompiledReplacement,
+      RegExpExecMultiple, the results caches (split, string split, multiple
+      indices, global atom), RegExpSyntaxValidator for the parser. 40 xUnit
+      tests (tests/V8Sharp.Tests/Builtins). Missing: the test262/mjsunit
+      runs (wait for the interpreter), the runtime dispatch entries (the
+      interpreter owns the table; Runtime* expose typed static methods),
+      Intl-dependent behaviour (V8Sharp is the non-ICU build).
 - [ ] modules (import/export, dynamic import, top-level await)
 - [ ] eval / new Function / with
 
@@ -209,8 +223,8 @@ Stand-ins in the engine that go away when the component they wait for merges
 - `src/V8Sharp/Objects/ScopeInfo.cs`: implement V8Sharp.Parsing's IScopeInfo.
 - `src/V8Sharp/Objects/JSFunction.cs`: type the bytecode as
   V8Sharp.Interpreter.BytecodeArray.
-- `src/V8Sharp/Objects/JSObjectShapes.cs`: JSRegExp data as V8Sharp.RegExp's
-  type; module namespace as the module system's Module.
+- `src/V8Sharp/Objects/JSObjectShapes.cs`: module namespace as the module
+  system's Module.
 
 
 ## Deviations
