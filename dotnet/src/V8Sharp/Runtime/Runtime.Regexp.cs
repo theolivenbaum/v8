@@ -1208,6 +1208,39 @@ public static class RuntimeRegExp
         return isolate.Factory.NewJSArrayWithElements(elems, ElementsKind.PACKED_ELEMENTS, (int)numberOfMatches);
     }
 
+    // ---- Test runtime functions (runtime-test.cc) -----------------------------------------
+
+    /// <summary>Runtime_RegexpHasBytecode (%RegexpHasBytecode(re, isLatin1)).</summary>
+    public static bool RegexpHasBytecode(JSRegExp regexp, bool isLatin1) =>
+        regexp.Data is { TypeTag: RegExpKind.Irregexp } data && data.Compiled.GetBytecode(isLatin1) is not null;
+
+    /// <summary>Runtime_RegexpHasNativeCode (%RegexpHasNativeCode(re, isLatin1)).</summary>
+    public static bool RegexpHasNativeCode(JSRegExp regexp, bool isLatin1) =>
+        regexp.Data is { TypeTag: RegExpKind.Irregexp } data && data.Compiled.HasCode(isLatin1);
+
+    /// <summary>
+    /// Runtime_RegexpQuickCheckRejects. V8Sharp.RegExp does not build V8's
+    /// quick-check filters (RegExpData::QuickCheckRejects), so nothing is
+    /// rejected (deviations.md).
+    /// </summary>
+    public static bool RegexpQuickCheckRejects(JSRegExp regexp, JSString c) => false;
+
+    /// <summary>Runtime_RegexpTypeTag (%RegexpTypeTag(re)).</summary>
+    public static JSString RegexpTypeTag(Isolate isolate, JSRegExp regexp)
+    {
+        string typeStr = regexp.Data?.TypeTag switch
+        {
+            RegExpKind.Atom => "ATOM",
+            RegExpKind.Irregexp => "IRREGEXP",
+            RegExpKind.Experimental => "EXPERIMENTAL",
+            _ => "NOT_COMPILED",
+        };
+        return isolate.Factory.NewStringFromAsciiChecked(typeStr);
+    }
+
+    /// <summary>Runtime_RegexpIsUnmodified (%RegexpIsUnmodified(re)).</summary>
+    public static bool RegexpIsUnmodified(Isolate isolate, JSRegExp regexp) => BuiltinsRegExp.IsUnmodifiedRegExp(isolate, regexp);
+
     // ---- Small runtime functions -------------------------------------------------------------
 
     /// <summary>Runtime_RegExpInitializeAndCompile.</summary>
