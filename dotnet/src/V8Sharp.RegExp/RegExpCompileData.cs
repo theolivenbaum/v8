@@ -15,6 +15,9 @@ public sealed class RegExpCompileData
     /// <summary>The generated code (bytecode) as produced by the compiler.</summary>
     public byte[]? Code;
 
+    /// <summary>The generated native (IL) code, for CompilationTarget.kNative.</summary>
+    public RegExpILCode? NativeCode;
+
     /// <summary>True, iff the pattern is a 'simple' atom with zero captures. In
     /// other words, the pattern consists of a string with no metacharacters and
     /// special regexp features, and can be implemented as a standard string

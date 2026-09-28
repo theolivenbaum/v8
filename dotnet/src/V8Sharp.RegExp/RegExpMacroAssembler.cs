@@ -58,6 +58,8 @@ public abstract class RegExpMacroAssembler
         kPPCImplementation,
         kX64Implementation,
         kBytecodeImplementation,
+        /// <summary>RegExpMacroAssemblerIL (not in V8: the IL counterpart of the native assemblers).</summary>
+        kILImplementation,
     }
 
     public enum GlobalMode

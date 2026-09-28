@@ -111,10 +111,10 @@ public class RegExpEngineTests
         // One-byte subject: Ā can never match, the whole graph is a
         // backtrack node (TextNode::CanMatchLatin1).
         Assert.Equal(0, re.Exec("bar.foo baz......", 0, regs));
-        Assert.NotNull(re.GetBytecode(true));
-        Assert.Null(re.GetBytecode(false));
+        Assert.True(re.HasCode(true));
+        Assert.False(re.HasCode(false));
         Assert.Equal(1, re.Exec("xĀ", 0, regs));
-        Assert.NotNull(re.GetBytecode(false));
+        Assert.True(re.HasCode(false));
     }
 
     [Theory]

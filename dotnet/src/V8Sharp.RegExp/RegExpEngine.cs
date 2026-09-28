@@ -26,7 +26,11 @@
 //
 // Like V8, irregexp code is compiled lazily on the first Exec, using that
 // subject as the sample for the Boyer-Moore frequency heuristics, and
-// separately for one-byte and two-byte subjects. V8 decides by the string's
+// separately for one-byte and two-byte subjects. It is compiled either to
+// bytecode for IrregexpInterpreter or to native code (IL, see
+// RegExpMacroAssemblerIL), following V8's tier-up policy (RegExpTierPolicy):
+// by default (--regexp-tier-up --regexp-tier-up-ticks=0) straight to native
+// code; with a nonzero tick count the first executions are interpreted. V8 decides by the string's
 // representation; strings here are always UTF-16, so a subject counts as
 // one-byte when all its code units are at most 0xFF (the caller may pass the
 // representation it knows instead).
@@ -68,8 +72,45 @@ public readonly struct RegExpCompileResult
     public bool Succeeded => Error == RegExpError.None;
 }
 
+/// <summary>
+/// V8's regexp tiering flags: --regexp-interpret-all, --regexp-tier-up and
+/// --regexp-tier-up-ticks. The default (V8's) is single-tier: tier-up with a
+/// zero-tick threshold, i.e. compile to native code on first use.
+/// </summary>
+public readonly record struct RegExpTierPolicy(bool InterpretAll, bool TierUp, int TierUpTicks)
+{
+    /// <summary>The policy of the static RegExpEngine flags.</summary>
+    public static RegExpTierPolicy Current =>
+        new(RegExpEngine.s_regexpInterpretAll, RegExpEngine.s_regexpTierUp, RegExpEngine.s_regexpTierUpTicks);
+
+    /// <summary>--regexp-interpret-all: never compile to native code.</summary>
+    public static RegExpTierPolicy Interpreted => new(true, false, 0);
+
+    /// <summary>--regexp-jit-all: compile to native code on first use (the default).</summary>
+    public static RegExpTierPolicy JitAll => new(false, true, 0);
+
+    /// <summary>--no-regexp-tier-up: native code only, no interpreter.</summary>
+    public static RegExpTierPolicy NativeOnly => new(false, false, 0);
+
+    /// <summary>Interpret the first <paramref name="ticks"/> executions, then compile.</summary>
+    public static RegExpTierPolicy TwoTier(int ticks) => new(false, true, ticks);
+
+    // DEFINE_NEG_IMPLICATION(regexp_interpret_all, regexp_tier_up).
+    internal RegExpTierPolicy Normalize() => InterpretAll ? this with { TierUp = false } : this;
+}
+
 public static class RegExpEngine
 {
+    /// <summary>--regexp-interpret-all (default false).</summary>
+    public static bool s_regexpInterpretAll;
+    /// <summary>--regexp-tier-up (default true).</summary>
+    public static bool s_regexpTierUp = true;
+    /// <summary>--regexp-tier-up-ticks (default 0).</summary>
+    public static int s_regexpTierUpTicks;
+
+    /// <summary>JSRegExp::kTierUpForSubjectLengthValue.</summary>
+    public const int kTierUpForSubjectLengthValue = 1000;
+
     /// <summary>--enable-experimental-regexp-engine (default false).</summary>
     public static bool s_enableExperimentalRegExpEngine;
     /// <summary>--default-to-experimental-regexp-engine (default false).</summary>
@@ -131,8 +172,9 @@ public static class RegExpEngine
     /// irregexp, or experimental). Irregexp code itself is compiled lazily.
     /// </summary>
     public static RegExpCompileResult Compile(string pattern, RegExpFlags flags,
-        uint backtrackLimit = kNoBacktrackLimit)
+        uint backtrackLimit = kNoBacktrackLimit, RegExpTierPolicy? tierPolicy = null)
     {
+        RegExpTierPolicy tier = (tierPolicy ?? RegExpTierPolicy.Current).Normalize();
         var parseResult = new RegExpCompileData();
         if (!RegExpParser.ParseRegExp(pattern, flags, parseResult))
         {
@@ -155,7 +197,7 @@ public static class RegExpEngine
         if (s_defaultToExperimentalRegExpEngine && isLinearExecutable)
         {
             result = new CompiledRegExp(pattern, escapedSource, flags, RegExpKind.Experimental,
-                parseResult.CaptureCount, backtrackLimit, captureNameMap, null);
+                parseResult.CaptureCount, backtrackLimit, captureNameMap, null, tier);
             hasBeenCompiled = true;
         }
         else if (flags.IsLinear())
@@ -169,7 +211,7 @@ public static class RegExpEngine
                 return new RegExpCompileResult(RegExpError.NotLinear, 0);
             }
             result = new CompiledRegExp(pattern, escapedSource, flags, RegExpKind.Experimental,
-                parseResult.CaptureCount, backtrackLimit, captureNameMap, null);
+                parseResult.CaptureCount, backtrackLimit, captureNameMap, null, tier);
             hasBeenCompiled = true;
         }
         else if (parseResult.Simple && !flags.IsIgnoreCase() && !flags.IsSticky() &&
@@ -177,7 +219,7 @@ public static class RegExpEngine
         {
             // Parse-tree is a single atom that is equal to the pattern.
             result = new CompiledRegExp(pattern, escapedSource, flags, RegExpKind.Atom, 0, backtrackLimit, null,
-                pattern);
+                pattern, tier);
             hasBeenCompiled = true;
         }
         else if (parseResult.Tree!.IsAtom() && !flags.IsSticky() && parseResult.CaptureCount == 0)
@@ -189,14 +231,14 @@ public static class RegExpEngine
             if (!flags.IsIgnoreCase() && !HasFewDifferentCharacters(atomString))
             {
                 result = new CompiledRegExp(pattern, escapedSource, flags, RegExpKind.Atom, 0, backtrackLimit, null,
-                    atomString);
+                    atomString, tier);
                 hasBeenCompiled = true;
             }
         }
         if (!hasBeenCompiled)
         {
             result = new CompiledRegExp(pattern, escapedSource, flags, RegExpKind.Irregexp,
-                parseResult.CaptureCount, backtrackLimit, captureNameMap, null)
+                parseResult.CaptureCount, backtrackLimit, captureNameMap, null, tier)
             {
                 CanBeZeroLength = parseResult.Tree!.MinMatch == 0,
                 IsLinearExecutable = isLinearExecutable,
@@ -222,8 +264,9 @@ public static class RegExpEngine
     }
 
     /// <summary>
-    /// RegExpImpl::Compile: compiles the parsed pattern to irregexp bytecode.
-    /// Returns false and sets data.Error on failure.
+    /// RegExpImpl::Compile: compiles the parsed pattern to irregexp bytecode
+    /// (data.Code) or, for data.CompilationTarget == kNative, to IL
+    /// (data.NativeCode). Returns false and sets data.Error on failure.
     /// </summary>
     public static bool CompileIrregexp(RegExpCompileData data, RegExpFlags flags, ReadOnlySpan<char> sampleSubject,
         int originalSourceLength, ref uint backtrackLimit, bool isLinearExecutable, bool isOneByte = false,
@@ -260,12 +303,20 @@ public static class RegExpEngine
         data.Error = Analysis.AnalyzeRegExp(isOneByte, data.Node);
         if (data.Error != RegExpError.None) return false;
 
-        // Interpreted regexp implementation.
-        var macroAssembler = new RegExpBytecodeGenerator(isOneByte ? RegExpMacroAssembler.Mode.LATIN1
-            : RegExpMacroAssembler.Mode.UC16)
+        RegExpMacroAssembler.Mode assemblerMode = isOneByte ? RegExpMacroAssembler.Mode.LATIN1
+            : RegExpMacroAssembler.Mode.UC16;
+        RegExpMacroAssembler macroAssembler;
+        if (data.CompilationTarget == CompilationTarget.kNative)
         {
-            PeepholeOptimization = peepholeOptimization,
-        };
+            // Native regexp implementation.
+            int outputRegisterCount = RegistersForCaptureCount(data.CaptureCount);
+            macroAssembler = new RegExpMacroAssemblerIL(assemblerMode, outputRegisterCount);
+        }
+        else
+        {
+            // Interpreted regexp implementation.
+            macroAssembler = new RegExpBytecodeGenerator(assemblerMode) { PeepholeOptimization = peepholeOptimization };
+        }
 
         backtrackLimit = SetBacktrackAndExperimentalFallback(macroAssembler, backtrackLimit, isLinearExecutable);
 
@@ -299,6 +350,7 @@ public static class RegExpEngine
         if (result.Error != RegExpError.None) data.Error = result.Error;
 
         data.Code = result.Code as byte[];
+        data.NativeCode = result.Code as RegExpILCode;
         data.RegisterCount = result.NumRegisters;
 
         return result.Succeeded;
@@ -466,13 +518,22 @@ public sealed class CompiledRegExp
     readonly string? _atomPattern;
     // Indexed by is_one_byte, as IrRegExpData's latin1/uc16 bytecode slots.
     readonly byte[]?[] _bytecode = new byte[]?[2];
+    // Indexed by is_one_byte, as IrRegExpData's latin1/uc16 code slots (when
+    // they hold native code rather than the interpreter trampoline).
+    readonly RegExpILCode?[] _nativeCode = new RegExpILCode?[2];
+    readonly RegExpTierPolicy _tier;
+    int _ticksUntilTierUp;
     int _maxRegisterCount;
     Instruction[]? _experimentalBytecode;
     uint _backtrackLimit;
 
     internal CompiledRegExp(string source, string escapedSource, RegExpFlags flags, RegExpKind kind, int captureCount,
-        uint backtrackLimit, List<KeyValuePair<string, int>>? captureNameMap, string? atomPattern)
+        uint backtrackLimit, List<KeyValuePair<string, int>>? captureNameMap, string? atomPattern,
+        RegExpTierPolicy tier)
     {
+        _tier = tier;
+        // Factory::SetRegExpIrregexpData.
+        _ticksUntilTierUp = tier.TierUp ? tier.TierUpTicks : 0;
         Source = source;
         EscapedSource = escapedSource;
         Flags = flags;
@@ -503,8 +564,45 @@ public sealed class CompiledRegExp
     /// <summary>The irregexp bytecode for two-byte subjects, once compiled.</summary>
     public byte[]? Bytecode => _bytecode[0];
 
-    /// <summary>The irregexp bytecode for the given subject width, once compiled.</summary>
+    /// <summary>The irregexp bytecode for the given subject width, once compiled
+    /// (and until tier-up replaces it with native code).</summary>
     public byte[]? GetBytecode(bool isOneByte) => _bytecode[isOneByte ? 1 : 0];
+
+    /// <summary>The native (IL) code for the given subject width, once compiled.</summary>
+    public RegExpILCode? GetNativeCode(bool isOneByte) => _nativeCode[isOneByte ? 1 : 0];
+
+    /// <summary>IrRegExpData::has_code: bytecode or native code exists for the width.</summary>
+    public bool HasCode(bool isOneByte) => _bytecode[isOneByte ? 1 : 0] is not null ||
+                                           _nativeCode[isOneByte ? 1 : 0] is not null;
+
+    /// <summary>The tiering policy this regexp was created with.</summary>
+    public RegExpTierPolicy TierPolicy => _tier;
+
+    /// <summary>IrRegExpData::ticks_until_tier_up.</summary>
+    public int TicksUntilTierUp => _ticksUntilTierUp;
+
+    // IrRegExpData::CanTierUp.
+    bool CanTierUp => _tier.TierUp && Kind == RegExpKind.Irregexp;
+
+    /// <summary>IrRegExpData::MarkedForTierUp.</summary>
+    public bool MarkedForTierUp => CanTierUp && _ticksUntilTierUp == 0;
+
+    /// <summary>IrRegExpData::ShouldProduceBytecode.</summary>
+    public bool ShouldProduceBytecode => _tier.InterpretAll || (_tier.TierUp && !MarkedForTierUp);
+
+    // IrRegExpData::TierUpTick.
+    void TierUpTick()
+    {
+        if (_ticksUntilTierUp == 0) return;
+        _ticksUntilTierUp--;
+    }
+
+    // IrRegExpData::MarkTierUpForNextExec.
+    void MarkTierUpForNextExec()
+    {
+        Debug.Assert(_tier.TierUp);
+        _ticksUntilTierUp = 0;
+    }
 
     /// <summary>String::IsOneByteRepresentationUnderneath, by content.</summary>
     public static bool IsOneByteSubject(ReadOnlySpan<char> subject) =>
@@ -513,8 +611,9 @@ public sealed class CompiledRegExp
     public int MaxRegisterCount => _maxRegisterCount;
 
     /// <summary>
-    /// RegExpImpl::EnsureCompiledIrregexp / CompileIrregexpFromSource (bytecode
-    /// target). Returns false and sets CompileError if compilation fails.
+    /// RegExpImpl::EnsureCompiledIrregexp / CompileIrregexpFromSource: compiles
+    /// to bytecode or native code as the tier-up state asks. Returns false and
+    /// sets CompileError if compilation fails.
     /// </summary>
     public bool EnsureCompiled(ReadOnlySpan<char> sampleSubject) =>
         EnsureCompiled(sampleSubject, IsOneByteSubject(sampleSubject));
@@ -523,7 +622,18 @@ public sealed class CompiledRegExp
     {
         if (Kind == RegExpKind.Atom) return true;
         if (Kind == RegExpKind.Experimental) return EnsureExperimentalCompiled();
-        if (_bytecode[isOneByte ? 1 : 0] is not null) return true;
+        int width = isOneByte ? 1 : 0;
+        bool hasBytecode = _bytecode[width] is not null;
+        bool needsInitialCompilation = !HasCode(isOneByte);
+        // Recompile is needed when we're dealing with the first execution of the
+        // regexp after the decision to tier up has been made. If the tiering up
+        // strategy is not in use, this value is always false.
+        // The hasBytecode check detects post-tier-up state: after successful
+        // tier-up, bytecode is cleared. With tier-up ticks 0 however, tier-up is
+        // requested immediately before any compilation, so !hasBytecode &&
+        // needsInitialCompilation means we need to compile native code first.
+        bool needsTierUpCompilation = MarkedForTierUp && (hasBytecode || needsInitialCompilation);
+        if (!needsInitialCompilation && !needsTierUpCompilation) return true;
         if (CompileError != RegExpError.None) return false;
 
         // Since we can't abort gracefully during compilation, check for sufficient
@@ -544,7 +654,13 @@ public sealed class CompiledRegExp
         if (compileData.CaptureCount != CaptureCount) throw new InvalidOperationException("SBXCHECK failed");
 
         CanBeZeroLength = compileData.Tree!.MinMatch == 0;
-        compileData.CompilationTarget = CompilationTarget.kBytecode;
+        // The compilation target is kBytecode if we're interpreting all regexp
+        // objects, or if we're using the tier-up strategy but the tier-up hasn't
+        // happened yet. The compilation target is kNative if we're using the
+        // tier-up strategy and we need to recompile to tier-up, or if we're
+        // producing native code for all regexp objects.
+        compileData.CompilationTarget = ShouldProduceBytecode ? CompilationTarget.kBytecode
+            : CompilationTarget.kNative;
         if (!RegExpEngine.CompileIrregexp(compileData, Flags, sampleSubject, Source.Length, ref _backtrackLimit,
                 IsLinearExecutable, isOneByte))
         {
@@ -552,8 +668,18 @@ public sealed class CompiledRegExp
             CompileError = compileData.Error;
             return false;
         }
+        if (compileData.CompilationTarget == CompilationTarget.kNative)
+        {
+            _nativeCode[width] = compileData.NativeCode;
+            // Reset bytecode to uninitialized. In case we use tier-up we know that
+            // tier-up has happened this way.
+            _bytecode[width] = null;
+        }
+        else
+        {
+            _bytecode[width] = compileData.Code;
+        }
         if (compileData.RegisterCount > _maxRegisterCount) _maxRegisterCount = compileData.RegisterCount;
-        _bytecode[isOneByte ? 1 : 0] = compileData.Code;
         return true;
     }
 
@@ -608,16 +734,47 @@ public sealed class CompiledRegExp
 
     int RoundedRegisterCount(int length) => length - length % RegistersPerMatch;
 
-    // RegExpImpl::IrregexpExec.
+    // RegExpImpl::IrregexpExec and IrregexpExecRaw.
     int IrregexpExec(ReadOnlySpan<char> subject, int previousIndex, Span<int> registers, bool isOneByte)
     {
-        if (!EnsureCompiled(subject, isOneByte)) return RegExpResult.RE_EXCEPTION;
         int outputRegisterCount = RegistersPerMatch;
         if (registers.Length < outputRegisterCount) throw new ArgumentException("register span too small");
+
+        // Maybe force early tier up:
+        if (_tier.TierUp)
+        {
+            if (subject.Length >= RegExpEngine.kTierUpForSubjectLengthValue)
+            {
+                // For very long subject strings, the regexp interpreter is currently much
+                // slower than the jitted code execution. If the tier-up strategy is
+                // turned on, we want to avoid this performance penalty so we eagerly
+                // tier-up if the subject string length is equal or greater than the given
+                // heuristic value.
+                MarkTierUpForNextExec();
+            }
+            else if (outputRegisterCount < registers.Length)
+            {
+                // Tier up because the interpreter doesn't do global execution.
+                MarkTierUpForNextExec();
+            }
+        }
+
+        if (!EnsureCompiled(subject, isOneByte)) return RegExpResult.RE_EXCEPTION;
         Span<int> output = registers.Slice(0, RoundedRegisterCount(registers.Length));
 
-        int res = IrregexpInterpreter.Match(_bytecode[isOneByte ? 1 : 0]!, subject, output, outputRegisterCount,
-            _maxRegisterCount, previousIndex, _backtrackLimit, Flags.IsEitherUnicode(), isOneByte);
+        int width = isOneByte ? 1 : 0;
+        int res;
+        if (!ShouldProduceBytecode)
+        {
+            res = _nativeCode[width]!.Execute(subject, previousIndex, output);
+        }
+        else
+        {
+            // IrregexpInterpreter::MatchForCallFromRuntime.
+            if (_tier.TierUp) TierUpTick();
+            res = IrregexpInterpreter.Match(_bytecode[width]!, subject, output, outputRegisterCount,
+                _maxRegisterCount, previousIndex, _backtrackLimit, Flags.IsEitherUnicode(), isOneByte);
+        }
 
         if (res >= RegExpResult.RE_SUCCESS) return res;
         if (res == RegExpResult.RE_FALLBACK_TO_EXPERIMENTAL)
