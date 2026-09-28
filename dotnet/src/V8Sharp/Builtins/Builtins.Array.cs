@@ -13,6 +13,9 @@
 // V8's CSA fast paths for the Array constructor (ArrayNoArgumentConstructor,
 // ArraySingleArgumentConstructor with allocation sites) produce the same
 // arrays as Runtime_NewArray, which V8Sharp always runs.
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
 namespace V8Sharp.Builtins;
 
 public static partial class BuiltinRegistry
@@ -750,6 +753,90 @@ public static partial class BuiltinsArray
         ElementsAccessor accessor = array.GetElementsAccessor();
         uint newLength = accessor.Push(isolate, array, args.Arguments);
         return JSValue.FromNumber(newLength);
+    }
+
+    // ---- The CSA fast paths of push / pop / shift for the interpreter --------------------------
+
+    // V8 implements Array.prototype.push, pop and shift as CSA/Torque builtins
+    // (TF_BUILTIN(ArrayPrototypePush/Pop), array-shift.tq) whose fast paths for
+    // a fast JSArray run in the builtin's stub frame without calling out: a few
+    // map checks, then the store or load. V8Sharp's builtins run behind
+    // CallBuiltin (a frame record, the builtin's context, BuiltinArguments); the
+    // interpreter's call handlers try these first. They take the builtin's own
+    // fast-path conditions and cannot throw or run JavaScript, so no frame is
+    // observable, and return false with nothing done otherwise.
+
+    /// <summary>ArrayPrototypePush's fast path for one argument (BuildAppendJSArray).</summary>
+    internal static bool TryFastPush(Isolate isolate, JSFunction push, JSValue receiver, JSValue value, out JSValue result)
+    {
+        result = default;
+        if (receiver._obj is not JSArray array) return false;
+        ElementsKind kind = array.Map.ElementsKind;
+        FixedArrayBase elements = array.Elements;
+        switch (kind)
+        {
+            case ElementsKind.PACKED_SMI_ELEMENTS:
+            case ElementsKind.HOLEY_SMI_ELEMENTS:
+                if (!value.IsSmi) return false;
+                break;
+            case ElementsKind.PACKED_ELEMENTS:
+            case ElementsKind.HOLEY_ELEMENTS:
+                break;
+            case ElementsKind.PACKED_DOUBLE_ELEMENTS:
+            case ElementsKind.HOLEY_DOUBLE_ELEMENTS:
+                if (!value.IsNumber) return false;
+                break;
+            default:
+                return false;
+        }
+        if (elements.IsCowArray || JSArray.HasReadOnlyLength(array) ||
+            ReferenceEquals(array, push.Context.NativeContext.InitialArrayPrototype) ||
+            !IsJSArrayFastElementMovingAllowed(isolate, array))
+        {
+            return false;
+        }
+        double length = array.Length._num;
+        if (length < elements.Length)
+        {
+            int index = (int)length;
+            if (elements is FixedDoubleArray doubles) doubles.Set(index, value._num);
+            else Unsafe.As<FixedArray>(elements).Data[index] = value;
+            result = array.Length = JSValue.FromNumber(length + 1);
+            return true;
+        }
+        if (length >= JSArray.kMaxFastArrayLength) return false;
+        // Grow the backing store (ElementsAccessor::Push, as the builtin's slow part of the fast path).
+        uint newLength = ElementsAccessor.ForKind(kind).Push(isolate, array, MemoryMarshal.CreateReadOnlySpan(ref value, 1));
+        result = JSValue.FromNumber(newLength);
+        return true;
+    }
+
+    /// <summary>ArrayPrototypePop's fast path (the ArrayPop fast elements case).</summary>
+    internal static bool TryFastPop(Isolate isolate, JSValue receiver, out JSValue result)
+    {
+        result = default;
+        if (!IsJSArrayWithExtensibleFastElements(receiver, out ElementsKind kind, out JSArray array) ||
+            JSArray.HasReadOnlyLength(array))
+        {
+            return false;
+        }
+        if (array.Length._num == 0)
+        {
+            result = JSValue.Undefined;
+            return true;
+        }
+        if (!IsJSArrayFastElementMovingAllowed(isolate, array)) return false;
+        result = ElementsAccessor.ForKind(kind).Pop(isolate, array);
+        return true;
+    }
+
+    /// <summary>ArrayPrototypeShift's fast path (TryFastArrayShift).</summary>
+    internal static bool TryFastShift(Isolate isolate, JSValue receiver, out JSValue result)
+    {
+        result = default;
+        if (!CanUseFastArrayModification(isolate, receiver, out ElementsKind kind)) return false;
+        result = ElementsAccessor.ForKind(kind).Shift(isolate, Unsafe.As<JSArray>(receiver._obj!));
+        return true;
     }
 
     /// <summary>GenericArrayPush / CommonArrayPush.</summary>

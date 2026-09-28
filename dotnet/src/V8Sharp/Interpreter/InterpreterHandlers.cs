@@ -605,6 +605,15 @@ public static partial class InterpreterExecution
             InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, 0, 0, default, default, pc + 1 + 3 * S);
             return true;
         }
+        // a.pop() / a.shift(): the builtins' CSA fast paths (BuiltinsArray.TryFastPop).
+        if (callee._obj is JSFunction { Shared.BuiltinId: Builtin.ArrayPrototypePop or Builtin.ArrayPrototypeShift } builtin &&
+            (builtin.Shared.BuiltinId == Builtin.ArrayPrototypePop
+                ? BuiltinsArray.TryFastPop(isolate, receiver, out JSValue fastResult)
+                : BuiltinsArray.TryFastShift(isolate, receiver, out fastResult)))
+        {
+            st.Accumulator = fastResult;
+            return false;
+        }
         st.Accumulator = InterpreterCalls.Call(isolate, callee, receiver, 0, 0, ConvertReceiverMode.NotNullOrUndefined);
         return false;
     }
@@ -635,6 +644,13 @@ public static partial class InterpreterExecution
             {
                 return true;
             }
+        }
+        // a.push(x): the builtin's CSA fast path (BuiltinsArray.TryFastPush).
+        if (callee._obj is JSFunction { Shared.BuiltinId: Builtin.ArrayPrototypePush } push &&
+            BuiltinsArray.TryFastPush(isolate, push, receiver, Reg<TS>(ref fp, ref code, pc + 1 + 2 * S), out JSValue pushResult))
+        {
+            st.Accumulator = pushResult;
+            return false;
         }
         st.Accumulator = InterpreterCalls.Call(isolate, callee, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
             ConvertReceiverMode.NotNullOrUndefined);
