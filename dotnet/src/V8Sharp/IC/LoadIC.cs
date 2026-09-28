@@ -209,6 +209,10 @@ public sealed class LoadIC : IC
             case LoadHandler.Kind.kFunctionPrototype:
             {
                 if (receiver.HeapObjectOrNull is not JSFunction function || function.PrototypeRequiresRuntimeLookup()) return false;
+                // LoadJSFunctionPrototype: a prototype that is not allocated yet
+                // (V8's hole in prototype_or_initial_map) takes the runtime path,
+                // which allocates it.
+                if (!function.HasPrototype) return false;
                 result = function.Prototype;
                 return true;
             }

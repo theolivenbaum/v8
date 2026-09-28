@@ -295,8 +295,8 @@ public sealed class StoreHandler : HeapObject
     /// <summary>An own accessor pair's setter.</summary>
     public static StoreHandler StoreAccessorPair(Isolate isolate, AccessorPair pair) => new(Kind.kAccessorPair, data: pair);
 
-    /// <summary>StoreHandler::StoreNativeDataProperty.</summary>
-    public static StoreHandler StoreNativeDataProperty(Isolate isolate, JSReceiver holder, AccessorInfo info, Cell? validityCell) =>
+    /// <summary>StoreHandler::StoreNativeDataProperty; a null holder means the receiver itself.</summary>
+    public static StoreHandler StoreNativeDataProperty(Isolate isolate, JSReceiver? holder, AccessorInfo info, Cell? validityCell) =>
         new(Kind.kNativeDataProperty, holder: holder, data: info, validityCell: validityCell);
 
     /// <summary>StoreHandler::StoreGlobal (a PropertyCell of the global object).</summary>

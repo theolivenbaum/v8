@@ -247,6 +247,26 @@ public static partial class RuntimeTable
 
     static void RegisterTest()
     {
+        // runtime-typedarray.cc.
+        Register(FunctionId.ArrayBufferDetach, static (i, a) =>
+        {
+            // This runtime function is exposed in ClusterFuzz and as such has to
+            // support arbitrary arguments.
+            if (a.Length < 1 || a[0].HeapObjectOrNull is not JSArrayBuffer buffer)
+            {
+                return i.ThrowTypeError(MessageTemplate.NotTypedArray);
+            }
+            JSArrayBuffer.Detach(i, buffer, forceForWasmMemory: false, hasKey: true,
+                a.Length > 1 ? a[1] : JSValue.Undefined);
+            return JSValue.Undefined;
+        });
+        Register(FunctionId.ArrayBufferSetDetachKey, static (i, a) =>
+        {
+            if (a[0].HeapObjectOrNull is not JSArrayBuffer buffer) return i.ThrowTypeError(MessageTemplate.NotTypedArray);
+            JSArrayBuffer.SetDetachKey(buffer, a[1], i);
+            return JSValue.Undefined;
+        });
+        Register(FunctionId.ArrayBufferMaxByteLength, static (i, a) => JSValue.FromNumber(JSArrayBuffer.kMaxByteLength));
         Register(FunctionId.GetOptimizationStatus, static (i, a) => RuntimeTest.GetOptimizationStatus(i, a.Length > 0 ? a[0] : default));
         Register(FunctionId.PrepareFunctionForOptimization, static (i, a) => RuntimeTest.EnsureFeedbackVector(i, a[0]));
         Register(FunctionId.EnsureFeedbackVectorForFunction, static (i, a) => RuntimeTest.EnsureFeedbackVector(i, a[0]));
