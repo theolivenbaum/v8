@@ -21,10 +21,16 @@ public enum PrivateSymbolKind : byte
 /// </summary>
 public abstract partial class Name : HeapObject
 {
-    protected Name(InstanceType instanceType) : base(instanceType) { }
+    protected Name(InstanceType instanceType) : base(instanceType) => _hashField = kEmptyHashField;
 
     /// <summary>V8's raw hash field; <see cref="kEmptyHashField"/> until computed.</summary>
-    internal uint RawHashField = kEmptyHashField;
+    internal uint RawHashField
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _hashField;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        set => _hashField = value;
+    }
 
     public enum HashFieldType : uint
     {

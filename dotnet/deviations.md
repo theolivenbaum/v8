@@ -405,8 +405,10 @@ Heap and object model
   Header and instance sizes are approximated from `JSObject.GetHeaderSize`,
   and builtin function instance sizes are recomputed from the header size
   plus in-object count (`Bootstrapper.CreateFunctionForBuiltinWithPrototype`).
-- The identity hash lives in a dedicated field on JSReceiver, not in
-  `properties_or_hash`.
+- The identity hash lives in the header word (`HeapObject._hashField`, which
+  is Name's raw hash field for names), not in `properties_or_hash`: a field
+  of the root class fills the padding after InstanceType, where a JSReceiver
+  field would add 8 bytes to every object.
 - No Smi/HeapNumber distinction: numbers are unboxed. A non-Smi number does not
   fit `Representation.HeapObject` (`ObjectOps.FitsRepresentation`), where V8's
   HeapNumber does; storing one generalizes the field to Tagged instead.

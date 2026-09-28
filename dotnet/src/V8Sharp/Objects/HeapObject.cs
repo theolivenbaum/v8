@@ -11,6 +11,15 @@ public abstract class HeapObject(InstanceType instanceType)
 {
     public readonly InstanceType InstanceType = instanceType;
 
+    /// <summary>
+    /// The hash word: Name's raw hash field, or a JSReceiver's identity hash
+    /// (V8 keeps that in properties_or_hash). One field in the root class,
+    /// next to InstanceType, so that it fills the header word's padding: the
+    /// CLR lays out a class's own fields after its references, and a field of
+    /// JSReceiver would add 8 bytes to every object.
+    /// </summary>
+    private protected uint _hashField;
+
     public bool IsString => InstanceTypeChecks.IsString(InstanceType);
     public bool IsName => InstanceTypeChecks.IsName(InstanceType);
     public bool IsJSReceiver => InstanceTypeChecks.IsJSReceiver(InstanceType);

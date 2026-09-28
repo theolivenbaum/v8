@@ -30,8 +30,17 @@ public abstract partial class JSReceiver : HeapObject
     /// <summary>The property dictionary in dictionary mode (NameDictionary, or GlobalDictionary for globals).</summary>
     internal HashTableBase? _dictionary;
 
-    /// <summary>The identity hash, or kNoHashSentinel (V8 keeps it in properties_or_hash).</summary>
-    internal int _identityHash;
+    /// <summary>
+    /// The identity hash, or kNoHashSentinel (V8 keeps it in properties_or_hash;
+    /// V8Sharp in the header word, HeapObject._hashField).
+    /// </summary>
+    internal int _identityHash
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => (int)_hashField;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        set => _hashField = (uint)value;
+    }
 
     public const int kNoHashSentinel = 0;
     public const int kHashMask = (1 << 21) - 1;  // PropertyArray::HashField::kMax
