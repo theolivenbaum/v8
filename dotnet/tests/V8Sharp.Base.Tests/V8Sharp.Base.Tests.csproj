@@ -12,6 +12,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The Gay's-dtoa tables of test/unittests are read straight from the V8 tree. -->
+    <EmbeddedResource Include="../../../test/unittests/gay-fixed.cc" LogicalName="gay-fixed.cc" />
+    <EmbeddedResource Include="../../../test/unittests/gay-precision.cc" LogicalName="gay-precision.cc" />
+    <EmbeddedResource Include="../../../test/unittests/gay-shortest.cc" LogicalName="gay-shortest.cc" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
