@@ -9,6 +9,8 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/V8Sharp.Base/V8Sharp.Base.csproj" />
+    <!-- Differential tests against the real V8. -->
+    <ProjectReference Include="../../src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />
   </ItemGroup>
 
   <ItemGroup>
