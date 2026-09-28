@@ -47,8 +47,26 @@ public interface IJsHost
     /// <c>type</c> ("json", "text" ...) or null.</summary>
     ModuleSource LoadModule(string specifier, string referrer, string? type);
 
-    /// <summary>Promise rejection tracking (v8::PromiseRejectCallback).</summary>
-    void OnPromiseRejection(IJsRealm realm, PromiseRejectionKind kind, object promise, object? value);
+    /// <summary>Promise rejection tracking (v8::PromiseRejectCallback).
+    /// <paramref name="message"/> is what d8's PromiseRejectCallback reports
+    /// (the value, or <c>Error: Unhandled Promise.</c>, with the location of
+    /// v8::Exception::CreateMessage), when the engine can compute it.</summary>
+    void OnPromiseRejection(IJsRealm realm, PromiseRejectionKind kind, object promise, object? value, JsExceptionInfo? message = null);
+
+    /// <summary>The process's stdout, for output the engine prints itself
+    /// (runtime functions such as %DebugTraceMinimal, the console delegate).</summary>
+    void WriteStdout(string text);
+
+    /// <summary>The process's stderr (console.error).</summary>
+    void WriteStderr(string text);
+
+    /// <summary>
+    /// The isolate's message listener (d8's PrintMessageCallback): an
+    /// exception the engine caught with a verbose TryCatch (a microtask
+    /// callback, a FinalizationRegistry cleanup callback) is reported like an
+    /// uncaught exception, without failing the run.
+    /// </summary>
+    void ReportMessage(IJsRealm realm, JsExceptionInfo exception) { }
 }
 
 public sealed record ModuleSource(string Name, string Source, bool IsJson = false, byte[]? Bytes = null);
@@ -136,6 +154,37 @@ public interface IJsRealm : IDisposable
     Completion Compile(string source, string name, bool isModule) =>
         new(CompletionKind.Throw, Exception: new JsExceptionInfo("--compile-only is not supported by this engine"));
 
+    /// <summary>
+    /// Shell::ExecuteModule after the module ran: once the message queues are
+    /// empty, a module evaluation promise that was rejected in the meantime
+    /// is thrown, and a stalled top-level await is reported as
+    /// <c>Error: Top-level await promise never resolved</c> with the location
+    /// of the stalled await (Module::GetStalledTopLevelAwaitMessages).
+    /// Applies to the last <see cref="RunModule"/> of this realm.
+    /// </summary>
+    Completion FinishModule() => Completion.Of(JsUndefined.Value);
+
+    /// <summary>
+    /// v8::JSON::Parse in this realm, called from the host (no JavaScript
+    /// frame): d8's --json files and --trace-config.
+    /// </summary>
+    Completion JsonParse(string source)
+    {
+        var json = GetProperty(GlobalObject, "JSON");
+        if (json.Kind != CompletionKind.Normal) return json;
+        var parse = GetProperty(json.Value!, "parse");
+        if (parse.Kind != CompletionKind.Normal) return parse;
+        return Call(parse.Value!, json.Value, source);
+    }
+
+    /// <summary>
+    /// Throws <c>new Error(message)</c> from the host, outside any JavaScript
+    /// frame (d8's Shell::ThrowError from C++), and returns the Throw
+    /// completion with the message d8 would report.
+    /// </summary>
+    Completion ThrowError(string message) =>
+        RunScript("throw new Error(" + System.Text.Json.JsonSerializer.Serialize(message) + ")", "undefined");
+
     /// <summary>Calls <paramref name="function"/> with <paramref name="receiver"/>
     /// and <paramref name="args"/>, then performs a microtask checkpoint.</summary>
     Completion Call(object function, object? receiver, params object?[] args);
@@ -156,6 +205,12 @@ public interface IJsRealm : IDisposable
     /// shows in stack traces. Null when the engine cannot provide one.
     /// </summary>
     object? CreateStringArgumentsFunction(string name, JsHostFunction function) => null;
+
+    /// <summary>Whether the engine's own console object reports to d8's
+    /// D8Console (installed by the engine, printing through
+    /// <see cref="IJsHost.WriteStdout"/>); otherwise the d8 shim replaces the
+    /// console methods with JavaScript ones.</summary>
+    bool HasConsoleDelegate => false;
 
     /// <summary>Whether <see cref="SerializeValue"/> and friends work (d8's Worker and d8.serializer).</summary>
     bool SupportsSerialization => false;

@@ -40,7 +40,7 @@ public sealed partial class D8Shell : IJsHost
     // message tasks, posted from any thread, run in order on the shell's thread.
     readonly ConcurrentQueue<Action> _tasks = new();
     readonly SemaphoreSlim _taskSignal = new(0);
-    readonly List<(object Promise, object? Value, RealmState Realm)> _unhandled = [];
+    readonly List<(object Promise, object? Value, RealmState Realm, JsExceptionInfo? Message)> _unhandled = [];
     readonly Dictionary<string, string> _sources = new(StringComparer.Ordinal);
     readonly Dictionary<string, double> _performanceMarks = new(StringComparer.Ordinal);
 
@@ -145,6 +145,7 @@ public sealed partial class D8Shell : IJsHost
             return 1;
         }
         _isolate = _engine.CreateIsolate(this);
+        if (_options.EnableTracing && _options.TraceConfig is { } traceConfig && !LoadTraceConfig(traceConfig)) return 1;
         _realms.Add(Install(_isolate.MainRealm, isMain: true));
         bool success = ExecuteSources();
         if (QuitCode is { } q) return q;
@@ -171,6 +172,7 @@ public sealed partial class D8Shell : IJsHost
             ", noArguments: " + (_options.NoArguments ? "true" : "false") +
             ", isWorker: " + (_worker is not null && isMain ? "true" : "false") +
             ", serialization: " + (realm.SupportsSerialization ? "true" : "false") +
+            ", nativeConsole: " + (realm.HasConsoleDelegate ? "true" : "false") +
             ", maxFixedArrayCapacity: 134217725, maxFastArrayLength: 33554432 })", "d8-options.js"), "d8 options");
         // print, printErr and write are C++ functions in d8 (Shell::Print ...): when
         // the engine can convert the arguments itself, no JS frame shows in stack traces.
@@ -217,13 +219,27 @@ public sealed partial class D8Shell : IJsHost
             {
                 c = RunInCurrentRealm(code, "unnamed", isModule: false);
             }
+            else if (src.IsJson)
+            {
+                if (!LoadJson(src.Path!)) return false;
+                continue;
+            }
             else
             {
                 string? text = ReadSourceFile(src.Path!);
                 if (text is null)
                 {
-                    Out($"Error reading '{src.Path}'\n");
-                    _quitCode = 1;
+                    if (_options.Bundle)
+                    {
+                        Out($"Error reading '{src.Path}'\n");
+                        _quitCode = 1;
+                        return false;
+                    }
+                    // Shell::ExecuteSource of Source::FromFile: ReadFile throws
+                    // "Error loading file: <name>" from C++, reported like any
+                    // uncaught exception (no script: "undefined:0").
+                    c = CurrentRealm.Realm.ThrowError("Error loading file: " + src.Path);
+                    if (c.Kind == CompletionKind.Throw) ReportException(CurrentRealm, c.Exception!);
                     return false;
                 }
                 string name = src.IsModule ? NormalizePath(src.Path!, _workingDirectory) : src.Path!;
@@ -233,6 +249,14 @@ public sealed partial class D8Shell : IJsHost
                     continue;
                 }
                 c = RunInCurrentRealm(text, name, src.IsModule);
+                if (src.IsModule && c.Kind == CompletionKind.Normal && !_options.CompileOnly)
+                {
+                    // Shell::ExecuteModule: EmptyMessageQueues, then a rejected
+                    // or stalled top-level await is reported.
+                    EmptyMessageQueues();
+                    if (Stopped) return true;
+                    c = CurrentRealm.Realm.FinishModule();
+                }
             }
             if (c.Kind == CompletionKind.Terminated) return true;
             if (c.Kind == CompletionKind.Throw)
@@ -240,6 +264,77 @@ public sealed partial class D8Shell : IJsHost
                 ReportException(CurrentRealm, c.Exception!);
                 return false;
             }
+        }
+        return true;
+    }
+
+    /// <summary>Shell::EmptyMessageQueues: runs the pending tasks without waiting for new ones.</summary>
+    void EmptyMessageQueues()
+    {
+        while (!Stopped)
+        {
+            if (_isolate!.PumpMessageLoop()) continue;
+            if (RunOneTask()) continue;
+            break;
+        }
+    }
+
+    /// <summary>
+    /// Shell::LoadJSON (--json FILE): every line of the file is parsed as a
+    /// JSON value in the current realm; a parse error is reported like an
+    /// uncaught exception.
+    /// </summary>
+    bool LoadJson(string fileName)
+    {
+        if (fileName.StartsWith("data:", StringComparison.Ordinal))
+        {
+            Out("d8: --json does not support data URLs\n");
+            _quitCode = 1;
+            return false;
+        }
+        string? data = ReadSourceFile(fileName);
+        if (data is null)
+        {
+            Out($"Error reading '{fileName}'\n");
+            _quitCode = 1;
+            return false;
+        }
+        // std::getline: a trailing newline does not start another line.
+        string[] lines = data.Split('\n');
+        int count = data.EndsWith('\n') ? lines.Length - 1 : lines.Length;
+        for (int i = 0; i < count; i++)
+        {
+            Completion c = CurrentRealm.Realm.JsonParse(lines[i]);
+            if (c.Kind == CompletionKind.Terminated) return true;
+            if (c.Kind == CompletionKind.Throw)
+            {
+                ReportException(CurrentRealm, c.Exception!);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// --enable-tracing --trace-config=FILE (Shell::Main): the file is read and
+    /// parsed as JSON in a new context (TraceConfigParser::FillTraceConfig);
+    /// tracing itself is not implemented, so the categories are not used.
+    /// </summary>
+    bool LoadTraceConfig(string path)
+    {
+        string? json = ReadSourceFile(path);
+        if (json is null)
+        {
+            Out($"Failed to read trace config from '{path}'\n");
+            return false;
+        }
+        IJsRealm context = _isolate!.CreateRealm(null);
+        Completion c = context.JsonParse(json);
+        if (c.Kind == CompletionKind.Throw)
+        {
+            Out("Failed to parse trace config.\n\n");
+            ReportException(Install(context, isMain: false), c.Exception!);
+            return false;
         }
         return true;
     }
@@ -331,10 +426,10 @@ public sealed partial class D8Shell : IJsHost
         {
             var pending = _unhandled.ToArray();
             _unhandled.Clear();
-            foreach (var (_, value, realm) in pending)
+            foreach (var (_, value, realm, message) in pending)
             {
                 if (Stopped) break;
-                ReportException(realm, MessageForValue(realm, value));
+                ReportException(realm, message ?? MessageForValue(realm, value));
             }
             _unhandledCount += pending.Length;
             success &= pending.Length == 0;
@@ -355,7 +450,20 @@ public sealed partial class D8Shell : IJsHost
         return new JsExceptionInfo(value);
     }
 
-    public void OnPromiseRejection(IJsRealm realm, PromiseRejectionKind kind, object promise, object? value)
+    public void WriteStdout(string text) => Out(text);
+
+    public void ReportMessage(IJsRealm realm, JsExceptionInfo exception)
+    {
+        var state = _realms.Find(r => r is not null && ReferenceEquals(r.Realm, realm)) ?? _realms[0]!;
+        ReportException(state, exception);
+    }
+
+    public void WriteStderr(string text)
+    {
+        lock (_stdout) _stderr.Append(text);
+    }
+
+    public void OnPromiseRejection(IJsRealm realm, PromiseRejectionKind kind, object promise, object? value, JsExceptionInfo? message = null)
     {
         if (_options.IgnoreUnhandledPromises) return;
         if (kind == PromiseRejectionKind.HandlerAddedAfterReject)
@@ -365,7 +473,7 @@ public sealed partial class D8Shell : IJsHost
             return;
         }
         var state = _realms.Find(r => r is not null && ReferenceEquals(r.Realm, realm)) ?? _realms[0]!;
-        _unhandled.Add((promise, value, state));
+        _unhandled.Add((promise, value, state, message));
     }
 
     // --- Shell::ReportException ---

@@ -106,6 +106,14 @@ public sealed partial class Isolate
     /// <summary>Isolate::console_delegate (v8::debug::SetConsoleDelegate); null: console calls do nothing.</summary>
     public Builtins.ConsoleDelegate? ConsoleDelegate;
 
+    /// <summary>
+    /// The process's stdout as the runtime prints to it (%DebugPrint,
+    /// %DebugTraceMinimal, --disable-abortjs messages). V8 writes to the C
+    /// stdout; an embedder that runs isolates in-process (the TestRunner's d8
+    /// shell) redirects it so the output interleaves with the shell's own.
+    /// </summary>
+    public TextWriter StdOut = Console.Out;
+
     /// <summary>Isolate::last_console_context_id.</summary>
     public int LastConsoleContextId;
 

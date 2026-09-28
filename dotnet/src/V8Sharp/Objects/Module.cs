@@ -1709,8 +1709,10 @@ public sealed class SourceTextModule() : Module(InstanceType.SourceTextModuleTyp
         {
             var code = (JSGeneratorObject)found.Code;
             SharedFunctionInfo shared = found.GetSharedFunctionInfo();
-            // JSGeneratorObject::code_offset: the continuation of a suspended generator.
-            var location = new MessageLocation(shared.Script!, shared, code.ContinuationValue);
+            // JSGeneratorObject::code_offset: input_or_debug_pos holds the
+            // bytecode offset of the suspend.
+            int codeOffset = code.InputOrDebugPos.IsSmi ? (int)code.InputOrDebugPos.Number : 0;
+            var location = new MessageLocation(shared.Script!, shared, codeOffset);
             JSMessageObject message = MessageHandler.MakeMessageObject(isolate, MessageTemplate.TopLevelAwaitStalled, location,
                 JSValue.Null);
             result.Add((found, message));

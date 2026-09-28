@@ -70,6 +70,10 @@ sealed class V8SharpJsIsolate : IJsIsolate
         // initiator's origin (same security token), with its own module map.
         Isolate.HostCreateShadowRealmContextCallback = ModuleLoader.HostCreateShadowRealmContext;
         Isolate.PromiseRejectCallback = OnPromiseReject;
+        // d8's stdout and its D8Console, routed to the shell's output.
+        Isolate.StdOut = new HostWriter(host.WriteStdout);
+        Isolate.ConsoleDelegate = new D8Console(host.WriteStdout, host.WriteStderr);
+        Isolate.DefaultMicrotaskQueue.UncaughtException += OnMessage;
         var main = new V8SharpRealm(this, Isolate.InitialNativeContext!);
         _realms.Add(main);
         MainRealm = main;
@@ -83,7 +87,13 @@ sealed class V8SharpJsIsolate : IJsIsolate
         using (Enter())
         {
             // d8 creates the queue with v8::MicrotaskQueue::New (kExplicit): nothing flushes it.
-            context = Bootstrapper.CreateEnvironment(Isolate, ownMicrotaskQueue ? new MicrotaskQueue(Isolate) : null);
+            MicrotaskQueue? queue = null;
+            if (ownMicrotaskQueue)
+            {
+                queue = new MicrotaskQueue(Isolate);
+                queue.UncaughtException += OnMessage;
+            }
+            context = Bootstrapper.CreateEnvironment(Isolate, queue);
         }
         if (shareSecurityTokenWith is V8SharpRealm from) context.SecurityToken = from.Context.SecurityToken;
         var realm = new V8SharpRealm(this, context);
@@ -140,7 +150,45 @@ sealed class V8SharpJsIsolate : IJsIsolate
         {
             if (ReferenceEquals(r.Context, owner)) realm = r;
         }
-        Host.OnPromiseRejection(realm, kind, new V8SharpHandle(promise), V8SharpRealm.ToHost(value));
+        JsExceptionInfo? message = null;
+        if (kind == PromiseRejectionKind.RejectedWithoutHandler)
+        {
+            // Shell::PromiseRejectCallback: objects get v8::Exception::CreateMessage
+            // (with the stack trace capture d8 turns on, every object's message has
+            // a stack trace); other values are replaced by a fresh
+            // Error("Unhandled Promise.").
+            JSValue exception = value;
+            if (value.HeapObjectOrNull is not JSReceiver)
+            {
+                exception = Isolate.Factory.NewError(realm.Context.ErrorFunction,
+                    Isolate.Factory.NewStringFromUtf16("Unhandled Promise."));
+            }
+            message = realm.ExceptionInfo(exception, Isolate.CreateMessage(exception, null));
+        }
+        Host.OnPromiseRejection(realm, kind, new V8SharpHandle(promise), V8SharpRealm.ToHost(value), message);
+    }
+
+    /// <summary>The message listener d8 installs (PrintMessageCallback).</summary>
+    void OnMessage(VIsolate isolate, JavaScriptException e)
+    {
+        NativeContext? current = isolate.Context?.NativeContext;
+        V8SharpRealm realm = _realms[0];
+        foreach (var r in _realms)
+        {
+            if (ReferenceEquals(r.Context, current)) realm = r;
+        }
+        Host.ReportMessage(realm, realm.ExceptionInfo(e.Value, e.MessageObject));
+    }
+
+    /// <summary>A TextWriter over the host's stdout (Isolate.StdOut).</summary>
+    sealed class HostWriter(Action<string> write) : TextWriter
+    {
+        public override System.Text.Encoding Encoding => System.Text.Encoding.UTF8;
+        public override void Write(char value) => write(value.ToString());
+        public override void Write(string? value)
+        {
+            if (value is not null) write(value);
+        }
     }
 
     public void Dispose() => Isolate.Deinit();
@@ -219,12 +267,13 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
         }
     }
 
-    JsExceptionInfo ExceptionInfo(JavaScriptException e)
+    JsExceptionInfo ExceptionInfo(JavaScriptException e) => ExceptionInfo(e.Value, e.MessageObject);
+
+    internal JsExceptionInfo ExceptionInfo(JSValue value, JSMessageObject? message)
     {
-        object? exception = ToHost(e.Value);
-        bool isSyntax = e.Value.HeapObjectOrNull is JSObject o &&
+        object? exception = ToHost(value);
+        bool isSyntax = value.HeapObjectOrNull is JSObject o &&
             ReferenceEquals(o.Map, Context.SyntaxErrorFunction.InitialMap);
-        JSMessageObject? message = e.MessageObject;
         if (message is null) return new JsExceptionInfo(exception, IsSyntaxError: isSyntax);
         string name = message.Script.Name.HeapObjectOrNull is JSString n ? n.ToString() : "undefined";
         int line = message.GetLineNumber();
@@ -248,9 +297,14 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
     /// <summary>The realm's module map and callbacks (d8's ModuleEmbedderData), created with the realm.</summary>
     readonly ModuleLoader _moduleLoader = new(owner.Isolate, context, new HostModuleSourceProvider(owner.Host));
 
+    /// <summary>The root module and evaluation promise of the last RunModule, for FinishModule.</summary>
+    (SourceTextModule Module, JSPromise Promise)? _lastModule;
+
     public Completion RunModule(string source, string name) => Execute(() =>
     {
-        (_, JSPromise promise) = _moduleLoader.StartModule(name, new ModuleSourceText(name, source));
+        _lastModule = null;
+        (SourceTextModule module, JSPromise promise) = _moduleLoader.StartModule(name, new ModuleSourceText(name, source));
+        _lastModule = (module, promise);
         VExecution.PerformMicrotaskCheckpoint(Isolate);
         // A module's evaluation returns a promise (top-level await); d8 reports
         // its rejection as an uncaught exception, thrown afresh (ThrowException)
@@ -258,6 +312,37 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
         if (promise.Status == PromiseState.kRejected) Isolate.Throw(promise.Result);
         return JSValue.Undefined;
     });
+
+    public Completion FinishModule()
+    {
+        if (_lastModule is not { } last) return Completion.Of(JsUndefined.Value);
+        _lastModule = null;
+        return Execute(() =>
+        {
+            if (last.Promise.Status == PromiseState.kRejected)
+            {
+                // If the exception has been caught by the promise pipeline, we
+                // rethrow here in order to ReportException.
+                Isolate.Throw(last.Promise.Result);
+            }
+            var stalled = last.Module.GetStalledTopLevelAwaitMessages(Isolate);
+            if (stalled.Count > 0)
+            {
+                JSMessageObject message = stalled[0].Message;
+                JSString text = MessageFormatter.Format(Isolate, message.Type, [message.Argument]);
+                throw new JavaScriptException(Isolate.Factory.NewError(Context.ErrorFunction, text), message);
+            }
+            return JSValue.Undefined;
+        });
+    }
+
+    public Completion JsonParse(string source) => Execute(() =>
+        V8Sharp.Json.JsonParser.Parse(Isolate, Isolate.Factory.NewStringFromUtf16(source), JSValue.Undefined));
+
+    public Completion ThrowError(string message) => Execute(() =>
+        Isolate.Throw(Isolate.Factory.NewError(Context.ErrorFunction, Isolate.Factory.NewStringFromUtf16(message))));
+
+    public bool HasConsoleDelegate => true;
 
     public Completion Compile(string source, string name, bool isModule) => Execute(() =>
     {

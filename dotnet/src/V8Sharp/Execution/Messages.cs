@@ -96,6 +96,16 @@ public static class MessageHandler
             result.Script = location.Script;
             result.BytecodeOffset = location.BytecodeOffset;
             result.SharedInfo = location.Shared;
+            // JSMessageObject::InitializeSourcePositions, done eagerly: a location
+            // given as (shared, bytecode offset) gets the source position of
+            // that bytecode.
+            if (result.StartPosition == -1 && location.Shared?.FunctionData is Interpreter.BytecodeArray code &&
+                location.BytecodeOffset >= 0)
+            {
+                int position = code.SourcePosition(location.BytecodeOffset);
+                result.StartPosition = position;
+                result.EndPosition = position + 1;
+            }
         }
         return result;
     }

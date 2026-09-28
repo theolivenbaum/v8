@@ -163,13 +163,30 @@ public sealed class MessageOutputProcessor(IReadOnlyList<string> expected, strin
         string basename = Path.GetFileName(js);
         for (int i = 0; i < expectedLines.Count; i++)
         {
-            string pattern = Regex.Escape(expectedLines[i].TrimEnd().Replace("%(basename)s", basename, StringComparison.Ordinal));
+            string pattern = Regex.Escape(PercentFormat(expectedLines[i].TrimEnd(), basename));
             pattern = pattern.Replace("\\*", ".*", StringComparison.Ordinal)
                 .Replace("\\{NUMBER}", @"-?\d+(?:\.\d*)?", StringComparison.Ordinal)
                 .Replace("\\{ADDRESS}", "(0x)?[0-9A-Fa-f]+", StringComparison.Ordinal);
             if (!Regex.IsMatch(actualLines[i], "^" + pattern + "$")) return true;
         }
         return false;
+    }
+
+    // Python's `line % {'basename': ...}`: `%(basename)s` is the file name and
+    // `%%` a literal percent sign (e.g. `%%Array%%.from` in the .out files).
+    static string PercentFormat(string line, string basename)
+    {
+        var sb = new StringBuilder(line.Length);
+        for (int i = 0; i < line.Length; i++)
+        {
+            if (line[i] == '%' && i + 1 < line.Length)
+            {
+                if (line[i + 1] == '%') { sb.Append('%'); i++; continue; }
+                if (string.CompareOrdinal(line, i, "%(basename)s", 0, 12) == 0) { sb.Append(basename); i += 11; continue; }
+            }
+            sb.Append(line[i]);
+        }
+        return sb.ToString();
     }
 
     static bool IgnoreLine(string s) =>

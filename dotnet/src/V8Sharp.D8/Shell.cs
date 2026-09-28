@@ -32,6 +32,8 @@ public sealed class Shell
         FlagList flags = FlagList.Default.Clone();
         var sources = new List<(string Kind, string Value)>();
         bool bundle = false;
+        bool enableTracing = false;
+        string? traceConfig = null;
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
@@ -43,9 +45,22 @@ public sealed class Shell
             {
                 sources.Add(("module", args[++i]));
             }
+            else if (arg == "--json" && i + 1 < args.Length)
+            {
+                // Treat the next file as a JSON file.
+                sources.Add(("json", args[++i]));
+            }
             else if (arg == "--bundle")
             {
                 bundle = true;
+            }
+            else if (arg == "--enable-tracing")
+            {
+                enableTracing = true;
+            }
+            else if (arg.StartsWith("--trace-config=", StringComparison.Ordinal))
+            {
+                traceConfig = arg["--trace-config=".Length..];
             }
             else if (arg is "--version" or "-v")
             {
@@ -72,6 +87,15 @@ public sealed class Shell
         {
             var shell = new Shell(isolate);
             shell.Register();
+            isolate.ConsoleDelegate = new D8Console();
+            // PrintMessageCallback: exceptions caught by the engine's verbose
+            // TryCatches (microtask and FinalizationRegistry callbacks).
+            isolate.DefaultMicrotaskQueue.UncaughtException += (_, e) => shell.ReportException(e);
+            if (enableTracing && traceConfig is not null && !shell.LoadTraceConfig(traceConfig))
+            {
+                Console.Out.Flush();
+                return 1;
+            }
             shell.InstallGlobals(isolate.NativeContext);
             shell._provider = new D8ModuleSourceProvider(Directory.GetCurrentDirectory());
             shell._bundle = bundle;
@@ -86,6 +110,7 @@ public sealed class Shell
                     {
                         "e" => shell.ExecuteString(value, "unnamed"),
                         "module" => shell.ExecuteModule(value),
+                        "json" => shell.LoadJson(value),
                         _ => shell.ExecuteFile(value),
                     };
                     if (!ok)
@@ -172,7 +197,15 @@ public sealed class Shell
         }
         catch (IOException)
         {
-            Console.Error.WriteLine("Error reading '" + path + "'");
+            if (_bundle)
+            {
+                Console.Out.Write("Error reading '" + path + "'\n");
+                throw new QuitException(1);
+            }
+            // Shell::ExecuteSource of Source::FromFile: ReadFile throws
+            // "Error loading file: <name>" from C++, reported like any
+            // uncaught exception.
+            ReportException(ThrowError("Error loading file: " + path));
             return false;
         }
         if (_bundle && TryExecuteBundle(source, path, out bool success)) return success;
@@ -233,6 +266,90 @@ public sealed class Shell
             Console.Out.Write("V8Sharp internal error: " + e.GetType().Name + ": " + e.Message + "\n\n");
             return false;
         }
+    }
+
+    /// <summary>Shell::ThrowError from C++ (no JavaScript frame): the exception as it would be caught.</summary>
+    JavaScriptException ThrowError(string message)
+    {
+        try
+        {
+            _isolate.Throw(_isolate.Factory.NewError(_isolate.NativeContext.ErrorFunction,
+                _isolate.Factory.NewStringFromUtf16(message)));
+        }
+        catch (JavaScriptException e)
+        {
+            return e;
+        }
+        throw new InvalidOperationException("unreachable");
+    }
+
+    /// <summary>
+    /// Shell::LoadJSON (--json FILE): every line of the file is parsed as a
+    /// JSON value; a parse error is reported like an uncaught exception.
+    /// </summary>
+    bool LoadJson(string fileName)
+    {
+        if (fileName.StartsWith("data:", StringComparison.Ordinal))
+        {
+            Console.Out.Write("d8: --json does not support data URLs\n");
+            throw new QuitException(1);
+        }
+        string data;
+        try
+        {
+            data = File.ReadAllText(fileName);
+        }
+        catch (IOException)
+        {
+            Console.Out.Write("Error reading '" + fileName + "'\n");
+            throw new QuitException(1);
+        }
+        // std::getline: a trailing newline does not start another line.
+        string[] lines = data.Split('\n');
+        int count = data.EndsWith('\n') ? lines.Length - 1 : lines.Length;
+        for (int i = 0; i < count; i++)
+        {
+            try
+            {
+                Json.JsonParser.Parse(_isolate, _isolate.Factory.NewStringFromUtf16(lines[i]), JSValue.Undefined);
+            }
+            catch (JavaScriptException e)
+            {
+                ReportException(e);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// --enable-tracing --trace-config=FILE: TraceConfigParser::FillTraceConfig
+    /// parses the file as JSON; tracing itself is not implemented, so the
+    /// categories are not used.
+    /// </summary>
+    bool LoadTraceConfig(string path)
+    {
+        string json;
+        try
+        {
+            json = File.ReadAllText(path);
+        }
+        catch (IOException)
+        {
+            Console.Out.Write("Failed to read trace config from '" + path + "'\n");
+            return false;
+        }
+        try
+        {
+            Json.JsonParser.Parse(_isolate, _isolate.Factory.NewStringFromUtf16(json), JSValue.Undefined);
+        }
+        catch (JavaScriptException e)
+        {
+            Console.Out.Write("Failed to parse trace config.\n\n");
+            ReportException(e);
+            return false;
+        }
+        return true;
     }
 
     JSValue RunScript(string source, string name)

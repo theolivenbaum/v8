@@ -155,8 +155,63 @@ public static class RuntimeTest
         {
             text = ObjectOps.NoSideEffectsToString(isolate, value).ToString();
         }
-        Console.Out.WriteLine("DebugPrint: " + text);
+        isolate.StdOut.WriteLine("DebugPrint: " + text);
         return value;
+    }
+
+    /// <summary>%DebugTraceMinimal: Isolate::PrintMinimalStack(stdout).</summary>
+    public static JSValue DebugTraceMinimal(Isolate isolate)
+    {
+        isolate.StdOut.Write(BuildMinimalStack(isolate, int.MaxValue));
+        return JSValue.Undefined;
+    }
+
+    /// <summary>
+    /// Isolate::BuildMinimalStack with isolate.cc's MinimalStackPrinter: one
+    /// line per JavaScript frame, "name in script:line:column", where a
+    /// script repeated from the previous line prints as "=", ended by "$".
+    /// </summary>
+    public static string BuildMinimalStack(Isolate isolate, int maxLength)
+    {
+        const string kUnknownName = "<none>";
+        const string kRepeatMarker = "=";
+        const string kEndMarker = "$";
+        var @out = new System.Text.StringBuilder();
+        string? prevScriptName = null;
+        IJavaScriptFrames? frames = isolate.Frames;
+        if (frames is not null)
+        {
+            for (int i = 0; @out.Length < maxLength && frames.TryGetFrame(i, out JavaScriptFrameSummary summary); i++)
+            {
+                JSString name = summary.Function.Shared.Name();
+                @out.Append(name.Length == 0 ? kUnknownName : name.ToString());
+                Script? script = summary.Function.Shared.Script;
+                if (script is not null && script.GetNameOrSourceURL().HeapObjectOrNull is JSString nameOrUrl)
+                {
+                    string currentName = nameOrUrl.ToString();
+                    if (currentName == prevScriptName)
+                    {
+                        @out.Append(" in ").Append(kRepeatMarker);
+                    }
+                    else
+                    {
+                        @out.Append(" in ").Append(currentName);
+                        prevScriptName = currentName;
+                    }
+                }
+                // Source positions are always available: V8Sharp keeps the
+                // source position table of every bytecode array.
+                if (script is not null)
+                {
+                    int pos = summary.SourcePosition;
+                    @out.Append(':').Append((script.GetLineNumber(pos) + 1).ToString(CultureInfo.InvariantCulture))
+                        .Append(':').Append((script.GetColumnNumber(pos) + 1).ToString(CultureInfo.InvariantCulture));
+                }
+                @out.Append('\n');
+            }
+        }
+        @out.Append(kEndMarker).Append('\n');
+        return @out.ToString();
     }
 
     /// <summary>%Is64Bit.</summary>

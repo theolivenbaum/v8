@@ -136,11 +136,18 @@ public static class RuntimeClasses
         constructor.Map = map;
 
         const PropertyAttributes roc = PropertyAttributes.DONT_ENUM | PropertyAttributes.READ_ONLY;
-        JSObject.SetAccessor(isolate, constructor, ReadOnlyRoots.length_string, Accessors.FunctionLengthAccessor, roc);
+        const PropertyAttributes ro = PropertyAttributes.DONT_ENUM | PropertyAttributes.DONT_DELETE | PropertyAttributes.READ_ONLY;
+        // The static properties template starts with the length, name and
+        // prototype accessors (ClassBoilerplate::New); AddDescriptorsByTemplate
+        // installs them as AccessorConstant descriptors, so the constructor
+        // keeps a fast map whose name descriptor is the FunctionNameGetter
+        // (UseFastFunctionNameLookup: stack frames of anonymous classes show
+        // the inferred name). JSObject::SetAccessor would normalize the map.
+        Map.EnsureDescriptorSlack(isolate, map, 3);
+        map.AppendDescriptor(isolate, Descriptor.AccessorConstant(ReadOnlyRoots.length_string, Accessors.FunctionLengthAccessor, roc));
         // All classes, even anonymous ones, have a name accessor.
-        JSObject.SetAccessor(isolate, constructor, ReadOnlyRoots.name_string, Accessors.FunctionNameAccessor, roc);
-        JSObject.SetAccessor(isolate, constructor, ReadOnlyRoots.prototype_string, Accessors.FunctionPrototypeAccessor,
-            PropertyAttributes.DONT_ENUM | PropertyAttributes.DONT_DELETE | PropertyAttributes.READ_ONLY);
+        map.AppendDescriptor(isolate, Descriptor.AccessorConstant(ReadOnlyRoots.name_string, Accessors.FunctionNameAccessor, roc));
+        map.AppendDescriptor(isolate, Descriptor.AccessorConstant(ReadOnlyRoots.prototype_string, Accessors.FunctionPrototypeAccessor, ro));
         JSObject.SetOwnPropertyIgnoreAttributes(isolate, constructor, ReadOnlyRoots.class_positions_symbol,
             new ClassPositions(classBoilerplate.StartPosition, classBoilerplate.EndPosition), PropertyAttributes.DONT_ENUM);
 

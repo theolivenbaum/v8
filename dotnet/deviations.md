@@ -310,7 +310,15 @@ for now, to be revisited when the reason goes away.
   positions); there is no compilation cache and no preparse data (inner
   functions are reparsed); every lazy function has UncompiledData without
   preparse data. `DefineClass` builds the class sequentially from the class
-  boilerplate stand-in. The template object cache is per SharedFunctionInfo.
+  boilerplate stand-in: the constructor's map gets the length, name and
+  prototype AccessorConstant descriptors appended (as the descriptor template
+  of AddDescriptorsByTemplate has them, so the map stays fast and
+  UseFastFunctionNameLookup holds), and the members are then added through
+  ordinary property definitions (fields rather than V8's constant
+  descriptors). The template object cache is per SharedFunctionInfo.
+- A JSMessageObject whose location is a (SharedFunctionInfo, bytecode offset)
+  pair (a stalled top-level await) gets its source position when it is made,
+  where V8 computes it on first use (InitializeSourcePositions).
 - Async functions and generators follow builtins-async-*-gen.cc; the debugger
   parts (Runtime_DebugAsyncFunctionSuspended's debug events, async stack
   trace annotations for the inspector) are not ported.
@@ -462,6 +470,23 @@ d8 host in the TestRunner (tools/V8Sharp.TestRunner/Shell)
 - `print`, `printErr` and `write` are API functions (`CreateStringArgumentsFunction`),
   so they do not appear in stack traces; API functions are sloppy, as V8's
   FunctionTemplate functions are for CallSite purposes.
+- d8's console is `V8Sharp.D8.D8Console` (d8-console.cc) behind the engine's
+  own console builtins, in d8sharp and in the TestRunner's v8sharp engine
+  (the oracle engine keeps the JavaScript replacement in d8-shim.js). Not
+  ported: `console.profile`/`profileEnd` (no CPU profiler) and
+  `console.trace` (V8 prints the stack to stderr).
+- The runtime's own stdout output (`%DebugPrint`, `%DebugTraceMinimal`,
+  `--disable-abortjs`) goes to `Isolate.StdOut`, a TextWriter defaulting to
+  `Console.Out`, where V8 writes to the C stdout: the in-process shell
+  redirects it into the test's output so it interleaves with `print`.
+- `--enable-tracing --trace-config=FILE`: the file is read and parsed as
+  JSON, with d8's error reports, but there is no tracing controller, so the
+  categories are not used. d8sharp parses it in the main context (d8: a
+  fresh context); the TestRunner uses a fresh realm.
+- The message listener d8 installs (PrintMessageCallback) is the
+  `MicrotaskQueue.UncaughtException` event, which V8Sharp raises for the
+  exceptions V8 reports through verbose TryCatches (microtask callbacks,
+  FinalizationRegistry cleanup callbacks).
 
 ## String and RegExp builtins
 
