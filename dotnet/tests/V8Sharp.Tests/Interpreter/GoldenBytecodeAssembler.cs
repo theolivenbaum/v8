@@ -2,6 +2,7 @@
 // bytecodes with source positions, constant pool, handlers) back into a
 // BytecodeArray, so that printing it with BytecodeExpectationsPrinter can be
 // checked against the text it came from. Not a V8 file: V8 only prints.
+using V8Sharp.Runtime;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
@@ -270,7 +271,7 @@ public static class GoldenBytecodeAssembler
                 ExpectTag(tag, "U" + size_tag, token);
                 const string prefix = "Runtime::k";
                 if (!payload.StartsWith(prefix, StringComparison.Ordinal) ||
-                    !RuntimeFunctions.TryFromName(payload[prefix.Length..], out RuntimeFunctionId id))
+                    !RuntimeFunctions.TryFromName(payload[prefix.Length..], out FunctionId id))
                 {
                     throw new GoldenFormatException("unknown runtime function: " + token);
                 }

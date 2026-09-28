@@ -9,6 +9,10 @@
 //     caller passes it as a bool.
 //   - `Variable*` for LoadContextSlot/StoreContextSlot is a ContextSlotVariable.
 // TODO(merge): the BytecodeGenerator port passes its AST objects straight through.
+using V8Sharp.Ast;
+using V8Sharp.Common;
+using V8Sharp.Parsing;
+using V8Sharp.Runtime;
 using System.Runtime.CompilerServices;
 using V8Sharp.Codegen;
 
@@ -481,85 +485,85 @@ public sealed class BytecodeArrayBuilder
     // ---- Operators ----------------------------------------------------------
 
     /// <summary>Binary operators (register holds the lhs value, accumulator holds the rhs value).</summary>
-    public BytecodeArrayBuilder BinaryOperation(Token.Value op, Register reg, int feedbackSlot)
+    public BytecodeArrayBuilder BinaryOperation(Token op, Register reg, int feedbackSlot)
     {
         // feedback is embedded into bytecode array for binary operations
         Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
         const int fb = InterpreterConstants.kUninitializedEmbeddedFeedback;
         switch (op)
         {
-            case Token.Value.Add: Output(Bytecode.Add, reg, fb); break;
-            case Token.Value.Sub: Output(Bytecode.Sub, reg, fb); break;
-            case Token.Value.Mul: Output(Bytecode.Mul, reg, fb); break;
-            case Token.Value.Div: Output(Bytecode.Div, reg, fb); break;
-            case Token.Value.Mod: Output(Bytecode.Mod, reg, fb); break;
-            case Token.Value.Exp: Output(Bytecode.Exp, reg, fb); break;
-            case Token.Value.BitOr: Output(Bytecode.BitwiseOr, reg, fb); break;
-            case Token.Value.BitXor: Output(Bytecode.BitwiseXor, reg, fb); break;
-            case Token.Value.BitAnd: Output(Bytecode.BitwiseAnd, reg, fb); break;
-            case Token.Value.Shl: Output(Bytecode.ShiftLeft, reg, fb); break;
-            case Token.Value.Sar: Output(Bytecode.ShiftRight, reg, fb); break;
-            case Token.Value.Shr: Output(Bytecode.ShiftRightLogical, reg, fb); break;
+            case Token.Add: Output(Bytecode.Add, reg, fb); break;
+            case Token.Sub: Output(Bytecode.Sub, reg, fb); break;
+            case Token.Mul: Output(Bytecode.Mul, reg, fb); break;
+            case Token.Div: Output(Bytecode.Div, reg, fb); break;
+            case Token.Mod: Output(Bytecode.Mod, reg, fb); break;
+            case Token.Exp: Output(Bytecode.Exp, reg, fb); break;
+            case Token.BitOr: Output(Bytecode.BitwiseOr, reg, fb); break;
+            case Token.BitXor: Output(Bytecode.BitwiseXor, reg, fb); break;
+            case Token.BitAnd: Output(Bytecode.BitwiseAnd, reg, fb); break;
+            case Token.Shl: Output(Bytecode.ShiftLeft, reg, fb); break;
+            case Token.Sar: Output(Bytecode.ShiftRight, reg, fb); break;
+            case Token.Shr: Output(Bytecode.ShiftRightLogical, reg, fb); break;
             default: throw new UnreachableException();
         }
         return this;
     }
 
-    public BytecodeArrayBuilder Add_StringConstant_Internalize(Token.Value op, Register reg, int feedbackSlot,
+    public BytecodeArrayBuilder Add_StringConstant_Internalize(Token op, Register reg, int feedbackSlot,
                                                                AddStringConstantAndInternalizeVariant asVariant)
     {
-        Debug.Assert(op == Token.Value.Add);
+        Debug.Assert(op == Token.Add);
         Output(Bytecode.Add_StringConstant_Internalize, reg, feedbackSlot, (int)asVariant);
         return this;
     }
 
     /// <summary>Same as BinaryOperation, but lhs in the accumulator and rhs in |literal|.</summary>
-    public BytecodeArrayBuilder BinaryOperationSmiLiteral(Token.Value op, Smi literal, int feedbackSlot)
+    public BytecodeArrayBuilder BinaryOperationSmiLiteral(Token op, Smi literal, int feedbackSlot)
     {
         Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
         const int fb = InterpreterConstants.kUninitializedEmbeddedFeedback;
         int v = literal.Value;
         switch (op)
         {
-            case Token.Value.Add: Output(Bytecode.AddSmi, v, fb); break;
-            case Token.Value.Sub: Output(Bytecode.SubSmi, v, fb); break;
-            case Token.Value.Mul: Output(Bytecode.MulSmi, v, fb); break;
-            case Token.Value.Div: Output(Bytecode.DivSmi, v, fb); break;
-            case Token.Value.Mod: Output(Bytecode.ModSmi, v, fb); break;
-            case Token.Value.Exp: Output(Bytecode.ExpSmi, v, fb); break;
-            case Token.Value.BitOr: Output(Bytecode.BitwiseOrSmi, v, fb); break;
-            case Token.Value.BitXor: Output(Bytecode.BitwiseXorSmi, v, fb); break;
-            case Token.Value.BitAnd: Output(Bytecode.BitwiseAndSmi, v, fb); break;
-            case Token.Value.Shl: Output(Bytecode.ShiftLeftSmi, v, fb); break;
-            case Token.Value.Sar: Output(Bytecode.ShiftRightSmi, v, fb); break;
-            case Token.Value.Shr: Output(Bytecode.ShiftRightLogicalSmi, v, fb); break;
+            case Token.Add: Output(Bytecode.AddSmi, v, fb); break;
+            case Token.Sub: Output(Bytecode.SubSmi, v, fb); break;
+            case Token.Mul: Output(Bytecode.MulSmi, v, fb); break;
+            case Token.Div: Output(Bytecode.DivSmi, v, fb); break;
+            case Token.Mod: Output(Bytecode.ModSmi, v, fb); break;
+            case Token.Exp: Output(Bytecode.ExpSmi, v, fb); break;
+            case Token.BitOr: Output(Bytecode.BitwiseOrSmi, v, fb); break;
+            case Token.BitXor: Output(Bytecode.BitwiseXorSmi, v, fb); break;
+            case Token.BitAnd: Output(Bytecode.BitwiseAndSmi, v, fb); break;
+            case Token.Shl: Output(Bytecode.ShiftLeftSmi, v, fb); break;
+            case Token.Sar: Output(Bytecode.ShiftRightSmi, v, fb); break;
+            case Token.Shr: Output(Bytecode.ShiftRightLogicalSmi, v, fb); break;
             default: throw new UnreachableException();
         }
         return this;
     }
 
     /// <summary>Unary and Count Operators (value stored in accumulator).</summary>
-    public BytecodeArrayBuilder UnaryOperation(Token.Value op, int feedbackSlot)
+    public BytecodeArrayBuilder UnaryOperation(Token op, int feedbackSlot)
     {
         const int fb = InterpreterConstants.kUninitializedEmbeddedFeedback;
         switch (op)
         {
-            case Token.Value.Inc:
+            case Token.Inc:
                 Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
                 Output(Bytecode.Inc, fb);
                 break;
-            case Token.Value.Dec:
+            case Token.Dec:
                 Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
                 Output(Bytecode.Dec, fb);
                 break;
-            case Token.Value.Add:
+            case Token.Add:
                 Output(Bytecode.ToNumber, feedbackSlot);
                 break;
-            case Token.Value.Sub:
+            case Token.Sub:
                 Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
                 Output(Bytecode.Negate, fb);
                 break;
-            case Token.Value.BitNot:
+            case Token.BitNot:
                 Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
                 Output(Bytecode.BitwiseNot, fb);
                 break;
@@ -605,40 +609,40 @@ public sealed class BytecodeArrayBuilder
         return this;
     }
 
-    public BytecodeArrayBuilder CompareOperation(Token.Value op, Register reg, int feedbackSlot)
+    public BytecodeArrayBuilder CompareOperation(Token op, Register reg, int feedbackSlot)
     {
         const int fb = InterpreterConstants.kUninitializedEmbeddedFeedback;
         switch (op)
         {
-            case Token.Value.Eq:
+            case Token.Eq:
                 Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
                 Output(Bytecode.TestEqual, reg, fb);
                 break;
-            case Token.Value.EqStrict:
+            case Token.EqStrict:
                 // feedback is embedded into bytecode array for strict equal
                 Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
                 Output(Bytecode.TestEqualStrict, reg, fb);
                 break;
-            case Token.Value.LessThan:
+            case Token.LessThan:
                 Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
                 Output(Bytecode.TestLessThan, reg, fb);
                 break;
-            case Token.Value.GreaterThan:
+            case Token.GreaterThan:
                 Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
                 Output(Bytecode.TestGreaterThan, reg, fb);
                 break;
-            case Token.Value.LessThanEq:
+            case Token.LessThanEq:
                 Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
                 Output(Bytecode.TestLessThanOrEqual, reg, fb);
                 break;
-            case Token.Value.GreaterThanEq:
+            case Token.GreaterThanEq:
                 Debug.Assert(feedbackSlot == InterpreterConstants.kFeedbackIsEmbedded);
                 Output(Bytecode.TestGreaterThanOrEqual, reg, fb);
                 break;
-            case Token.Value.InstanceOf:
+            case Token.InstanceOf:
                 Output(Bytecode.TestInstanceOf, reg, feedbackSlot);
                 break;
-            case Token.Value.In:
+            case Token.In:
                 Output(Bytecode.TestIn, reg, feedbackSlot);
                 break;
             default:
@@ -671,10 +675,10 @@ public sealed class BytecodeArrayBuilder
         return this;
     }
 
-    public BytecodeArrayBuilder CompareNil(Token.Value op, NilValue nil)
+    public BytecodeArrayBuilder CompareNil(Token op, NilValue nil)
     {
-        if (op == Token.Value.Eq) return CompareUndetectable();
-        Debug.Assert(op == Token.Value.EqStrict);
+        if (op == Token.Eq) return CompareUndetectable();
+        Debug.Assert(op == Token.EqStrict);
         if (nil == NilValue.UndefinedValue) return CompareUndefined();
         Debug.Assert(nil == NilValue.NullValue);
         return CompareNull();
@@ -889,7 +893,7 @@ public sealed class BytecodeArrayBuilder
     public BytecodeArrayBuilder LoadContextSlot(Register context, ContextSlotVariable variable, int depth)
     {
         int slot_index = variable.Index;
-        if (variable.MaybeAssigned == MaybeAssignedFlag.NotAssigned)
+        if (variable.MaybeAssigned == MaybeAssignedFlag.kNotAssigned)
         {
             if (context.IsCurrentContext && depth == 0)
                 Output(Bytecode.LdaImmutableCurrentContextSlot, slot_index);
@@ -918,7 +922,7 @@ public sealed class BytecodeArrayBuilder
     public BytecodeArrayBuilder StoreContextSlot(Register context, ContextSlotVariable variable, int depth)
     {
         int slot_index = variable.Index;
-        if (variable.MaybeAssigned != MaybeAssignedFlag.NotAssigned && variable.ScopeHasContextCells)
+        if (variable.MaybeAssigned != MaybeAssignedFlag.kNotAssigned && variable.ScopeHasContextCells)
         {
             if (context.IsCurrentContext && depth == 0)
                 Output(Bytecode.StaCurrentContextSlot, slot_index);
@@ -1198,9 +1202,9 @@ public sealed class BytecodeArrayBuilder
     {
         switch (type)
         {
-            case CreateArgumentsType.MappedArguments: Output(Bytecode.CreateMappedArguments); break;
-            case CreateArgumentsType.UnmappedArguments: Output(Bytecode.CreateUnmappedArguments); break;
-            case CreateArgumentsType.RestParameter: Output(Bytecode.CreateRestParameter); break;
+            case CreateArgumentsType.kMappedArguments: Output(Bytecode.CreateMappedArguments); break;
+            case CreateArgumentsType.kUnmappedArguments: Output(Bytecode.CreateUnmappedArguments); break;
+            case CreateArgumentsType.kRestParameter: Output(Bytecode.CreateRestParameter); break;
             default: throw new UnreachableException();
         }
         return this;
@@ -1472,27 +1476,27 @@ public sealed class BytecodeArrayBuilder
         return this;
     }
 
-    public BytecodeArrayBuilder JumpIfNil(BytecodeLabel label, Token.Value op, NilValue nil)
+    public BytecodeArrayBuilder JumpIfNil(BytecodeLabel label, Token op, NilValue nil)
     {
-        if (op == Token.Value.Eq)
+        if (op == Token.Eq)
         {
             // TODO(rmcilroy): Implement JumpIfUndetectable.
             return CompareUndetectable().JumpIfTrue(ToBooleanMode.AlreadyBoolean, label);
         }
-        Debug.Assert(op == Token.Value.EqStrict);
+        Debug.Assert(op == Token.EqStrict);
         if (nil == NilValue.UndefinedValue) return JumpIfUndefined(label);
         Debug.Assert(nil == NilValue.NullValue);
         return JumpIfNull(label);
     }
 
-    public BytecodeArrayBuilder JumpIfNotNil(BytecodeLabel label, Token.Value op, NilValue nil)
+    public BytecodeArrayBuilder JumpIfNotNil(BytecodeLabel label, Token op, NilValue nil)
     {
-        if (op == Token.Value.Eq)
+        if (op == Token.Eq)
         {
             // TODO(rmcilroy): Implement JumpIfUndetectable.
             return CompareUndetectable().JumpIfFalse(ToBooleanMode.AlreadyBoolean, label);
         }
-        Debug.Assert(op == Token.Value.EqStrict);
+        Debug.Assert(op == Token.EqStrict);
         if (nil == NilValue.UndefinedValue) return JumpIfNotUndefined(label);
         Debug.Assert(nil == NilValue.NullValue);
         return JumpIfNotNull(label);
@@ -1739,7 +1743,7 @@ public sealed class BytecodeArrayBuilder
     }
 
     /// <summary>Call the runtime function with |functionId| and arguments |args|.</summary>
-    public BytecodeArrayBuilder CallRuntime(RuntimeFunctionId functionId, RegisterList args)
+    public BytecodeArrayBuilder CallRuntime(FunctionId functionId, RegisterList args)
     {
         Debug.Assert(RuntimeFunctions.ResultSize(functionId) == 1);
         Debug.Assert(Bytecodes.SizeForUnsignedOperand((uint)functionId) <= OperandSize.Short);
@@ -1757,16 +1761,16 @@ public sealed class BytecodeArrayBuilder
     }
 
     /// <summary>Call the runtime function with |functionId| with single argument |arg|.</summary>
-    public BytecodeArrayBuilder CallRuntime(RuntimeFunctionId functionId, Register arg) =>
+    public BytecodeArrayBuilder CallRuntime(FunctionId functionId, Register arg) =>
         CallRuntime(functionId, new RegisterList(arg));
 
     /// <summary>Call the runtime function with |functionId| with no arguments.</summary>
-    public BytecodeArrayBuilder CallRuntime(RuntimeFunctionId functionId) =>
+    public BytecodeArrayBuilder CallRuntime(FunctionId functionId) =>
         CallRuntime(functionId, RegisterList.Empty);
 
     /// <summary>Call the runtime function with |functionId| and arguments |args|,
     /// that returns a pair of values in |returnPair|.</summary>
-    public BytecodeArrayBuilder CallRuntimeForPair(RuntimeFunctionId functionId, RegisterList args,
+    public BytecodeArrayBuilder CallRuntimeForPair(FunctionId functionId, RegisterList args,
                                                    RegisterList returnPair)
     {
         Debug.Assert(RuntimeFunctions.ResultSize(functionId) == 2);
@@ -1777,7 +1781,7 @@ public sealed class BytecodeArrayBuilder
         return this;
     }
 
-    public BytecodeArrayBuilder CallRuntimeForPair(RuntimeFunctionId functionId, Register arg, RegisterList returnPair) =>
+    public BytecodeArrayBuilder CallRuntimeForPair(FunctionId functionId, Register arg, RegisterList returnPair) =>
         CallRuntimeForPair(functionId, new RegisterList(arg), returnPair);
 
     /// <summary>Call the JS runtime function with |contextIndex| and arguments
@@ -1925,6 +1929,36 @@ public sealed class BytecodeArrayBuilder
     }
 
     public BytecodeRegisterAllocator RegisterAllocator() => _registerAllocator;
+
+    // ---- AST overloads (the bytecode generator's entry points) --------------
+
+    public void SetStatementPosition(Statement stmt, bool isBreakable = true) =>
+        SetStatementPosition(stmt.position(), isBreakable);
+
+    public void SetExpressionPosition(Expression expr) => SetExpressionPosition(expr.position());
+
+    public void SetExpressionAsStatementPosition(Expression expr, bool isBreakable = true) =>
+        SetStatementPosition(expr.position(), isBreakable);
+
+    static ContextSlotVariable SlotOf(Variable variable) =>
+        new(variable.index(), variable.maybe_assigned(), variable.scope()!.has_context_cells());
+
+    /// <summary>LoadContextSlot(Register, Variable*, int).</summary>
+    public BytecodeArrayBuilder LoadContextSlot(Register context, Variable variable, int depth) =>
+        LoadContextSlot(context, SlotOf(variable), depth);
+
+    /// <summary>StoreContextSlot(Register, Variable*, int).</summary>
+    public BytecodeArrayBuilder StoreContextSlot(Register context, Variable variable, int depth) =>
+        StoreContextSlot(context, SlotOf(variable), depth);
+
+    /// <summary>CreateFunctionContext(const Scope*, int).</summary>
+    public BytecodeArrayBuilder CreateFunctionContext(Scope scope, int slots) =>
+        CreateFunctionContext(scope, slots, scope.has_context_cells());
+
+    public BytecodeArrayBuilder LoadLiteral(AstRawString rawString) => LoadLiteralRawString(rawString);
+    public BytecodeArrayBuilder LoadLiteral(AstConsString consString) => LoadLiteralConsString(consString);
+    public BytecodeArrayBuilder LoadLiteral(Scope scope) => LoadLiteralScope(scope);
+    public BytecodeArrayBuilder LoadLiteral(AstBigInt bigint) => LoadLiteralBigInt(bigint);
 
     public static string ToString(ToBooleanMode mode) => mode switch
     {

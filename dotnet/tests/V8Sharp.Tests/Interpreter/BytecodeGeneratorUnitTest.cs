@@ -1,11 +1,8 @@
-// Port of the golden-file harness of test/unittests/interpreter/bytecode-generator-unittest.cc,
-// plus a round trip of every golden file through the ported parser, an
-// assembler for the expectation text, and the ported printer.
-//
-// CompilationMatchesExpectation needs the bytecode generator.
-// TODO(merge): when BytecodeGenerator lands, implement
-// IBytecodeExpectationsCompiler and replace the round trip's
-// GoldenBytecodeAssembler.Assemble(expectation) with compiling the snippet.
+// Port of test/unittests/interpreter/bytecode-generator-unittest.cc: every
+// golden file in test/unittests/interpreter/bytecode_expectations compiled by
+// the ported BytecodeGenerator (CompilationMatchesExpectation), plus a round
+// trip of every golden file through the ported parser, an assembler for the
+// expectation text, and the ported printer.
 using System.Text;
 
 namespace V8Sharp.Tests.Interpreter;
@@ -77,6 +74,57 @@ public class BytecodeGeneratorUnitTest
         List<string> golden_files =
             BytecodeExpectationsParser.CollectGoldenFiles(BytecodeExpectationsParser.GoldenFileDirectory());
         Assert.NotEmpty(golden_files);
+    }
+
+    // BuildActual.
+    static string BuildActual(BytecodeExpectationsPrinter printer, GoldenCase golden_case)
+    {
+        var actual_stream = new StringBuilder();
+        printer.PrintExpectation(actual_stream, golden_case.Snippet);
+        return actual_stream.ToString();
+    }
+
+    // BuildExpected.
+    static string BuildExpected(BytecodeExpectationsPrinter printer, GoldenCase golden_case)
+    {
+        var expected_stream = new StringBuilder();
+        printer.PrintCodeSnippet(expected_stream, golden_case.Snippet);
+        expected_stream.Append(golden_case.Expectation);
+        return expected_stream.ToString();
+    }
+
+    /// <summary>Compiles every snippet of |golden| and compares it with the
+    /// expectation; returns (passed, total, failure messages).</summary>
+    public static (int Passed, int Total, List<string> Failures) RunGoldenFile(string golden)
+    {
+        string path = GoldenPath(golden);
+        GoldenFile file = LoadGoldenFile(path);
+        var printer = new BytecodeExpectationsPrinter(new GoldenBytecodeCompiler());
+        printer.SetOptions(file.Header);
+        int passed = 0;
+        var failures = new List<string>();
+        foreach (GoldenCase golden_case in file.Cases)
+        {
+            try
+            {
+                CompareTexts(BuildActual(printer, golden_case), BuildExpected(printer, golden_case), path,
+                             golden_case.Line);
+                passed++;
+            }
+            catch (Exception e)
+            {
+                failures.Add(e.GetType().Name + ": " + e.Message);
+            }
+        }
+        return (passed, file.Cases.Count, failures);
+    }
+
+    [Theory]
+    [MemberData(nameof(GoldenFiles))]
+    public void BytecodeGeneratorTest_CompilationMatchesExpectation(string golden)
+    {
+        (int passed, int total, List<string> failures) = RunGoldenFile(golden);
+        Assert.True(passed == total, $"{golden}: {passed}/{total} snippets match\n" + string.Join("\n", failures));
     }
 
     [Theory]

@@ -1,4 +1,5 @@
 // Port of test/unittests/interpreter/bytecode-decoder-unittest.cc.
+using V8Sharp.Runtime;
 using System.Globalization;
 using System.Text;
 using V8Sharp.Interpreter;
@@ -24,7 +25,7 @@ public class BytecodeDecoderUnitTest
             ([Op(Bytecode.Wide), Op(Bytecode.CallAnyReceiver), .. R16(134), .. R16(135), .. U16(10), .. U16(177)],
              "CallAnyReceiver.Wide r134, r135-r144, FBV[177]"),
             ([Op(Bytecode.ForInPrepare), R8(10), U8(11)], "         ForInPrepare r10-r12, FBV[11]"),
-            ([Op(Bytecode.CallRuntime), .. U16((int)RuntimeFunctionId.IsSmi), R8(0), U8(0)],
+            ([Op(Bytecode.CallRuntime), .. U16((int)FunctionId.IsSmi), R8(0), U8(0)],
              "   CallRuntime [IsSmi], r0-r0"),
             ([Op(Bytecode.Ldar), (byte)Register.FromParameterIndex(2).ToOperand()], "            Ldar a1"),
             ([Op(Bytecode.Wide), Op(Bytecode.CreateObjectLiteral), .. U16(513), .. U16(1027), U8(165)],

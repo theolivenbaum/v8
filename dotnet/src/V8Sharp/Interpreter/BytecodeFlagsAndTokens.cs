@@ -1,5 +1,8 @@
 // Port of src/interpreter/bytecode-flags-and-tokens.h/.cc. The bit layouts
 // are V8's (base::BitField8 positions).
+using V8Sharp.Ast;
+using V8Sharp.Common;
+using V8Sharp.Parsing;
 namespace V8Sharp.Interpreter;
 
 public static class CreateArrayLiteralFlags
@@ -114,10 +117,10 @@ public static class StoreLookupSlotFlags
 
     public static byte Encode(LanguageMode language_mode, LookupHoistingMode lookup_hoisting_mode)
     {
-        Debug.Assert(lookup_hoisting_mode != LookupHoistingMode.LegacySloppy ||
+        Debug.Assert(lookup_hoisting_mode != LookupHoistingMode.kLegacySloppy ||
                      language_mode == LanguageMode.Sloppy);
         return (byte)((language_mode == LanguageMode.Strict ? LanguageModeBitMask : 0) |
-                      (lookup_hoisting_mode != LookupHoistingMode.Normal ? LookupHoistingModeBitMask : 0));
+                      (lookup_hoisting_mode != LookupHoistingMode.kNormal ? LookupHoistingModeBitMask : 0));
     }
 
     public static LanguageMode GetLanguageMode(byte flags) =>
