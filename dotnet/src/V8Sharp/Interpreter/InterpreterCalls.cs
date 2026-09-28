@@ -123,7 +123,7 @@ public static class InterpreterCalls
     }
 
     /// <summary>CollectConstructFeedback (ic-callable.tq); returns the AllocationSite for Array construction.</summary>
-    static AllocationSite? CollectConstructFeedback(Isolate isolate, FeedbackVector? fv, int slot, JSValue target, JSValue newTarget)
+    internal static AllocationSite? CollectConstructFeedback(Isolate isolate, FeedbackVector? fv, int slot, JSValue target, JSValue newTarget)
     {
         if (fv is null) return null;
         JSValue[] slots = fv.Slots;

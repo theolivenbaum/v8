@@ -36,5 +36,8 @@ public sealed class BaselineCode(SharedFunctionInfo shared, BytecodeArray byteco
     /// <summary>The size of the generated IL in bytes (V8: instruction_size).</summary>
     public int ILSize { get; } = ilSize;
 
+    /// <summary>Whether the bytecode has exception handlers (the entry then needs the handler dispatch loop).</summary>
+    public bool HasHandlers { get; } = bytecode.HandlerTable.Length != 0;
+
     public static CodeKind Kind => CodeKind.BASELINE;
 }

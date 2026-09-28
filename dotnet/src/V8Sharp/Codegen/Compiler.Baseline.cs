@@ -65,6 +65,7 @@ public static partial class Compiler
     static string DebugName(SharedFunctionInfo shared)
     {
         string name = shared.Name().ToString();
+        if (name.Length == 0) name = shared.InferredName().ToString();
         return "0x" + RuntimeHelpers.GetHashCode(shared).ToString("x8", System.Globalization.CultureInfo.InvariantCulture) +
                " <SharedFunctionInfo" + (name.Length == 0 ? "" : " " + name) + ">";
     }

@@ -299,8 +299,20 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 
 ## Phase 2: the fast tiers
 
-- [ ] TieringManager: interrupt budget, OSR triggers (port of tiering-manager.cc)
-- [ ] Baseline compiler: bytecode -> IL (Sparkplug analogue)
+- [x] TieringManager: interrupt budget, OnInterruptTick, feedback allocation
+      and the Sparkplug tier-up, InterruptBudgetFor with V8's flag defaults,
+      NotifyICChanged; no optimizing tier, so use_optimizer() is false
+      (Execution/TieringManager.cs). OSR urgency is ported but unused until
+      the optimizing tier exists.
+- [~] Baseline compiler: bytecode -> IL (Sparkplug analogue), src/V8Sharp/Baseline/
+      (architecture.md 9.1): every bytecode compiles; entry at function start,
+      exception handlers and loop headers (OSR from Ignition at JumpLoop);
+      batch compilation, --sparkplug (default on), --always-sparkplug,
+      --sparkplug-filter, %CompileBaseline, %ActiveTierIsSparkplug,
+      %BaselineOsr, %GetOptimizationStatus baseline bits; Smi fast paths for
+      arithmetic, a baseline-to-baseline call path (BaselineCalls). Tests:
+      tests/V8Sharp.Tests/Baseline (interpreter vs --always-sparkplug).
+      Open: see "Baseline: open items" below.
 - [ ] Optimizing compiler: SSA graph from bytecode + feedback, speculative
       representations, inlining, deoptimizer (Maglev analogue)
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays

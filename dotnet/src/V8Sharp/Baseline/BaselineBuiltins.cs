@@ -94,12 +94,15 @@ public static class BaselineBuiltins
 
     // ---- Globals and lookup slots ---------------------------------------------------------------------------
 
+    [MethodImpl(Inline)]
     public static JSValue LdaGlobal(Isolate isolate, FeedbackVector? fv, int slot, Context context, JSValue name) =>
         LoadGlobalIC.Load(isolate, fv, slot, context, name.As<Name>(), TypeofMode.NotInside);
 
+    [MethodImpl(Inline)]
     public static JSValue LdaGlobalInsideTypeof(Isolate isolate, FeedbackVector? fv, int slot, Context context, JSValue name) =>
         LoadGlobalIC.Load(isolate, fv, slot, context, name.As<Name>(), TypeofMode.Inside);
 
+    [MethodImpl(Inline)]
     public static void StaGlobal(Isolate isolate, FeedbackVector? fv, int slot, Context context, JSValue name, JSValue value) =>
         StoreGlobalIC.Store(isolate, fv, slot, context, name.As<Name>(), value);
 
@@ -169,6 +172,7 @@ public static class BaselineBuiltins
     public static void SetNamedProperty(Isolate isolate, FeedbackVector? fv, int slot, JSValue obj, JSValue name, JSValue value) =>
         StoreIC.StoreNamed(isolate, fv, slot, obj, Unsafe.As<Name>(name._obj!), value);
 
+    [MethodImpl(Inline)]
     public static void DefineNamedOwnProperty(Isolate isolate, FeedbackVector? fv, int slot, JSValue obj, JSValue name, JSValue value) =>
         StoreIC.DefineNamedOwn(isolate, fv, slot, obj, name.As<Name>(), value);
 
@@ -387,10 +391,22 @@ public static class BaselineBuiltins
 
     // ---- Compare operations ---------------------------------------------------------------------------------
 
+    [MethodImpl(Inline)]
     public static JSValue TestEqual(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
-        InterpreterOps.Equal(isolate, lhs, rhs, ref feedback);
+        lhs.IsNumber && rhs.IsNumber ? CompareNumbersEqual(lhs._num, rhs._num, ref feedback) : InterpreterOps.Equal(isolate, lhs, rhs, ref feedback);
 
-    public static JSValue TestEqualStrict(JSValue lhs, JSValue rhs, ref byte feedback) => InterpreterOps.StrictEqual(lhs, rhs, ref feedback);
+    [MethodImpl(Inline)]
+    public static JSValue TestEqualStrict(JSValue lhs, JSValue rhs, ref byte feedback) =>
+        lhs.IsNumber && rhs.IsNumber ? CompareNumbersEqual(lhs._num, rhs._num, ref feedback) : InterpreterOps.StrictEqual(lhs, rhs, ref feedback);
+
+    /// <summary>The number case of TestEqual / TestEqualStrict (InterpreterOps.Equal / StrictEqual).</summary>
+    [MethodImpl(Inline)]
+    static JSValue CompareNumbersEqual(double l, double r, ref byte feedback)
+    {
+        InterpreterOps.UpdateCompareFeedback(ref feedback,
+            IsSmi(l, out _) && IsSmi(r, out _) ? CompareOperationFeedback.TypeIndex.SignedSmall : CompareOperationFeedback.TypeIndex.Number);
+        return JSValue.FromBoolean(l == r);
+    }
 
     [MethodImpl(Inline)]
     public static JSValue TestLessThan(Isolate isolate, JSValue lhs, JSValue rhs, ref byte feedback) =>
@@ -504,60 +520,62 @@ public static class BaselineBuiltins
     {
         JSValue receiver = isolate.RegisterStack[first];
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
-        return InterpreterCalls.Call(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.NotNullOrUndefined);
+        return BaselineCalls.Call(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.NotNullOrUndefined);
     }
 
     public static JSValue CallAnyReceiver(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, int first, int count)
     {
         JSValue receiver = isolate.RegisterStack[first];
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
-        return InterpreterCalls.Call(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.Any);
+        return BaselineCalls.Call(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.Any);
     }
 
     public static JSValue CallProperty0(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, JSValue receiver)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
-        return InterpreterCalls.Call(isolate, callee, receiver, 0, 0, ConvertReceiverMode.NotNullOrUndefined);
+        return BaselineCalls.Call(isolate, callee, receiver, 0, 0, ConvertReceiverMode.NotNullOrUndefined);
     }
 
     public static JSValue CallProperty1(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, JSValue receiver, int arg0)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
-        return InterpreterCalls.Call(isolate, callee, receiver, arg0, 1, ConvertReceiverMode.NotNullOrUndefined);
+        return BaselineCalls.Call(isolate, callee, receiver, arg0, 1, ConvertReceiverMode.NotNullOrUndefined);
     }
 
     public static JSValue CallProperty2(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, JSValue receiver, int arg0,
         int arg1)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
+        if (arg1 == arg0 + 1) return BaselineCalls.Call(isolate, callee, receiver, arg0, 2, ConvertReceiverMode.NotNullOrUndefined);
         JSValue[] stack = isolate.RegisterStack;
-        return InterpreterCalls.Call2(isolate, callee, receiver, stack[arg0], stack[arg1], arg0, arg1 == arg0 + 1,
+        return InterpreterCalls.Call2(isolate, callee, receiver, stack[arg0], stack[arg1], arg0, false,
             ConvertReceiverMode.NotNullOrUndefined);
     }
 
     public static JSValue CallUndefinedReceiver(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, int first, int count)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
-        return InterpreterCalls.Call(isolate, callee, JSValue.Undefined, first, count, ConvertReceiverMode.NullOrUndefined);
+        return BaselineCalls.Call(isolate, callee, JSValue.Undefined, first, count, ConvertReceiverMode.NullOrUndefined);
     }
 
     public static JSValue CallUndefinedReceiver0(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
-        return InterpreterCalls.Call(isolate, callee, JSValue.Undefined, 0, 0, ConvertReceiverMode.NullOrUndefined);
+        return BaselineCalls.Call(isolate, callee, JSValue.Undefined, 0, 0, ConvertReceiverMode.NullOrUndefined);
     }
 
     public static JSValue CallUndefinedReceiver1(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, int arg0)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
-        return InterpreterCalls.Call(isolate, callee, JSValue.Undefined, arg0, 1, ConvertReceiverMode.NullOrUndefined);
+        return BaselineCalls.Call(isolate, callee, JSValue.Undefined, arg0, 1, ConvertReceiverMode.NullOrUndefined);
     }
 
     public static JSValue CallUndefinedReceiver2(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, int arg0, int arg1)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
+        if (arg1 == arg0 + 1) return BaselineCalls.Call(isolate, callee, JSValue.Undefined, arg0, 2, ConvertReceiverMode.NullOrUndefined);
         JSValue[] stack = isolate.RegisterStack;
-        return InterpreterCalls.Call2(isolate, callee, JSValue.Undefined, stack[arg0], stack[arg1], arg0, arg1 == arg0 + 1,
+        return InterpreterCalls.Call2(isolate, callee, JSValue.Undefined, stack[arg0], stack[arg1], arg0, false,
             ConvertReceiverMode.NullOrUndefined);
     }
 
@@ -588,7 +606,7 @@ public static class BaselineBuiltins
 
     public static JSValue Construct(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, int first, int count,
         JSValue newTarget) =>
-        InterpreterCalls.Construct(isolate, fv, slot, constructor, newTarget, first, count);
+        BaselineCalls.Construct(isolate, fv, slot, constructor, newTarget, first, count);
 
     public static JSValue ConstructWithSpread(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, int first, int count,
         JSValue newTarget) =>
