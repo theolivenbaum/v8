@@ -31,6 +31,7 @@ dotnet run -c Release --project tools/V8Sharp.TestRunner -- message webkit --eng
 | `--test262-root DIR` | default `test/test262/data`, then `/home/user/theolivenbaum/test262` |
 | `--json FILE` | default `dotnet/artifacts/testrunner/<engine>-<suites>.json` |
 | `--run-skipped`, `--list`, `--show-failures N` | as in run-tests.py |
+| `--extra-flags "FLAGS"` | appended to every test's flags, as run-tests.py's `--extra-flags` (e.g. `"--always-sparkplug"`); the run is compared against the same expectation file, so any new failure is the flag's; pass `--json` to keep the plain run's results |
 
 `V8Sharp.TestRunner shell [--engine E] [d8 args]` runs one d8 command line
 in-process and prints its output, like d8 itself; handy to reproduce a test:

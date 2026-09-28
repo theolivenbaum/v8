@@ -52,6 +52,11 @@ namespace V8Sharp
         public InterpreterFrameKind Kind;
         /// <summary>The frame was entered by [[Construct]].</summary>
         public bool IsConstructor;
+        /// <summary>
+        /// An interpreted frame that runs baseline (Sparkplug) code: V8's
+        /// BaselineFrame, which has the interpreter frame's layout.
+        /// </summary>
+        public bool IsBaseline;
     }
 
     public sealed partial class Isolate

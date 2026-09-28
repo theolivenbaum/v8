@@ -1,7 +1,8 @@
 // Port of the test runtime functions of src/runtime/runtime-test.cc (the
 // %-natives of --allow-natives-syntax that mjsunit uses), as they behave in
-// a --jitless V8: optimization requests are accepted and ignored, the
-// status reports lite mode, and the heap-shape queries answer from the
+// a V8 built without Turbofan and Maglev (Sparkplug is the only compiler):
+// optimization requests are accepted and ignored, the status reports lite
+// mode and the baseline tier, and the heap-shape queries answer from the
 // object model.
 using System.Globalization;
 using V8Sharp.Base.Numbers;
@@ -16,18 +17,23 @@ public static class RuntimeTest
     const int kInterpreted = 1 << 6;
     const int kIsExecuting = 1 << 10;
     const int kLiteMode = 1 << 12;
+    const int kBaseline = 1 << 14;
     const int kTopmostFrameIsInterpreted = 1 << 15;
+    const int kTopmostFrameIsBaseline = 1 << 16;
     const int kIsLazy = 1 << 17;
 
     /// <summary>Runtime_GetOptimizationStatus.</summary>
     public static JSValue GetOptimizationStatus(Isolate isolate, JSValue functionObject)
     {
         // These modes cannot optimize. Unit tests should handle these the same way.
+        // (V8Sharp has no Turbofan: !V8_ENABLE_TURBOFAN_BOOL, and !use_optimizer().)
         int status = kLiteMode | kNeverOptimize;
         if (functionObject.IsUndefined) return JSValue.FromInt(status);
         if (functionObject.HeapObjectOrNull is not JSFunction function) return JSValue.FromInt(status);
         status |= kIsFunction;
-        if (function.Shared.FunctionData is Interpreter.BytecodeArray || !function.Shared.IsCompiled) status |= kInterpreted;
+        if (function.Shared.HasBaselineCode) status |= kBaseline;
+        // ActiveTierIsIgnition, or not compiled yet (the CompileLazy trampoline).
+        if (TieringManager.ActiveTierIsIgnition(function) || !function.Shared.IsCompiled) status |= kInterpreted;
         if (!function.Shared.IsCompiled) status |= kIsLazy;
 
         // Additionally, detect activations of this frame on the stack, and report the
@@ -37,11 +43,51 @@ public static class RuntimeTest
         {
             if (ReferenceEquals(frames[i].Function, function) && frames[i].Kind == InterpreterFrameKind.Interpreted)
             {
-                status |= kIsExecuting | kTopmostFrameIsInterpreted;
+                status |= kIsExecuting | (frames[i].IsBaseline ? kTopmostFrameIsBaseline : kTopmostFrameIsInterpreted);
                 break;
             }
         }
         return JSValue.FromInt(status);
+    }
+
+    /// <summary>Runtime_CompileBaseline.</summary>
+    public static JSValue CompileBaseline(Isolate isolate, JSValue functionObject)
+    {
+        if (functionObject.HeapObjectOrNull is not JSFunction function || !function.Shared.IsUserJavaScript())
+        {
+            throw new InvalidOperationException("V8Sharp: %CompileBaseline needs a user JavaScript function");
+        }
+        // First compile the bytecode, if we have to.
+        if (!function.Shared.IsCompiled && !Codegen.Compiler.CompileLazy(isolate, function))
+        {
+            throw new InvalidOperationException("V8Sharp: %CompileBaseline could not compile the function");
+        }
+        if (!Codegen.Compiler.CompileBaseline(isolate, function))
+        {
+            throw new InvalidOperationException("V8Sharp: %CompileBaseline failed (is --sparkplug off?)");
+        }
+        return JSValue.Undefined;
+    }
+
+    /// <summary>Runtime_ActiveTierIsSparkplug.</summary>
+    public static JSValue ActiveTierIsSparkplug(JSValue functionObject) =>
+        JSValue.FromBoolean(functionObject.HeapObjectOrNull is JSFunction function && TieringManager.ActiveTierIsBaseline(function));
+
+    /// <summary>
+    /// Runtime_BaselineOsr: baseline-compiles the function of the topmost
+    /// JavaScript frame, so its next JumpLoop continues in baseline code.
+    /// </summary>
+    public static JSValue BaselineOsr(Isolate isolate)
+    {
+        if (!isolate.Flags.sparkplug || !isolate.Flags.use_osr) return JSValue.Undefined;
+        InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
+        for (int i = isolate.InterpreterFrameDepth - 1; i >= 0; i--)
+        {
+            if (frames[i].Kind != InterpreterFrameKind.Interpreted) continue;
+            Codegen.Compiler.CompileBaseline(isolate, frames[i].Function);
+            break;
+        }
+        return JSValue.Undefined;
     }
 
     /// <summary>

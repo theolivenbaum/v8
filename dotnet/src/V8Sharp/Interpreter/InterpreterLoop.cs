@@ -1158,6 +1158,19 @@ public static partial class InterpreterExecution
                         Unsafe.Add(ref fpSlot, InterpreterRuntime.kFeedbackVectorOffset) = fv is null ? JSValue.Undefined : fv;
                     }
                     pc -= relative;
+                    // OSR to baseline code when the SharedFunctionInfo has some and the
+                    // closure has a feedback vector (InterpreterAssembler::OnStackReplacement,
+                    // case 3): Run continues the frame in it at the loop header.
+                    if (function.Shared.BaselineCode is not null && fv is not null)
+                    {
+                        st.Pc = pc;
+                        st.Accumulator = acc;
+                        st.Context = context;
+                        st.FeedbackVector = fv;
+                        st.OsrToBaseline = true;
+                        if (TS.SingleStep) st.Done = true;
+                        return acc;
+                    }
                     continue;
                 }
                 case Bytecode.Jump:

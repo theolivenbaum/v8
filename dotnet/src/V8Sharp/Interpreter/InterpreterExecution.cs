@@ -122,8 +122,17 @@ public static partial class InterpreterExecution
         frame.Argc = argc;
         frame.Kind = InterpreterFrameKind.Interpreted;
         frame.IsConstructor = isConstruct;
+        frame.IsBaseline = false;
 
         FeedbackVector? feedbackVector = function.RawFeedbackCell.Value as FeedbackVector;
+        // BaselineOrInterpreterEntry: a function whose SharedFunctionInfo has
+        // baseline code runs it (Runtime_InstallBaselineCode gives it the
+        // feedback vector baseline code needs).
+        Baseline.BaselineCode? baselineCode = function.Shared.BaselineCode;
+        if (baselineCode is not null && feedbackVector is null)
+        {
+            feedbackVector = Baseline.BaselineExecution.InstallBaselineCode(isolate, function);
+        }
         if (feedbackVector is null)
         {
             // JSFunction::InitializeFeedbackCell on first entry (V8 does it when
@@ -156,7 +165,7 @@ public static partial class InterpreterExecution
         };
         try
         {
-            return Run(isolate, ref state);
+            return baselineCode is null ? Run(isolate, ref state) : Baseline.BaselineExecution.Run(isolate, ref state, baselineCode);
         }
         finally
         {
@@ -172,11 +181,13 @@ public static partial class InterpreterExecution
     /// </summary>
     internal static JSValue Run(Isolate isolate, ref InterpreterState state)
     {
+        JSValue result;
         while (true)
         {
             try
             {
-                return Loop<SingleScale>(isolate, ref state);
+                result = Loop<SingleScale>(isolate, ref state);
+                break;
             }
             // The filter only looks for a handler: an exception this frame does
             // not handle keeps propagating without a catch-and-rethrow, which
@@ -186,10 +197,18 @@ public static partial class InterpreterExecution
                 TryDispatchToHandler(isolate, ref state, e.Value, e.MessageObject);
             }
         }
+        if (state.OsrToBaseline)
+        {
+            // InterpreterOnStackReplacement_ToBaseline: JumpLoop found baseline
+            // code; the frame continues in it at the loop header (state.Pc).
+            state.OsrToBaseline = false;
+            return Baseline.BaselineExecution.Run(isolate, ref state, state.Function.Shared.BaselineCode!);
+        }
+        return result;
     }
 
     /// <summary>Whether this frame's handler table covers the current bytecode offset.</summary>
-    static bool HasHandler(Isolate isolate, ref InterpreterState state)
+    internal static bool HasHandler(Isolate isolate, ref InterpreterState state)
     {
         byte[] handlerTableBytes = state.Bytecode.HandlerTable;
         if (handlerTableBytes.Length == 0) return false;

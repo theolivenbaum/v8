@@ -58,6 +58,11 @@ public struct InterpreterState
     public int Argc;
     /// <summary>Set when the frame returned (Return / SuspendGenerator) during a single step.</summary>
     public bool Done;
+    /// <summary>
+    /// Set by JumpLoop when the function has baseline code: the frame leaves the
+    /// dispatch loop and continues in baseline code at Pc (OSR to Sparkplug).
+    /// </summary>
+    public bool OsrToBaseline;
 }
 
 /// <summary>Operand decoding (little-endian, unaligned, as V8's BytecodeOperandReadUnaligned).</summary>
