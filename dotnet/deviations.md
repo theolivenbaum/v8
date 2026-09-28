@@ -92,6 +92,12 @@ for now, to be revisited when the reason goes away.
   `PreparseData` class for V8's zone and heap forms (release byte format);
   flags passed per parse (`ParsingFlags`) instead of global.
 - Parsing: AstPrinter/ScopePrinter are always compiled (DEBUG-only in V8).
+- Parsing: stack_limit_ is a budget of 4 x --stack-size bytes of .NET stack
+  from where each parser starts (V8: the isolate's C stack limit). The .NET
+  parser frames are about four times V8's, so the RangeError comes at about
+  V8's nesting depth (2997 nested parentheses vs V8's 2296 at the default
+  984 KB, 2208 array literals vs 3100). The stack position is the address
+  of a local (`Unsafe.ByteOffset` from the null ref, no unsafe context).
 - Parsing: decorators (`@`) not scanned; V8's status lists those tests as FAIL.
 
 ## V8Sharp.RegExp

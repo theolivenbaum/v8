@@ -94,7 +94,11 @@
     let ownQueue = false;
     const opts = a[0];
     if (a.length > 0 && ((typeof opts === 'object' && opts !== null) || typeof opts === 'function')) {
-      ownQueue = !!opts.create_own_microtask_queue;
+      // A verbose TryCatch: an exception from the getter is reported, not thrown.
+      try {
+        ownQueue = !!opts.create_own_microtask_queue;
+      } catch (e) {
+      }
     }
     return host('realmCreate', false, ownQueue);
   }));

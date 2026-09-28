@@ -357,6 +357,8 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | NavierStokes | 632 | 1441 | 27465 |
 | 2026-09-28 | test262 | 84670 | 94901 | 89.2% | interpreter port complete (async, modules, eval); 98.8% without Temporal (9210). Remaining: import defer and source phase imports (not ported), ShadowRealm (124), Array.fromAsync, Atomics.waitAsync; expectations: tools/V8Sharp.TestRunner/expectations/test262.v8sharp.txt |
 | 2026-09-28 | mjsunit | 7074 | 7597 | 93.1% | clusters: Worker and d8 host features, optimization-status asserts, import defer (43), ShadowRealm/Wasm/shared structs; expectations: mjsunit.v8sharp.txt |
+| 2026-09-28 | test262 | 85199 | 85891 | 99.2% | engine conformance pass; left: import defer (180), dynamic-import/catch (128, modules), decorators (34, not in V8 either), bytes imports, ShadowRealm importValue, RegExp legacy accessors; expectations regenerated |
+| 2026-09-28 | mjsunit | 7259 | 7597 | 95.6% | engine conformance pass (Sparkplug off by default: opt-proto-seq/* fail); see "Engine-side conformance: what is left"; expectations regenerated |
 
 Octane (interpreter only, 2 runs, loaded 4-core container, 2026-09-28):
 Richards 257 / 1265 (v8 --jitless), DeltaBlue 240 / 1409, Crypto 218 / 1111,
@@ -419,8 +421,6 @@ Still failing (mjsunit clusters, v8sharp engine):
   importValue.
 - CloneObjectIC always takes the slow path, so `{...o}` never shares `o`'s map
   (clone-ic-regressions).
-- The parser's stack limit is the .NET stack, not --stack-size
-  (regress-1215653 parses 20000 nested parentheses without overflowing).
 - Spread calls are capped at kMaxArguments (regress-869735,
   regress-crbug-906043; V8 has no argument count limit there, only the stack).
 - `%IsSmi(%AllocateHeapNumberWithValue(1))` (call-intrinsic-fuzzing, deviation).
