@@ -3,7 +3,7 @@
 using System.Globalization;
 using System.Text;
 using V8Sharp.Oracle;
-using Op = V8Sharp.Builtins.BuiltinsBigInt.Operation;
+using Op = V8Sharp.Common.Operation;
 
 namespace V8Sharp.Tests.Builtins;
 
@@ -48,28 +48,28 @@ public class BigIntBuiltinsTest : IntrinsicsTestBase
     public void Operators()
     {
         string Bin(string a, string b, Op op) => Dec(BuiltinsBigInt.BinaryOp(i_isolate, B(a), B(b), op));
-        Assert.Equal("0", Bin("5", "-5", Op.kAdd));
-        Assert.Equal("-3", Bin("-7", "2", Op.kDivide));
-        Assert.Equal("-1", Bin("-7", "2", Op.kModulus));
-        Assert.Equal("1267650600228229401496703205376", Bin("2", "100", Op.kExponentiate));
-        Assert.Equal("-8", Bin("-2", "3", Op.kExponentiate));
-        Assert.Equal("-4", Bin("-7", "1", Op.kShiftRight));
-        Assert.Equal("-1", Bin("-1", "1000", Op.kShiftRight));
-        Assert.Equal("-14", Bin("-7", "1", Op.kShiftLeft));
-        Assert.Equal("-8", Bin("-7", "-8", Op.kBitwiseAnd));
-        Assert.Equal("RangeError: Division by zero", Throws(() => BuiltinsBigInt.BinaryOp(i_isolate, B("1"), B("0"), Op.kDivide)));
+        Assert.Equal("0", Bin("5", "-5", Op.Add));
+        Assert.Equal("-3", Bin("-7", "2", Op.Divide));
+        Assert.Equal("-1", Bin("-7", "2", Op.Modulus));
+        Assert.Equal("1267650600228229401496703205376", Bin("2", "100", Op.Exponentiate));
+        Assert.Equal("-8", Bin("-2", "3", Op.Exponentiate));
+        Assert.Equal("-4", Bin("-7", "1", Op.ShiftRight));
+        Assert.Equal("-1", Bin("-1", "1000", Op.ShiftRight));
+        Assert.Equal("-14", Bin("-7", "1", Op.ShiftLeft));
+        Assert.Equal("-8", Bin("-7", "-8", Op.BitwiseAnd));
+        Assert.Equal("RangeError: Division by zero", Throws(() => BuiltinsBigInt.BinaryOp(i_isolate, B("1"), B("0"), Op.Divide)));
         Assert.Equal("RangeError: Maximum BigInt size exceeded",
-            Throws(() => BuiltinsBigInt.BinaryOp(i_isolate, B("1"), B("1073741824"), Op.kShiftLeft)));
+            Throws(() => BuiltinsBigInt.BinaryOp(i_isolate, B("1"), B("1073741824"), Op.ShiftLeft)));
         Assert.Equal("TypeError: Cannot mix BigInt and other types, use explicit conversions",
-            Throws(() => BuiltinsBigInt.BinaryOp(i_isolate, B("1"), Num(1), Op.kAdd)));
+            Throws(() => BuiltinsBigInt.BinaryOp(i_isolate, B("1"), Num(1), Op.Add)));
         Assert.Equal("TypeError: BigInts have no unsigned right shift, use >> instead",
-            Throws(() => BuiltinsBigInt.BinaryOp(i_isolate, B("1"), B("1"), Op.kShiftRightLogical)));
+            Throws(() => BuiltinsBigInt.BinaryOp(i_isolate, B("1"), B("1"), Op.ShiftRightLogical)));
         Assert.Equal("RangeError: Exponent must be positive",
-            Throws(() => BuiltinsBigInt.BinaryOp(i_isolate, B("1"), B("-1"), Op.kExponentiate)));
-        Assert.Equal("-1", Dec(BuiltinsBigInt.UnaryOp(i_isolate, B("0"), Op.kDecrement)));
-        Assert.Equal("-6", Dec(BuiltinsBigInt.UnaryOp(i_isolate, B("5"), Op.kBitwiseNot)));
-        Assert.Equal("4", Dec(BuiltinsBigInt.UnaryOp(i_isolate, B("-5"), Op.kBitwiseNot)));
-        Assert.Equal("18446744073709551616", Dec(BuiltinsBigInt.UnaryOp(i_isolate, B("18446744073709551615"), Op.kIncrement)));
+            Throws(() => BuiltinsBigInt.BinaryOp(i_isolate, B("1"), B("-1"), Op.Exponentiate)));
+        Assert.Equal("-1", Dec(BuiltinsBigInt.UnaryOp(i_isolate, B("0"), Op.Decrement)));
+        Assert.Equal("-6", Dec(BuiltinsBigInt.UnaryOp(i_isolate, B("5"), Op.BitwiseNot)));
+        Assert.Equal("4", Dec(BuiltinsBigInt.UnaryOp(i_isolate, B("-5"), Op.BitwiseNot)));
+        Assert.Equal("18446744073709551616", Dec(BuiltinsBigInt.UnaryOp(i_isolate, B("18446744073709551615"), Op.Increment)));
     }
 
     // Port of test/unittests/numbers/bigint-unittest.cc.
@@ -233,26 +233,26 @@ public class BigIntBuiltinsTest : IntrinsicsTestBase
             actual.Add(S(BigInt.ToNumber(i_isolate, x)));
             actual.Add(Dec(BigInt.AsIntN(i_isolate, 65, x)));
             actual.Add(Dec(BigInt.AsUintN(i_isolate, 100, x)));
-            actual.Add(Dec(BuiltinsBigInt.UnaryOp(i_isolate, x, Op.kBitwiseNot)));
-            actual.Add(Dec(BuiltinsBigInt.UnaryOp(i_isolate, x, Op.kNegate)));
+            actual.Add(Dec(BuiltinsBigInt.UnaryOp(i_isolate, x, Op.BitwiseNot)));
+            actual.Add(Dec(BuiltinsBigInt.UnaryOp(i_isolate, x, Op.Negate)));
             for (int j = 0; j < bigints.Count; j += 3)
             {
                 BigInt y = bigints[j];
-                actual.Add(Bin(x, y, Op.kAdd));
-                actual.Add(Bin(x, y, Op.kSubtract));
-                actual.Add(Bin(x, y, Op.kMultiply));
-                actual.Add(y.IsZero ? "div0" : Bin(x, y, Op.kDivide));
-                actual.Add(y.IsZero ? "div0" : Bin(x, y, Op.kModulus));
-                actual.Add(Bin(x, y, Op.kBitwiseAnd));
-                actual.Add(Bin(x, y, Op.kBitwiseOr));
-                actual.Add(Bin(x, y, Op.kBitwiseXor));
+                actual.Add(Bin(x, y, Op.Add));
+                actual.Add(Bin(x, y, Op.Subtract));
+                actual.Add(Bin(x, y, Op.Multiply));
+                actual.Add(y.IsZero ? "div0" : Bin(x, y, Op.Divide));
+                actual.Add(y.IsZero ? "div0" : Bin(x, y, Op.Modulus));
+                actual.Add(Bin(x, y, Op.BitwiseAnd));
+                actual.Add(Bin(x, y, Op.BitwiseOr));
+                actual.Add(Bin(x, y, Op.BitwiseXor));
                 actual.Add(BigInt.CompareToBigInt(x, y) == ComparisonResult.LessThan ? "true" : "false");
                 actual.Add(BigInt.EqualToNumber(x, BigInt.ToNumber(i_isolate, y)) ? "true" : "false");
             }
-            actual.Add(Bin(x, B("67"), Op.kShiftLeft));
-            actual.Add(Bin(x, B("67"), Op.kShiftRight));
-            actual.Add(Bin(x, B("-3"), Op.kShiftRight));
-            actual.Add(Bin(x, B("3"), Op.kExponentiate));
+            actual.Add(Bin(x, B("67"), Op.ShiftLeft));
+            actual.Add(Bin(x, B("67"), Op.ShiftRight));
+            actual.Add(Bin(x, B("-3"), Op.ShiftRight));
+            actual.Add(Bin(x, B("3"), Op.Exponentiate));
         }
 
         Assert.Equal(expected.Length, actual.Count);

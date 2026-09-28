@@ -18,26 +18,26 @@ public static partial class BuiltinRegistry
         Register(Builtin.BigIntPrototypeToString, BuiltinsBigInt.BigIntPrototypeToString);
         Register(Builtin.BigIntPrototypeValueOf, BuiltinsBigInt.BigIntPrototypeValueOf);
 
-        Register(Builtin.BigIntAdd, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, BuiltinsBigInt.Operation.kAdd));
-        Register(Builtin.BigIntSubtract, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, BuiltinsBigInt.Operation.kSubtract));
-        Register(Builtin.BigIntMultiply, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, BuiltinsBigInt.Operation.kMultiply));
-        Register(Builtin.BigIntDivide, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, BuiltinsBigInt.Operation.kDivide));
-        Register(Builtin.BigIntModulus, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, BuiltinsBigInt.Operation.kModulus));
-        Register(Builtin.BigIntBitwiseAnd, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, BuiltinsBigInt.Operation.kBitwiseAnd));
-        Register(Builtin.BigIntBitwiseOr, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, BuiltinsBigInt.Operation.kBitwiseOr));
-        Register(Builtin.BigIntBitwiseXor, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, BuiltinsBigInt.Operation.kBitwiseXor));
-        Register(Builtin.BigIntShiftLeft, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, BuiltinsBigInt.Operation.kShiftLeft));
-        Register(Builtin.BigIntShiftRight, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, BuiltinsBigInt.Operation.kShiftRight));
-        Register(Builtin.BigIntAddNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, BuiltinsBigInt.Operation.kAdd));
-        Register(Builtin.BigIntSubtractNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, BuiltinsBigInt.Operation.kSubtract));
-        Register(Builtin.BigIntMultiplyNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, BuiltinsBigInt.Operation.kMultiply));
-        Register(Builtin.BigIntDivideNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, BuiltinsBigInt.Operation.kDivide));
-        Register(Builtin.BigIntModulusNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, BuiltinsBigInt.Operation.kModulus));
-        Register(Builtin.BigIntBitwiseAndNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, BuiltinsBigInt.Operation.kBitwiseAnd));
-        Register(Builtin.BigIntBitwiseOrNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, BuiltinsBigInt.Operation.kBitwiseOr));
-        Register(Builtin.BigIntBitwiseXorNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, BuiltinsBigInt.Operation.kBitwiseXor));
-        Register(Builtin.BigIntShiftLeftNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, BuiltinsBigInt.Operation.kShiftLeft));
-        Register(Builtin.BigIntShiftRightNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, BuiltinsBigInt.Operation.kShiftRight));
+        Register(Builtin.BigIntAdd, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, Operation.Add));
+        Register(Builtin.BigIntSubtract, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, Operation.Subtract));
+        Register(Builtin.BigIntMultiply, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, Operation.Multiply));
+        Register(Builtin.BigIntDivide, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, Operation.Divide));
+        Register(Builtin.BigIntModulus, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, Operation.Modulus));
+        Register(Builtin.BigIntBitwiseAnd, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, Operation.BitwiseAnd));
+        Register(Builtin.BigIntBitwiseOr, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, Operation.BitwiseOr));
+        Register(Builtin.BigIntBitwiseXor, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, Operation.BitwiseXor));
+        Register(Builtin.BigIntShiftLeft, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, Operation.ShiftLeft));
+        Register(Builtin.BigIntShiftRight, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.Binary(i, a, Operation.ShiftRight));
+        Register(Builtin.BigIntAddNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, Operation.Add));
+        Register(Builtin.BigIntSubtractNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, Operation.Subtract));
+        Register(Builtin.BigIntMultiplyNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, Operation.Multiply));
+        Register(Builtin.BigIntDivideNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, Operation.Divide));
+        Register(Builtin.BigIntModulusNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, Operation.Modulus));
+        Register(Builtin.BigIntBitwiseAndNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, Operation.BitwiseAnd));
+        Register(Builtin.BigIntBitwiseOrNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, Operation.BitwiseOr));
+        Register(Builtin.BigIntBitwiseXorNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, Operation.BitwiseXor));
+        Register(Builtin.BigIntShiftLeftNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, Operation.ShiftLeft));
+        Register(Builtin.BigIntShiftRightNoThrow, static (Isolate i, in BuiltinArguments a) => BuiltinsBigInt.BinaryNoThrow(i, a, Operation.ShiftRight));
         Register(Builtin.BigIntEqual, static (Isolate i, in BuiltinArguments a) =>
             JSValue.FromBoolean(BigInt.EqualToBigInt(a[1].As<BigInt>(), a[2].As<BigInt>())));
         Register(Builtin.BigIntLessThan, static (Isolate i, in BuiltinArguments a) =>
@@ -55,14 +55,6 @@ public static partial class BuiltinRegistry
 /// <summary>The BigInt builtins.</summary>
 public static class BuiltinsBigInt
 {
-    /// <summary>V8's Operation enum (src/common/operation.h), for the BigInt operators.</summary>
-    public enum Operation
-    {
-        kAdd, kSubtract, kMultiply, kDivide, kModulus, kExponentiate,
-        kBitwiseAnd, kBitwiseOr, kBitwiseXor, kShiftLeft, kShiftRight, kShiftRightLogical,
-        kBitwiseNot, kNegate, kIncrement, kDecrement,
-    }
-
     /// <summary>BUILTIN(BigIntConstructor).</summary>
     public static JSValue BigIntConstructor(Isolate isolate, in BuiltinArguments args)
     {
@@ -169,18 +161,18 @@ public static class BuiltinsBigInt
         }
         return op switch
         {
-            Operation.kAdd => BigInt.AddImpl(isolate, x, y),
-            Operation.kSubtract => BigInt.SubtractImpl(isolate, x, y),
-            Operation.kMultiply => BigInt.MultiplyImpl(isolate, x, y),
-            Operation.kDivide => BigInt.DivideImpl(isolate, x, y),
-            Operation.kModulus => BigInt.ModulusImpl(isolate, x, y),
-            Operation.kExponentiate => BigInt.Exponentiate(isolate, x, y),
-            Operation.kBitwiseAnd => BigInt.BitwiseAnd(isolate, x, y),
-            Operation.kBitwiseOr => BigInt.BitwiseOr(isolate, x, y),
-            Operation.kBitwiseXor => BigInt.BitwiseXor(isolate, x, y),
-            Operation.kShiftLeft => BigInt.LeftShift(isolate, x, y),
-            Operation.kShiftRight => BigInt.SignedRightShift(isolate, x, y),
-            Operation.kShiftRightLogical => BigInt.UnsignedRightShift(isolate, x, y),
+            Operation.Add => BigInt.AddImpl(isolate, x, y),
+            Operation.Subtract => BigInt.SubtractImpl(isolate, x, y),
+            Operation.Multiply => BigInt.MultiplyImpl(isolate, x, y),
+            Operation.Divide => BigInt.DivideImpl(isolate, x, y),
+            Operation.Modulus => BigInt.ModulusImpl(isolate, x, y),
+            Operation.Exponentiate => BigInt.Exponentiate(isolate, x, y),
+            Operation.BitwiseAnd => BigInt.BitwiseAnd(isolate, x, y),
+            Operation.BitwiseOr => BigInt.BitwiseOr(isolate, x, y),
+            Operation.BitwiseXor => BigInt.BitwiseXor(isolate, x, y),
+            Operation.ShiftLeft => BigInt.LeftShift(isolate, x, y),
+            Operation.ShiftRight => BigInt.SignedRightShift(isolate, x, y),
+            Operation.ShiftRightLogical => BigInt.UnsignedRightShift(isolate, x, y),
             _ => throw new ArgumentOutOfRangeException(nameof(op)),
         };
     }
@@ -188,16 +180,16 @@ public static class BuiltinsBigInt
     /// <summary>Runtime_BigIntUnaryOp.</summary>
     public static BigInt UnaryOp(Isolate isolate, BigInt x, Operation op) => op switch
     {
-        Operation.kBitwiseNot => BigInt.BitwiseNot(isolate, x),
-        Operation.kNegate => BigInt.UnaryMinus(isolate, x),
-        Operation.kIncrement => BigInt.Increment(isolate, x),
-        Operation.kDecrement => BigInt.Decrement(isolate, x),
+        Operation.BitwiseNot => BigInt.BitwiseNot(isolate, x),
+        Operation.Negate => BigInt.UnaryMinus(isolate, x),
+        Operation.Increment => BigInt.Increment(isolate, x),
+        Operation.Decrement => BigInt.Decrement(isolate, x),
         _ => throw new ArgumentOutOfRangeException(nameof(op)),
     };
 
     /// <summary>Runtime_BigIntExponentiate.</summary>
     public static JSValue Exponentiate(Isolate isolate, JSValue left, JSValue right) =>
-        BinaryOp(isolate, left, right, Operation.kExponentiate);
+        BinaryOp(isolate, left, right, Operation.Exponentiate);
 
     internal static JSValue Binary(Isolate isolate, in BuiltinArguments args, Operation op) =>
         BinaryOp(isolate, args.AtOrUndefined(1), args.AtOrUndefined(2), op);
