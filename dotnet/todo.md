@@ -93,15 +93,33 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       V8Sharp.Base once it lands
 
 ### V8Sharp (engine)
-- [ ] objects: strings (table, flattening, hashing, compare), symbols,
-      Map/descriptors/transitions, PropertyDetails, FieldIndex, JSObject
-      fast/dictionary properties, elements kinds and accessors, LookupIterator,
-      property descriptors, keys (KeyAccumulator), ordered hash tables
-- [ ] Isolate, Factory, roots, StringTable, MessageTemplate, error creation,
-      stack traces (CallSiteInfo, Error.captureStackTrace, prepareStackTrace)
-- [ ] conversions and operators (Object::ToNumber, ToPrimitive, Equals,
+- [x] objects: strings (table, flattening, hashing, compare, ConsStringIterator,
+      StringCharacterStream), symbols, Map/descriptors/transitions, MapUpdater,
+      PropertyDetails, FieldIndex, JSObject fast/dictionary properties, elements
+      kinds and accessors, LookupIterator, property descriptors, keys
+      (KeyAccumulator), hash tables, ordered hash tables.
+      Tests: object-unittest, test-field-type-tracking, dictionary-unittest,
+      hashcode-unittest, test-orderedhashtable (OrderedHashMap/Set),
+      test-strings (non-JS), elements-kind-unittest, test-transitions.
+      Missing: interceptors and access checks, shared/Atomics elements,
+      SmallOrderedHashTable, the JS-running tests of those files
+      (StoreToConstantField_*, HoleyHeapNumber, the JS parts of test-strings)
+- [~] Isolate, Factory, roots, StringTable, MessageTemplate, error creation,
+      stack traces (CallSiteInfo, Error.captureStackTrace, prepareStackTrace).
+      Done: Isolate, Factory, roots, StringTable, error creation, CallSiteInfo,
+      protectors. Missing: the Error builtins (captureStackTrace,
+      prepareStackTrace callers) belong to the builtins port
+- [x] conversions and operators (Object::ToNumber, ToPrimitive, Equals,
       StrictEquals, Compare, arithmetic helpers)
-- [ ] bootstrapper/Genesis: native context, intrinsics in V8's install order
+- [~] bootstrapper/Genesis: native context, intrinsics in V8's install order.
+      Done: Object, Function, Array, Number, Boolean, String, Symbol, Date,
+      Promise, RegExp, Errors, JSON, Math, Map/Set/WeakMap/WeakSet/WeakRef/
+      FinalizationRegistry, BigInt, Iterator and helpers, Proxy, Reflect,
+      bound/wrapped functions, arguments maps, API functions
+      (FunctionTemplateInfo, HandleApiCallOrConstruct). Missing: Intl, Temporal,
+      ArrayBuffer/SharedArrayBuffer/Atomics, typed arrays, DataView,
+      DisposableStack, shared structs, RegExpMatchInfo, extras, extensions,
+      the TemplateLiteral map (interpreter port)
 - [x] interpreter: bytecodes, operands, array builder/writer, register
       optimizer, constant array builder, handler tables, control-flow builders,
       decoder, iterators, source-position table (292 tests; 100 golden files
@@ -135,6 +153,23 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
   `object[]` until heap constants exist.
 - TODO(merge): Parsing's `NumberConversions` and string hashing should use
   V8Sharp.Base (`Conversions`, `StringHasher`).
+
+Stand-ins in the engine that go away when the component they wait for merges
+(each marked `TODO(merge)` at the site):
+
+- `src/V8Sharp/Objects/BigIntOps.cs`: replace the System.Numerics bridge with
+  V8Sharp.Base.BigInts.
+- `src/V8Sharp/Objects/HashTable.cs` (`Hashing`) and
+  `src/V8Sharp/Strings/StringHasher.cs`: use V8Sharp.Base's hashing
+  (rapidhash with the isolate's hash seed).
+- `src/V8Sharp/Objects/String.cs` (`CharPredicates`): use V8Sharp.Base's
+  char-predicates.
+- `src/V8Sharp/Objects/ScopeInfo.cs`: implement V8Sharp.Parsing's IScopeInfo.
+- `src/V8Sharp/Objects/JSFunction.cs`: type the bytecode as
+  V8Sharp.Interpreter.BytecodeArray.
+- `src/V8Sharp/Objects/JSObjectShapes.cs`: JSRegExp data as V8Sharp.RegExp's
+  type; module namespace as the module system's Module.
+
 
 ## Deviations
 

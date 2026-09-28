@@ -98,7 +98,7 @@ public enum AbortReason : byte
     LastErrorMessage,
 }
 
-public static class BailoutReason
+public static class AbortReasons
 {
     static readonly string[] s_abortMessages =
     [

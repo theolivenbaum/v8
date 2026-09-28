@@ -180,8 +180,8 @@ public sealed class BytecodeExpectationsPrinter(IBytecodeExpectationsCompiler? c
             {
                 stream.Append('U').Append(size_tag).Append('(');
                 AbortReason reason = bytecode_iterator.GetAbortReasonOperand(op_index);
-                if (BailoutReason.IsValidAbortReason((int)reason))
-                    stream.Append("AbortReason::").Append(BailoutReason.GetAbortReason(reason));
+                if (AbortReasons.IsValidAbortReason((int)reason))
+                    stream.Append("AbortReason::").Append(AbortReasons.GetAbortReason(reason));
                 else
                     stream.Append("Invalid abort reason: ").Append(Int((int)reason));
                 break;

@@ -200,7 +200,7 @@ public static class BytecodeDecoder
                     break;
                 case OperandType.AbortReason:
                     os.Append('[')
-                      .Append(BailoutReason.GetAbortReason((AbortReason)DecodeUnsignedOperand(operand_start, op_type, operand_scale)))
+                      .Append(AbortReasons.GetAbortReason((AbortReason)DecodeUnsignedOperand(operand_start, op_type, operand_scale)))
                       .Append(']');
                     break;
                 case OperandType.Imm:

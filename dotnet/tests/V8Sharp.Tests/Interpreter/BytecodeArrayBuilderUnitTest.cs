@@ -9,6 +9,10 @@ using V8Sharp.Codegen;
 using V8Sharp.Interpreter;
 using ToBooleanMode = V8Sharp.Interpreter.BytecodeArrayBuilder.ToBooleanMode;
 
+// TODO(merge): drop once InterpreterCommon.cs duplicates are removed.
+using LanguageMode = V8Sharp.Interpreter.LanguageMode;
+using MaybeAssignedFlag = V8Sharp.Interpreter.MaybeAssignedFlag;
+
 namespace V8Sharp.Tests.Interpreter;
 
 public class BytecodeArrayBuilderUnitTest

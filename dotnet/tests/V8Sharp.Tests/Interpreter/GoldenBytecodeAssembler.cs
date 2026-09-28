@@ -289,7 +289,7 @@ public static class GoldenBytecodeAssembler
                 const string prefix = "AbortReason::";
                 for (var r = AbortReason.NoReason; r < AbortReason.LastErrorMessage; r++)
                 {
-                    if (payload == prefix + BailoutReason.GetAbortReason(r)) return (uint)r;
+                    if (payload == prefix + AbortReasons.GetAbortReason(r)) return (uint)r;
                 }
                 throw new GoldenFormatException("unknown abort reason: " + token);
             }

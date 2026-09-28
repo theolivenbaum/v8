@@ -3,7 +3,7 @@
 // as V8's BigInt does (64-bit digits, little-endian, no leading zero digits).
 namespace V8Sharp.Objects;
 
-public sealed class BigInt : HeapObject
+public sealed partial class BigInt : HeapObject
 {
     public const int kMaxLengthBits = 1 << 30;
     public const int kMaxLength = kMaxLengthBits / 64;
