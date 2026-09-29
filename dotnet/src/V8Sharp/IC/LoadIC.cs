@@ -66,6 +66,10 @@ public sealed class LoadIC : IC
                         JSValue value = Unsafe.As<JSObject>(handler.Holder!).FieldAt(handler.PrototypeFieldIndex);
                         if (!ReferenceEquals(value._obj, Oddball.Uninitialized)) return value;
                     }
+                    // JSArray length: V8's field load of JSArray::kLengthOffset
+                    // (kField with kArrayLengthFieldDescriptorIndex); the handler
+                    // is recorded only for JSArray maps.
+                    if (handler.HandlerKind == LoadHandler.Kind.kArrayLength) return Unsafe.As<JSArray>(r).Length;
                 }
             }
             else if (o is not null && o.IsString)

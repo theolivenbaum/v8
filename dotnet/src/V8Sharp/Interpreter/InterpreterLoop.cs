@@ -323,6 +323,13 @@ public static partial class InterpreterExecution
                                 pc += 1 + 3 * S;
                                 continue;
                             }
+                            if (handler.HandlerKind == LoadHandler.Kind.kArrayLength)
+                            {
+                                // Recorded only for JSArray maps (JSArray::kLengthOffset).
+                                acc = Unsafe.As<JSArray>(o).Length;
+                                pc += 1 + 3 * S;
+                                continue;
+                            }
                         }
                     }
                     acc = GetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref code, pc, acc);
