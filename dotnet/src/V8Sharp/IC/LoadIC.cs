@@ -53,6 +53,11 @@ public sealed class LoadIC : IC
                         }
                     }
                 }
+                else if (ReferenceEquals(feedback, ReadOnlyRoots.megamorphic_symbol) && isolate.ICState is { } icState)
+                {
+                    // LoadIC_Megamorphic: TryProbeStubCache.
+                    found = icState.LoadStubCache.Get(name, map);
+                }
                 if (found is LoadHandler handler)
                 {
                     // The hits of AccessorAssembler::HandleLoadICHandlerCase handled
@@ -70,6 +75,12 @@ public sealed class LoadIC : IC
                     // (kField with kArrayLengthFieldDescriptorIndex); the handler
                     // is recorded only for JSArray maps.
                     if (handler.HandlerKind == LoadHandler.Kind.kArrayLength) return Unsafe.As<JSArray>(r).Length;
+                    // F.prototype (LoadHandler::LoadFunctionPrototype: LoadJSFunctionPrototype).
+                    if (handler.HandlerKind == LoadHandler.Kind.kFunctionPrototype && r is JSFunction function &&
+                        !function.PrototypeRequiresRuntimeLookup() && function.HasPrototype)
+                    {
+                        return function.Prototype;
+                    }
                 }
             }
             else if (o is not null && o.IsString)
