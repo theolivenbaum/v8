@@ -778,9 +778,14 @@ public sealed class KeyedStoreIC : IC
     {
         if (vector is not null && key.IsNumber && obj._obj is JSObject jsObject)
         {
+            // The monomorphic and polymorphic (HandlePolymorphicCase) element
+            // store handlers.
             JSValue[] slots = vector.Slots;
-            if (ReferenceEquals(slots[slot]._obj, jsObject.Map) && slots[slot + 1]._obj is StoreHandler handler &&
-                handler.HandlerKind == StoreHandler.Kind.kElement &&
+            HeapObject? feedback = slots[slot]._obj;
+            Map map = jsObject.Map;
+            HeapObject? found = ReferenceEquals(feedback, map) ? slots[slot + 1]._obj
+                : feedback is FixedArray polymorphic ? LoadIC.FindPolymorphicHandler(polymorphic, map) : null;
+            if (found is StoreHandler handler && handler.HandlerKind == StoreHandler.Kind.kElement &&
                 ElementAccess.TryStoreFastElement(isolate, jsObject, key._num, handler, value))
             {
                 return;
