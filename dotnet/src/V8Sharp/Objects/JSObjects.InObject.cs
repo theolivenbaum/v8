@@ -7,8 +7,10 @@
 // followed by map->GetInObjectProperties() tagged slots; fields beyond those
 // live in the PropertyArray. A CLR object cannot be sized per allocation, so
 // V8Sharp allocates ordinary objects from a small chain of classes whose last
-// fields are [InlineArray] segments: JSObjectInObject4 holds slots 0..3,
-// JSObjectInObject8 derives from it and adds 4..7, and so on. An object gets
+// fields are [InlineArray] segments: JSObjectInObject1 holds slot 0,
+// JSObjectInObject2 derives from it and adds slot 1, and so on up to 4 (small
+// objects, V8's usual instance sizes after slack tracking, are common: pairs,
+// vectors), then JSObjectInObject8 adds 4..7, and so on. An object gets
 // the smallest class covering its map's in-object property count; a class of
 // the chain is also every larger class, so in-object slot i of any object whose
 // map has more than i in-object properties is the same field of the class that
@@ -18,6 +20,9 @@
 using System.Runtime.CompilerServices;
 
 namespace V8Sharp.Objects;
+
+[InlineArray(1)]
+internal struct InObjectSlots1 { JSValue _e0; }
 
 [InlineArray(4)]
 internal struct InObjectSlots4 { JSValue _e0; }
@@ -72,7 +77,10 @@ public partial class JSObject
         return count switch
         {
             0 => new JSObject(map),
-            <= 4 => new JSObjectInObject4(map),
+            1 => new JSObjectInObject1(map),
+            2 => new JSObjectInObject2(map),
+            3 => new JSObjectInObject3(map),
+            4 => new JSObjectInObject4(map),
             <= 8 => new JSObjectInObject8(map),
             <= 12 => new JSObjectInObject12(map),
             <= 16 => new JSObjectInObject16(map),
@@ -108,7 +116,7 @@ public partial class JSObject
         {
             // The segments of the class chain are laid out back to back (checked
             // once, InObjectLayout), so the slots are one run from _slots0.
-            return ref Unsafe.Add(ref InObjectLayout.First(Unsafe.As<JSObjectInObject4>(this)), index);
+            return ref Unsafe.Add(ref InObjectLayout.First(Unsafe.As<JSObjectInObject1>(this)), index);
         }
         return ref InObjectSlotBySegment(index);
     }
@@ -116,7 +124,10 @@ public partial class JSObject
     [MethodImpl(MethodImplOptions.NoInlining)]
     ref JSValue InObjectSlotBySegment(int index)
     {
-        if (index < 4) return ref Unsafe.As<JSObjectInObject4>(this)._slots0[index];
+        if (index == 0) return ref Unsafe.As<JSObjectInObject1>(this)._slots0[0];
+        if (index == 1) return ref Unsafe.As<JSObjectInObject2>(this)._slot1[0];
+        if (index == 2) return ref Unsafe.As<JSObjectInObject3>(this)._slot2[0];
+        if (index == 3) return ref Unsafe.As<JSObjectInObject4>(this)._slot3[0];
         if (index < 8) return ref Unsafe.As<JSObjectInObject8>(this)._slots1[index - 4];
         if (index < 12) return ref Unsafe.As<JSObjectInObject12>(this)._slots2[index - 8];
         if (index < 16) return ref Unsafe.As<JSObjectInObject16>(this)._slots3[index - 12];
@@ -188,13 +199,16 @@ internal static class InObjectLayout
     public static readonly bool IsContiguous = Check();
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ref JSValue First(JSObjectInObject4 obj) => ref obj._slots0[0];
+    public static ref JSValue First(JSObjectInObject1 obj) => ref obj._slots0[0];
 
     static bool Check()
     {
         var probe = (JSObjectInObject256)RuntimeHelpers.GetUninitializedObject(typeof(JSObjectInObject256));
         ref JSValue first = ref probe._slots0[0];
-        return Offset(ref first, ref probe._slots1[0]) == 4 &&
+        return Offset(ref first, ref probe._slot1[0]) == 1 &&
+               Offset(ref first, ref probe._slot2[0]) == 2 &&
+               Offset(ref first, ref probe._slot3[0]) == 3 &&
+               Offset(ref first, ref probe._slots1[0]) == 4 &&
                Offset(ref first, ref probe._slots2[0]) == 8 &&
                Offset(ref first, ref probe._slots3[0]) == 12 &&
                Offset(ref first, ref probe._slots4[0]) == 16 &&
@@ -207,12 +221,42 @@ internal static class InObjectLayout
         (long)Unsafe.ByteOffset(ref first, ref other) / Unsafe.SizeOf<JSValue>();
 }
 
-/// <summary>An ordinary object with in-object slots 0..3.</summary>
-internal class JSObjectInObject4 : JSObject
+/// <summary>An ordinary object with in-object slot 0.</summary>
+internal class JSObjectInObject1 : JSObject
 {
-    internal InObjectSlots4 _slots0;
-    public JSObjectInObject4(Map map) : base(map, inObjectSlots: true) { }
-    protected JSObjectInObject4(JSObjectInObject4 source) : base(source) => _slots0 = source._slots0;
+    internal InObjectSlots1 _slots0;
+    public JSObjectInObject1(Map map) : base(map, inObjectSlots: true) { }
+    protected JSObjectInObject1(JSObjectInObject1 source) : base(source) => _slots0 = source._slots0;
+    internal override int InObjectSlotCapacity => 1;
+    internal override JSObject CloneShallowCore() => new JSObjectInObject1(this);
+}
+
+/// <summary>An ordinary object with in-object slots 0..1.</summary>
+internal class JSObjectInObject2 : JSObjectInObject1
+{
+    internal InObjectSlots1 _slot1;
+    public JSObjectInObject2(Map map) : base(map) { }
+    protected JSObjectInObject2(JSObjectInObject2 source) : base(source) => _slot1 = source._slot1;
+    internal override int InObjectSlotCapacity => 2;
+    internal override JSObject CloneShallowCore() => new JSObjectInObject2(this);
+}
+
+/// <summary>An ordinary object with in-object slots 0..2.</summary>
+internal class JSObjectInObject3 : JSObjectInObject2
+{
+    internal InObjectSlots1 _slot2;
+    public JSObjectInObject3(Map map) : base(map) { }
+    protected JSObjectInObject3(JSObjectInObject3 source) : base(source) => _slot2 = source._slot2;
+    internal override int InObjectSlotCapacity => 3;
+    internal override JSObject CloneShallowCore() => new JSObjectInObject3(this);
+}
+
+/// <summary>An ordinary object with in-object slots 0..3.</summary>
+internal class JSObjectInObject4 : JSObjectInObject3
+{
+    internal InObjectSlots1 _slot3;
+    public JSObjectInObject4(Map map) : base(map) { }
+    protected JSObjectInObject4(JSObjectInObject4 source) : base(source) => _slot3 = source._slot3;
     internal override int InObjectSlotCapacity => 4;
     internal override JSObject CloneShallowCore() => new JSObjectInObject4(this);
 }
