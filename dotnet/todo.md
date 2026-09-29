@@ -455,6 +455,63 @@ _dictionary and _identityHash could fold into V8's properties_or_hash),
 builtin calls through CallBuiltin (Math.*, charCodeAt: 3-4.5x slower than
 V8 jitless), and string concatenation (4.5x).
 
+Octane, interpreter only, after the third interpreter performance pass
+(2026-09-29, 4-core container shared with other jobs; mean of 3
+interleaved runs of V8Sharp.Bench `octane:<name>`; "before" is 01fa85dd,
+"now" is this pass; wall scores are noisy by 5-15% per benchmark, Splay
+most):
+
+| benchmark | before | now | V8 --jitless | now / jitless |
+|---|---|---|---|---|
+| Richards | 580 | 581 | 1382 | 42% |
+| DeltaBlue | 495 | 558 | 1455 | 38% |
+| Crypto | 448 | 519 | 1201 | 43% |
+| RayTrace | 1189 | 1277 | 2986 | 43% |
+| EarleyBoyer | 1809 | 2084 | 5581 | 37% |
+| RegExp | 1098 | 1274 | 2202 | 58% |
+| Splay | 2398 | 2007 | 3443 | 58% |
+| NavierStokes | 1132 | 1306 | 1584 | 82% |
+| geomean | 976 | 1051 | 2165 | 48.6% |
+
+By thread CPU time (`octane-cpu`, V8SHARP_BENCH_SCALE=10, fixed work, mean
+of 3) the pass is +7.1% (geomean 132.6 to 142.0; V8 --jitless 326.6, so
+43.5% of jitless): Richards +2.5%, DeltaBlue +6.4%, Crypto +4.4%,
+RayTrace +4.9%, EarleyBoyer +7.9%, RegExp +7.7%, Splay +18%,
+NavierStokes +5.4%. The pass, one commit each (git log): the
+number-string cache (NumberToString +15%), frameless builtin calls
+(V8's frameless builtins list), string length and prototype loads on the
+inline LoadIC path, CSA-style fast paths for Math.*, charCodeAt/charAt/
+codePointAt, push/pop/shift and Number toString, IsString by instance
+type (string concat 89 to 69 ns), SmiMod, String+Number in AddSlow via
+the cache, the hash word shared by Name and JSReceiver on HeapObject
+(strings 8 bytes smaller), classifying Smis once in arithmetic feedback,
+no baseline OSR probe in JumpLoop until something has baseline code
+(empty loop -9%), in-object slot classes for 1-4 fields (Splay +21% CPU),
+array length on the inline IC path (micro -38%), mono/polymorphic
+StoreIC from feedback on the inline path (Splay +6%), the megamorphic
+load stub cache and F.prototype on the inline path, polymorphic keyed
+element stores (1.2M slow stores to under 1K per run), and an
+OrdinaryHasInstance check cached on the function's map.
+
+Tried and dropped (no measurable effect or slower): folding _dictionary
+into a properties_or_hash field, dropping ConsString's flat cache, a
+stack-base local in the dispatch loop (-30%: RyuJIT stops tracking
+locals past its limit, DOTNET_JitMaxLocalsToTrack=0x1800 gains ~10% on
+micro loops but cannot be set from runtimeconfig), outlining the OSR and
+wide-prefix paths, trimming barriers in CallBuiltinWithFrame, GC knobs
+(gen0size, RetainVM).
+
+What is left before 2x of jitless (48.6% now): builtins and string
+concatenation turned out to be a small share of Octane; the gap is the
+dispatch loop and calls. The loop sits at RyuJIT's local-tracking limit,
+so any new local spills the accumulator; the single indirect dispatch
+jump predicts poorly; calls are ~45-50 ns against ~20 ns (frame record,
+register stack stores with GC write barriers, argument copying); property
+access is pointer chasing (JSObject -> Map -> FixedArray feedback). The
+interpreter can probably reach 55-60% with a leaner frame protocol
+(register window without barriers, e.g. a struct-of-arrays with object
+and number halves); beyond that the IL tiers are the lever.
+
 Performance with the baseline tier (Octane, 2026-09-28, 4-core container
 shared with other jobs, mean of 2 runs; V8Sharp.Bench):
 
