@@ -22,15 +22,7 @@ public sealed class StoreIC : IC
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void StoreNamed(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name, JSValue value)
     {
-        if (vector is not null && receiver._obj is JSObject obj)
-        {
-            JSValue[] slots = vector.Slots;
-            if (ReferenceEquals(slots[slot]._obj, obj.Map) && slots[slot + 1]._obj is StoreHandler handler &&
-                TryStoreOwnField(obj, handler, value))
-            {
-                return;
-            }
-        }
+        if (vector is not null && receiver._obj is JSObject obj && TryStoreFromFeedback(vector, slot, obj, value)) return;
         StoreNamedSlow(isolate, vector, slot, receiver, name, value, FeedbackSlotKind.kSetNamedStrict);
     }
 
@@ -38,16 +30,25 @@ public sealed class StoreIC : IC
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void DefineNamedOwn(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name, JSValue value)
     {
-        if (vector is not null && receiver._obj is JSObject obj)
-        {
-            JSValue[] slots = vector.Slots;
-            if (ReferenceEquals(slots[slot]._obj, obj.Map) && slots[slot + 1]._obj is StoreHandler handler &&
-                TryStoreOwnField(obj, handler, value))
-            {
-                return;
-            }
-        }
+        if (vector is not null && receiver._obj is JSObject obj && TryStoreFromFeedback(vector, slot, obj, value)) return;
         StoreNamedSlow(isolate, vector, slot, receiver, name, value, FeedbackSlotKind.kDefineNamedOwn);
+    }
+
+    /// <summary>
+    /// The monomorphic and polymorphic hits of StoreIC (AccessorAssembler's
+    /// HandleStoreICHandlerCase after TryMonomorphicCase / HandlePolymorphicCase):
+    /// the handler recorded for the receiver's map, when it is a field store or
+    /// a field-adding transition.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool TryStoreFromFeedback(FeedbackVector vector, int slot, JSObject obj, JSValue value)
+    {
+        JSValue[] slots = vector.Slots;
+        HeapObject? feedback = slots[slot]._obj;
+        Map map = obj.Map;
+        HeapObject? found = ReferenceEquals(feedback, map) ? slots[slot + 1]._obj
+            : feedback is FixedArray polymorphic ? LoadIC.FindPolymorphicHandler(polymorphic, map) : null;
+        return found is StoreHandler handler && TryStoreOwnField(obj, handler, value);
     }
 
     /// <summary>
