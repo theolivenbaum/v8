@@ -129,7 +129,7 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   literals) and in-object slack tracking (`Map::InobjectSlackTrackingStep`,
   `MapUpdater::CompleteInobjectSlackTracking`) shrinks them after seven
   constructions. A CLR object has a fixed size, so ordinary objects are
-  allocated from a small chain of classes (`JSObjectInObject4` ...
+  allocated from a small chain of classes (`JSObjectInObject1` ...
   `JSObjectInObject256`) whose `[InlineArray]` segments are the slots, the
   smallest that holds the map's in-object count; a larger class derives from
   the smaller ones, so slot i is the same field in every object that has it

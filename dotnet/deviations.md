@@ -394,7 +394,7 @@ Heap and object model
   be sized per allocation, so ordinary objects (the instance types
   `JSObject.UsesInObjectSlots` lists: JS_OBJECT_TYPE, API objects, errors,
   the special prototype types) are allocated from a chain of classes with
-  `[InlineArray]` slot segments (4, 8, 12, 16, 32, 64, 128, 256 slots), the
+  `[InlineArray]` slot segments (1, 2, 3, 4, 8, 12, 16, 32, 64, 128, 256 slots), the
   smallest covering the map's in-object property count. After in-object slack
   tracking shrinks a map, objects allocated earlier keep their larger class
   (V8 turns the tail into filler). The other JSObject subclasses (arrays,
