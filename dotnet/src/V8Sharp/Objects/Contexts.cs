@@ -236,6 +236,11 @@ public sealed partial class NativeContext : Context
         SetNativeContext(this);
     }
 
+    // An intrinsic that hot paths only compare against (instanceof): the
+    // slot's object without the typed getter's cast, which for a non-sealed
+    // class such as JSObject is a runtime helper call.
+    internal HeapObject? FunctionPrototypeObject => Slots[(int)Field.FUNCTION_PROTOTYPE_INDEX]._obj;
+
     /// <summary>
     /// Whether the context is a ShadowRealm's: V8 gives such a context the
     /// shadow_realm_scope_info (scope type SHADOW_REALM_SCOPE).

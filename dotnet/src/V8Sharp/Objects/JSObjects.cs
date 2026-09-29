@@ -337,7 +337,11 @@ public partial class JSObject : JSReceiver
             return;
         }
         int inobject = map.GetInObjectProperties();
-        Debug.Assert(inobject <= InObjectSlotCapacity);
+        // A map keeps the instance size of the objects it describes (V8 never
+        // migrates an object to a map with more in-object properties); the
+        // slots beyond the class's capacity do not exist, so check it here
+        // rather than trust it.
+        if (inobject > InObjectSlotCapacity) throw new InvalidOperationException("SetFieldsByPropertyIndex: instance too small");
         int n = Math.Min(inobject, fields.Length);
         for (int i = 0; i < n; i++) InObjectSlot(i) = fields[i];
         for (int i = n; i < inobject; i++) InObjectSlot(i) = default;

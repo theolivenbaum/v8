@@ -994,24 +994,34 @@ public static class ObjectOps
     /// Function.prototype[@@hasInstance] for it. False when another path must
     /// decide.
     /// </summary>
+    /// <summary>
+    /// Whether a function map has neither an own @@hasInstance nor a redefined
+    /// "prototype" (the FunctionPrototypeAccessor): 1 or -1. A fast-mode map's
+    /// own descriptors do not change (adding or redefining a property moves the
+    /// object to another map), so the answer is cached on the map.
+    /// </summary>
+    static sbyte ComputeOrdinaryHasInstanceState(Map functionMap)
+    {
+        if (functionMap.IsDictionaryMap) return -1;
+        DescriptorArray descriptors = functionMap.InstanceDescriptors;
+        if (descriptors.Search(ReadOnlyRoots.has_instance_symbol, functionMap).IsFound) return -1;
+        InternalIndex index = descriptors.Search(ReadOnlyRoots.prototype_string, functionMap);
+        if (index.IsNotFound ||
+            !ReferenceEquals(descriptors.GetStrongValue(index).HeapObjectOrNull, Builtins.Accessors.FunctionPrototypeAccessor))
+        {
+            return -1;
+        }
+        return 1;
+    }
+
     internal static bool TryFastInstanceOf(JSValue obj, JSValue callable, out bool result)
     {
         result = false;
         if (callable._obj is not JSFunction function) return false;
         Map functionMap = function.Map;
-        if (functionMap.IsDictionaryMap ||
-            !ReferenceEquals(functionMap.Prototype, function.Context.NativeContext.FunctionPrototype))
-        {
-            return false;
-        }
-        DescriptorArray descriptors = functionMap.InstanceDescriptors;
-        if (descriptors.Search(ReadOnlyRoots.has_instance_symbol, functionMap).IsFound) return false;
-        InternalIndex index = descriptors.Search(ReadOnlyRoots.prototype_string, functionMap);
-        if (index.IsNotFound ||
-            !ReferenceEquals(descriptors.GetStrongValue(index).HeapObjectOrNull, Builtins.Accessors.FunctionPrototypeAccessor))
-        {
-            return false;
-        }
+        sbyte state = functionMap.OrdinaryHasInstanceState;
+        if (state == 0) functionMap.OrdinaryHasInstanceState = state = ComputeOrdinaryHasInstanceState(functionMap);
+        if (state < 0 || !ReferenceEquals(functionMap.Prototype, function.Context.NativeContext.FunctionPrototypeObject)) return false;
         // JSFunction::prototype(): the initial map's prototype, or the instance prototype.
         HeapObject? protoOrMap = function.PrototypeOrInitialMap;
         if (protoOrMap is null) return false;

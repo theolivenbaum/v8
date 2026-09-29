@@ -59,6 +59,13 @@ public sealed class Map : HeapObject
 
     public byte BitField;
     public byte BitField2;
+
+    /// <summary>
+    /// V8Sharp's cache for instanceof on functions of this map (ObjectOps.
+    /// TryFastInstanceOf): 0 not computed, 1 no own @@hasInstance and the
+    /// original "prototype" accessor, -1 otherwise.
+    /// </summary>
+    internal sbyte OrdinaryHasInstanceState;
     public uint BitField3;
 
     /// <summary>The prototype: a JSReceiver, or null for JavaScript null.</summary>

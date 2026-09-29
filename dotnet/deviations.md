@@ -258,6 +258,10 @@ for now, to be revisited when the reason goes away.
   many locals). The loop is AggressiveOptimization (it would otherwise run
   as OSR code). Wide/ExtraWide run one bytecode in the scaled loop, except
   LdaSmi, which the single-scale loop decodes itself.
+- JumpLoop's OSR-to-baseline check (InterpreterAssembler::OnStackReplacement,
+  case 3) runs only once the isolate has installed baseline code
+  (`Isolate.MayHaveBaselineCode`); V8 compiles the check into every JumpLoop
+  of a non-jitless build and out of a jitless one.
 - The bytecode offset is stored in the frame record only by the handlers
   that call out (`SavePc`, V8's SaveBytecodeOffset), not before every
   bytecode.
