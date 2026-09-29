@@ -9,8 +9,8 @@ public class CloneShallowTest : TestWithContext
 {
     static readonly string[] s_copiedFields =
     [
-        "HeapObject.InstanceType", "JSReceiver.Map", "JSReceiver._fields", "JSReceiver._dictionary",
-        "JSReceiver._identityHash", "JSObject.Elements", "JSArray.Length", "JSArray.AllocationMementoSite",
+        "HeapObject.InstanceType", "HeapObject._hashField", "JSReceiver.Map", "JSReceiver._fields", "JSReceiver._dictionary",
+        "JSObject.Elements", "JSArray.Length", "JSArray.AllocationMementoSite",
     ];
 
     static IEnumerable<string> InstanceFields(Type type)
@@ -38,7 +38,7 @@ public class CloneShallowTest : TestWithContext
     [Fact]
     public void CloneShallowCopiesInObjectSlots()
     {
-        foreach (int count in new[] { 1, 4, 5, 9, 13, 20, 40, 100, 200 })
+        foreach (int count in new[] { 1, 2, 3, 4, 5, 9, 13, 20, 40, 100, 200 })
         {
             Map map = Map.Create(i_isolate, count);
             JSObject obj = i_isolate.Factory.NewJSObjectFromMap(map);
