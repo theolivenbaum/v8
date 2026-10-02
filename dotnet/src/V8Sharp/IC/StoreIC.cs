@@ -22,7 +22,7 @@ public sealed class StoreIC : IC
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void StoreNamed(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name, JSValue value)
     {
-        if (vector is not null && receiver._obj is JSObject obj && TryStoreFromFeedback(vector, slot, obj, value)) return;
+        if (vector is not null && ICMaps.AsJSObject(receiver._obj) is { } obj && TryStoreFromFeedback(vector, slot, obj, value)) return;
         StoreNamedSlow(isolate, vector, slot, receiver, name, value, FeedbackSlotKind.kSetNamedStrict);
     }
 
@@ -39,7 +39,7 @@ public sealed class StoreIC : IC
     public static JSFunction? StoreNamedOrSetter(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name,
         JSValue value)
     {
-        if (vector is not null && receiver._obj is JSObject obj)
+        if (vector is not null && ICMaps.AsJSObject(receiver._obj) is { } obj)
         {
             JSValue[] slots = vector.Slots;
             HeapObject? feedback = slots[slot]._obj;
@@ -79,7 +79,7 @@ public sealed class StoreIC : IC
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void DefineNamedOwn(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name, JSValue value)
     {
-        if (vector is not null && receiver._obj is JSObject obj && TryStoreFromFeedback(vector, slot, obj, value)) return;
+        if (vector is not null && ICMaps.AsJSObject(receiver._obj) is { } obj && TryStoreFromFeedback(vector, slot, obj, value)) return;
         StoreNamedSlow(isolate, vector, slot, receiver, name, value, FeedbackSlotKind.kDefineNamedOwn);
     }
 
@@ -847,7 +847,7 @@ public sealed class KeyedStoreIC : IC
         {
             return;
         }
-        if (vector is not null && key.IsNumber && obj._obj is JSObject jsObject)
+        if (vector is not null && key.IsNumber && ICMaps.AsJSObject(obj._obj) is { } jsObject)
         {
             // The monomorphic and polymorphic (HandlePolymorphicCase) element
             // store handlers.

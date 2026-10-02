@@ -796,8 +796,9 @@ public sealed class KeyedLoadIC : IC
                 return typedResult;
             }
         }
-        else if (vector is not null && key.IsNumber && obj._obj is JSString str)
+        else if (vector is not null && key.IsNumber && obj._obj is { IsString: true } stringObject)
         {
+            JSString str = Unsafe.As<JSString>(stringObject);
             // LoadIndexedString: an in-bounds index of a String receiver whose
             // feedback is the String map (StringCharCodeAt; a ConsString is
             // flattened once, then indexed in its flat copy).
@@ -807,7 +808,7 @@ public sealed class KeyedLoadIC : IC
                 return isolate.Factory.LookupSingleCharacterStringFromCode(str.Get(index));
             }
         }
-        else if (vector is not null && key.IsNumber && obj._obj is JSObject jsObject)
+        else if (vector is not null && key.IsNumber && ICMaps.AsJSObject(obj._obj) is { } jsObject)
         {
             JSValue[] slots = vector.Slots;
             if (ReferenceEquals(slots[slot]._obj, jsObject.Map) && slots[slot + 1]._obj is LoadHandler handler &&

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 // Port of the IC base class of src/ic/ic.{h,cc,-inl.h}: the feedback state
 // machine (UNINITIALIZED -> MONOMORPHIC -> POLYMORPHIC (4 maps) ->
 // MEGAMORPHIC with the stub cache), handler installation (SetCache,
@@ -364,6 +365,16 @@ public sealed class ICIsolateState
 /// </summary>
 public static class ICMaps
 {
+    /// <summary>
+    /// <paramref name="o"/> as a JSObject when its instance type says it is one
+    /// (V8's IsJSObject: an instance type range check), else null. A type
+    /// test against JSObject, which is not sealed, is a call into the
+    /// runtime's cast helper that walks the class hierarchy.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSObject? AsJSObject(HeapObject? o) =>
+        o is not null && InstanceTypeChecks.IsJSObject(o.InstanceType) ? Unsafe.As<JSObject>(o) : null;
+
     public sealed class PrimitiveMaps(Map stringMap, Map numberMap, Map booleanMap, Map symbolMap, Map bigIntMap)
     {
         public readonly Map StringMap = stringMap;
