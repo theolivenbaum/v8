@@ -781,6 +781,37 @@ progress, also off by default.
     (regress-2618, regress-6989, regress-794825, generator-loop-peel);
     code-coverage-block-opt, regress-v8-5697 and
     turboshaft/regress-380487911 (65536 locals).
+  - Octane (V8Sharp.Bench `compare`, median of 2, under the bench lock,
+    2026-10-02, shared 4-core host; V8 is the 14.7 oracle's d8):
+
+    | benchmark | v8sharp | v8sharp:maglev | v8:jitless | v8:maglev | v8:jit |
+    |---|---|---|---|---|---|
+    | Richards | 734 | 2297 | 1319 | 28268 | 36436 |
+    | DeltaBlue | 501 | 1135 | 1395 | 35538 | 74918 |
+    | Crypto | 595 | 1318 | 1370 | 20801 | 35670 |
+    | RayTrace | 1381 | 1691 | 3189 | 39996 | 63565 |
+    | EarleyBoyer | 2011 | 2774 | 5428 | 29100 | 42352 |
+    | RegExp | 1462 | 1429 | 2111 | 6056 | 7319 |
+    | Splay | 2949 | 2557 | 2554 | 5660 | 6054 |
+    | SplayLatency | 2352 | 2019 | 2818 | 3664 | 4341 |
+    | NavierStokes | 1713 | 6735 | 1609 | 23292 | 44104 |
+    | PdfJS | 1259 | 813 | 6983 | 27188 | 32534 |
+    | Box2D | 1896 | 2111 | 3726 | 72217 | 80262 |
+    | Gameboy | 2176 | 1988 | 7884 | 54497 | 51353 |
+    | Mandreel | 471 | 1529 | 1141 | 28109 | 36491 |
+    | MandreelLatency | 1564 | 2073 | 6424 | 39728 | 45450 |
+    | CodeLoad | 2061 | 2077 | 17542 | 18632 | 17114 |
+    | zlib | 770 | 765 | 2224 | 73558 | 79018 |
+    | Typescript | 6006 | 5938 | 16472 | 53366 | 54936 |
+    | geomean | 1419 | 1945 | 3389 | 25097 | 31903 |
+
+    The tier is 1.37x the interpreter (2-4x on Richards, DeltaBlue, Crypto,
+    NavierStokes, Mandreel) and 57% of V8 --jitless; it is above V8
+    --jitless on Richards, NavierStokes and Mandreel. Losses: PdfJS (many
+    functions get hot in a short run, RyuJIT compile time on the background
+    thread), Splay and Gameboy (allocation- and call-heavy code that is
+    still generic). The rest of the gap to V8 --jitless is the interpreter
+    (V8Sharp's interpreter is 42% of V8's on this run).
   - The tier stays off by default until it is conformance-clean under
     forced optimization and a net win on Octane.
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays
