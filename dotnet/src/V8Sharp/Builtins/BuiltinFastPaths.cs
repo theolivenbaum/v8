@@ -158,6 +158,11 @@ public static class BuiltinFastPaths
             return true;
         }
         if (id == Builtin.ArrayPrototypePush) return BuiltinsArray.TryFastPush(isolate, function, receiver, arg0, out result);
+        if (IsRegExpStringBuiltin(isolate, id, receiver, arg0, JSValue.Undefined, 1) && IsSameRealm(isolate, function))
+        {
+            result = BuiltinRegistry.Invoke(isolate, id, function, JSValue.Undefined, receiver, new ReadOnlySpan<JSValue>(in arg0));
+            return true;
+        }
         result = default;
         return false;
     }
@@ -173,7 +178,14 @@ public static class BuiltinFastPaths
         if (TryCall2(callee, arg0, arg1, out result)) return true;
         if (receiver._obj is { IsString: true } && callee._obj is JSFunction function && function.Shared.BuiltinId != Builtin.NoBuiltinId)
         {
-            return TryCallString2(isolate, function.Shared.BuiltinId, Unsafe.As<JSString>(receiver._obj), arg0, arg1, out result);
+            Builtin id = function.Shared.BuiltinId;
+            if (IsRegExpStringBuiltin(isolate, id, receiver, arg0, arg1, 2) && IsSameRealm(isolate, function))
+            {
+                ReadOnlySpan<JSValue> args = [arg0, arg1];
+                result = BuiltinRegistry.Invoke(isolate, id, function, JSValue.Undefined, receiver, args);
+                return true;
+            }
+            return TryCallString2(isolate, id, Unsafe.As<JSString>(receiver._obj), arg0, arg1, out result);
         }
         return false;
     }
@@ -221,6 +233,44 @@ public static class BuiltinFastPaths
         result = default;
         return false;
     }
+
+    /// <summary>
+    /// RegExp.prototype.exec/test with an unmodified JSRegExp receiver (the
+    /// initial map) and a String; String.prototype.match/replace/split with a
+    /// String receiver, a String or unmodified JSRegExp pattern, and a String
+    /// replacement or no limit. These are TFJ builtins in V8 (no frame of
+    /// their own, never in stack traces), so V8Sharp invokes them without the
+    /// builtin frame record (BuiltinFramelessCalls.cs) when, as here, their
+    /// fast paths apply: the builtins still check the prototype themselves
+    /// and take their slow paths when it changed.
+    /// </summary>
+    static bool IsRegExpStringBuiltin(Isolate isolate, Builtin id, JSValue receiver, JSValue arg0, JSValue arg1, int argc)
+    {
+        switch (id)
+        {
+            case Builtin.RegExpPrototypeExec:
+            case Builtin.RegExpPrototypeTest:
+                return argc == 1 && BuiltinsRegExp.HasInitialRegExpMap(isolate, receiver._obj) && arg0._obj is { IsString: true };
+            case Builtin.StringPrototypeMatch:
+                return argc == 1 && receiver._obj is { IsString: true } && BuiltinsRegExp.HasInitialRegExpMap(isolate, arg0._obj);
+            case Builtin.StringPrototypeSplit:
+                return argc == 1 && receiver._obj is { IsString: true } && arg0._obj is { IsString: true };
+            case Builtin.StringPrototypeReplace:
+                return argc == 2 && receiver._obj is { IsString: true } &&
+                       (arg0._obj is { IsString: true } || BuiltinsRegExp.HasInitialRegExpMap(isolate, arg0._obj)) &&
+                       arg1._obj is { IsString: true };
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// The builtin belongs to the current realm, so running it in the
+    /// caller's context allocates its results in the right native context.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsSameRealm(Isolate isolate, JSFunction function) =>
+        ReferenceEquals(function.Context.NativeContext, isolate.Context?.NativeContext);
 
     /// <summary>The fast paths of builtins called with two arguments.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
