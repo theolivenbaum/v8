@@ -58,6 +58,12 @@ public sealed partial class MaglevGraphBuilder
     // Return values of an inlined function, merged into its continuation.
     readonly List<(BasicBlock Block, ValueNode Value, KnownNodeAspects Known)> _inlinedReturns = [];
 
+    // The try blocks around the current bytecode, innermost on top
+    // (catch_block_stack_), and the catch blocks' merge states.
+    readonly Stack<(int End, int Handler, int ContextRegister)> _catchBlockStack = new();
+    int _nextHandlerTableIndex;
+    readonly MergePointInterpreterFrameState?[] _catchStates;
+
     // Lazy deopt result location (LazyDeoptResultLocationScope).
     Register _lazyResultLocation = Register.VirtualAccumulator();
     int _lazyResultSize = 1;
@@ -92,6 +98,7 @@ public sealed partial class MaglevGraphBuilder
         _isJumpTarget = new bool[length];
         _loopChangesContext = new bool[length];
         _frameAtBytecodeStart = new ValueNode?[InterpreterFrameState.SlotCount(unit)];
+        _catchStates = new MergePointInterpreterFrameState?[length];
     }
 
     public Graph Graph => _graph;
@@ -123,7 +130,6 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>The bytecodes and features the builder supports; others bail out.</summary>
     internal static string? UnsupportedReason(SharedFunctionInfo shared, BytecodeArray bytecode)
     {
-        if (bytecode.HandlerTable.Length != 0) return "exception handlers";
         if (Globals.IsResumableFunction(shared.Kind)) return "resumable function";
         var it = new BytecodeArrayIterator(bytecode);
         for (; !it.Done(); it.Advance())
@@ -134,7 +140,6 @@ public sealed partial class MaglevGraphBuilder
                 case Bytecode.SwitchOnGeneratorState:
                 case Bytecode.SuspendGenerator:
                 case Bytecode.ResumeGenerator:
-                case Bytecode.CreateCatchContext:
                 case Bytecode.Illegal:
                     return "unsupported bytecode " + bc;
             }
@@ -184,6 +189,8 @@ public sealed partial class MaglevGraphBuilder
                     _forwardPredecessorCount[target]++;
                     _isJumpTarget[target] = true;
                 }
+                // The fallthrough is a Switch target too (VisitSwitchOnSmiNoFeedback merges into it).
+                if (next < bytecode.Length) _isJumpTarget[next] = true;
             }
             if (!Bytecodes.IsUnconditionalJump(bc) && !Bytecodes.Returns(bc) && !Bytecodes.UnconditionallyThrows(bc) &&
                 next < bytecode.Length)
@@ -314,7 +321,12 @@ public sealed partial class MaglevGraphBuilder
         for (; !_it.Done(); _it.Advance())
         {
             int offset = _it.CurrentOffset();
-            if (NeedsMergeState(offset))
+            HandleTryBlock(offset);
+            if (_catchStates[offset] is { } catchState)
+            {
+                ProcessMergePointAtExceptionHandlerStart(offset, catchState);
+            }
+            else if (NeedsMergeState(offset))
             {
                 ProcessMergePoint(offset);
             }
@@ -330,6 +342,83 @@ public sealed partial class MaglevGraphBuilder
             if (_info.IsTracing) Console.WriteLine($"[maglev] {_unit} @{offset} {_it.CurrentBytecode()}");
             VisitSingleBytecode();
         }
+    }
+
+    /// <summary>
+    /// HandleTryBlock: pops the try blocks that end at <paramref name="offset"/>
+    /// and pushes the ones that start there (the handler table's ranges are
+    /// ordered by start, outer before inner).
+    /// </summary>
+    void HandleTryBlock(int offset)
+    {
+        byte[] tableBytes = _unit.Bytecode.HandlerTable;
+        if (tableBytes.Length == 0) return;
+        while (_catchBlockStack.Count > 0 && offset >= _catchBlockStack.Peek().End) _catchBlockStack.Pop();
+        var table = new Codegen.HandlerTable(tableBytes);
+        while (_nextHandlerTableIndex < table.NumberOfRangeEntries())
+        {
+            uint index = (uint)_nextHandlerTableIndex;
+            int start = table.GetRangeStart(index);
+            if (offset < start) break;
+            int end = table.GetRangeEnd(index);
+            _nextHandlerTableIndex++;
+            if (offset >= end) continue;
+            _catchBlockStack.Push((end, table.GetRangeHandler(index), table.GetRangeData(index)));
+        }
+    }
+
+    bool IsInsideTryBlock => _catchBlockStack.Count > 0;
+
+    /// <summary>Nodes that can throw: calls, runtime and builtin calls (V8: properties().can_throw()).</summary>
+    static bool CanThrowInTry(Node node) =>
+        (node.Properties & (OpProperties.kCanThrow | OpProperties.kCall | OpProperties.kLazyDeopt)) != 0 || node.Opcode == Opcode.CallBuiltin;
+
+    /// <summary>
+    /// AttachExceptionHandlerInfo: a node that can throw inside a try block
+    /// continues at the innermost catch block, whose state merges the frame
+    /// at the node. (V8 lazy-deopts instead when the handler was never used;
+    /// V8Sharp always builds the catch block, as the interpreter does not
+    /// record handler use.)
+    /// </summary>
+    void AttachExceptionHandlerInfo(Node node)
+    {
+        (int _, int handler, int contextRegister) = _catchBlockStack.Peek();
+        MergePointInterpreterFrameState? state = _catchStates[handler];
+        if (state is null)
+        {
+            state = MergePointInterpreterFrameState.NewForCatchBlock(this, _unit, _analysis.GetInLivenessFor(handler), handler,
+                new Register(contextRegister));
+            _catchStates[handler] = state;
+        }
+        node.ExceptionHandler = new ExceptionHandlerInfo(state, state.PredecessorsSoFar);
+        state.MergeThrow(this, _frame);
+    }
+
+    /// <summary>
+    /// ProcessMergePointAtExceptionHandlerStart: a catch block starts from the
+    /// merged frames of its throws (a handler nothing can throw to is dead),
+    /// with the context of its try block.
+    /// </summary>
+    void ProcessMergePointAtExceptionHandlerStart(int offset, MergePointInterpreterFrameState state)
+    {
+        if (_currentBlock is not null || NeedsMergeState(offset))
+        {
+            throw new MaglevBailoutException("exception handler with normal predecessors");
+        }
+        _latestCheckpointedFrame = null;
+        _pendingFallthrough = null;
+        if (state.PredecessorsSoFar == 0)
+        {
+            _currentBlock = null;
+            return;
+        }
+        BasicBlock block = StartBlockFromMergeState(state);
+        block.Offset = offset;
+        block.IsExceptionHandler = true;
+        // The throwing nodes ran (and may have had side effects) after their frames merged.
+        _frame.Known.ClearUnstableMaps();
+        // Isolate::UnwindAndFindHandler sets the context from the context register.
+        SetCurrentContext(_frame.Context);
     }
 
     // A conditional branch's fallthrough when the next bytecode has no merge state.
@@ -609,13 +698,14 @@ public sealed partial class MaglevGraphBuilder
         if (!_it.Done()) node.BytecodeOffset = Cursor;
         if ((node.Properties & OpProperties.kEagerDeopt) != 0)
         {
-            node.EagerDeoptInfo = new EagerDeoptInfo(GetLatestCheckpointedFrame(), reason);
+            node.EagerDeoptInfo = NewEagerDeoptInfo(reason);
         }
         if ((node.Properties & OpProperties.kLazyDeopt) != 0)
         {
             node.LazyDeoptInfo = new LazyDeoptInfo(GetDeoptFrameForLazyDeopt(), _lazyResultLocation, _lazyResultSize);
         }
         _currentBlock!.Nodes.Add(node);
+        if (_catchBlockStack.Count > 0 && CanThrowInTry(node)) AttachExceptionHandlerInfo(node);
         if ((node.Properties & (OpProperties.kCanWrite | OpProperties.kCall)) != 0)
         {
             _frame.Known.ClearUnstableMaps();
@@ -718,9 +808,21 @@ public sealed partial class MaglevGraphBuilder
     void EmitUnconditionalDeopt(DeoptimizeReason reason)
     {
         var deopt = new ControlNode(Opcode.Deopt) { Reason = reason };
-        deopt.EagerDeoptInfo = new EagerDeoptInfo(GetLatestCheckpointedFrame(), reason);
+        deopt.EagerDeoptInfo = NewEagerDeoptInfo(reason);
         FinishBlock(deopt);
     }
+
+    // The call feedback of the builtin call being reduced (current_speculation_feedback_)
+    // and its speculation mode (current_speculation_mode_).
+    FeedbackVector? _speculationVector;
+    int _speculationSlot = -1;
+    SpeculationMode _speculationMode = SpeculationMode.kAllowSpeculation;
+
+    EagerDeoptInfo NewEagerDeoptInfo(DeoptimizeReason reason) => new(GetLatestCheckpointedFrame(), reason)
+    {
+        FeedbackToUpdate = _speculationVector,
+        FeedbackSlotToUpdate = _speculationSlot,
+    };
 
     /// <summary>
     /// An unconditional deopt in the middle of a bytecode's reduction: the
@@ -868,6 +970,75 @@ public sealed partial class MaglevGraphBuilder
         }
     }
 
+    /// <summary>
+    /// Select (MaglevSubGraphBuilder): a diamond inside the current bytecode.
+    /// <paramref name="branch"/> ends the current block; its true successor
+    /// computes <paramref name="ifTrue"/>, its false one
+    /// <paramref name="ifFalse"/>, and the merge's phi is the result. The
+    /// frame does not change, so only the known node aspects are merged.
+    /// </summary>
+    ValueNode Select(ControlNode branch, Func<ValueNode> ifTrue, Func<ValueNode> ifFalse)
+    {
+        BasicBlock predecessor = _currentBlock!;
+        KnownNodeAspects known = _frame.Known.Clone();
+        FinishBlock(branch);
+
+        BasicBlock trueBlock = StartNewBlock(predecessor);
+        branch.Target = trueBlock;
+        ValueNode trueValue = GetTaggedValue(ifTrue());
+        BasicBlock trueEnd = _currentBlock!;
+        var trueJump = new ControlNode(Opcode.Jump);
+        FinishBlock(trueJump);
+        KnownNodeAspects trueKnown = _frame.Known;
+
+        _frame.Known = known;
+        BasicBlock falseBlock = StartNewBlock(predecessor);
+        branch.FalseTarget = falseBlock;
+        ValueNode falseValue = GetTaggedValue(ifFalse());
+        BasicBlock falseEnd = _currentBlock!;
+        var falseJump = new ControlNode(Opcode.Jump);
+        FinishBlock(falseJump);
+
+        BasicBlock merge = StartNewBlock(trueEnd);
+        merge.Predecessors.Add(falseEnd);
+        trueJump.Target = merge;
+        falseJump.Target = merge;
+        trueKnown.Merge(_frame.Known);
+        _frame.Known = trueKnown;
+        if (ReferenceEquals(trueValue, falseValue)) return trueValue;
+        var phi = new Phi(Register.VirtualAccumulator(), Cursor)
+        {
+            Id = _graph.NewNodeId(),
+            Type = NodeTypes.Union(GetType(trueValue), GetType(falseValue)),
+            Block = merge,
+            Unit = _unit,
+        };
+        phi.InputList.Add(trueValue);
+        phi.InputList.Add(falseValue);
+        merge.Phis.Add(phi);
+        return phi;
+    }
+
+    /// <summary>
+    /// GetInt32ElementIndex: the int32 index of a key: Smis and int32s as they
+    /// are, other values through CheckedObjectToIndex (integral numbers and
+    /// array index strings; others deoptimize).
+    /// </summary>
+    ValueNode GetInt32ElementIndex(ValueNode key)
+    {
+        if (key.Representation != ValueRepresentation.kTagged || key.IsConstant) return GetInt32(key);
+        if (key.Opcode is Opcode.Int32ToNumber) return key.Inputs[0];
+        if (CheckType(key, NodeType.kNumber)) return GetInt32(key);
+        NodeInfo info = _frame.Known.GetOrCreateInfoFor(key);
+        if (info.Int32Alternative is { } alt) return alt;
+        return AddNewNode(new ValueNode(Opcode.CheckedObjectToIndex, ValueRepresentation.kInt32)
+        {
+            Inputs = [key],
+            Properties = OpProperties.kEagerDeopt,
+            Type = NodeType.kSmi,
+        }, DeoptimizeReason.kNotInt32);
+    }
+
     /// <summary>GetFloat64ForToNumber: a Float64 value, deoptimizing unless the value has <paramref name="allowed"/> type.</summary>
     ValueNode GetFloat64(ValueNode value, NodeType allowed = NodeType.kNumber)
     {
@@ -917,6 +1088,8 @@ public sealed partial class MaglevGraphBuilder
                 if (value.Opcode is Opcode.Float64ToTagged) return value.Inputs[0];
                 NodeInfo info = _frame.Known.GetOrCreateInfoFor(value);
                 if (info.Float64Alternative is { } alt) return alt;
+                // The ToNumber of an oddball is not the value (a store must not store it).
+                if (allowed != NodeType.kNumber && info.NumberOrOddballFloat64Alternative is { } oddballAlt) return oddballAlt;
                 if (info.Int32Alternative is { } i32)
                 {
                     return info.Float64Alternative = AddConversion(Opcode.ChangeInt32ToFloat64, ValueRepresentation.kFloat64, i32,
@@ -930,8 +1103,15 @@ public sealed partial class MaglevGraphBuilder
                         allowed == NodeType.kNumber ? DeoptimizeReason.kNotANumber : DeoptimizeReason.kNotANumberOrOddball,
                         (int)allowed);
                 info = _frame.Known.GetOrCreateInfoFor(value);
-                info.Float64Alternative = untagged;
-                if (allowed == NodeType.kNumber) info.Type &= NodeType.kNumber;
+                if (number || allowed == NodeType.kNumber)
+                {
+                    info.Float64Alternative = untagged;
+                    info.Type &= NodeType.kNumber;
+                }
+                else
+                {
+                    info.NumberOrOddballFloat64Alternative = untagged;
+                }
                 return untagged;
             }
         }
@@ -1051,6 +1231,42 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>BuildCheckValue: the value is this exact object.</summary>
+    /// <summary>
+    /// BuildCheckInternalizedStringValueOrByReference: the key is the name, an
+    /// equal string, or the primitive whose ToString is the name ("undefined",
+    /// "null", "true", "false"), which the keyed IC also handled
+    /// (CheckValueEqualsString; the primitive test of V8's Select is part of
+    /// the check node).
+    /// </summary>
+    void BuildCheckInternalizedStringValueOrByReference(ValueNode value, JSString expected, DeoptimizeReason reason)
+    {
+        if (value.Representation != ValueRepresentation.kTagged) EmitUnconditionalDeoptAndAbort(reason);
+        string s = expected.ToString();
+        JSValue primitive = s switch
+        {
+            "undefined" => JSValue.Undefined,
+            "null" => JSValue.Null,
+            "true" => JSValue.True,
+            "false" => JSValue.False,
+            _ => JSValue.TheHole,
+        };
+        if (value.Opcode is Opcode.Constant or Opcode.RootConstant)
+        {
+            JSValue c = value.ConstantValue();
+            if (c.HeapObjectOrNull is JSString cs && JSString.Equals(cs, expected)) return;
+            if (!primitive.IsTheHole && c.IsIdenticalTo(primitive)) return;
+            EmitUnconditionalDeoptAndAbort(reason);
+        }
+        AddNewNode(new Node(Opcode.CheckValueEqualsString)
+        {
+            Inputs = [value],
+            Obj0 = expected,
+            Value0 = primitive,
+            Properties = OpProperties.kEagerDeopt,
+        }, reason);
+        if (primitive.IsTheHole) EnsureType(value, NodeType.kString);
+    }
+
     void BuildCheckValue(ValueNode value, HeapObject expected, DeoptimizeReason reason)
     {
         if (value.Representation != ValueRepresentation.kTagged) EmitUnconditionalDeoptAndAbort(reason);

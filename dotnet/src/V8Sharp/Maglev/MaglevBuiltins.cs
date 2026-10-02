@@ -260,6 +260,53 @@ public static class MaglevBuiltins
         Unsafe.As<FixedDoubleArray>(elements._obj!)._data[index] = value;
     }
 
+    /// <summary>CheckValueEqualsString (and the keyed name's primitive, the hole if none).</summary>
+    public static bool ValueEqualsString(JSValue value, JSString expected, JSValue primitive)
+    {
+        if (ReferenceEquals(value._obj, expected)) return true;
+        if (value._obj is JSString s) return JSString.Equals(s, expected);
+        return !primitive.IsTheHole && value.IsIdenticalTo(primitive);
+    }
+
+    /// <summary>charCodeAt, NaN for an index outside the string.</summary>
+    public static double StringCharCodeAtOrNaN(JSValue s, int index)
+    {
+        var str = Unsafe.As<JSString>(s._obj!);
+        return (uint)index < (uint)str.Length ? StringCharCodeAt(s, index) : double.NaN;
+    }
+
+    /// <summary>CheckedObjectToIndex: the int32 index of a Smi, an integral HeapNumber or an array index String.</summary>
+    public static bool TryObjectToIndex(JSValue value, out int index)
+    {
+        if (value.IsNumber)
+        {
+            double d = value.Number;
+            index = (int)d;
+            return index == d;
+        }
+        if (value._obj is JSString s && s.AsArrayIndex(out uint u) && u <= int.MaxValue)
+        {
+            index = (int)u;
+            return true;
+        }
+        index = 0;
+        return false;
+    }
+
+    /// <summary>
+    /// The start of an exception trampoline (Isolate::UnwindAndFindHandler
+    /// for a Maglev frame): drops the frames and registers the exception left
+    /// above this frame, sets the pending message, and returns the exception.
+    /// </summary>
+    public static JSValue EnterCatchBlock(object exception, Isolate isolate, int frameIndex, int registerTop)
+    {
+        var e = (JavaScriptException)exception;
+        if (isolate.InterpreterFrameDepth > frameIndex + 1) isolate.PopFramesTo(frameIndex + 1);
+        if (isolate.RegisterStackTop > registerTop) isolate.ReleaseRegisters(registerTop);
+        isolate.PendingMessage = e.MessageObject is { } message ? JSValue.FromObject(message) : JSValue.TheHole;
+        return e.Value;
+    }
+
     /// <summary>
     /// MaybeGrowFastElements + EnsureWritableFastElements for a store at
     /// <paramref name="index"/> of a map-checked object with fast elements
@@ -271,24 +318,36 @@ public static class MaglevBuiltins
     public static JSValue MaybeGrowFastElements(Isolate isolate, JSValue obj, int index, int isJSArray, int kind)
     {
         JSObject o = Unsafe.As<JSObject>(obj._obj!);
-        if (index < 0) return default;
-        int length = isJSArray != 0 ? (int)Unsafe.As<JSArray>(o).Length._num : o.Elements.Length;
-        if (index > length) return default;
+        // The object's own kind: a map check over several maps may have
+        // passed a map of a packed kind where the group's kind is holey.
+        ElementsKind e = o.Map.ElementsKind;
+        _ = kind;
+        int elementsLength = o.Elements.Length;
+        int length = isJSArray != 0 ? (int)Unsafe.As<JSArray>(o).Length._num : elementsLength;
+        // TryBuildElementStoreOnJSArrayOrJSObject's limit: holey kinds may
+        // grow by up to kMaxGap past the capacity, packed arrays only append,
+        // and packed non-arrays never grow (that needs a map transition).
+        long limit = ElementsKinds.IsHoleyElementsKind(e) ? (long)elementsLength + JSObject.kMaxGap
+            : isJSArray != 0 ? length + 1L : elementsLength;
+        if ((uint)index >= limit) return default;
         if (o.Elements.IsCowArray) JSObject.EnsureWritableFastElements(isolate, o);
         FixedArrayBase elements = o.Elements;
         if (index >= elements.Length)
         {
-            if (isJSArray == 0) return default;
             // Grow as Runtime_GrowArrayElements / the CSA grow path (new capacity from NewElementsCapacity).
-            if (index >= JSObject.kMaxGap + elements.Length || index >= FixedArrayBase.kMaxLength) return default;
+            if (index >= FixedArrayBase.kMaxLength) return default;
             int capacity = JSObject.NewElementsCapacity(index + 1);
-            var e = (ElementsKind)kind;
             if (ElementsKinds.IsDoubleElementsKind(e))
             {
                 var grown = new FixedDoubleArray(capacity);
-                var old = (FixedDoubleArray)elements;
-                Array.Copy(old._data, grown._data, old.Length);
-                grown._data.AsSpan(old.Length).Fill(FixedDoubleArray.HoleNaN);
+                // An empty double array's elements are the empty FixedArray.
+                int oldLength = 0;
+                if (elements is FixedDoubleArray old)
+                {
+                    Array.Copy(old._data, grown._data, old.Length);
+                    oldLength = old.Length;
+                }
+                grown._data.AsSpan(oldLength).Fill(FixedDoubleArray.HoleNaN);
                 o.Elements = grown;
             }
             else

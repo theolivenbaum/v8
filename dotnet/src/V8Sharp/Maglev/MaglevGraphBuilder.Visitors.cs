@@ -552,6 +552,10 @@ public sealed partial class MaglevGraphBuilder
                      BuiltinArg.B(bytecode == Bytecode.CreateEvalContext)],
                     properties: OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!, NodeType.kContext));
                 break;
+            case Bytecode.CreateCatchContext:
+                SetAccumulator(WithType(CallBaseline("CreateCatchContext", [_frame.Context, LoadRegister(0)],
+                    [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.C(Constant(ConstantPoolIndex(1)))])!, NodeType.kContext));
+                break;
             case Bytecode.CreateWithContext:
                 SetAccumulator(WithType(CallBaseline("CreateWithContext", [_frame.Context, LoadRegister(0)],
                     [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.C(Constant(ConstantPoolIndex(1)))])!, NodeType.kContext));

@@ -505,7 +505,8 @@ public sealed partial class MaglevGraphBuilder
             ValueNode nameNode = GetConstant(name);
             if (name is JSString { IsInternalized: true } or Symbol)
             {
-                BuildCheckValue(key, name, DeoptimizeReason.kKeyedAccessChanged);
+                if (name is JSString nameString) BuildCheckInternalizedStringValueOrByReference(key, nameString, DeoptimizeReason.kKeyedAccessChanged);
+                else BuildCheckValue(key, name, DeoptimizeReason.kKeyedAccessChanged);
                 if (TryBuildNamedLoad(obj, namedFeedback) is { } named)
                 {
                     SetAccumulator(named);
@@ -543,7 +544,11 @@ public sealed partial class MaglevGraphBuilder
             }
             else
             {
-                if (handler.HeapObjectOrNull is not StoreHandler { IsSimpleElementStore: true } sh) return false;
+                // The handler's prototype validity cell is replaced by the
+                // prototype map checks in TryBuildElementStore, as V8 builds
+                // element access from the feedback maps, not the handlers.
+                if (handler.HeapObjectOrNull is not StoreHandler { HandlerKind: StoreHandler.Kind.kElement, ElementsTransitionMap: null } sh)
+                    return false;
                 k = sh.ElementsKind;
                 array = map.InstanceType == InstanceType.JSArrayType;
             }
@@ -571,15 +576,88 @@ public sealed partial class MaglevGraphBuilder
     ValueNode? TryBuildElementLoad(ValueNode obj, ValueNode key, List<(Map Map, JSValue Handler)> feedback)
     {
         if (obj.Representation != ValueRepresentation.kTagged) return null;
-        if (!CollectElementAccess(feedback, load: true, out ElementsKind kind, out bool isJSArray, out bool anyHoley)) return null;
+        if (!CollectElementAccess(feedback, load: true, out ElementsKind kind, out bool isJSArray, out bool anyHoley))
+        {
+            return TryBuildPolymorphicElementLoad(obj, key, feedback);
+        }
         var maps = new Map[feedback.Count];
         for (int i = 0; i < maps.Length; i++) maps[i] = feedback[i].Map;
         BuildCheckMaps(obj, maps);
-        ValueNode index = GetInt32(key);
+        ValueNode index = GetInt32ElementIndex(key);
         ValueNode elements = BuildLoadElements(obj);
+        // BuildElementLoadOnJSArrayOrJSObject: out of bounds loads are
+        // undefined when the IC handled them and the prototype chain has no
+        // elements; otherwise they deoptimize.
+        if (LoadModeHandlesOOB(feedback) && CanTreatHoleAsUndefined(maps))
+        {
+            // GetUint32ElementIndex.
+            AddNewNode(new Node(Opcode.CheckInt32Condition)
+            {
+                Inputs = [GetInt32Constant(-1), index],
+                Int0 = (int)CompareOperation.kLessThan,
+                Properties = OpProperties.kEagerDeopt,
+            }, DeoptimizeReason.kNotUint32);
+            ValueNode length = BuildLoadLength(obj, elements, isJSArray);
+            var branch = new ControlNode(Opcode.BranchIfInt32Compare)
+            {
+                Inputs = [index, length],
+                Operation = CompareOperation.kLessThan,
+                Unsigned = true,
+            };
+            return Select(branch, () => BuildElementLoad(elements, index, kind, anyHoley, maps, feedback),
+                () => GetRootConstant(RootIndex.kUndefinedValue));
+        }
         BuildBoundsCheck(obj, elements, index, isJSArray);
-        // BuildElementLoadOnJSArrayOrJSObject: holes are undefined when the
-        // prototype chain has no elements and the IC handled holes.
+        return BuildElementLoad(elements, index, kind, anyHoley, maps, feedback);
+    }
+
+    /// <summary>
+    /// TryBuildPolymorphicElementAccess for loads: a map dispatch with an
+    /// element load per map, when the maps are of different families (arrays
+    /// and objects, Smi/object and double elements). Out of bounds loads are
+    /// not handled (V8 neither).
+    /// </summary>
+    ValueNode? TryBuildPolymorphicElementLoad(ValueNode obj, ValueNode key, List<(Map Map, JSValue Handler)> feedback)
+    {
+        if (feedback.Count < 2 || LoadModeHandlesOOB(feedback)) return null;
+        var cases = new List<(Map[] Maps, Func<ValueNode?> Build)>(feedback.Count);
+        var entries = new List<(Map Map, JSValue Handler)>[feedback.Count];
+        for (int i = 0; i < feedback.Count; i++)
+        {
+            entries[i] = [feedback[i]];
+            if (!CollectElementAccess(entries[i], load: true, out _, out _, out _)) return null;
+        }
+        ValueNode index = GetInt32ElementIndex(key);
+        for (int i = 0; i < feedback.Count; i++)
+        {
+            List<(Map Map, JSValue Handler)> entry = entries[i];
+            Map[] maps = [entry[0].Map];
+            CollectElementAccess(entry, load: true, out ElementsKind kind, out bool isJSArray, out bool anyHoley);
+            cases.Add((maps, () =>
+            {
+                ValueNode elements = BuildLoadElements(obj);
+                BuildBoundsCheck(obj, elements, index, isJSArray);
+                return BuildElementLoad(elements, index, kind, anyHoley, maps, entry);
+            }));
+        }
+        return BuildPolymorphicAccess(obj, cases, hasResult: true);
+    }
+
+    /// <summary>LoadModeHandlesOOB over the element handlers.</summary>
+    static bool LoadModeHandlesOOB(List<(Map Map, JSValue Handler)> feedback)
+    {
+        foreach ((Map _, JSValue handler) in feedback)
+        {
+            if (handler.HeapObjectOrNull is not LoadHandler { AllowOutOfBounds: true }) return false;
+        }
+        return true;
+    }
+
+    /// <summary>The element load of BuildElementLoadOnJSArrayOrJSObject (emit_load), after the bounds check.</summary>
+    ValueNode BuildElementLoad(ValueNode elements, ValueNode index, ElementsKind kind, bool anyHoley, Map[] maps,
+        List<(Map Map, JSValue Handler)> feedback)
+    {
+        // Holes are undefined when the prototype chain has no elements and the IC handled holes.
         bool convertHole = anyHoley && CanTreatHoleAsUndefined(maps) && LoadModeHandlesHoles(feedback);
         if (ElementsKinds.IsDoubleElementsKind(kind))
         {
@@ -661,7 +739,19 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>index &lt; length (unsigned), deoptimizing out of bounds.</summary>
     void BuildBoundsCheck(ValueNode obj, ValueNode elements, ValueNode index, bool isJSArray)
     {
-        ValueNode length = isJSArray
+        ValueNode length = BuildLoadLength(obj, elements, isJSArray);
+        AddNewNode(new Node(Opcode.CheckInt32Condition)
+        {
+            Inputs = [index, length],
+            Int0 = (int)CompareOperation.kLessThan,
+            Int1 = 1, // unsigned
+            Properties = OpProperties.kEagerDeopt,
+        }, DeoptimizeReason.kOutOfBounds);
+    }
+
+    /// <summary>The length elements accesses check: a JSArray's length, else the backing store's.</summary>
+    ValueNode BuildLoadLength(ValueNode obj, ValueNode elements, bool isJSArray) =>
+        isJSArray
             ? GetInt32(AddNewNode(new ValueNode(Opcode.LoadJSArrayLength, ValueRepresentation.kTagged)
             {
                 Inputs = [obj],
@@ -674,14 +764,6 @@ public sealed partial class MaglevGraphBuilder
                 Type = NodeType.kSmi,
                 Properties = OpProperties.kCanRead,
             });
-        AddNewNode(new Node(Opcode.CheckInt32Condition)
-        {
-            Inputs = [index, length],
-            Int0 = (int)CompareOperation.kLessThan,
-            Int1 = 1, // unsigned
-            Properties = OpProperties.kEagerDeopt,
-        }, DeoptimizeReason.kOutOfBounds);
-    }
 
     // ---- Keyed stores -------------------------------------------------------------------------------------
 
@@ -702,10 +784,38 @@ public sealed partial class MaglevGraphBuilder
             [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)]);
     }
 
+    /// <summary>MapRef::PrototypesElementsDoNotHaveAccessorsOrThrow.</summary>
+    static bool PrototypesElementsDoNotHaveAccessorsOrThrow(Map map, ref List<Map>? prototypeMaps)
+    {
+        for (JSReceiver? prototype = map.Prototype; prototype is not null; prototype = prototype.Map.Prototype)
+        {
+            // Non-extensible and sealed fast elements behave like fast elements
+            // for stores into holes on the receiver; frozen ones do not (the
+            // "override mistake").
+            Map prototypeMap = prototype.Map;
+            if (!InstanceTypeChecks.IsJSObject(prototypeMap.InstanceType) || !prototypeMap.IsStable ||
+                !ElementsKinds.IsFastOrNonextensibleOrSealedElementsKind(prototypeMap.ElementsKind))
+            {
+                return false;
+            }
+            (prototypeMaps ??= []).Add(prototypeMap);
+        }
+        return true;
+    }
+
     bool TryBuildElementStore(ValueNode obj, ValueNode key, ValueNode value, List<(Map Map, JSValue Handler)> feedback)
     {
         if (obj.Representation != ValueRepresentation.kTagged) return false;
-        if (!CollectElementAccess(feedback, load: false, out ElementsKind kind, out bool isJSArray, out bool _)) return false;
+        bool grouped = CollectElementAccess(feedback, load: false, out ElementsKind kind, out bool isJSArray, out bool _);
+        if (!grouped)
+        {
+            // TryBuildPolymorphicElementAccess: one store per map.
+            if (feedback.Count < 2) return false;
+            foreach ((Map Map, JSValue Handler) entry in feedback)
+            {
+                if (!CollectElementAccess([entry], load: false, out _, out _, out _)) return false;
+            }
+        }
         KeyedAccessStoreMode mode = KeyedAccessStoreMode.kInBounds;
         foreach ((Map _, JSValue handler) in feedback)
         {
@@ -715,8 +825,46 @@ public sealed partial class MaglevGraphBuilder
         }
         var maps = new Map[feedback.Count];
         for (int i = 0; i < maps.Length; i++) maps[i] = feedback[i].Map;
+        // For holey stores or growing stores, the prototype chain must have no
+        // element setters, guarded by dependencies on the stable prototype maps.
+        List<Map>? prototypeMaps = null;
+        foreach (Map map in maps)
+        {
+            if ((ElementsKinds.IsHoleyOrDictionaryElementsKind(map.ElementsKind) || mode != KeyedAccessStoreMode.kInBounds) &&
+                !PrototypesElementsDoNotHaveAccessorsOrThrow(map, ref prototypeMaps))
+            {
+                return false;
+            }
+        }
+        if (prototypeMaps is not null)
+        {
+            foreach (Map m in prototypeMaps) _info.AddDependency(m, Objects.DependentCode.DependencyGroups.PrototypeCheck);
+        }
+        if (!grouped)
+        {
+            ValueNode polymorphicIndex = GetInt32ElementIndex(key);
+            var cases = new List<(Map[] Maps, Func<ValueNode?> Build)>(feedback.Count);
+            foreach ((Map Map, JSValue Handler) entry in feedback)
+            {
+                CollectElementAccess([entry], load: false, out ElementsKind entryKind, out bool entryIsJSArray, out bool _);
+                cases.Add(([entry.Map], () =>
+                {
+                    BuildElementStore(obj, polymorphicIndex, value, entryKind, entryIsJSArray, mode);
+                    return null;
+                }));
+            }
+            BuildPolymorphicAccess(obj, cases, hasResult: false);
+            return true;
+        }
         BuildCheckMaps(obj, maps);
-        ValueNode index = GetInt32(key);
+        BuildElementStore(obj, GetInt32ElementIndex(key), value, kind, isJSArray, mode);
+        return true;
+    }
+
+    /// <summary>TryBuildElementStoreOnJSArrayOrJSObject after the map check.</summary>
+    void BuildElementStore(ValueNode obj, ValueNode index, ValueNode value, ElementsKind kind, bool isJSArray,
+        KeyedAccessStoreMode mode)
+    {
         // The value must fit the elements kind.
         ValueNode stored;
         if (ElementsKinds.IsSmiElementsKind(kind))
@@ -760,6 +908,5 @@ public sealed partial class MaglevGraphBuilder
             Inputs = [elements, index, stored],
             Properties = OpProperties.kCanWrite | OpProperties.kNotIdempotent,
         });
-        return true;
     }
 }

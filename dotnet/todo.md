@@ -640,8 +640,12 @@ progress, also off by default.
         lazily pushed inlined frames, `new` of known constructors
         (FastNewObject + inlined constructor), Math.*, charCodeAt,
         f.apply(thisArg, arguments) forwarding with arguments-object
-        elision, builtin fast paths for calls; everything else through the
-        baseline builtins (generic nodes).
+        elision, builtin fast paths for calls; try/catch/finally (catch
+        blocks with exception phis); string/number element keys
+        (CheckedObjectToIndex), out-of-bounds loads, polymorphic element
+        loads/stores, holey/growing stores guarded by prototype maps; call
+        speculation modes updated by deopts (out of bounds, disallow);
+        everything else through the baseline builtins (generic nodes).
       - Phi representation selector (untagged Int32/Float64 phis).
       - IL code generator: values in IL locals, deopt exits shared per frame
         state, lazy deopt checks after calls, OSR entry.
@@ -656,8 +660,9 @@ progress, also off by default.
         %ActiveTierIsMaglev, %GetOptimizationStatus bits.
       Tests: tests/V8Sharp.Tests/Maglev (interpreter vs forced optimization).
 - Maglev: open items
-  - Not optimized (the compile bails out): try/catch handlers, generators and
-    async functions, `with`, debug bytecodes; typed arrays, DataView,
+  - Not optimized (the compile bails out): generators and async functions,
+    debug bytecodes; no inlining in or of try blocks; elements kind
+    transitions in element stores are generic; typed arrays, DataView,
     Map/Set/iterators, string builders, array destructuring and for-of
     reductions are generic.
   - Missing reductions that mjsunit/maglev asserts (deopt policy and

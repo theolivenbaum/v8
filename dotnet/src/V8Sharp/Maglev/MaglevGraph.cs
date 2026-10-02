@@ -21,6 +21,8 @@ public sealed class BasicBlock(int id)
     /// <summary>The merge state this block starts with (merge points only).</summary>
     public MergePointInterpreterFrameState? State;
     public bool IsLoopHeader;
+    /// <summary>The block starts a catch block: it is entered from throwing nodes, not from predecessors.</summary>
+    public bool IsExceptionHandler;
     /// <summary>The bytecode offset the block starts at (-1 for blocks not at a bytecode, e.g. edge splits).</summary>
     public int Offset = -1;
     /// <summary>Code generation: the IL label of the block.</summary>

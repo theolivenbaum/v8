@@ -103,7 +103,10 @@ public sealed partial class MaglevGraphBuilder
 
         var nexus = new FeedbackNexus(Isolate, _unit.Feedback, slot);
         JSValue feedback = nexus.GetFeedback();
-        bool speculate = nexus.GetSpeculationMode() == SpeculationMode.kAllowSpeculation;
+        // The call target is checked whatever the speculation mode; the mode
+        // gates the builtin reductions (SaveCallSpeculationScope).
+        SpeculationMode speculationMode = nexus.GetSpeculationMode();
+        bool speculate = speculationMode != SpeculationMode.kDisallowSpeculation;
         if (speculate && feedback.HeapObjectOrNull is JSFunction applied && !FeedbackVector.IsCleared(feedback) &&
             nexus.GetCallFeedbackContent() == CallFeedbackContent.kReceiver)
         {
@@ -116,10 +119,28 @@ public sealed partial class MaglevGraphBuilder
                 return;
             }
         }
-        else if (speculate && feedback.HeapObjectOrNull is JSFunction target && !FeedbackVector.IsCleared(feedback))
+        else if (feedback.HeapObjectOrNull is JSFunction target && !FeedbackVector.IsCleared(feedback))
         {
             BuildCheckValue(callee, target, DeoptimizeReason.kWrongCallTarget);
-            if (TryReduceBuiltin(target, receiver, args) is { } reduced)
+            // SaveCallSpeculationScope: the reduction's checks disallow speculation here when they fail.
+            ValueNode? reduced = null;
+            if (speculate)
+            {
+                _speculationVector = _unit.Feedback;
+                _speculationSlot = slot;
+                _speculationMode = speculationMode;
+                try
+                {
+                    reduced = TryReduceBuiltin(target, receiver, args);
+                }
+                finally
+                {
+                    _speculationVector = null;
+                    _speculationSlot = -1;
+                    _speculationMode = SpeculationMode.kAllowSpeculation;
+                }
+            }
+            if (reduced is not null)
             {
                 SetAccumulator(reduced);
                 return;
@@ -303,6 +324,9 @@ public sealed partial class MaglevGraphBuilder
         if (Flags.maglev_disable_builtin_reducers) return null;
         Builtin id = target.Shared.BuiltinId;
         if (id == Builtin.NoBuiltinId) return null;
+        // CanSpeculateCall({kDisallowBoundsCheckSpeculation}): after an out of
+        // bounds deopt only the reductions with a bounds-checked path remain.
+        if (_speculationMode == SpeculationMode.kDisallowBoundsCheckSpeculation && id != Builtin.StringPrototypeCharCodeAt) return null;
         try
         {
             switch (id)
@@ -342,8 +366,17 @@ public sealed partial class MaglevGraphBuilder
                 case Builtin.StringPrototypeCharCodeAt:
                 {
                     if (args.Length < 1 || receiver.Representation != ValueRepresentation.kTagged) return null;
+                    ValueNode index = GetInt32ElementIndex(args[0]);
                     BuildCheckString(receiver);
-                    ValueNode index = GetInt32(args[0]);
+                    if (_speculationMode == SpeculationMode.kDisallowBoundsCheckSpeculation)
+                    {
+                        // The Select of an index check: NaN out of bounds (one node).
+                        return AddNewNode(new ValueNode(Opcode.BuiltinStringPrototypeCharCodeAtOrNaN, ValueRepresentation.kFloat64)
+                        {
+                            Inputs = [receiver, index],
+                            Type = NodeType.kNumber,
+                        });
+                    }
                     ValueNode length = AddNewNode(new ValueNode(Opcode.StringLength, ValueRepresentation.kInt32)
                     {
                         Inputs = [receiver],
@@ -434,6 +467,10 @@ public sealed partial class MaglevGraphBuilder
         if (Globals.IsResumableFunction(shared.Kind)) return "resumable";
         if (UnsupportedReason(shared, bytecode) is { } reason) return reason;
         if (!InlineableBytecodes(bytecode)) return "frame-reading bytecode";
+        // V8Sharp: the IL backend's catch blocks are in the outermost function
+        // (an exception leaves inlined frames through the interpreter's frames).
+        if (bytecode.HandlerTable.Length != 0) return "exception handlers";
+        if (IsInsideTryBlock) return "inside a try block";
         int length = bytecode.Length;
         bool small = length <= Flags.max_maglev_inlined_bytecode_size_small;
         int depth = _unit.InliningDepth + 1;

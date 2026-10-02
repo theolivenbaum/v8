@@ -280,9 +280,10 @@ for now, to be revisited when the reason goes away.
 - Protectors are bools (Protectors.cs), not PropertyCells: code depending on
   one registers on a stand-in Cell per protector, invalidated through
   `Protectors.OnInvalidate`.
-- `MaglevCompiler.kMaxDeoptCount` (8) eager deopts disable optimization of a
-  function (V8 counts deopts with `--max-deopt-count` per feedback vector
-  only for Turbofan and lets Maglev re-optimize).
+- `MaglevCompiler.kMaxDeoptCount` (8) eager deopts stop the tiering manager
+  from optimizing a function (V8 counts deopts with `--max-deopt-count` per
+  feedback vector only for Turbofan and lets Maglev re-optimize). Explicit
+  requests (`%OptimizeFunctionOnNextCall`) still compile, as in V8.
 - The tiering manager does not optimize functions whose graph exceeds
   `MaglevCompiler.kMaxTieringGraphNodes` (1200 nodes): their IL is over
   RyuJIT's MinOpts limits, so it would be jitted without optimization, at a
@@ -291,10 +292,23 @@ for now, to be revisited when the reason goes away.
 - Deopt exits are shared by the checks of one frame state; the failed
   check's reason is passed to the Deoptimizer at run time (V8 has one exit
   per check, with the reason in the deopt data).
+- Exception handlers: the code body is one .NET try region; a throwing
+  node inside a JS try block stores its index in a local, and the region's
+  filtered catch clause runs that node's trampoline (the catch block's
+  exception phis from the node's frame) and re-enters the region, whose
+  first instruction dispatches to the catch block. V8 returns to a handler
+  address. Catch blocks are always built: V8 lazy-deopts instead when the
+  handler was never used, but the interpreter does not record handler use.
+  Calls inside try blocks and functions with handlers are not inlined (V8
+  inlines them and drops the inlined frames on a throw).
+- Select diamonds of one node: charCodeAt's out-of-bounds NaN
+  (`BuiltinStringPrototypeCharCodeAtOrNaN`) and the keyed name check against
+  the name's primitive (`CheckValueEqualsString` with the primitive) are one
+  node each where V8 builds a branch and a phi.
 - No escape analysis (except the arguments object forwarded to
   Function.prototype.apply), loop peeling, LICM, or typed array/DataView/string
-  builder reductions yet; try/catch, generators and async functions are not
-  optimized (the compile bails out).
+  builder reductions yet; generators and async functions are not optimized
+  (the compile bails out).
 
 ## Interpreter execution, ICs, runtime, compiler and modules
 

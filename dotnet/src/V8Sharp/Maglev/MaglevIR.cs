@@ -243,6 +243,12 @@ public enum Opcode : ushort
     StoreContextSlot,
     StringLength,
     BuiltinStringPrototypeCharCodeAt,
+    /// <summary>V8Sharp: charCodeAt with NaN out of bounds (TryReduceStringPrototypeCharCodeAt's Select).</summary>
+    BuiltinStringPrototypeCharCodeAtOrNaN,
+    /// <summary>CheckedObjectToIndex: Smi, integral HeapNumber or array index String to int32.</summary>
+    CheckedObjectToIndex,
+    /// <summary>CheckValueEqualsString: the value is a string equal to Obj0 (or Value0, a primitive with that name).</summary>
+    CheckValueEqualsString,
     LoadPropertyCellValue,
     StorePropertyCellValue,
     /// <summary>V8Sharp: EnsureWritableFastElements + MaybeGrowFastElements for an append store.</summary>
@@ -322,6 +328,8 @@ public abstract class NodeBase(Opcode opcode)
     public OpProperties Properties;
     public EagerDeoptInfo? EagerDeoptInfo;
     public LazyDeoptInfo? LazyDeoptInfo;
+    /// <summary>The catch block the node continues at when it throws (null: the exception leaves the code).</summary>
+    public ExceptionHandlerInfo? ExceptionHandler;
     /// <summary>The compilation unit (frame) the node belongs to.</summary>
     public MaglevCompilationUnit? Unit;
     /// <summary>The bytecode offset (after any prefix) the frame record holds while the node runs; -1 if none.</summary>
@@ -452,9 +460,27 @@ public sealed class Phi(Interpreter.Register owner, int mergeOffset) : ValueNode
     public bool IsLoopPhi;
     /// <summary>The phi's uses as untagged values (PhiRepresentationSelector bookkeeping).</summary>
     public bool UsedAsUntagged;
+    /// <summary>
+    /// A phi of a catch block (V8: an exception phi): its inputs are the
+    /// values at the throwing nodes, in ExceptionHandlerInfo.ThrowIndex order,
+    /// moved by the code generator's exception trampolines. Always tagged.
+    /// The accumulator's exception phi has no inputs: it is the exception.
+    /// </summary>
+    public bool IsExceptionPhi;
     public List<ValueNode> InputList = [];
 
     public override string ToString() => $"n{Id}: Phi({Owner})";
+}
+
+/// <summary>
+/// ExceptionHandlerInfo: the catch block of a node that can throw inside a
+/// try block, and the node's index among the throws merged into it (the
+/// input index of the block's exception phis).
+/// </summary>
+public sealed class ExceptionHandlerInfo(MergePointInterpreterFrameState catchState, int throwIndex)
+{
+    public readonly MergePointInterpreterFrameState CatchState = catchState;
+    public readonly int ThrowIndex = throwIndex;
 }
 
 /// <summary>ControlNode.</summary>
@@ -467,6 +493,8 @@ public class ControlNode(Opcode opcode) : NodeBase(opcode)
     /// <summary>Switch targets (by case value - base) and the fallthrough.</summary>
     public BasicBlock?[]? Targets;
     public CompareOperation Operation;
+    /// <summary>BranchIfInt32Compare: compare as uint32 (BuildBranchIfUint32Compare).</summary>
+    public bool Unsigned;
     public DeoptimizeReason Reason;
 }
 
@@ -514,6 +542,13 @@ public abstract class DeoptInfo(DeoptFrame topFrame)
 public sealed class EagerDeoptInfo(DeoptFrame topFrame, DeoptimizeReason reason) : DeoptInfo(topFrame)
 {
     public DeoptimizeReason Reason = reason;
+    /// <summary>
+    /// The call feedback whose speculation the check made (feedback_to_update):
+    /// the deopt disallows speculation there, so the next compilation calls the
+    /// builtin generically.
+    /// </summary>
+    public FeedbackVector? FeedbackToUpdate;
+    public int FeedbackSlotToUpdate = -1;
 }
 
 /// <summary>LazyDeoptInfo: the result of the call goes to ResultLocation (the accumulator or a register).</summary>

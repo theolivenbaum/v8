@@ -35,8 +35,27 @@ public static class Deoptimizer
     public static void Deoptimize(Isolate isolate, ref InterpreterState state, MaglevCode code, int index, int reason)
     {
         DeoptPoint point = code.DeoptPoints[index];
-        // The exit of a frame state is shared by its checks: the reason is the failed check's.
-        point.Reason = (DeoptimizeReason)reason;
+        // The exit of a frame state is shared by its checks: the reason is the
+        // failed check's, and its high bits name the call feedback the check
+        // speculated on (Deoptimizer: feedback_to_update), which now
+        // disallows speculation.
+        point.Reason = (DeoptimizeReason)(reason & 0xFFFF);
+        if (reason >> 16 is > 0 and int feedback)
+        {
+            (FeedbackVector vector, int slot) = code.SpeculationFeedback[feedback - 1];
+            // TranslatedState::DoUpdateFeedback.
+            var nexus = new FeedbackNexus(isolate, vector, slot);
+            if (point.Reason == DeoptimizeReason.kOutOfBounds)
+            {
+                nexus.SetSpeculationMode(nexus.GetSpeculationMode() == SpeculationMode.kAllowSpeculation
+                    ? SpeculationMode.kDisallowBoundsCheckSpeculation
+                    : SpeculationMode.kDisallowSpeculation);
+            }
+            else
+            {
+                nexus.SetSpeculationMode(SpeculationMode.kDisallowSpeculation);
+            }
+        }
         point.Count++;
         JSValue[] scratch = isolate.MaglevDeoptScratch;
         JSValue[] stack = isolate.RegisterStack;

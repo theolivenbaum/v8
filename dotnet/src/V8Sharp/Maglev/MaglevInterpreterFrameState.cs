@@ -31,6 +31,8 @@ public sealed class NodeInfo
     // Cached conversions (NodeInfo::alternative()).
     public ValueNode? Int32Alternative;
     public ValueNode? Float64Alternative;
+    /// <summary>The Float64 of ToNumber for a number or oddball (not the value itself for oddballs).</summary>
+    public ValueNode? NumberOrOddballFloat64Alternative;
     public ValueNode? TaggedAlternative;
     public ValueNode? TruncatedInt32Alternative;
 
@@ -126,6 +128,10 @@ public sealed class KnownNodeAspects
             }
             if (!ReferenceEquals(mine.Int32Alternative, theirs.Int32Alternative)) mine.Int32Alternative = null;
             if (!ReferenceEquals(mine.Float64Alternative, theirs.Float64Alternative)) mine.Float64Alternative = null;
+            if (!ReferenceEquals(mine.NumberOrOddballFloat64Alternative, theirs.NumberOrOddballFloat64Alternative))
+            {
+                mine.NumberOrOddballFloat64Alternative = null;
+            }
             if (!ReferenceEquals(mine.TaggedAlternative, theirs.TaggedAlternative)) mine.TaggedAlternative = null;
             if (!ReferenceEquals(mine.TruncatedInt32Alternative, theirs.TruncatedInt32Alternative)) mine.TruncatedInt32Alternative = null;
         }
@@ -254,6 +260,10 @@ public sealed class MergePointInterpreterFrameState
     public BasicBlock? Block;
     /// <summary>The loop's back edge has been merged.</summary>
     public bool LoopClosed;
+    /// <summary>A catch block's state (NewForCatchBlock): merged from the throwing nodes (MergeThrow).</summary>
+    public bool IsExceptionHandler;
+    /// <summary>The register holding the context of the try block (the handler table's range data).</summary>
+    public Interpreter.Register CatchBlockContextRegister;
 
     public MergePointInterpreterFrameState(MaglevCompilationUnit unit, int mergeOffset, int predecessorCount,
         BytecodeLivenessState liveness, LoopInfo? loop)
@@ -325,6 +335,84 @@ public sealed class MergePointInterpreterFrameState
             Known!.Merge(unmerged.Known);
         }
         Predecessors.Add(predecessor);
+        PredecessorsSoFar++;
+    }
+
+    /// <summary>
+    /// NewForCatchBlock: the state of the catch block at
+    /// <paramref name="handlerOffset"/>; the accumulator, when live, is the
+    /// exception (an exception phi without inputs).
+    /// </summary>
+    public static MergePointInterpreterFrameState NewForCatchBlock(MaglevGraphBuilder builder, MaglevCompilationUnit unit,
+        BytecodeLivenessState liveness, int handlerOffset, Interpreter.Register contextRegister)
+    {
+        var state = new MergePointInterpreterFrameState(unit, handlerOffset, 0, liveness, null)
+        {
+            IsExceptionHandler = true,
+            CatchBlockContextRegister = contextRegister,
+        };
+        if (liveness.AccumulatorIsLive())
+        {
+            var phi = new Phi(Interpreter.Register.VirtualAccumulator(), handlerOffset)
+            {
+                Id = builder.Graph.NewNodeId(),
+                IsExceptionPhi = true,
+            };
+            state.Phis.Add(phi);
+            state.Values[InterpreterFrameState.AccumulatorSlot(unit)] = phi;
+        }
+        return state;
+    }
+
+    /// <summary>
+    /// MergeThrow: merges the frame at a throwing node into the catch block
+    /// (the parameters, the live registers, and the context from the catch
+    /// block's context register). A value that differs between throws becomes
+    /// an exception phi whose inputs are the values at each throw.
+    /// </summary>
+    public void MergeThrow(MaglevGraphBuilder builder, InterpreterFrameState frame)
+    {
+        int index = PredecessorsSoFar;
+        int accumulatorSlot = InterpreterFrameState.AccumulatorSlot(Unit);
+        int contextSlot = InterpreterFrameState.ContextSlot(Unit);
+        int contextRegisterSlot = InterpreterFrameState.SlotOf(Unit, CatchBlockContextRegister);
+        for (int slot = 0; slot < Values.Length; slot++)
+        {
+            if (slot == accumulatorSlot) continue;
+            ValueNode? incoming;
+            if (slot == contextSlot) incoming = frame.Values[contextRegisterSlot];
+            else if (!InterpreterFrameState.IsLive(Unit, Liveness, slot)) continue;
+            else incoming = frame.Values[slot];
+            if (index == 0)
+            {
+                Values[slot] = incoming;
+                continue;
+            }
+            ValueNode? existing = Values[slot];
+            if (existing is null || incoming is null)
+            {
+                Values[slot] = null;
+                continue;
+            }
+            if (existing is Phi { IsExceptionPhi: true } phi && phi.MergeOffset == MergeOffset && Phis.Contains(phi))
+            {
+                phi.InputList.Add(incoming);
+                continue;
+            }
+            if (ReferenceEquals(existing, incoming)) continue;
+            var newPhi = new Phi(InterpreterFrameState.RegisterOf(Unit, slot), MergeOffset)
+            {
+                Id = builder.Graph.NewNodeId(),
+                Type = NodeType.kUnknown,
+                IsExceptionPhi = true,
+            };
+            for (int i = 0; i < index; i++) newPhi.InputList.Add(existing);
+            newPhi.InputList.Add(incoming);
+            Phis.Add(newPhi);
+            Values[slot] = newPhi;
+        }
+        if (Known is null) Known = frame.Known.Clone();
+        else Known.Merge(frame.Known);
         PredecessorsSoFar++;
     }
 

@@ -30,7 +30,8 @@ internal static class MaglevPhiRepresentationSelector
         foreach (BasicBlock block in graph.Blocks)
         {
             if (block.IsDead) continue;
-            phis.AddRange(block.Phis);
+            // Exception phis stay tagged (their inputs are tagged by the exception trampolines).
+            foreach (Phi phi in block.Phis) if (!phi.IsExceptionPhi) phis.Add(phi);
         }
         if (phis.Count == 0) return;
 
@@ -214,7 +215,11 @@ internal static class MaglevPhiRepresentationSelector
         foreach (BasicBlock block in graph.Blocks)
         {
             if (block.IsDead) continue;
-            foreach (Phi phi in block.Phis) foreach (ValueNode input in phi.Inputs) Add(input, phi);
+            foreach (Phi phi in block.Phis)
+            {
+                if (phi.IsExceptionPhi) continue;
+                foreach (ValueNode input in phi.Inputs) Add(input, phi);
+            }
             foreach (Node node in block.Nodes) foreach (ValueNode input in node.Inputs) Add(input, node);
         }
         return uses;

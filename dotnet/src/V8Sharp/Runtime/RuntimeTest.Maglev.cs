@@ -34,7 +34,7 @@ public static partial class RuntimeTest
         if (!isolate.UseOptimizer) return JSValue.Undefined;
         // CanOptimizeFunction.
         if (!function.Shared.IsCompiled && !Codegen.Compiler.CompileLazy(isolate, function)) return JSValue.Undefined;
-        if (MaglevCompiler.OptimizationDisabled(function.Shared)) return JSValue.Undefined;
+        if (MaglevCompiler.CompilationDisabled(function.Shared)) return JSValue.Undefined;
         if (function.Shared.FunctionData is not Interpreter.BytecodeArray) return JSValue.Undefined;
         JSFunctionFeedback.EnsureFeedbackVector(isolate, function);
         Codegen.Compiler.CompileMaglev(isolate, function);
@@ -63,7 +63,7 @@ public static partial class RuntimeTest
                 break;
             }
         }
-        if (function is null || MaglevCompiler.OptimizationDisabled(function.Shared)) return JSValue.Undefined;
+        if (function is null || MaglevCompiler.CompilationDisabled(function.Shared)) return JSValue.Undefined;
         FeedbackVector vector = JSFunctionFeedback.EnsureFeedbackVector(isolate, function);
         vector.RequestOsrAtNextOpportunity();
         function.RawFeedbackCell.InterruptBudget = 0;

@@ -86,6 +86,8 @@ public sealed class MaglevCode
     public bool MarkedForDeoptimization;
 
     public DeoptPoint[] DeoptPoints { get; internal set; } = [];
+    /// <summary>The call feedback slots eager deopts disallow speculation for (EagerDeoptInfo.FeedbackToUpdate).</summary>
+    public (FeedbackVector Vector, int Slot)[] SpeculationFeedback { get; internal set; } = [];
     public int MaxScratchSize { get; internal set; }
 
     /// <summary>The dependencies registered for the code (CompilationDependencies).</summary>

@@ -44,6 +44,14 @@ public static class MaglevCompiler
         return state.CompilationFailed || state.DeoptCount >= kMaxDeoptCount;
     }
 
+    /// <summary>
+    /// SharedFunctionInfo::maglev_compilation_failed only: explicit requests
+    /// (%OptimizeFunctionOnNextCall) compile after any number of deopts, as in
+    /// V8, where the deopts' feedback updates end deopt loops.
+    /// </summary>
+    public static bool CompilationDisabled(SharedFunctionInfo shared) =>
+        s_sharedState.TryGetValue(shared, out SharedState? state) && state.CompilationFailed;
+
     public static string? DisabledReason(SharedFunctionInfo shared) =>
         s_sharedState.TryGetValue(shared, out SharedState? state) ? state.FailureReason : null;
 
@@ -72,7 +80,7 @@ public static class MaglevCompiler
     public static MaglevCode? Compile(Isolate isolate, JSFunction function, int osrOffset = -1, bool byTieringManager = false)
     {
         SharedFunctionInfo shared = function.Shared;
-        if (OptimizationDisabled(shared)) return null;
+        if (byTieringManager ? OptimizationDisabled(shared) : CompilationDisabled(shared)) return null;
         if (function.RawFeedbackCell.Value is not FeedbackVector) return null;
         if (shared.FunctionData is not BytecodeArray bytecode) return null;
         // MaglevCompilationJob::PrepareJobImpl.
@@ -160,6 +168,11 @@ public static class MaglevCompiler
             BasicBlock b = work.Pop();
             if (!reachable.Add(b)) continue;
             foreach (BasicBlock s in b.Successors()) work.Push(s);
+            // Exception edges: a throwing node continues at its catch block.
+            foreach (Node node in b.Nodes)
+            {
+                if (node.ExceptionHandler?.CatchState.Block is { } catchBlock) work.Push(catchBlock);
+            }
         }
         foreach (BasicBlock block in graph.Blocks)
         {
@@ -182,6 +195,7 @@ public static class MaglevCompiler
             }
             foreach (Phi phi in block.Phis)
             {
+                if (phi.IsExceptionPhi) continue;
                 if (phi.Inputs.Length != block.Predecessors.Count)
                 {
                     throw new MaglevBailoutException($"phi n{phi.Id} has {phi.Inputs.Length} inputs for {block.Predecessors.Count} predecessors");

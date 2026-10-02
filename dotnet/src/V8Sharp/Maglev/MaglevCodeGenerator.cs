@@ -59,16 +59,31 @@ internal sealed class MaglevCodeGenerator
     readonly List<(FieldBuilder Field, object? Value)> _staticConstants = [];
     readonly Dictionary<(object, Type), FieldBuilder> _constantFields = new();
     readonly List<DeoptPoint> _deoptPoints = [];
-    readonly Dictionary<(DeoptFrame, DeoptimizeReason), Label> _eagerExits = new();
+    readonly Dictionary<(DeoptFrame, DeoptimizeReason, int), Label> _eagerExits = new();
+    readonly List<(FeedbackVector Vector, int Slot)> _speculationFeedback = [];
     // One deopt exit per frame state: the checks of a checkpoint branch to a
     // stub that sets the reason and jumps to it.
     readonly Dictionary<DeoptFrame, Label> _frameExits = new(ReferenceEqualityComparer.Instance);
-    readonly List<(Label Stub, Label Exit, DeoptimizeReason Reason)> _eagerStubs = [];
+    readonly List<(Label Stub, Label Exit, int Reason)> _eagerStubs = [];
     LocalBuilder? _deoptReason;
     int _spilledValues;
     readonly List<(Label Label, DeoptInfo Info, DeoptimizeKind Kind, DeoptimizeReason Reason, ValueNode? Result)> _pendingExits = [];
     readonly List<(Label Label, BasicBlock From, BasicBlock To)> _edgeStubs = [];
     int _maxScratch;
+
+    // Catch blocks (exception handlers): the body runs in a .NET try region
+    // whose catch clause moves the throwing node's values into the catch
+    // block's exception phis (V8's exception handler trampolines) and
+    // re-enters the region at its start, which dispatches to the catch block.
+    bool _hasCatchBlocks;
+    LocalBuilder? _throwSite;
+    LocalBuilder? _dispatch;
+    LocalBuilder? _result;
+    LocalBuilder? _exception;
+    Label _reenter;
+    Label _end;
+    readonly List<BasicBlock> _catchBlocks = [];
+    readonly List<Node> _throwSites = [];
 
     public MaglevCodeGenerator(MaglevCompilationInfo info, MaglevCode code)
     {
@@ -141,12 +156,19 @@ internal sealed class MaglevCodeGenerator
         EmitPrologue();
         foreach (BasicBlock block in _graph.Blocks)
         {
+            if (!block.IsDead && block.IsExceptionHandler) _catchBlocks.Add(block);
+        }
+        _hasCatchBlocks = _catchBlocks.Count > 0;
+        if (_hasCatchBlocks) EmitTryRegionStart();
+        foreach (BasicBlock block in _graph.Blocks)
+        {
             if (block.IsDead) continue;
             EmitBlock(block);
         }
         EmitEdgeStubs();
         int bodySize = _il.ILOffset;
         EmitDeoptExits();
+        if (_hasCatchBlocks) EmitTryRegionEnd();
         if (_info.Isolate.Flags.trace_opt_verbose)
         {
             Console.WriteLine($"[maglev code: {bodySize} bytes IL body, {_il.ILOffset - bodySize} bytes in {_pendingExits.Count} deopt exits " +
@@ -154,6 +176,7 @@ internal sealed class MaglevCodeGenerator
         }
 
         _code.DeoptPoints = _deoptPoints.ToArray();
+        _code.SpeculationFeedback = _speculationFeedback.ToArray();
         _code.MaxScratchSize = _maxScratch;
         Type type = BaselineCodeSpace.CreateType(_type);
         foreach ((FieldBuilder field, object? value) in _staticConstants)
@@ -444,6 +467,99 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Stfld, s_recordPc);
     }
 
+    // ---- Catch blocks --------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Starts the try region around the body: re-entered after an exception
+    /// with the catch block to continue at in _dispatch (-1 on entry).
+    /// </summary>
+    void EmitTryRegionStart()
+    {
+        _throwSite = _il.DeclareLocal(typeof(int));
+        _dispatch = _il.DeclareLocal(typeof(int));
+        _result = _il.DeclareLocal(typeof(JSValue));
+        _exception = _il.DeclareLocal(typeof(JSValue));
+        _end = _il.DefineLabel();
+        _reenter = _il.DefineLabel();
+        _il.Emit(OpCodes.Ldc_I4_M1);
+        _il.Emit(OpCodes.Stloc, _throwSite);
+        _il.Emit(OpCodes.Ldc_I4_M1);
+        _il.Emit(OpCodes.Stloc, _dispatch);
+        _il.MarkLabel(_reenter);
+        _il.BeginExceptionBlock();
+        var labels = new Label[_catchBlocks.Count];
+        for (int i = 0; i < labels.Length; i++) labels[i] = BlockLabel(_catchBlocks[i]);
+        _il.Emit(OpCodes.Ldloc, _dispatch);
+        _il.Emit(OpCodes.Switch, labels);
+    }
+
+    /// <summary>
+    /// The catch clause: an exception of a throwing node with a catch block
+    /// (_throwSite) runs the node's trampoline; others propagate (the filter).
+    /// </summary>
+    void EmitTryRegionEnd()
+    {
+        _il.BeginExceptFilterBlock();
+        _il.Emit(OpCodes.Isinst, typeof(JavaScriptException));
+        _il.Emit(OpCodes.Ldnull);
+        _il.Emit(OpCodes.Cgt_Un);
+        _il.Emit(OpCodes.Ldloc, _throwSite!);
+        _il.Emit(OpCodes.Ldc_I4_0);
+        _il.Emit(OpCodes.Clt);
+        _il.Emit(OpCodes.Ldc_I4_0);
+        _il.Emit(OpCodes.Ceq);
+        _il.Emit(OpCodes.And);
+        _il.BeginCatchBlock(null!);
+        _il.Emit(OpCodes.Ldarg_1);
+        _il.Emit(OpCodes.Ldloc, _baseFrameIndex);
+        _il.Emit(OpCodes.Ldloc, _fp);
+        _il.Emit(OpCodes.Ldc_I4, _info.Toplevel.Bytecode.RegisterCount);
+        _il.Emit(OpCodes.Add);
+        Call(nameof(MaglevBuiltins.EnterCatchBlock));
+        _il.Emit(OpCodes.Stloc, _exception!);
+        var trampolines = new Label[_throwSites.Count];
+        for (int i = 0; i < trampolines.Length; i++) trampolines[i] = _il.DefineLabel();
+        _il.Emit(OpCodes.Ldloc, _throwSite!);
+        _il.Emit(OpCodes.Switch, trampolines);
+        _il.Emit(OpCodes.Rethrow);
+        for (int i = 0; i < trampolines.Length; i++)
+        {
+            _il.MarkLabel(trampolines[i]);
+            ExceptionHandlerInfo handler = _throwSites[i].ExceptionHandler!;
+            BasicBlock catchBlock = handler.CatchState.Block!;
+            var stored = new List<Phi>();
+            foreach (Phi phi in catchBlock.Phis)
+            {
+                if (phi.Local is null) continue;
+                if (phi.Inputs.Length == 0) _il.Emit(OpCodes.Ldloc, _exception!);
+                else Load(phi.Inputs[handler.ThrowIndex], phi.Representation);
+                stored.Add(phi);
+            }
+            for (int k = stored.Count - 1; k >= 0; k--) _il.Emit(OpCodes.Stloc, stored[k].Local!);
+            _il.Emit(OpCodes.Ldc_I4, _catchBlocks.IndexOf(catchBlock));
+            _il.Emit(OpCodes.Stloc, _dispatch!);
+            _il.Emit(OpCodes.Ldc_I4_M1);
+            _il.Emit(OpCodes.Stloc, _throwSite!);
+            _il.Emit(OpCodes.Leave, _reenter);
+        }
+        _il.EndExceptionBlock();
+        _il.MarkLabel(_end);
+        _il.Emit(OpCodes.Ldloc, _result!);
+        _il.Emit(OpCodes.Ret);
+    }
+
+    /// <summary>Returns the value on the stack (from inside the try region: through _result).</summary>
+    void EmitReturn()
+    {
+        if (!_hasCatchBlocks)
+        {
+            _il.Emit(OpCodes.Ret);
+            return;
+        }
+        _il.Emit(OpCodes.Stloc, _result!);
+        _il.Emit(OpCodes.Leave, _end);
+    }
+
     // ---- Blocks ------------------------------------------------------------------------------------------
 
     void EmitBlock(BasicBlock block)
@@ -454,6 +570,17 @@ internal sealed class MaglevCodeGenerator
             if (IsDeadNode(node)) continue;
             if (IsElidedArguments(node)) continue;
             if (node.Unit is { IsInline: true } unit && NeedsFrame(node)) EmitEnsureInlinedFrames(unit);
+            if (_hasCatchBlocks && node.ExceptionHandler is { CatchState.Block: { IsDead: false } })
+            {
+                // The node's exceptions continue at its catch block.
+                _il.Emit(OpCodes.Ldc_I4, _throwSites.Count);
+                _il.Emit(OpCodes.Stloc, _throwSite!);
+                _throwSites.Add(node);
+                EmitNode(node);
+                _il.Emit(OpCodes.Ldc_I4_M1);
+                _il.Emit(OpCodes.Stloc, _throwSite!);
+                continue;
+            }
             EmitNode(node);
         }
         EmitControl(block, block.Control!);
@@ -526,7 +653,7 @@ internal sealed class MaglevCodeGenerator
                 return;
             case Opcode.Return:
                 Load(c.Inputs[0], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Ret);
+                EmitReturn();
                 return;
             case Opcode.Deopt:
                 if (c.EagerDeoptInfo is null)
@@ -534,7 +661,7 @@ internal sealed class MaglevCodeGenerator
                     // Unreachable (after a throw).
                     _il.Emit(OpCodes.Call, B(nameof(MaglevBuiltins.Unreachable)));
                     LoadUndefined();
-                    _il.Emit(OpCodes.Ret);
+                    EmitReturn();
                     return;
                 }
                 _il.Emit(OpCodes.Br, EagerExit(c.EagerDeoptInfo));
@@ -572,6 +699,12 @@ internal sealed class MaglevCodeGenerator
             case Opcode.BranchIfInt32Compare:
                 Load(c.Inputs[0], ValueRepresentation.kInt32);
                 Load(c.Inputs[1], ValueRepresentation.kInt32);
+                if (c.Unsigned && c.Operation == CompareOperation.kLessThan)
+                {
+                    _il.Emit(OpCodes.Clt_Un);
+                    return;
+                }
+                if (c.Unsigned) throw new InvalidOperationException("unsigned compare " + c.Operation);
                 EmitCompare(c.Operation, isFloat: false);
                 return;
             case Opcode.BranchIfFloat64Compare:
@@ -669,7 +802,19 @@ internal sealed class MaglevCodeGenerator
     /// <summary>The label of the eager deopt exit for <paramref name="info"/> (shared by identical frames and reasons).</summary>
     Label EagerExit(EagerDeoptInfo info)
     {
-        if (_eagerExits.TryGetValue((info.TopFrame, info.Reason), out Label stub)) return stub;
+        // The stub passes the reason and, in its high bits, the speculation feedback to update.
+        int feedback = 0;
+        if (info.FeedbackToUpdate is { } vector)
+        {
+            int i = _speculationFeedback.IndexOf((vector, info.FeedbackSlotToUpdate));
+            if (i < 0)
+            {
+                i = _speculationFeedback.Count;
+                _speculationFeedback.Add((vector, info.FeedbackSlotToUpdate));
+            }
+            feedback = i + 1;
+        }
+        if (_eagerExits.TryGetValue((info.TopFrame, info.Reason, feedback), out Label stub)) return stub;
         if (!_frameExits.TryGetValue(info.TopFrame, out Label exit))
         {
             exit = _il.DefineLabel();
@@ -677,8 +822,8 @@ internal sealed class MaglevCodeGenerator
             _pendingExits.Add((exit, info, DeoptimizeKind.kEager, info.Reason, null));
         }
         stub = _il.DefineLabel();
-        _eagerExits[(info.TopFrame, info.Reason)] = stub;
-        _eagerStubs.Add((stub, exit, info.Reason));
+        _eagerExits[(info.TopFrame, info.Reason, feedback)] = stub;
+        _eagerStubs.Add((stub, exit, (int)info.Reason | feedback << 16));
         return stub;
     }
 
@@ -696,10 +841,10 @@ internal sealed class MaglevCodeGenerator
     void EmitDeoptExits()
     {
         _deoptReason ??= _il.DeclareLocal(typeof(int));
-        foreach ((Label stub, Label exit, DeoptimizeReason reason) in _eagerStubs)
+        foreach ((Label stub, Label exit, int reason) in _eagerStubs)
         {
             _il.MarkLabel(stub);
-            _il.Emit(OpCodes.Ldc_I4, (int)reason);
+            _il.Emit(OpCodes.Ldc_I4, reason);
             _il.Emit(OpCodes.Stloc, _deoptReason);
             _il.Emit(OpCodes.Br, exit);
         }
@@ -776,7 +921,7 @@ internal sealed class MaglevCodeGenerator
             else _il.Emit(OpCodes.Ldc_I4, (int)reason);
             _il.Emit(OpCodes.Call, s_deoptimize);
             LoadUndefined();
-            _il.Emit(OpCodes.Ret);
+            EmitReturn();
         }
     }
 
@@ -1164,6 +1309,13 @@ internal sealed class MaglevCodeGenerator
                 });
                 DeoptIfFalse(node);
                 return;
+            case Opcode.CheckValueEqualsString:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                LoadConstantObject(node.Obj0, typeof(JSString));
+                LoadConstantObject(node.Value0, typeof(JSValue));
+                Call(nameof(MaglevBuiltins.ValueEqualsString));
+                DeoptIfFalse(node);
+                return;
             case Opcode.CheckValue:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 _il.Emit(OpCodes.Ldfld, s_obj);
@@ -1313,6 +1465,20 @@ internal sealed class MaglevCodeGenerator
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 Call(nameof(MaglevBuiltins.StringCharCodeAt));
+                Store(v!);
+                return;
+            case Opcode.BuiltinStringPrototypeCharCodeAtOrNaN:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Load(node.Inputs[1], ValueRepresentation.kInt32);
+                Call(nameof(MaglevBuiltins.StringCharCodeAtOrNaN));
+                Store(v!);
+                return;
+            case Opcode.CheckedObjectToIndex:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                _il.Emit(OpCodes.Ldloca, _tmpInt);
+                Call(nameof(MaglevBuiltins.TryObjectToIndex));
+                DeoptIfFalse(node);
+                _il.Emit(OpCodes.Ldloc, _tmpInt);
                 Store(v!);
                 return;
             case Opcode.LoadPropertyCellValue:
@@ -1597,7 +1763,13 @@ internal sealed class MaglevCodeGenerator
         unit.FrameRecordLocal ??= _il.DeclareLocal(typeof(InterpreterFrameRecord).MakeByRefType());
         // Lazy frames are pushed by EmitEnsureInlinedFrames before the first
         // node that needs them.
-        if (unit.EagerFrame) EmitPushInlinedFrame(unit);
+        if (unit.EagerFrame)
+        {
+            // Its callers' lazy frames come first (the push stores the call's
+            // bytecode offset in the caller's frame).
+            if (unit.Caller is { IsInline: true } caller) EmitEnsureInlinedFrames(caller);
+            EmitPushInlinedFrame(unit);
+        }
     }
 
     /// <summary>

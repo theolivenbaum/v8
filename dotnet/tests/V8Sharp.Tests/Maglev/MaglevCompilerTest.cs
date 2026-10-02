@@ -228,6 +228,41 @@ public class MaglevCompilerTest
           return r.join();
         })()
         """,
+        // try/catch/finally in optimized code: catch blocks with exception phis,
+        // finally's token switch, nested handlers, catch contexts, break/continue.
+        """
+        (function() {
+          function thrower(x) { if (x & 1) throw new Error("e" + x); return x * 2; }
+          function f1(n) { let s = 0; for (let i = 0; i < n; i++) { try { s += thrower(i); } catch (e) { s += e.message.length; } } return s; }
+          function f2(x) { let log = []; try { try { log.push("a"); thrower(x); log.push("b"); } finally { log.push("f"); } } catch (e) { log.push("c:" + e.message); } return log.join(","); }
+          function f3(x) { let r = 0; try { r = 1; if (x) throw 42; r = 2; } catch (e) { r += e; } finally { r *= 10; } return r; }
+          function f4(x) { try { return thrower(x); } catch (e) { try { throw e.message; } catch (e2) { return "nested " + e2; } } }
+          function f5(x) { let a = x | 0, b = x * 1.5; try { thrower(x); a += 1; b += 0.5; } catch (e) { return a + b + 0.25; } return a + b; }
+          function f6(x) { try { let y = x; { let z = y + 1; (() => z)(); thrower(z); } } catch ({message}) { return message; } return "none"; }
+          function f7(x) { for (var i = 0; i < 3; i++) { try { if (i == x) continue; if (i == 2) break; thrower(1); } catch (e) { x += 10; } finally { x += 100; } } return x; }
+          var out = [];
+          for (var k = 0; k < 12; k++) out.push(f1(10 + k), f2(k), f3(k & 1), f4(k), f5(k), f6(k), f7(k % 3));
+          return out.join("|");
+        })()
+        """,
+        // Element access: string and double keys, out-of-bounds loads, polymorphic
+        // arrays and objects, growing and holey stores, empty double arrays.
+        """
+        (function() {
+          function ld(a, i) { return a[i]; }
+          function st(a, i, v) { a[i] = v; return a.length; }
+          var smi = [1, 2, 3, 4], dbl = [1.5, 2.5], obj = {0: 'a', 1: 'b', length: 2}, out = [];
+          for (var k = 0; k < 30; k++) {
+            out.push(ld(smi, k % 6), ld(dbl, String(k % 3)), ld(obj, k & 1), ld(smi, k == 29 ? 1.5 : 0));
+            var g = []; for (var j = 0; j < (k % 5); j++) st(g, j, j * 0.5);
+            out.push(st(g, k % 7, 'x'), g.join());
+            var e = []; e[1] = 4.2; out.push(e[0] ?? 'u');
+          }
+          function cc(s, i) { return s.charCodeAt(i); }
+          for (var k = 0; k < 30; k++) out.push(cc("abc", k % 5 - 1));
+          return out.join();
+        })()
+        """,
     };
 
     [Theory]
@@ -391,6 +426,37 @@ public class MaglevCompilerTest
             %OptimizeFunctionOnNextCall(f);
             f();
             String(%GetOptimizationStatus(f) & 8);
+            """));
+    }
+
+    [Fact]
+    public void CatchBlocksStayOptimized()
+    {
+        Assert.Equal("34,187,0,8", Run("--maglev", """
+            function h(x) { if (x) { throw 1; } else { return 17; } }
+            %NeverOptimizeFunction(h);
+            function f(a, b) { let r = a; try { r = h(a); return h(b) + r; } catch { return r * b; } }
+            %PrepareFunctionForOptimization(f);
+            f(0, 0); f(0, 11); f(7, 0);
+            %OptimizeFunctionOnNextCall(f);
+            [f(0, 0), f(0, 11), f(7, 0), %GetOptimizationStatus(f) & 8].join();
+            """));
+    }
+
+    [Fact]
+    public void DeoptInBuiltinReductionDisallowsSpeculation()
+    {
+        // The second compilation calls Math.abs generically (the call's
+        // feedback no longer allows speculation) and does not deoptimize.
+        Assert.Equal("100,8", Run("--maglev", """
+            function f(a) { return Math.abs(a); }
+            %PrepareFunctionForOptimization(f);
+            f(1); f(1);
+            %OptimizeFunctionOnNextCall(f);
+            f("100");
+            %PrepareFunctionForOptimization(f);
+            %OptimizeFunctionOnNextCall(f);
+            [f("100"), %GetOptimizationStatus(f) & 8].join();
             """));
     }
 
