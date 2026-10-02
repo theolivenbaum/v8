@@ -385,9 +385,17 @@ public static class TypedArrayElementsOps
     /// array, specialized per kind (the element size is the case's constant).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static JSValue LoadElement(Isolate isolate, JSTypedArray array, ElementsKind kind, int index)
+    public static JSValue LoadElement(Isolate isolate, JSTypedArray array, ElementsKind kind, int index) =>
+        LoadElement(isolate, array.Buffer.BackingStoreBuffer, (int)array.ByteOffset, kind, index);
+
+    /// <summary>
+    /// <see cref="LoadElement(Isolate, JSTypedArray, ElementsKind, int)"/> over the
+    /// view's bytes given as its buffer's array and byte offset.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue LoadElement(Isolate isolate, byte[] data, int byteOffset, ElementsKind kind, int index)
     {
-        ReadOnlySpan<byte> s = array.Buffer.BackingStoreBuffer.AsSpan((int)array.ByteOffset);
+        ReadOnlySpan<byte> s = data.AsSpan(byteOffset);
         switch (kind)
         {
             case ElementsKind.UINT8_ELEMENTS:
@@ -418,9 +426,17 @@ public static class TypedArrayElementsOps
     /// of an attached array of a Number kind, specialized per kind.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void StoreElement(JSTypedArray array, ElementsKind kind, int index, double value)
+    public static void StoreElement(JSTypedArray array, ElementsKind kind, int index, double value) =>
+        StoreElement(array.Buffer.BackingStoreBuffer, (int)array.ByteOffset, kind, index, value);
+
+    /// <summary>
+    /// <see cref="StoreElement(JSTypedArray, ElementsKind, int, double)"/> over the
+    /// view's bytes given as its buffer's array and byte offset.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void StoreElement(byte[] data, int byteOffset, ElementsKind kind, int index, double value)
     {
-        Span<byte> d = array.Buffer.BackingStoreBuffer.AsSpan((int)array.ByteOffset);
+        Span<byte> d = data.AsSpan(byteOffset);
         switch (kind)
         {
             case ElementsKind.UINT8_ELEMENTS:

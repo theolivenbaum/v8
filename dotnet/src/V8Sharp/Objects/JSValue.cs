@@ -134,6 +134,19 @@ public readonly struct JSValue : IEquatable<JSValue>
         Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(d)) : (int)d;
 
     /// <summary>
+    /// Stores <paramref name="value"/> into a heap slot (a field or an element),
+    /// skipping the reference half when the slot already holds the same one: a
+    /// Number over a Number (the tag never changes) or the same object needs no
+    /// GC write barrier.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void StoreSlot(ref JSValue slot, JSValue value)
+    {
+        if (!ReferenceEquals(slot._obj, value._obj)) Unsafe.AsRef(in slot._obj) = value._obj;
+        Unsafe.AsRef(in slot._bits) = value._bits;
+    }
+
+    /// <summary>
     /// The array index a number key names when it is an integer in [0, 2^31):
     /// V8's TryToIntptr for a keyed access (-0 is index 0).
     /// </summary>

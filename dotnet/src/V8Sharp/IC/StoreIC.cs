@@ -62,7 +62,7 @@ public sealed class StoreIC : IC
         {
             case StoreHandler.Kind.kField:
                 if (!FitsField(handler, value)) return false;
-                obj.FieldAt(handler.FieldIndex) = handler.Representation.IsDouble ? CanonicalizeDouble(value) : value;
+                JSValue.StoreSlot(ref obj.FieldAt(handler.FieldIndex), handler.Representation.IsDouble ? CanonicalizeDouble(value) : value);
                 return true;
             case StoreHandler.Kind.kTransitionToField:
                 return TryStoreTransition(obj, handler, value);
@@ -789,6 +789,15 @@ public sealed class KeyedStoreIC : IC
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Store(Isolate isolate, FeedbackVector? vector, int slot, JSValue obj, JSValue key, JSValue value)
     {
+        // A monomorphic typed array element store: the element handler's map
+        // check, then the cached data (KeyedLoadIC.Load's typed array case).
+        if (vector is not null && key.IsNumber && obj._obj is JSTypedArray typedArray &&
+            ReferenceEquals(vector.Slots[slot]._obj, typedArray.Map) &&
+            vector.Slots[slot + 1]._obj is StoreHandler { HandlerKind: StoreHandler.Kind.kElement, ElementsTransitionMap: null, IsValid: true } &&
+            ElementAccess.TryStoreTypedElementFast(isolate, typedArray, key._num, value))
+        {
+            return;
+        }
         if (vector is not null && key.IsNumber && obj._obj is JSObject jsObject)
         {
             // The monomorphic and polymorphic (HandlePolymorphicCase) element
