@@ -3226,6 +3226,11 @@ public sealed partial class AstNodeFactory
 
     public BreakStatement NewBreakStatement(BreakableStatement target, int pos) => new(target, pos);
 
+    // ParserBase passes break and continue targets as Types::Statement.
+    public ContinueStatement NewContinueStatement(Statement target, int pos) => new((IterationStatement)target, pos);
+
+    public BreakStatement NewBreakStatement(Statement target, int pos) => new((BreakableStatement)target, pos);
+
     public ReturnStatement NewReturnStatement(Expression expression, int pos, int end_position = ReturnStatement.kFunctionLiteralReturnPosition)
         => new(expression, ReturnStatement.Type.kNormal, pos, end_position);
 
@@ -3320,6 +3325,10 @@ public sealed partial class AstNodeFactory
     public ObjectLiteral NewObjectLiteral(IReadOnlyList<ObjectLiteralProperty> properties, uint boilerplate_properties, int pos,
                                           bool has_rest_property, Variable? home_object = null)
         => new(properties, boilerplate_properties, pos, has_rest_property, home_object);
+
+    public ObjectLiteral NewObjectLiteral(IReadOnlyList<ObjectLiteralProperty> properties, int boilerplate_properties, int pos,
+                                          bool has_rest_property, Variable? home_object)
+        => new(properties, (uint)boilerplate_properties, pos, has_rest_property, home_object);
 
     public ObjectLiteralProperty NewObjectLiteralProperty(Expression key, Expression value, ObjectLiteralProperty.Kind kind, bool is_computed_name)
         => new(key, value, kind, is_computed_name);

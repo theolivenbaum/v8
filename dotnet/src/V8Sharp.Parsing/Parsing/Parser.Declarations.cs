@@ -1652,7 +1652,7 @@ public sealed partial class Parser
                                       ref int num_parameters, ref int function_length,
                                       ref ProducedPreparseData produced_preparse_data)
     {
-        using FunctionState function_state = new(this, function_scope);
+        using FunctionState function_state = FunctionState.New(this, function_scope);
 
         // FIXME(marja): There are 2 ways to skip functions now. Unify them.
         if (consumed_preparse_data_ != null)
@@ -1793,7 +1793,7 @@ public sealed partial class Parser
         using FunctionParsingScope function_parsing_scope = new(this);
         using ModeScope mode_scope = new(this, allow_lazy_ ? Mode.PARSE_LAZILY : Mode.PARSE_EAGERLY);
 
-        using FunctionState function_state = new(this, function_scope);
+        using FunctionState function_state = FunctionState.New(this, function_scope);
 
         bool is_wrapped = function_syntax_kind == FunctionSyntaxKind.Wrapped;
 
@@ -1809,7 +1809,7 @@ public sealed partial class Parser
         ParserFormalParameters formals = new(function_scope);
 
         {
-            using ParameterDeclarationParsingScope formals_scope = new(this);
+            using ParameterDeclarationParsingScope formals_scope = ParameterDeclarationParsingScope.New(this);
             if (is_wrapped)
             {
                 // For a function implicitly wrapped in function header and footer, the

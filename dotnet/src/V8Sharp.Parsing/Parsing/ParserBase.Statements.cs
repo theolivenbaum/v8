@@ -150,7 +150,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
                 if (labels == null) return ParseTryStatement();
                 using TStatementList statements = TStatementList.New(pointer_buffer());
                 TBlock result = factory().NewBlock(false, true);
-                using Target target = new(this, result, labels, null, Target.TargetType.TARGET_FOR_NAMED_ONLY);
+                using Target target = Target.New(this, result, labels, null, Target.TargetType.TARGET_FOR_NAMED_ONLY);
                 TStatement statement = ParseTryStatement();
                 statements.Add(statement);
                 result.InitializeStatements(statements);
@@ -203,7 +203,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         using (BlockState block_state = new(this, block_scope))
         {
             scope().set_start_position(peek_position());
-            using Target target = new(this, body, labels, null, Target.TargetType.TARGET_FOR_NAMED_ONLY);
+            using Target target = Target.New(this, body, labels, null, Target.TargetType.TARGET_FOR_NAMED_ONLY);
 
             Expect(Token.LeftBrace);
 
@@ -336,7 +336,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         {
             // Effectively inlines ParseExpression, so potential labels can be extracted
             // from expression_scope.
-            using ExpressionParsingScope expression_scope = new(impl());
+            using ExpressionParsingScope expression_scope = ExpressionParsingScope.New(impl());
             using AcceptINScope accept_in = new(this, true);
             expr = ParseExpressionCoverGrammar();
             expression_scope.ValidateExpression();
@@ -575,7 +575,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         using LoopScope loop_scope = new(function_state_);
 
         TStatement loop = factory().NewDoWhileStatement(peek_position());
-        using Target target = new(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
+        using Target target = Target.New(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
 
         SourceRange body_range = new();
         TStatement body = impl().NullStatement();
@@ -612,7 +612,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         using LoopScope loop_scope = new(function_state_);
 
         TStatement loop = factory().NewWhileStatement(peek_position());
-        using Target target = new(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
+        using Target target = Target.New(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
 
         SourceRange body_range = new();
         TStatement body = impl().NullStatement();
@@ -673,7 +673,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
             using BlockState cases_block_state = BlockState.NewBlock(this);
             scope().set_start_position(switch_pos);
             scope().SetNonlinear();
-            using Target target = new(this, switch_statement, labels, null, Target.TargetType.TARGET_FOR_ANONYMOUS);
+            using Target target = Target.New(this, switch_statement, labels, null, Target.TargetType.TARGET_FOR_ANONYMOUS);
 
             bool default_seen = false;
             Expect(Token.LeftBrace);
@@ -797,7 +797,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
                                 ThreadedList<Declaration>.Iterator declaration_it = scope().declarations().end();
 
                                 using (VariableDeclarationParsingScope destructuring =
-                                       new(impl(), VariableMode.Let, null))
+                                       VariableDeclarationParsingScope.New(impl(), VariableMode.Let, null))
                                 {
                                     catch_info.pattern = ParseBindingPattern();
 
@@ -965,7 +965,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
             TExpression expression;
 
             {
-                using ExpressionParsingScope parsing_scope = new(impl());
+                using ExpressionParsingScope parsing_scope = ExpressionParsingScope.New(impl());
                 using AcceptINScope accept_in = new(this, false);
                 expression = ParseExpressionCoverGrammar();
                 // `for (async of` is disallowed but `for (async.x of` is allowed, so
@@ -1048,7 +1048,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         TBlock init_block = impl().RewriteForVarInLegacy(for_info);
 
         TStatement loop = factory().NewForEachStatement(for_info.mode, stmt_pos);
-        using Target target = new(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
+        using Target target = Target.New(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
 
         Scope enumerable_block_scope = NewScope(ScopeType.BLOCK_SCOPE);
         enumerable_block_scope.set_start_position(position());
@@ -1117,7 +1117,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
                                                                   List<AstRawString> own_labels)
     {
         TStatement loop = factory().NewForEachStatement(for_info.mode, stmt_pos);
-        using Target target = new(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
+        using Target target = Target.New(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
 
         TExpression enumerable = impl().NullExpression();
         if (for_info.mode == ForEachStatement.VisitMode.ITERATE)
@@ -1208,7 +1208,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
     {
         CheckStackOverflow();
         TStatement loop = factory().NewForStatement(stmt_pos);
-        using Target target = new(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
+        using Target target = Target.New(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
 
         if (peek() != Token.Semicolon)
         {
@@ -1256,7 +1256,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         function_state_.AddSuspend();
         function_state_.AddSuspend();
 
-        using Target target = new(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
+        using Target target = Target.New(this, loop, labels, own_labels, Target.TargetType.TARGET_FOR_ANONYMOUS);
 
         TExpression each_variable = impl().NullExpression();
 
@@ -1310,7 +1310,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
             }
             int lhs_beg_pos = peek_position();
             using BlockState inner_state = new(this, inner_block_scope);
-            using ExpressionParsingScope parsing_scope = new(impl());
+            using ExpressionParsingScope parsing_scope = ExpressionParsingScope.New(impl());
             TExpression lhs = each_variable = ParseLeftHandSideExpression();
             int lhs_end_pos = end_position();
 

@@ -10,6 +10,7 @@
 
 #nullable disable
 
+using System.Runtime.CompilerServices;
 using V8Sharp.Ast;
 using V8Sharp.Common;
 using static V8Sharp.Common.Globals;
@@ -276,7 +277,14 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
         protected void Report(Scanner.Location loc, MessageTemplate message) => parser_.ReportMessageAt(loc, message);
 
-        protected ExpressionScope(TImpl parser, ScopeType type)
+        // V8 allocates expression scopes on the C++ stack. Here they are
+        // objects (the parser points at the current one), recycled through
+        // per-parser free lists so that parsing an expression allocates
+        // nothing: Enter is the constructor, Dispose returns the scope to its
+        // list.
+        protected ExpressionScope() { }
+
+        protected void Enter(TImpl parser, ScopeType type)
         {
             parser_ = parser;
             parent_ = parser.expression_scope_;
@@ -294,7 +302,13 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
             parser_.expression_scope_ = parent_;
         }
 
-        protected internal ExpressionParsingScope AsExpressionParsingScope() => (ExpressionParsingScope)this;
+        // V8's As*() are static_casts checked by DCHECK: the scope type says
+        // which class the scope is, so the casts do not repeat a type check.
+        protected internal ExpressionParsingScope AsExpressionParsingScope()
+        {
+            System.Diagnostics.Debug.Assert(CanBeExpression());
+            return Unsafe.As<ExpressionParsingScope>(this);
+        }
 
         protected internal bool CanBeExpression()
             => type_ is >= ScopeType.kExpression and <= ScopeType.kMaybeAsyncArrowParameterDeclaration;
@@ -309,13 +323,23 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         protected bool IsAsyncArrowHeadParsingScope() => type_ == ScopeType.kMaybeAsyncArrowParameterDeclaration;
         protected bool IsVarDeclaration() => type_ == ScopeType.kVarDeclaration;
 
-        protected internal ArrowHeadParsingScope AsArrowHeadParsingScope() => (ArrowHeadParsingScope)this;
+        protected internal ArrowHeadParsingScope AsArrowHeadParsingScope()
+        {
+            System.Diagnostics.Debug.Assert(IsArrowHeadParsingScope());
+            return Unsafe.As<ArrowHeadParsingScope>(this);
+        }
 
         private ParameterDeclarationParsingScope AsParameterDeclarationParsingScope()
-            => (ParameterDeclarationParsingScope)this;
+        {
+            System.Diagnostics.Debug.Assert(IsCertainlyParameterDeclaration());
+            return Unsafe.As<ParameterDeclarationParsingScope>(this);
+        }
 
         private VariableDeclarationParsingScope AsVariableDeclarationParsingScope()
-            => (VariableDeclarationParsingScope)this;
+        {
+            System.Diagnostics.Debug.Assert(IsVariableDeclaration());
+            return Unsafe.As<VariableDeclarationParsingScope>(this);
+        }
 
         private bool IsArrowHeadParsingScope()
             => type_ is >= ScopeType.kMaybeArrowParameterDeclaration
@@ -332,22 +356,42 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
         private bool IsCertainlyParameterDeclaration() => type_ == ScopeType.kParameterDeclaration;
 
-        private readonly TImpl parser_;
-        private readonly ExpressionScope parent_;
-        protected internal readonly ScopeType type_;
-        private readonly bool has_possible_parameter_in_scope_chain_;
-        private readonly bool has_possible_arrow_parameter_in_scope_chain_;
+        private TImpl parser_;
+        private ExpressionScope parent_;
+        protected internal ScopeType type_;
+        private bool has_possible_parameter_in_scope_chain_;
+        private bool has_possible_arrow_parameter_in_scope_chain_;
     }
+
+    // The free lists of the recycled expression scopes (see ExpressionScope).
+    private VariableDeclarationParsingScope free_variable_declaration_parsing_scopes_;
+    private ParameterDeclarationParsingScope free_parameter_declaration_parsing_scopes_;
+    private ExpressionParsingScope free_expression_parsing_scopes_;
+    private ArrowHeadParsingScope free_arrow_head_parsing_scopes_;
+    private AccumulationScope free_accumulation_scopes_;
 
     // Used to unambiguously parse var, let, const declarations.
     public sealed class VariableDeclarationParsingScope : ExpressionScope
     {
-        public VariableDeclarationParsingScope(TImpl parser, VariableMode mode, List<AstRawString> names)
-            : base(parser, IsLexicalVariableMode(mode) ? ScopeType.kLexicalDeclaration : ScopeType.kVarDeclaration)
+        public static VariableDeclarationParsingScope New(TImpl parser, VariableMode mode, List<AstRawString> names)
         {
-            mode_ = mode;
-            names_ = names;
-            scope_ = parser.scope();
+            VariableDeclarationParsingScope s = parser.free_variable_declaration_parsing_scopes_;
+            if (s != null) parser.free_variable_declaration_parsing_scopes_ = s.next_free_;
+            else s = new VariableDeclarationParsingScope();
+            s.Enter(parser, IsLexicalVariableMode(mode) ? ScopeType.kLexicalDeclaration : ScopeType.kVarDeclaration);
+            s.mode_ = mode;
+            s.names_ = names;
+            s.scope_ = parser.scope();
+            return s;
+        }
+
+        public override void Dispose()
+        {
+            base.Dispose();
+            names_ = null;
+            scope_ = null;
+            next_free_ = parser().free_variable_declaration_parsing_scopes_;
+            parser().free_variable_declaration_parsing_scopes_ = this;
         }
 
         public new Variable Declare(AstRawString name, int pos)
@@ -401,14 +445,31 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         // a more reasonable lower up-limit.
         private const int kMaxNumFunctionLocals = (1 << 23) - 1;
 
-        private readonly VariableMode mode_;
-        private readonly List<AstRawString> names_;
-        private readonly Scope scope_;
+        private VariableMode mode_;
+        private List<AstRawString> names_;
+        private Scope scope_;
+        private VariableDeclarationParsingScope next_free_;
     }
 
-    public sealed class ParameterDeclarationParsingScope(TImpl parser)
-        : ExpressionScope(parser, ScopeType.kParameterDeclaration)
+    public sealed class ParameterDeclarationParsingScope : ExpressionScope
     {
+        public static ParameterDeclarationParsingScope New(TImpl parser)
+        {
+            ParameterDeclarationParsingScope s = parser.free_parameter_declaration_parsing_scopes_;
+            if (s != null) parser.free_parameter_declaration_parsing_scopes_ = s.next_free_;
+            else s = new ParameterDeclarationParsingScope();
+            s.Enter(parser, ScopeType.kParameterDeclaration);
+            s.duplicate_loc_ = Scanner.Location.invalid();
+            return s;
+        }
+
+        public override void Dispose()
+        {
+            base.Dispose();
+            next_free_ = parser().free_parameter_declaration_parsing_scopes_;
+            parser().free_parameter_declaration_parsing_scopes_ = this;
+        }
+
         public new Variable Declare(AstRawString name, int pos)
         {
             VariableKind kind = VariableKind.PARAMETER_VARIABLE;
@@ -428,6 +489,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         public Scanner.Location duplicate_location() => duplicate_loc_;
 
         private Scanner.Location duplicate_loc_ = Scanner.Location.invalid();
+        private ParameterDeclarationParsingScope next_free_;
     }
 
     // Parsing expressions is always ambiguous between at least left-hand-side and
@@ -440,10 +502,24 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
     // parsing an assignment expression.
     public class ExpressionParsingScope : ExpressionScope
     {
-        public ExpressionParsingScope(TImpl parser, ScopeType type = ScopeType.kExpression)
-            : base(parser, type)
+        public static ExpressionParsingScope New(TImpl parser, ScopeType type = ScopeType.kExpression)
+        {
+            ExpressionParsingScope s = parser.free_expression_parsing_scopes_;
+            if (s != null) parser.free_expression_parsing_scopes_ = s.next_free_;
+            else s = new ExpressionParsingScope(parser);
+            s.EnterExpressionParsingScope(parser, type);
+            return s;
+        }
+
+        protected ExpressionParsingScope(TImpl parser)
         {
             variable_list_ = new ScopedList<(VariableProxy, int)>(parser.variable_buffer());
+        }
+
+        protected void EnterExpressionParsingScope(TImpl parser, ScopeType type)
+        {
+            Enter(parser, type);
+            variable_list_.Reopen();
             has_async_arrow_in_scope_chain_ =
                 type == ScopeType.kMaybeAsyncArrowParameterDeclaration ||
                 (parent() != null && parent().CanBeExpression() &&
@@ -465,6 +541,13 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         }
 
         public override void Dispose()
+        {
+            ExitExpressionParsingScope();
+            next_free_ = parser().free_expression_parsing_scopes_;
+            parser().free_expression_parsing_scopes_ = this;
+        }
+
+        protected void ExitExpressionParsingScope()
         {
             variable_list_.Dispose();
             base.Dispose();
@@ -586,7 +669,8 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         private readonly ScopedList<(VariableProxy, int)> variable_list_;
         internal readonly MessageTemplate[] messages_ = new MessageTemplate[kNumberOfErrors];
         internal readonly Scanner.Location[] locations_ = new Scanner.Location[kNumberOfErrors];
-        private readonly bool has_async_arrow_in_scope_chain_;
+        private bool has_async_arrow_in_scope_chain_;
+        private ExpressionParsingScope next_free_;
     }
 
     // This class is used to parse multiple ambiguous expressions and declarations
@@ -602,7 +686,17 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
     {
         private const int kNumberOfErrors = ExpressionParsingScope.kNumberOfErrors;
 
-        public AccumulationScope(ExpressionScope scope)
+        public static AccumulationScope New(TImpl parser, ExpressionScope scope)
+        {
+            AccumulationScope s = parser.free_accumulation_scopes_;
+            if (s != null) parser.free_accumulation_scopes_ = s.next_free_;
+            else s = new AccumulationScope();
+            s.parser_ = parser;
+            s.Enter(scope);
+            return s;
+        }
+
+        private void Enter(ExpressionScope scope)
         {
             scope_ = null;
             if (!scope.CanBeExpression()) return;
@@ -643,9 +737,14 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
         public void Dispose()
         {
-            if (scope_ == null) return;
-            Accumulate();
-            for (int i = 0; i < kNumberOfErrors; i++) copy_back(i);
+            if (scope_ != null)
+            {
+                Accumulate();
+                for (int i = 0; i < kNumberOfErrors; i++) copy_back(i);
+                scope_ = null;
+            }
+            next_free_ = parser_.free_accumulation_scopes_;
+            parser_.free_accumulation_scopes_ = this;
         }
 
         private void copy(int entry)
@@ -661,9 +760,11 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
             scope_.locations_[entry] = locations_[entry];
         }
 
-        private readonly ExpressionParsingScope scope_;
+        private ExpressionParsingScope scope_;
         private readonly MessageTemplate[] messages_ = new MessageTemplate[2];
         private readonly Scanner.Location[] locations_ = new Scanner.Location[2];
+        private TImpl parser_;
+        private AccumulationScope next_free_;
     }
 
     // The head of an arrow function is ambiguous between expression, assignment
@@ -672,21 +773,33 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
     // expression or a pattern.
     public sealed class ArrowHeadParsingScope : ExpressionParsingScope
     {
-        public ArrowHeadParsingScope(TImpl parser, FunctionKind kind, int function_literal_id)
-            : base(parser, kind == FunctionKind.ArrowFunction
-                ? ScopeType.kMaybeArrowParameterDeclaration
-                : ScopeType.kMaybeAsyncArrowParameterDeclaration)
+        public static ArrowHeadParsingScope New(TImpl parser, FunctionKind kind, int function_literal_id)
         {
-            function_literal_id_ = function_literal_id;
-            allow_reindex_scope_ = new AllowReindexScope(parser.max_drift_);
+            ArrowHeadParsingScope s = parser.free_arrow_head_parsing_scopes_;
+            if (s != null) parser.free_arrow_head_parsing_scopes_ = s.next_free_;
+            else s = new ArrowHeadParsingScope(parser);
+            s.EnterExpressionParsingScope(parser, kind == FunctionKind.ArrowFunction
+                ? ScopeType.kMaybeArrowParameterDeclaration
+                : ScopeType.kMaybeAsyncArrowParameterDeclaration);
+            s.declaration_error_location = Scanner.Location.invalid();
+            s.declaration_error_message = MessageTemplate.None;
+            s.has_simple_parameter_list_ = true;
+            s.uses_this_ = false;
+            s.function_literal_id_ = function_literal_id;
+            s.allow_reindex_scope_ = new AllowReindexScope(parser.max_drift_);
             // clear last next_arrow_function_info tracked strict parameters error.
             parser.next_arrow_function_info_.ClearStrictParameterError();
+            return s;
         }
+
+        private ArrowHeadParsingScope(TImpl parser) : base(parser) { }
 
         public override void Dispose()
         {
             allow_reindex_scope_.Dispose();
-            base.Dispose();
+            ExitExpressionParsingScope();
+            next_free_ = parser().free_arrow_head_parsing_scopes_;
+            parser().free_arrow_head_parsing_scopes_ = this;
         }
 
         public new void ValidateExpression()
@@ -752,9 +865,10 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
         private Scanner.Location declaration_error_location = Scanner.Location.invalid();
         private MessageTemplate declaration_error_message = MessageTemplate.None;
-        private readonly int function_literal_id_;
+        private int function_literal_id_;
         private bool has_simple_parameter_list_ = true;
         private bool uses_this_;
-        private readonly AllowReindexScope allow_reindex_scope_;
+        private AllowReindexScope allow_reindex_scope_;
+        private ArrowHeadParsingScope next_free_;
     }
 }

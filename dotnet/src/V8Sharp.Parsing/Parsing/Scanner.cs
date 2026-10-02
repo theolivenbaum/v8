@@ -128,6 +128,18 @@ public sealed class Scanner
     private readonly UnoptimizedCompileFlags _flags;
     private readonly bool _enableExperimentalRegExpEngine;
 
+    // Returns the token literal buffers' storage to the per-thread pool when a
+    // parse is done (see LiteralBuffer.ReleaseBackingStore).
+    public void ReleaseLiteralBuffers()
+    {
+        foreach (TokenDesc desc in (ReadOnlySpan<TokenDesc>)[_current, _next, _nextNext, _nextNextNext])
+        {
+            if (desc == null) continue;
+            desc.literal_chars.ReleaseBackingStore();
+            desc.raw_literal_chars.ReleaseBackingStore();
+        }
+    }
+
     private TokenDesc _current = null!;        // desc for current token (as returned by Next())
     private TokenDesc _next = null!;           // desc for next token (one token look-ahead)
     private TokenDesc _nextNext = null!;       // desc for the token after next (after peek())

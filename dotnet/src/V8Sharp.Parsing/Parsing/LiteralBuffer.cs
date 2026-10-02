@@ -89,8 +89,33 @@ public sealed class LiteralBuffer
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void ExpandBuffer()
     {
+        if (_backingStore.Length == 0 && t_poolCount > 0)
+        {
+            _backingStore = t_pool![--t_poolCount]!;
+            t_pool[t_poolCount] = null;
+            return;
+        }
         int minCapacity = Math.Max(kInitialCapacity, _backingStore.Length);
         Array.Resize(ref _backingStore, NewCapacity(minCapacity));
+    }
+
+    // V8 allocates the backing store with new[] and frees it with the scanner.
+    // Here a scanner's token buffers go back to a small per-thread pool when
+    // its parse is done (Scanner.ReleaseLiteralBuffers), so a lazy compile does
+    // not allocate them again.
+    private const int kPoolSize = 16;
+    [ThreadStatic] private static char[]?[]? t_pool;
+    [ThreadStatic] private static int t_poolCount;
+
+    public void ReleaseBackingStore()
+    {
+        char[] store = _backingStore;
+        _backingStore = [];
+        _position = 0;
+        _isOneByte = true;
+        if (store.Length != NewCapacity(kInitialCapacity)) return;
+        t_pool ??= new char[]?[kPoolSize];
+        if (t_poolCount < kPoolSize) t_pool[t_poolCount++] = store;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

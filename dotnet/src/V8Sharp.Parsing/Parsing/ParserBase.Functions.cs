@@ -76,7 +76,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
                 throw new InvalidOperationException("UNREACHABLE"); // by current callers
         }
 
-        using VariableDeclarationParsingScope declaration = new(impl(), parsing_result.descriptor.mode, names);
+        using VariableDeclarationParsingScope declaration = VariableDeclarationParsingScope.New(impl(), parsing_result.descriptor.mode, names);
 
         ThreadedList<Declaration>.Iterator declaration_it = target_scope.declarations().end();
 
@@ -337,7 +337,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
             variable_name = name;
         }
 
-        using ExpressionParsingScope no_expression_scope = new(impl());
+        using ExpressionParsingScope no_expression_scope = ExpressionParsingScope.New(impl());
         TExpression value = ParseClassLiteral(scope(), name, scanner().location(), is_strict_reserved,
                                               class_token_pos);
         no_expression_scope.ValidateExpression();
@@ -446,7 +446,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
                 {
                     // Derived constructors are implemented by returning `this` when the
                     // original return value is undefined, so always use `this`.
-                    using ExpressionParsingScope expression_scope = new(impl());
+                    using ExpressionParsingScope expression_scope = ExpressionParsingScope.New(impl());
                     UseThis();
                     expression_scope.ValidateExpression();
                 }
@@ -621,7 +621,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         bool has_braces = true;
         ProducedPreparseData produced_preparse_data = null;
         using TStatementList body = TStatementList.New(pointer_buffer());
-        using (FunctionState function_state = new(this, formal_parameters.scope))
+        using (FunctionState function_state = FunctionState.New(this, formal_parameters.scope))
         {
             Consume(Token.Arrow);
 
@@ -668,7 +668,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
                         if (has_error()) return impl().FailureExpression();
 
                         DeclarationScope function_scope = next_arrow_function_info_.scope;
-                        using FunctionState inner_function_state = new(this, function_scope);
+                        using FunctionState inner_function_state = FunctionState.New(this, function_scope);
                         Scanner.Location loc = new(function_scope.start_position(), end_position());
                         TFormalParameters parameters = impl().NewFormalParameters(function_scope);
                         parameters.is_simple = function_scope.has_simple_parameters();
@@ -782,7 +782,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         {
             using ClassScope.HeritageParsingScope heritage = new(class_scope);
             using FuncNameInferrerState fni_state = new(fni_);
-            using ExpressionParsingScope scope = new(impl());
+            using ExpressionParsingScope scope = ExpressionParsingScope.New(impl());
             class_info.extends = ParseLeftHandSideExpression();
             scope.ValidateExpression();
         }

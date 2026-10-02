@@ -30,7 +30,7 @@ public sealed partial class Parser
         function_scope.set_end_position(pos);
         using ScopedPtrList<Statement> body = new(pointer_buffer());
 
-        using (FunctionState function_state = new(this, function_scope))
+        using (FunctionState function_state = FunctionState.New(this, function_scope))
         {
             // https://tc39.es/ecma262/#sec-runtime-semantics-classdefinitionevaluation
             //
@@ -70,7 +70,7 @@ public sealed partial class Parser
         SetLanguageMode(function_scope, LanguageMode.Strict);
         function_scope.set_start_position(pos);
         function_scope.set_end_position(pos);
-        using (FunctionState function_state = new(this, function_scope))
+        using (FunctionState function_state = FunctionState.New(this, function_scope))
         {
             body.Add(factory().NewAutoAccessorGetterBody(name_proxy, pos));
         }
@@ -96,7 +96,7 @@ public sealed partial class Parser
         function_scope.set_end_position(pos);
         function_scope.DeclareParameter(ast_value_factory().empty_string(), VariableMode.Temporary, false, false,
                                         ast_value_factory(), kNoSourcePosition);
-        using (FunctionState function_state = new(this, function_scope))
+        using (FunctionState function_state = FunctionState.New(this, function_scope))
         {
             body.Add(factory().NewAutoAccessorSetterBody(name_proxy, pos));
         }
@@ -717,6 +717,18 @@ public sealed partial class Parser
     // Sets the literal on |info| if parsing succeeded.
     public void ParseProgram(IParsingScript script, ParseInfo info, IScopeInfo maybe_outer_scope_info)
     {
+        try
+        {
+            ParseProgramInternal(script, info, maybe_outer_scope_info);
+        }
+        finally
+        {
+            scanner_.ReleaseLiteralBuffers();
+        }
+    }
+
+    private void ParseProgramInternal(IParsingScript script, ParseInfo info, IScopeInfo maybe_outer_scope_info)
+    {
         // Initialize parser state.
         DeserializeScopeChain(info, maybe_outer_scope_info, Scope.DeserializationMode.kIncludingVariables, script);
 
@@ -759,7 +771,7 @@ public sealed partial class Parser
             DeclarationScope scope = outer.AsDeclarationScope();
             scope.set_start_position(0);
 
-            using FunctionState function_state = new(this, scope);
+            using FunctionState function_state = FunctionState.New(this, scope);
             using ScopedPtrList<Statement> body = new(pointer_buffer());
             int beg_pos = scanner().location().beg_pos;
             if (flags().is_module())
@@ -910,7 +922,7 @@ public sealed partial class Parser
         using ModeScope mode_scope = new(this, Mode.PARSE_EAGERLY);
 
         // Set function and block state for the outer eval scope.
-        using FunctionState function_state = new(this, outer_scope);
+        using FunctionState function_state = FunctionState.New(this, outer_scope);
 
         AstRawString function_name = null;
         Scanner.Location location = new(0, 0);
@@ -994,6 +1006,18 @@ public sealed partial class Parser
     // Sets the literal on |info| if parsing succeeded.
     public void ParseFunction(ParseInfo info, IParsingSharedFunctionInfo shared_info)
     {
+        try
+        {
+            ParseFunctionInternal(info, shared_info);
+        }
+        finally
+        {
+            scanner_.ReleaseLiteralBuffers();
+        }
+    }
+
+    private void ParseFunctionInternal(ParseInfo info, IParsingSharedFunctionInfo shared_info)
+    {
         IScopeInfo maybe_outer_scope_info = null;
         if (shared_info.HasOuterScopeInfo())
         {
@@ -1065,7 +1089,7 @@ public sealed partial class Parser
             // Parse the function literal.
             Scope outer = original_scope_;
             DeclarationScope outer_function = outer.GetClosureScope();
-            using FunctionState function_state = new(this, outer_function);
+            using FunctionState function_state = FunctionState.New(this, outer_function);
             using BlockState block_state = new(this, outer);
             FunctionKind kind = flags().function_kind();
 
@@ -1101,7 +1125,7 @@ public sealed partial class Parser
                 scope.set_start_position(start_position);
                 ParserFormalParameters formals = new(scope);
                 {
-                    using ParameterDeclarationParsingScope formals_scope = new(this);
+                    using ParameterDeclarationParsingScope formals_scope = ParameterDeclarationParsingScope.New(this);
                     // Parsing patterns as variable reference expression creates
                     // NewUnresolved references in current scope. Enter arrow function
                     // scope for formal parameter parsing.
@@ -1176,13 +1200,13 @@ public sealed partial class Parser
         // token.
         // Insert a FunctionState with the closest outer Declaration scope
         DeclarationScope nearest_decl_scope = original_scope_.GetDeclarationScope();
-        using FunctionState function_state = new(this, nearest_decl_scope);
+        using FunctionState function_state = FunctionState.New(this, nearest_decl_scope);
 
         // We preparse the class members that are not fields with initializers
         // in order to collect the function literal ids.
         using ModeScope mode_scope = new(this, Mode.PARSE_LAZILY);
 
-        using ExpressionParsingScope no_expression_scope = new(this);
+        using ExpressionParsingScope no_expression_scope = ExpressionParsingScope.New(this);
 
         // Reparse the whole class body to build member initializer functions.
         FunctionLiteral initializer;

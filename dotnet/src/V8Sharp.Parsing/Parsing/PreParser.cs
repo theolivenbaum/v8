@@ -25,10 +25,7 @@ using static V8Sharp.Common.Globals;
 
 namespace V8Sharp.Parsing;
 
-public sealed class PreParser : ParserBase<PreParser, PreParserExpression, PreParserIdentifier, PreParserStatement,
-    PreParserStatement, PreParserExpression, PreParserExpression, PreParserExpression, PreParserExpressionList,
-    PreParserExpressionList, PreParserScopedStatementList, PreParserPropertyList, PreParserPropertyList,
-    PreParserFormalParameters, PreParserFactory, PreParserFuncNameInferrer>
+public sealed class PreParser : ParserBaseOfPreParser
 {
     public enum PreParseResult
     {
@@ -115,7 +112,7 @@ public sealed class PreParser : ParserBase<PreParser, PreParserExpression, PrePa
         // the global scope.
         if (flags().is_module()) scope = NewModuleScope(scope);
 
-        using FunctionState top_scope = new(this, scope);
+        using FunctionState top_scope = FunctionState.New(this, scope);
         original_scope_ = scope_;
         int start_position = peek_position();
         PreParserScopedStatementList body = PreParserScopedStatementList.New(pointer_buffer());
@@ -153,7 +150,7 @@ public sealed class PreParser : ParserBase<PreParser, PreParserExpression, PrePa
         // The caller passes the function_scope which is not yet inserted into the
         // scope stack. All scopes above the function_scope are ignored by the
         // PreParser.
-        using FunctionState function_state = new(this, function_scope);
+        using FunctionState function_state = FunctionState.New(this, function_scope);
 
         // Start collecting data for a new function which might contain skippable
         // functions.
@@ -170,7 +167,7 @@ public sealed class PreParser : ParserBase<PreParser, PreParserExpression, PrePa
 
                 // Parse non-arrow function parameters. For arrow functions, the parameters
                 // have already been parsed.
-                using (ParameterDeclarationParsingScope formals_scope = new(this))
+                using (ParameterDeclarationParsingScope formals_scope = ParameterDeclarationParsingScope.New(this))
                 {
                     // We return kPreParseSuccess in failure cases too - errors are retrieved
                     // separately by Parser::SkipLazyFunctionBody.
@@ -336,13 +333,13 @@ public sealed class PreParser : ParserBase<PreParser, PreParserExpression, PrePa
                 preparse_data_builder_scope.Start(function_scope);
             }
 
-            using FunctionState function_state = new(this, function_scope);
+            using FunctionState function_state = FunctionState.New(this, function_scope);
 
             Expect(Token.LeftParen);
             int start_position = position();
             function_scope.set_start_position(start_position);
             PreParserFormalParameters formals = new(function_scope);
-            using (ParameterDeclarationParsingScope formals_scope = new(this))
+            using (ParameterDeclarationParsingScope formals_scope = ParameterDeclarationParsingScope.New(this))
             {
                 ParseFormalParameterList(formals);
                 if (formals_scope.has_duplicate()) formals.set_has_duplicate();
@@ -609,7 +606,7 @@ public sealed class PreParser : ParserBase<PreParser, PreParserExpression, PrePa
         SetLanguageMode(function_scope, LanguageMode.Strict);
         function_scope.set_start_position(pos);
         function_scope.set_end_position(pos);
-        using FunctionState function_state = new(this, function_scope);
+        using FunctionState function_state = FunctionState.New(this, function_scope);
         GetNextInfoId();
     }
 

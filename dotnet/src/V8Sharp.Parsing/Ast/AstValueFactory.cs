@@ -35,11 +35,13 @@ public sealed class AstRawString
     // The internalized heap string, set by the engine (V8: string_ / set_string).
     public object? string_ { get; private set; }
 
-    internal AstRawString(string value, bool isOneByte)
+    internal AstRawString(string value, bool isOneByte) : this(value, isOneByte, AstStringTable.Hash(value)) { }
+
+    internal AstRawString(string value, bool isOneByte, int hash)
     {
         _value = value;
         _isOneByte = isOneByte;
-        _hash = string.GetHashCode(value, StringComparison.Ordinal);
+        _hash = hash;
         ComputeIndex(value, out _isIntegerIndex, out _isArrayIndex, out _arrayIndex);
     }
 
@@ -132,7 +134,7 @@ public sealed class AstRawString
         string_ = internalize(this);
     }
 
-    internal void set_string(object s) => string_ = s;
+    public void set_string(object s) => string_ = s;
 
     public override string ToString() => _value;
 }
@@ -187,7 +189,8 @@ public sealed class AstStringConstants
 {
     public const int kMaxOneCharStringValue = 128;
 
-    internal readonly Dictionary<string, AstRawString> string_table_ = new(StringComparer.Ordinal);
+    internal readonly AstStringTable string_table_ = new();
+    private readonly List<AstRawString> _allStrings = [];
     private readonly AstRawString[] _oneCharacterStrings = new AstRawString[kMaxOneCharStringValue];
 
     public AstStringConstants()
@@ -250,7 +253,8 @@ public sealed class AstStringConstants
     private AstRawString Add(string s)
     {
         var str = new AstRawString(s, true);
-        string_table_.Add(s, str);
+        string_table_.Add(str);
+        _allStrings.Add(str);
         return str;
     }
 
@@ -307,14 +311,16 @@ public sealed class AstStringConstants
     public AstRawString value_string { get; }
 
     // All constant strings (the engine internalizes these once per isolate).
-    public IEnumerable<AstRawString> AllStrings() => string_table_.Values;
+    public IEnumerable<AstRawString> AllStrings() => _allStrings;
 }
 
 public sealed class AstValueFactory
 {
-    // All strings are copied here.
-    private readonly Dictionary<string, AstRawString> _stringTable;
-    private readonly Dictionary<string, AstRawString>.AlternateLookup<ReadOnlySpan<char>> _lookup;
+    // All strings are copied here. V8 starts this table from a copy of the
+    // constants' table; here the (isolate-wide, read-only) constants' table is
+    // probed first, so a compile does not copy it.
+    private readonly AstStringTable _constantsTable;
+    private readonly AstStringTable _stringTable;
 
     // Strings created by this factory, in creation order (V8: strings_ list).
     private AstRawString? _strings;
@@ -328,8 +334,8 @@ public sealed class AstValueFactory
     public AstValueFactory(AstStringConstants string_constants)
     {
         _stringConstants = string_constants;
-        _stringTable = new Dictionary<string, AstRawString>(string_constants.string_table_, StringComparer.Ordinal);
-        _lookup = _stringTable.GetAlternateLookup<ReadOnlySpan<char>>();
+        _constantsTable = string_constants.string_table_;
+        _stringTable = new AstStringTable(64);
         _emptyConsString = new AstConsString();
     }
 
@@ -349,10 +355,11 @@ public sealed class AstValueFactory
                 return _stringConstants.one_character_string(key);
             }
         }
-        if (_lookup.TryGetValue(literal, out AstRawString? existing)) return existing;
-        string copy = literal.ToString();
-        var result = new AstRawString(copy, isOneByte);
-        _stringTable.Add(copy, result);
+        int hash = AstStringTable.Hash(literal);
+        AstRawString? existing = _constantsTable.Lookup(literal, hash) ?? _stringTable.Lookup(literal, hash);
+        if (existing != null) return existing;
+        var result = new AstRawString(literal.ToString(), isOneByte, hash);
+        _stringTable.Add(result);
         AddString(result);
         return result;
     }
@@ -468,4 +475,62 @@ public sealed class AstValueFactory
     public AstRawString throw_string() => _stringConstants.throw_string;
     public AstRawString undefined_string() => _stringConstants.undefined_string;
     public AstRawString value_string() => _stringConstants.value_string;
+}
+
+// The AstValueFactory's string table (V8: a base::CustomMatcherHashMap keyed
+// by the string's hash and contents). Open addressing with linear probing over
+// a power-of-two array of the strings, which carry their hash.
+internal sealed class AstStringTable
+{
+    private AstRawString?[] _slots;
+    private int _count;
+
+    public AstStringTable(int capacity = 256) => _slots = new AstRawString?[capacity];
+
+    // FNV-1a over the code units: cheap for the short identifiers the
+    // scanner produces. Only used for hash tables, never for output order.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int Hash(ReadOnlySpan<char> s)
+    {
+        uint h = 2166136261u;
+        for (int i = 0; i < s.Length; i++) h = (h ^ s[i]) * 16777619u;
+        return (int)(h ^ (h >> 15));
+    }
+
+    public AstRawString? Lookup(ReadOnlySpan<char> literal, int hash)
+    {
+        AstRawString?[] slots = _slots;
+        int mask = slots.Length - 1;
+        for (int i = hash & mask; ; i = (i + 1) & mask)
+        {
+            AstRawString? s = slots[i];
+            if (s == null) return null;
+            if (s.GetHashCode() == hash && literal.SequenceEqual(s.Value)) return s;
+        }
+    }
+
+    public void Add(AstRawString s)
+    {
+        if ((_count + 1) * 2 > _slots.Length) Grow();
+        Insert(_slots, s);
+        _count++;
+    }
+
+    private static void Insert(AstRawString?[] slots, AstRawString s)
+    {
+        int mask = slots.Length - 1;
+        int i = s.GetHashCode() & mask;
+        while (slots[i] != null) i = (i + 1) & mask;
+        slots[i] = s;
+    }
+
+    private void Grow()
+    {
+        var slots = new AstRawString?[_slots.Length * 2];
+        foreach (AstRawString? s in _slots)
+        {
+            if (s != null) Insert(slots, s);
+        }
+        _slots = slots;
+    }
 }

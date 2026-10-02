@@ -12,4 +12,8 @@
     <InternalsVisibleTo Include="V8Sharp.Parsing.Tests" />
   </ItemGroup>
 
+  <!-- ParserBase<Parser> and ParserBase<PreParser> as non-generic classes,
+       generated from the generic template before compilation. -->
+  <Import Project="ParserBase.Specialize.targets" />
+
 </Project>

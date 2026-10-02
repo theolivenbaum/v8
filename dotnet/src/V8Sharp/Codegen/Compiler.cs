@@ -105,9 +105,16 @@ namespace V8Sharp.Codegen
             shared.IsToplevel,
             shared.IsHoistedInContext);
 
+        // isolate->ast_string_constants(): created once per isolate (they cache
+        // their internalized strings, CompilerHeap.RawString), not per parse.
+        static readonly ConditionalWeakTable<Isolate, AstStringConstants> s_astStringConstants = new();
+
+        static AstStringConstants AstStringConstantsFor(Isolate isolate) =>
+            s_astStringConstants.GetValue(isolate, static _ => new AstStringConstants());
+
         static ParseInfo NewParseInfo(Isolate isolate, UnoptimizedCompileFlags flags)
         {
-            var parseInfo = new ParseInfo(flags, ParsingFlagsFor(isolate));
+            var parseInfo = new ParseInfo(flags, AstStringConstantsFor(isolate), ParsingFlagsFor(isolate));
             parseInfo.set_scope_info_provider(ScopeInfoProviderFor(isolate));
             parseInfo.set_regexp_syntax_validator(RegExpSyntaxValidator.Instance);
             return parseInfo;
@@ -380,6 +387,11 @@ namespace V8Sharp.Codegen
                 DetailsOf(isolate, script));
             ParseInfo parseInfo = NewParseInfo(isolate, flags);
 
+            if (shared.FunctionData is UncompiledData { PreparseData: PreparseData preparseData })
+            {
+                parseInfo.set_consumed_preparse_data(ConsumedPreparseData.For(preparseData));
+            }
+
             // Parse and update ParseInfo with the results.
             if (!ParsingEntry.ParseAny(parseInfo, new ParsingSharedFunctionInfo(shared)))
             {
@@ -400,6 +412,37 @@ namespace V8Sharp.Codegen
         public static JSFunction GetFunctionFromEval(Isolate isolate, JSString source, SharedFunctionInfo outerInfo,
             Context context, LanguageMode languageMode, ParseRestriction restriction, int parametersEndPos, int evalPosition)
         {
+            // The cache lookup key needs to be aware of the separation between the
+            // parameters and the body to prevent this valid invocation:
+            //   Function("", "function anonymous(\n/**/) {\n}");
+            // from adding an entry that falsely approves this invalid invocation:
+            //   Function("\n/**/) {\nfunction anonymous(", "}");
+            // The actual eval_position for indirect eval and CreateDynamicFunction
+            // is unused (just 0), which means it's an available field to use to indicate
+            // this separation. But to make sure we're not causing other false hits, we
+            // negate the scope position.
+            int evalCachePosition = evalPosition;
+            if (restriction == ParseRestriction.ONLY_SINGLE_FUNCTION_LITERAL &&
+                parametersEndPos != Globals.kNoSourcePosition)
+            {
+                // use the parameters_end_pos as the eval_position in the eval cache.
+                evalCachePosition = -parametersEndPos;
+            }
+            CompilationCacheEval? cache = source.Length <= CompilationCacheEval.kMaxSourceLength
+                ? CompilationCacheEval.For(isolate)
+                : null;
+            string? sourceString = null;
+            if (cache is not null)
+            {
+                sourceString = source.ToString();
+                if (cache.Lookup(sourceString, outerInfo, languageMode, evalCachePosition) is { } cached)
+                {
+                    JSFunction cachedResult = isolate.Factory.NewFunction(cached, context);
+                    JSFunctionFeedback.InitializeFeedbackCell(isolate, cachedResult, false);
+                    return cachedResult;
+                }
+            }
+
             Script script = isolate.Factory.NewScript(source);
             script.Compilation = Script.CompilationType.Eval;
             script.EvalFromShared = outerInfo;
@@ -435,6 +478,10 @@ namespace V8Sharp.Codegen
             SharedFunctionInfo shared = CompileToplevel(isolate, parseInfo, script, outerScopeInfo);
             JSFunction result = isolate.Factory.NewFunction(shared, context);
             JSFunctionFeedback.InitializeFeedbackCell(isolate, result, false);
+            if (cache is not null && parseInfo.allow_eval_cache() && !flags.block_coverage_enabled())
+            {
+                cache.Put(sourceString!, outerInfo, languageMode, evalCachePosition, shared);
+            }
             return result;
         }
 

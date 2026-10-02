@@ -103,10 +103,7 @@ public interface IParsingSharedFunctionInfo
     bool private_name_lookup_skips_outer_class();
 }
 
-public sealed partial class Parser : ParserBase<Parser, Expression, AstRawString, Statement, Block, FunctionLiteral,
-    ObjectLiteralProperty, ClassLiteralProperty, ScopedPtrList<Expression>, ScopedPtrList<ObjectLiteralProperty>,
-    ScopedPtrList<Statement>, List<ClassLiteralProperty>, List<ClassLiteralStaticElement>, ParserFormalParameters,
-    AstNodeFactory, FuncNameInferrer>
+public sealed partial class Parser : ParserBaseOfParser
 {
     public static bool IsPreParser() => false;
 
