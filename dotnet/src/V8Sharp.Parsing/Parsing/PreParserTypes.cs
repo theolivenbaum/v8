@@ -290,18 +290,38 @@ public sealed class PreParserScopedStatementList : IScopedPtrList<PreParserScope
 // The pre-parser doesn't need to build lists of expressions, identifiers, or
 // the like. If the PreParser is used in variable tracking mode, it needs to
 // build lists of variables though.
+//
+// V8's PreParserExpressionList is a value on the C++ stack. Here it is a class
+// (ParserBase passes lists by reference), and the lists are recycled through
+// a per-thread free list, since every list lives exactly as long as the
+// `using` that creates it: preparsing a call allocates nothing.
 public sealed class PreParserExpressionList
     : IScopedPtrList<PreParserExpressionList, PreParserExpression>
 {
     private int length_;
+    private PreParserExpressionList next_free_;
 
-    public static PreParserExpressionList New(List<object> buffer) => new();
+    [ThreadStatic] private static PreParserExpressionList t_free_;
+
+    public static PreParserExpressionList New(List<object> buffer)
+    {
+        PreParserExpressionList list = t_free_;
+        if (list == null) return new PreParserExpressionList();
+        t_free_ = list.next_free_;
+        list.next_free_ = null;
+        list.length_ = 0;
+        return list;
+    }
 
     public int length() => length_;
 
     public void Add(PreParserExpression expression) => ++length_;
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        next_free_ = t_free_;
+        t_free_ = this;
+    }
     public void Rewind() => length_ = 0;
     public void MergeInto(PreParserExpressionList parent) { }
 }

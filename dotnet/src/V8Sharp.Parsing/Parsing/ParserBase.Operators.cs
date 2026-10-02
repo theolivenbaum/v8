@@ -723,7 +723,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         {
             int pos = position();
 
-            using ArrowHeadParsingScope maybe_arrow = new(impl(), FunctionKind.AsyncArrowFunction, PeekNextInfoId());
+            using ArrowHeadParsingScope maybe_arrow = ArrowHeadParsingScope.New(impl(), FunctionKind.AsyncArrowFunction, PeekNextInfoId());
             using Scope.Snapshot scope_snapshot = new(scope());
 
             using TExpressionList args = TExpressionList.New(pointer_buffer());

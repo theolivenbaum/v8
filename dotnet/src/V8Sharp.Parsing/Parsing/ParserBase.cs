@@ -336,24 +336,45 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
     // labels() of the Block will be l1.
     // labels() of the ForStatement will be l2, l3, l4.
     // own_labels() of the ForStatement will be l3, l4.
+    //
+    // V8's Targets live on the C++ stack; here they are recycled through a
+    // per-parser free list (as the expression scopes are, ExpressionScope.cs).
     public sealed class Target : IDisposable
     {
         public enum TargetType { TARGET_FOR_ANONYMOUS, TARGET_FOR_NAMED_ONLY }
 
-        private readonly FunctionState _functionState;
-        private readonly TStatement _statement;
-        private readonly List<AstRawString> _labels;
-        private readonly List<AstRawString> _ownLabels;
-        private readonly TargetType _targetType;
-        private readonly Target _previous;
-        private readonly bool _isIteration;
+        private ParserBase<TImpl, TExpression, TIdentifier, TStatement, TBlock, TFunctionLiteral,
+            TObjectLiteralProperty, TClassLiteralProperty, TExpressionList, TObjectPropertyList, TStatementList,
+            TClassPropertyList, TClassStaticElementList, TFormalParameters, TFactory, TFuncNameInferrer> _parser;
+        private FunctionState _functionState;
+        private TStatement _statement;
+        private List<AstRawString> _labels;
+        private List<AstRawString> _ownLabels;
+        private TargetType _targetType;
+        private Target _previous;
+        private bool _isIteration;
+        private Target _nextFree;
 
-        public Target(ParserBase<TImpl, TExpression, TIdentifier, TStatement, TBlock, TFunctionLiteral,
+        public static Target New(ParserBase<TImpl, TExpression, TIdentifier, TStatement, TBlock, TFunctionLiteral,
                           TObjectLiteralProperty, TClassLiteralProperty, TExpressionList, TObjectPropertyList,
                           TStatementList, TClassPropertyList, TClassStaticElementList, TFormalParameters,
                           TFactory, TFuncNameInferrer> parser, TStatement statement, List<AstRawString> labels,
-                      List<AstRawString> own_labels, TargetType target_type)
+                                 List<AstRawString> own_labels, TargetType target_type)
         {
+            Target t = parser.free_targets_;
+            if (t != null) parser.free_targets_ = t._nextFree;
+            else t = new Target();
+            t.Enter(parser, statement, labels, own_labels, target_type);
+            return t;
+        }
+
+        private void Enter(ParserBase<TImpl, TExpression, TIdentifier, TStatement, TBlock, TFunctionLiteral,
+                          TObjectLiteralProperty, TClassLiteralProperty, TExpressionList, TObjectPropertyList,
+                          TStatementList, TClassPropertyList, TClassStaticElementList, TFormalParameters,
+                          TFactory, TFuncNameInferrer> parser, TStatement statement, List<AstRawString> labels,
+                           List<AstRawString> own_labels, TargetType target_type)
+        {
+            _parser = parser;
             _functionState = parser.function_state_;
             _statement = statement;
             _labels = labels;
@@ -364,7 +385,17 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
             _functionState.target_stack_ = this;
         }
 
-        public void Dispose() => _functionState.target_stack_ = _previous;
+        public void Dispose()
+        {
+            _functionState.target_stack_ = _previous;
+            _functionState = null;
+            _statement = default;
+            _labels = null;
+            _ownLabels = null;
+            _previous = null;
+            _nextFree = _parser.free_targets_;
+            _parser.free_targets_ = this;
+        }
 
         public Target previous() => _previous;
         public TStatement statement() => _statement;
@@ -375,6 +406,10 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
     }
 
     protected Target target_stack() => function_state_.target_stack_;
+
+    // The free lists of the recycled Targets and FunctionStates.
+    private Target free_targets_;
+    private FunctionState free_function_states_;
 
     protected TStatement LookupBreakTarget(TIdentifier label)
     {
@@ -405,14 +440,16 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         return impl().NullStatement();
     }
 
+    //
+    // Recycled through a per-parser free list, like Target.
     public sealed class FunctionState : IDisposable
     {
-        private readonly ParserBase<TImpl, TExpression, TIdentifier, TStatement, TBlock, TFunctionLiteral,
+        private ParserBase<TImpl, TExpression, TIdentifier, TStatement, TBlock, TFunctionLiteral,
             TObjectLiteralProperty, TClassLiteralProperty, TExpressionList, TObjectPropertyList, TStatementList,
             TClassPropertyList, TClassStaticElementList, TFormalParameters, TFactory, TFuncNameInferrer> _parser;
 
         // BlockState part.
-        private readonly Scope _outerScope;
+        private Scope _outerScope;
 
         // Properties count estimation.
         private int _expectedPropertyCount;
@@ -423,9 +460,10 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         // How deeply nested we currently are in this function.
         internal int loop_nesting_depth_;
 
-        private readonly FunctionState _outerFunctionState;
-        private readonly DeclarationScope _scope;
+        private FunctionState _outerFunctionState;
+        private DeclarationScope _scope;
         internal Target target_stack_; // for break, continue statements
+        private FunctionState _nextFree;
 
         // A reason, if any, why this function should not be optimized.
         private BailoutReason _dontOptimizeReason;
@@ -441,12 +479,27 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         // Track if a function or eval occurs within this FunctionState
         internal bool contains_function_or_eval_;
 
-        public FunctionState(ParserBase<TImpl, TExpression, TIdentifier, TStatement, TBlock, TFunctionLiteral,
-                                 TObjectLiteralProperty, TClassLiteralProperty, TExpressionList,
-                                 TObjectPropertyList, TStatementList, TClassPropertyList, TClassStaticElementList,
-                                 TFormalParameters, TFactory, TFuncNameInferrer> parser, DeclarationScope scope)
+        public static FunctionState New(ParserBase<TImpl, TExpression, TIdentifier, TStatement, TBlock, TFunctionLiteral,
+                          TObjectLiteralProperty, TClassLiteralProperty, TExpressionList, TObjectPropertyList,
+                          TStatementList, TClassPropertyList, TClassStaticElementList, TFormalParameters,
+                          TFactory, TFuncNameInferrer> parser, DeclarationScope scope)
+        {
+            FunctionState state = parser.free_function_states_;
+            if (state != null) parser.free_function_states_ = state._nextFree;
+            else state = new FunctionState();
+            state.Enter(parser, scope);
+            return state;
+        }
+
+        private void Enter(ParserBase<TImpl, TExpression, TIdentifier, TStatement, TBlock, TFunctionLiteral,
+                          TObjectLiteralProperty, TClassLiteralProperty, TExpressionList, TObjectPropertyList,
+                          TStatementList, TClassPropertyList, TClassStaticElementList, TFormalParameters,
+                          TFactory, TFuncNameInferrer> parser, DeclarationScope scope)
         {
             _parser = parser;
+            _suspendCount = 0;
+            loop_nesting_depth_ = 0;
+            target_stack_ = null;
             _outerScope = parser.scope_;
             parser.scope_ = scope;
             _expectedPropertyCount = 0;
@@ -470,6 +523,12 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         {
             _parser.function_state_ = _outerFunctionState;
             _parser.scope_ = _outerScope;
+            _outerFunctionState = null;
+            _outerScope = null;
+            _scope = null;
+            target_stack_ = null;
+            _nextFree = _parser.free_function_states_;
+            _parser.free_function_states_ = this;
         }
 
         public DeclarationScope scope() => _scope.AsDeclarationScope();

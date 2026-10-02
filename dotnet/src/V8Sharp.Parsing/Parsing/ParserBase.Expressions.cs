@@ -349,7 +349,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
             if (peek() == Token.Arrow)
             {
-                using ArrowHeadParsingScope parsing_scope = new(impl(), kind, PeekNextInfoId());
+                using ArrowHeadParsingScope parsing_scope = ArrowHeadParsingScope.New(impl(), kind, PeekNextInfoId());
                 TIdentifier name = ParseAndClassifyIdentifier(token);
                 ClassifyParameter(name, beg_pos, end_position());
                 TExpression result = impl().ExpressionFromIdentifier(name, beg_pos, InferName.kNo);
@@ -428,7 +428,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
                 using Scope.Snapshot scope_snapshot = new(scope());
                 bool could_be_immediately_invoked_arrow_function =
                     position_after_last_primary_expression_open_parenthesis_ == beg_pos;
-                using ArrowHeadParsingScope maybe_arrow = new(impl(), FunctionKind.ArrowFunction, PeekNextInfoId());
+                using ArrowHeadParsingScope maybe_arrow = ArrowHeadParsingScope.New(impl(), FunctionKind.ArrowFunction, PeekNextInfoId());
                 position_after_last_primary_expression_open_parenthesis_ = peek_position();
                 // Heuristically try to detect immediately called functions before
                 // seeing the call parentheses.
@@ -485,7 +485,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
     // a pattern.
     protected TExpression ParseExpression()
     {
-        using ExpressionParsingScope expression_scope = new(impl());
+        using ExpressionParsingScope expression_scope = ExpressionParsingScope.New(impl());
         using AcceptINScope accept_in = new(this, true);
         TExpression result = ParseExpressionCoverGrammar();
         expression_scope.ValidateExpression();
@@ -494,7 +494,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
     protected TExpression ParseConditionalChainAssignmentExpression()
     {
-        using ExpressionParsingScope expression_scope = new(impl());
+        using ExpressionParsingScope expression_scope = ExpressionParsingScope.New(impl());
         TExpression result = ParseConditionalChainAssignmentExpressionCoverGrammar();
         expression_scope.ValidateExpression();
         return result;
@@ -502,7 +502,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
     protected TExpression ParseAssignmentExpression()
     {
-        using ExpressionParsingScope expression_scope = new(impl());
+        using ExpressionParsingScope expression_scope = ExpressionParsingScope.New(impl());
         TExpression result = ParseAssignmentExpressionCoverGrammar();
         expression_scope.ValidateExpression();
         return result;
@@ -523,7 +523,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
         using TExpressionList list = TExpressionList.New(pointer_buffer());
         TExpression expression;
-        using AccumulationScope accumulation_scope = new(expression_scope());
+        using AccumulationScope accumulation_scope = AccumulationScope.New(impl(), expression_scope());
         int variable_index = 0;
         while (true)
         {
@@ -614,7 +614,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         int first_spread_index = -1;
         Consume(Token.LeftBracket);
 
-        using AccumulationScope accumulation_scope = new(expression_scope());
+        using AccumulationScope accumulation_scope = AccumulationScope.New(impl(), expression_scope());
 
         while (!Check(Token.RightBracket))
         {
@@ -1089,7 +1089,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
         if (Check(Token.Assign))
         {
-            using FunctionState initializer_state = new(this, initializer_scope);
+            using FunctionState initializer_state = FunctionState.New(this, initializer_scope);
 
             using AcceptINScope accept_in = new(this, true);
             TExpression result = ParseAssignmentExpression();
@@ -1107,7 +1107,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         DeclarationScope initializer_scope =
             class_info.EnsureStaticElementsScope(this, position(), PeekNextInfoId());
 
-        using FunctionState initializer_state = new(this, initializer_scope);
+        using FunctionState initializer_state = FunctionState.New(this, initializer_scope);
         using FunctionParsingScope body_parsing_scope = new(this);
         using AcceptINScope accept_in = new(this, true);
 
@@ -1292,7 +1292,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         bool has_seen_proto = false;
 
         Consume(Token.LeftBrace);
-        using AccumulationScope accumulation_scope = new(expression_scope());
+        using AccumulationScope accumulation_scope = AccumulationScope.New(impl(), expression_scope());
 
         // If methods appear inside the object literal, we'll enter this scope.
         Scope block_scope = NewBlockScopeForObjectLiteral();
@@ -1369,7 +1369,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
         has_spread = false;
         Consume(Token.LeftParen);
-        using AccumulationScope accumulation_scope = new(expression_scope());
+        using AccumulationScope accumulation_scope = AccumulationScope.New(impl(), expression_scope());
 
         int variable_index = 0;
         while (peek() != Token.RightParen)

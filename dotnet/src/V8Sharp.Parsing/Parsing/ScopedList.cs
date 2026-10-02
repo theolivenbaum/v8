@@ -28,6 +28,14 @@ public sealed class ScopedList<T> : IReadOnlyList<T>, IDisposable
 
     public void Dispose() => Rewind();
 
+    // Starts the list again at the end of its buffer, as a new ScopedList
+    // over the same buffer would (for recycled expression scopes).
+    public void Reopen()
+    {
+        _start = _buffer.Count;
+        _end = _start;
+    }
+
     public void Rewind()
     {
         if (_buffer.Count > _start) _buffer.RemoveRange(_start, _buffer.Count - _start);
