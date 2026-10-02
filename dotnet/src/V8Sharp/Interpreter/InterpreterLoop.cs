@@ -336,7 +336,8 @@ public static partial class InterpreterExecution
                             }
                         }
                     }
-                    acc = GetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    if (GetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto reload;
+                    acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
                 }
@@ -408,7 +409,7 @@ public static partial class InterpreterExecution
                             continue;
                         }
                     }
-                    SetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    if (SetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) goto reload;
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
                 }

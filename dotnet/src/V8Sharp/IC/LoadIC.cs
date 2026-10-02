@@ -25,8 +25,28 @@ public sealed class LoadIC : IC
     /// polymorphic feedback, then the stub cache when megamorphic, then misses.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static JSValue LoadNamed(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name)
+    public static JSValue LoadNamed(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name) =>
+        LoadNamedCore(isolate, vector, slot, receiver, name, false, out _);
+
+    /// <summary>
+    /// <see cref="LoadNamed"/> for the interpreter, which calls JavaScript
+    /// getters as it calls functions (V8's accessor handlers call the getter
+    /// with the CallFunction builtin, on the same stack): when the feedback's
+    /// handler is a JavaScript getter (own, kAccessorPair, or on the prototype
+    /// chain, kAccessorFromPrototype), returns undefined with the getter in
+    /// <paramref name="getter"/> and loads nothing; the caller calls it with
+    /// the receiver.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue LoadNamedOrGetter(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name,
+        out JSFunction? getter) =>
+        LoadNamedCore(isolate, vector, slot, receiver, name, true, out getter);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static JSValue LoadNamedCore(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name,
+        bool wantGetter, out JSFunction? getter)
     {
+        getter = null;
         if (vector is not null)
         {
             HeapObject? o = receiver._obj;
@@ -78,10 +98,22 @@ public sealed class LoadIC : IC
                     if (handler.HandlerKind == LoadHandler.Kind.kArrayLength) return Unsafe.As<JSArray>(r).Length;
                     // A builtin getter on the prototype chain whose fast case needs
                     // no frame (typed array length: BuiltinFastPaths.TryCall0).
-                    if (handler.HandlerKind == LoadHandler.Kind.kAccessorFromPrototype && handler.IsValid && !map.IsDictionaryMap &&
-                        BuiltinFastPaths.TryCall0(isolate, handler.Data, receiver, out JSValue getterResult))
+                    if (handler.HandlerKind == LoadHandler.Kind.kAccessorFromPrototype && handler.IsValid && !map.IsDictionaryMap)
                     {
-                        return getterResult;
+                        if (BuiltinFastPaths.TryCall0(isolate, handler.Data, receiver, out JSValue getterResult)) return getterResult;
+                        if (wantGetter && handler.Data._obj is JSFunction prototypeGetter)
+                        {
+                            getter = prototypeGetter;
+                            return default;
+                        }
+                    }
+                    // An own accessor of a fast-mode receiver (the map check
+                    // covers the descriptor, so the pair is the receiver's).
+                    if (wantGetter && handler.HandlerKind == LoadHandler.Kind.kAccessorPair && handler.IsValid &&
+                        Unsafe.As<AccessorPair>(handler.Data._obj!).Getter._obj is JSFunction ownGetter)
+                    {
+                        getter = ownGetter;
+                        return default;
                     }
                     // F.prototype (LoadHandler::LoadFunctionPrototype: LoadJSFunctionPrototype).
                     if (handler.HandlerKind == LoadHandler.Kind.kFunctionPrototype && r is JSFunction function &&

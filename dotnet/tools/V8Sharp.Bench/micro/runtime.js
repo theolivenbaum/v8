@@ -117,6 +117,23 @@ benchCpu('RtSetter', function (n) {
   for (var i = 0; i < n; i++) { p.x = i; }
   return p._x;
 }, 1000000);
+benchCpu('RtClassGetter', function (n) {
+  class Q { constructor() { this._x = 1; } get x() { return this._x; } }
+  var q = new Q(), s = 0;
+  for (var i = 0; i < n; i++) { s = s + q.x; }
+  return s;
+}, 1000000);
+benchCpu('RtClassSetter', function (n) {
+  class Q { constructor() { this._x = 1; } set x(v) { this._x = v; } }
+  var q = new Q();
+  for (var i = 0; i < n; i++) { q.x = i; }
+  return q._x;
+}, 1000000);
+benchCpu('RtOwnGetter', function (n) {
+  var o = { _x: 1, get x() { return this._x; } }, s = 0;
+  for (var i = 0; i < n; i++) { s = s + o.x; }
+  return s;
+}, 1000000);
 benchCpu('RtNewArray', function (n) {
   var a;
   for (var i = 0; i < n; i++) { a = new Array(8); }

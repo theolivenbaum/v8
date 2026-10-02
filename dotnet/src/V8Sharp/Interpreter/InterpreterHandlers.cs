@@ -247,7 +247,7 @@ public static partial class InterpreterExecution
     // ---- Property loads and stores --------------------------------------------------
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static JSValue GetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+    static bool GetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(isolate, ref st, ref ip);
@@ -255,7 +255,22 @@ public static partial class InterpreterExecution
         JSValue receiver = Reg<TS>(ref fp, ref ip, 1);
         var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
-        return LoadIC.LoadNamed(isolate, st.FeedbackVector, slot, receiver, name);
+        JSValue result = LoadIC.LoadNamedOrGetter(isolate, st.FeedbackVector, slot, receiver, name, out JSFunction? getter);
+        if (getter is not null)
+        {
+            // A JavaScript getter from the feedback (LoadHandler accessor
+            // cases): called like a CallProperty0 with the receiver, in this
+            // loop; its return value is the accumulator at the next bytecode.
+            if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(getter, out JSFunction target, out int mode))
+            {
+                InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver, new Baseline.BaselineCalls.NoArguments(),
+                    PcOf(ref st, ref ip) + 1 + 3 * S);
+                return true;
+            }
+            result = ObjectOps.GetPropertyWithDefinedGetter(isolate, receiver, getter);
+        }
+        st.Accumulator = result;
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -270,7 +285,7 @@ public static partial class InterpreterExecution
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void SetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+    static bool SetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
         SavePc(isolate, ref st, ref ip);
@@ -278,7 +293,21 @@ public static partial class InterpreterExecution
         JSValue obj = Reg<TS>(ref fp, ref ip, 1);
         var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
-        StoreIC.StoreNamed(isolate, st.FeedbackVector, slot, obj, name, acc);
+        JSFunction? setter = StoreIC.StoreNamedOrSetter(isolate, st.FeedbackVector, slot, obj, name, acc);
+        if (setter is null) return false;
+        // A JavaScript setter from the feedback (StoreHandler accessor cases):
+        // called like a CallProperty1 with the receiver and the value, in this
+        // loop. SetNamedProperty clobbers the accumulator (the bytecode
+        // generator reloads the value when the assignment's result is used),
+        // so the setter's return value may land in it, as in V8.
+        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(setter, out JSFunction target, out int mode))
+        {
+            InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, obj, new Baseline.BaselineCalls.OneArgument(acc),
+                PcOf(ref st, ref ip) + 1 + 3 * S);
+            return true;
+        }
+        ObjectOps.SetPropertyWithDefinedSetter(isolate, obj, setter, acc, null);
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

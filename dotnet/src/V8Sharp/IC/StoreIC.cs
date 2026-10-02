@@ -26,6 +26,51 @@ public sealed class StoreIC : IC
         StoreNamedSlow(isolate, vector, slot, receiver, name, value, FeedbackSlotKind.kSetNamedStrict);
     }
 
+    /// <summary>
+    /// <see cref="StoreNamed"/> for the interpreter, which calls JavaScript
+    /// setters as it calls functions (V8's StoreHandler accessor cases call the
+    /// setter with the CallFunction builtin, on the same stack): when the
+    /// feedback's handler for the receiver's map is a JavaScript setter (own,
+    /// kAccessorPair, or on the prototype chain, kAccessorFromPrototype),
+    /// stores nothing and returns the setter, which the caller calls with the
+    /// receiver and the value; otherwise stores and returns null.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSFunction? StoreNamedOrSetter(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name,
+        JSValue value)
+    {
+        if (vector is not null && receiver._obj is JSObject obj)
+        {
+            JSValue[] slots = vector.Slots;
+            HeapObject? feedback = slots[slot]._obj;
+            Map map = obj.Map;
+            HeapObject? found = ReferenceEquals(feedback, map) ? slots[slot + 1]._obj
+                : feedback is FixedArray polymorphic ? LoadIC.FindPolymorphicHandler(polymorphic, map) : null;
+            if (found is StoreHandler handler)
+            {
+                if (TryStoreOwnField(obj, handler, value)) return null;
+                if (handler.IsValid)
+                {
+                    // A prototype handler applies to fast-mode receivers (a
+                    // dictionary-mode one could have the name itself:
+                    // FoundOnLookupStartObject in TryHandleStore).
+                    if (handler.HandlerKind == StoreHandler.Kind.kAccessorFromPrototype && obj.HasFastProperties &&
+                        handler.Data._obj is JSFunction prototypeSetter)
+                    {
+                        return prototypeSetter;
+                    }
+                    if (handler.HandlerKind == StoreHandler.Kind.kAccessorPair &&
+                        Unsafe.As<AccessorPair>(handler.Data._obj!).Setter._obj is JSFunction ownSetter)
+                    {
+                        return ownSetter;
+                    }
+                }
+            }
+        }
+        StoreNamedSlow(isolate, vector, slot, receiver, name, value, FeedbackSlotKind.kSetNamedStrict);
+        return null;
+    }
+
     /// <summary>DefineNamedOwnProperty: DefineNamedOwnIC.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void DefineNamedOwn(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name, JSValue value)
