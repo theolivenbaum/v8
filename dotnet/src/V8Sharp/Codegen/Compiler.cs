@@ -412,6 +412,35 @@ namespace V8Sharp.Codegen
         public static JSFunction GetFunctionFromEval(Isolate isolate, JSString source, SharedFunctionInfo outerInfo,
             Context context, LanguageMode languageMode, ParseRestriction restriction, int parametersEndPos, int evalPosition)
         {
+            // The cache lookup key needs to be aware of the separation between the
+            // parameters and the body to prevent this valid invocation:
+            //   Function("", "function anonymous(\n/**/) {\n}");
+            // from adding an entry that falsely approves this invalid invocation:
+            //   Function("\n/**/) {\nfunction anonymous(", "}");
+            // The actual eval_position for indirect eval and CreateDynamicFunction
+            // is unused (just 0), which means it's an available field to use to indicate
+            // this separation. But to make sure we're not causing other false hits, we
+            // negate the scope position.
+            int evalCachePosition = evalPosition;
+            if (restriction == ParseRestriction.ONLY_SINGLE_FUNCTION_LITERAL &&
+                parametersEndPos != Globals.kNoSourcePosition)
+            {
+                // use the parameters_end_pos as the eval_position in the eval cache.
+                evalCachePosition = -parametersEndPos;
+            }
+            CompilationCacheEval? cache = CompilationCacheEval.For(isolate);
+            string? sourceString = null;
+            if (cache is not null)
+            {
+                sourceString = source.ToString();
+                if (cache.Lookup(sourceString, outerInfo, languageMode, evalCachePosition) is { } cached)
+                {
+                    JSFunction cachedResult = isolate.Factory.NewFunction(cached, context);
+                    JSFunctionFeedback.InitializeFeedbackCell(isolate, cachedResult, false);
+                    return cachedResult;
+                }
+            }
+
             Script script = isolate.Factory.NewScript(source);
             script.Compilation = Script.CompilationType.Eval;
             script.EvalFromShared = outerInfo;
@@ -447,6 +476,10 @@ namespace V8Sharp.Codegen
             SharedFunctionInfo shared = CompileToplevel(isolate, parseInfo, script, outerScopeInfo);
             JSFunction result = isolate.Factory.NewFunction(shared, context);
             JSFunctionFeedback.InitializeFeedbackCell(isolate, result, false);
+            if (cache is not null && parseInfo.allow_eval_cache() && !flags.block_coverage_enabled())
+            {
+                cache.Put(sourceString!, outerInfo, languageMode, evalCachePosition, shared);
+            }
             return result;
         }
 
