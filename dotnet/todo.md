@@ -603,7 +603,12 @@ write barriers half the cost, +10% on Richards/DeltaBlue/EarleyBoyer, -11%
 Splay, +2.6% geomean, a non-default GC); `System.GC.LOHThreshold` 2 MB
 (PdfJS gen-2 GCs 15 to 3 per process and -7.5% per run steady, mixed on
 the rest); ReadyToRun without composite and with TieredPGO (mixed: CodeLoad
-1.8x, PdfJS and Mandreel -10%).
+1.8x, PdfJS and Mandreel -10%); bringing the loop under RyuJIT's
+local-tracking limit (it had about 1050 locals against 1024; moving two
+inlined helpers out got it under, as `DOTNET_JitMaxLocalsToTrack` scans of
+the listing show) did not help: `DOTNET_JitMaxLocalsToTrack=0x1800` gives
+the old loop +7% on loop micros, the trimmed loop -4% with or without it,
+another case of code generation and placement deciding, not the work.
 
 What blocks parity (44.5% of jitless by Octane's own score), measured:
 - The dispatch loop costs about 2x V8's bytecode handlers per bytecode.
