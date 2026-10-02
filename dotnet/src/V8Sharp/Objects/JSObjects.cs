@@ -63,6 +63,7 @@ public abstract partial class JSReceiver : HeapObject
         _fields = source._fields;
         _dictionary = source._dictionary;
         _identityHash = source._identityHash;
+        _headerFlags = source._headerFlags;
     }
 
     /// <summary>Whether properties are stored in fields described by the map (not a dictionary).</summary>
