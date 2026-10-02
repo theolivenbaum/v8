@@ -765,16 +765,22 @@ progress, also off by default.
     window, write barriers); deopt exits are most of the IL of big functions,
     and RyuJIT compiles big methods without optimization (MinOpts) and only
     tiers them up late, so the tiering manager does not optimize graphs over
-    1200 nodes. No escape analysis, LICM, loop peeling or CSE of loads.
+    500 nodes (V8SHARP_MAGLEV_MAX_NODES). No escape analysis, LICM, loop peeling or CSE of loads.
   - Conformance under forced optimization (`--maglev
     --invocation-count-for-maglev=4 --optimize-on-next-call-optimizes-to-maglev`,
-    2026-10-02): test262 0 newly failing against the expectations; mjsunit
-    103 failures vs 60 in the plain run, 39 of them only with optimization:
-    11 need `--mock-arraybuffer-allocator`, most others are optimization
-    status asserts of Turbofan/turbolev behaviour (truncation analysis,
-    undefined doubles, deopt-free generic paths) or need IC changes (store
-    handlers for typed arrays, LoadIC feedback for undefined receivers,
-    deprecated-map migration in the IC); generators are not optimized.
+    2026-10-02, after concurrent compilation): test262 0 newly failing
+    against the expectations (95123 run); mjsunit 82 failures vs 53 in the
+    plain run, 29 of them only with optimization: 11 typed array length
+    tests need `--mock-arraybuffer-allocator`; IC work (deprecated-map
+    migration in the IC: checkmaps-with-migration-and-deopt-poly/poly2;
+    LoadIC feedback for undefined receivers: misc-ensure-no-deopt,
+    load-named-generic); optimization status asserts of Turbofan/turbolev
+    behaviour (int32-mul-truncation, holey-double-load-arith,
+    elide-double-hole-check-12, new-obj, super-ic-opt's const-field
+    dependency, immutable-ab-regress); generators are not optimized
+    (regress-2618, regress-6989, regress-794825, generator-loop-peel);
+    code-coverage-block-opt, regress-v8-5697 and
+    turboshaft/regress-380487911 (65536 locals).
   - The tier stays off by default until it is conformance-clean under
     forced optimization and a net win on Octane.
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays

@@ -359,6 +359,10 @@ for now, to be revisited when the reason goes away.
   feedback maps alone, and megamorphic keyed stores call
   `KeyedStoreICMegamorphic`, which has the typed array fast path of V8's
   KeyedStoreIC_Megamorphic builtin.
+- OSR code is invalidated when an exit outside its loop is taken a second
+  time (V8 only invalidates it for exits inside the loop): a function whose
+  own compile failed would otherwise re-enter the OSR code and deoptimize at
+  the same exit on every call.
 - Deopt exits are shared by the checks of one frame state; the failed
   check's reason is passed to the Deoptimizer at run time (V8 has one exit
   per check, with the reason in the deopt data).
