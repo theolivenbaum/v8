@@ -27,6 +27,13 @@ public static partial class RuntimeTest
         return result;
     }
 
+    /// <summary>%WaitForBackgroundOptimization / %FinalizeOptimization: the concurrent Maglev jobs finish and install.</summary>
+    public static JSValue WaitForBackgroundOptimization(Isolate isolate, ReadOnlySpan<JSValue> args)
+    {
+        MaglevCompiler.WaitForBackgroundOptimization(isolate);
+        return JSValue.Undefined;
+    }
+
     /// <summary>%OptimizeMaglevOnNextCall / %OptimizeFunctionOnNextCall.</summary>
     public static JSValue OptimizeMaglevOnNextCall(Isolate isolate, ReadOnlySpan<JSValue> args)
     {

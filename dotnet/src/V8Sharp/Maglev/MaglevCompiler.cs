@@ -45,6 +45,8 @@ public static class MaglevCompiler
         public int DeoptCount;
         public bool CompilationFailed;
         public string? FailureReason;
+        /// <summary>TieringState::kInProgress: a concurrent job is compiling the function.</summary>
+        public bool CompileInProgress;
     }
 
     static readonly ConditionalWeakTable<SharedFunctionInfo, SharedState> s_sharedState = new();
@@ -155,6 +157,130 @@ public static class MaglevCompiler
         {
             return Fail(isolate, shared, e.Message);
         }
+    }
+
+    // ---- Concurrent compilation (MaglevConcurrentDispatcher) -----------------------------------------------
+
+    /// <summary>
+    /// MaglevConcurrentDispatcher::EnqueueJob for a tiering request: the graph
+    /// is built on the main thread (it reads the heap and the feedback); the
+    /// IL is generated and RyuJIT compiles it fully optimized on the
+    /// background compile thread (BaselineCompileThread, which also serializes
+    /// it with baseline code generation); the code is installed at the next
+    /// INSTALL_MAGLEV_CODE interrupt. The dependencies are registered when the
+    /// graph is built, so one invalidated before the install marks the code
+    /// and the install drops it (V8 checks them at commit). False when the
+    /// function cannot be optimized.
+    /// </summary>
+    public static bool CompileConcurrently(Isolate isolate, JSFunction function)
+    {
+        SharedFunctionInfo shared = function.Shared;
+        SharedState state = StateOf(shared);
+        if (state.CompileInProgress) return true;
+        if (OptimizationDisabled(shared)) return false;
+        if (function.RawFeedbackCell.Value is not FeedbackVector) return false;
+        if (shared.FunctionData is not BytecodeArray bytecode) return false;
+        if (bytecode.Length > isolate.Flags.max_maglev_optimized_bytecode_size) return Fail(isolate, shared, "Function is too big to be optimized") is not null;
+        if (MaglevGraphBuilder.UnsupportedReason(shared, bytecode) is { } unsupported) return Fail(isolate, shared, unsupported) is not null;
+        if (!shared.IsUserJavaScript()) return Fail(isolate, shared, "not user JavaScript") is not null;
+
+        var info = new MaglevCompilationInfo(isolate, function, -1);
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            var builder = new MaglevGraphBuilder(info, info.Toplevel);
+            builder.Build();
+            FinalizeGraph(info.Graph);
+            if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph);
+            ComputeUseCounts(info.Graph);
+            ElideArgumentsObjects(info.Graph);
+            if (isolate.Flags.print_maglev_graph) MaglevGraphPrinter.Print(info, Console.Out);
+            if (info.Graph.NodeCount > kMaxTieringGraphNodes)
+            {
+                return Fail(isolate, shared, $"graph too big for the IL backend ({info.Graph.NodeCount} nodes)") is not null;
+            }
+        }
+        catch (MaglevBailoutException e)
+        {
+            return Fail(isolate, shared, e.Message) is not null;
+        }
+        var code = new MaglevCode(function, info.Toplevel.Feedback, -1)
+        {
+            NodeCount = info.Graph.NodeCount,
+            Dependencies = info.Dependencies.ToArray(),
+        };
+        foreach (CompilationDependency dependency in code.Dependencies)
+        {
+            Objects.DependentCode.InstallDependency(isolate, code, dependency.Object, dependency.Groups);
+        }
+        double graphMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        state.CompileInProgress = true;
+        Interlocked.Increment(ref isolate.MaglevJobsInFlight);
+        Baseline.BaselineCompileThread.Post(() =>
+        {
+            long jobStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            try
+            {
+                var generator = new MaglevCodeGenerator(info, code, optimizeFully: true);
+                (MaglevCodeEntry entry, int ilSize) = generator.Generate();
+                RuntimeHelpers.PrepareMethod(entry.Method.MethodHandle);
+                code.Entry = entry;
+                code.ILSize = ilSize;
+                code.CompiledConcurrently = true;
+                code.BackgroundMs = System.Diagnostics.Stopwatch.GetElapsedTime(jobStart).TotalMilliseconds;
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                // The function stays in its current tier (V8: a failed job).
+                code.MarkedForDeoptimization = true;
+                if (isolate.Flags.trace_opt) Console.WriteLine($"[concurrent Maglev compile of {DebugName(shared)} failed: {e.Message}]");
+            }
+            isolate.MaglevInstallQueue.Enqueue(code);
+            Interlocked.Decrement(ref isolate.MaglevJobsInFlight);
+            isolate.StackGuard.RequestInterrupt(StackGuard.InterruptFlag.INSTALL_MAGLEV_CODE);
+        });
+        if (isolate.Flags.trace_opt)
+        {
+            Console.WriteLine($"[queued concurrent maglev compile of {DebugName(shared)}, {info.Graph.NodeCount} nodes, graph {graphMs:F3} ms]");
+        }
+        s_codegenMs += graphMs;
+        return true;
+    }
+
+    /// <summary>
+    /// MaglevConcurrentDispatcher::FinalizeFinishedJobs (INSTALL_MAGLEV_CODE):
+    /// installs the finished code, unless a dependency was invalidated
+    /// meanwhile or the function got other code.
+    /// </summary>
+    public static void InstallConcurrentCode(Isolate isolate)
+    {
+        while (isolate.MaglevInstallQueue.TryDequeue(out MaglevCode? code))
+        {
+            SharedFunctionInfo shared = code.SharedFunctionInfo;
+            StateOf(shared).CompileInProgress = false;
+            FeedbackVector vector = code.FeedbackVector;
+            bool install = !code.MarkedForDeoptimization && code.Entry is not null && !OptimizationDisabled(shared) &&
+                           vector.MaglevCode is not { MarkedForDeoptimization: false };
+            if (install)
+            {
+                EnsureScratch(isolate, code.MaxScratchSize);
+                InstallCode(isolate, code);
+                s_compiles++;
+                s_ilBytes += code.ILSize;
+            }
+            if (isolate.Flags.trace_opt)
+            {
+                Console.WriteLine($"[{(install ? "completed" : "discarded")} concurrent maglev compile of {DebugName(shared)}, " +
+                                  $"{code.NodeCount} nodes, {code.ILSize} bytes IL, background {code.BackgroundMs:F3} ms]");
+            }
+        }
+    }
+
+    /// <summary>%WaitForBackgroundOptimization / %FinalizeOptimization: waits for the jobs in flight and installs them.</summary>
+    public static void WaitForBackgroundOptimization(Isolate isolate)
+    {
+        while (Volatile.Read(ref isolate.MaglevJobsInFlight) > 0) Thread.Sleep(1);
+        InstallConcurrentCode(isolate);
     }
 
     static MaglevCode? Fail(Isolate isolate, SharedFunctionInfo shared, string reason)

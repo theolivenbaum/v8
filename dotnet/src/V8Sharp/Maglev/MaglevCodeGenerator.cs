@@ -92,8 +92,15 @@ internal sealed class MaglevCodeGenerator
     readonly List<BasicBlock> _catchBlocks = [];
     readonly List<Node> _throwSites = [];
 
-    public MaglevCodeGenerator(MaglevCompilationInfo info, MaglevCode code)
+    readonly bool _optimizeFully;
+
+    /// <param name="optimizeFully">
+    /// RyuJIT compiles the method fully optimized at once (AggressiveOptimization):
+    /// concurrent compiles, whose JIT cost is off the main thread.
+    /// </param>
+    public MaglevCodeGenerator(MaglevCompilationInfo info, MaglevCode code, bool optimizeFully = false)
     {
+        _optimizeFully = optimizeFully;
         _info = info;
         _graph = info.Graph;
         _code = code;
@@ -205,7 +212,7 @@ internal sealed class MaglevCodeGenerator
                               $"({_frameExits.Count} eager, {_pendingExits.Count - _frameExits.Count} lazy; {_eagerStubs.Count} eager checks, {_spilledValues} values)]");
         }
 
-        if (_il.ILOffset <= s_aggressiveMaxIL) _method.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
+        if (_optimizeFully || _il.ILOffset <= s_aggressiveMaxIL) _method.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
         _code.DeoptPoints = _deoptPoints.ToArray();
         _code.SpeculationFeedback = _speculationFeedback.ToArray();
         _code.MaxScratchSize = _maxScratch;

@@ -21,6 +21,12 @@ namespace V8Sharp
         /// <summary>Set by the Deoptimizer: the Maglev code returned to continue in the interpreter.</summary>
         public bool MaglevDeoptPending;
 
+        /// <summary>Concurrently compiled Maglev code waiting for INSTALL_MAGLEV_CODE (MaglevConcurrentDispatcher's outgoing queue).</summary>
+        public readonly System.Collections.Concurrent.ConcurrentQueue<Maglev.MaglevCode> MaglevInstallQueue = new();
+
+        /// <summary>Maglev compile jobs posted to the background thread and not yet queued for install.</summary>
+        public int MaglevJobsInFlight;
+
         /// <summary>Some function has Maglev code (enables the interpreter's OSR check).</summary>
         public bool MayHaveMaglevCode;
     }

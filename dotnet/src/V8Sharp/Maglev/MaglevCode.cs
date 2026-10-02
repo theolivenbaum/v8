@@ -86,6 +86,10 @@ public sealed class MaglevCode
     public bool MarkedForDeoptimization;
 
     public DeoptPoint[] DeoptPoints { get; internal set; } = [];
+    /// <summary>The code was generated and jitted on the background compile thread.</summary>
+    public bool CompiledConcurrently { get; internal set; }
+    /// <summary>The background job's time (IL generation and RyuJIT), for --trace-opt.</summary>
+    public double BackgroundMs { get; internal set; }
     /// <summary>The call feedback slots eager deopts disallow speculation for (EagerDeoptInfo.FeedbackToUpdate).</summary>
     public (FeedbackVector Vector, int Slot)[] SpeculationFeedback { get; internal set; } = [];
     public int MaxScratchSize { get; internal set; }

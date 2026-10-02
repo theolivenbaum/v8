@@ -314,8 +314,8 @@ public static partial class RuntimeTable
         Register(FunctionId.DeoptimizeFunction, static (i, a) => RuntimeTest.DeoptimizeFunction(i, a));
         Register(FunctionId.DeoptimizeNow, static (i, a) => RuntimeTest.DeoptimizeNow(i));
         Register(FunctionId.CompileBaseline, static (i, a) => RuntimeTest.CompileBaseline(i, a[0]));
-        Register(FunctionId.WaitForBackgroundOptimization, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.FinalizeOptimization, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.WaitForBackgroundOptimization, RuntimeTest.WaitForBackgroundOptimization);
+        Register(FunctionId.FinalizeOptimization, RuntimeTest.WaitForBackgroundOptimization);
         Register(FunctionId.SetAllocationTimeout, RuntimeTest.ReturnUndefined);
         Register(FunctionId.NotifyContextDisposed, RuntimeTest.ReturnUndefined);
         Register(FunctionId.SimulateNewspaceFull, RuntimeTest.ReturnUndefined);

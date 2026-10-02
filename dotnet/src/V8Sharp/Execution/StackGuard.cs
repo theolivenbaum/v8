@@ -91,6 +91,10 @@ public sealed class StackGuard(Isolate isolate)
         {
             _isolate.BaselineBatchCompiler.InstallBatch();
         }
+        if ((flags & (int)InterruptFlag.INSTALL_MAGLEV_CODE) != 0)
+        {
+            Maglev.MaglevCompiler.InstallConcurrentCode(_isolate);
+        }
         if ((flags & (int)InterruptFlag.API_INTERRUPT) != 0)
         {
             InvokeApiInterruptCallbacks();
