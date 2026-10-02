@@ -557,10 +557,14 @@ the object model calls `DeoptimizeDependencyGroups` where V8 does, which
 marks the code (lazy deopt).
 
 **Tiering.** `--maglev` (off by default in V8Sharp) makes
-`Isolate.UseOptimizer` true; `TieringManager.OnInterruptTick` compiles a
-function synchronously once its invocation count reaches
-`--invocation-count-for-maglev` and installs the code on the feedback
-vector, which every closure of the CreateClosure site shares. A frame stuck
+`Isolate.UseOptimizer` true; `TieringManager.OnInterruptTick` requests a
+compile once a function's invocation count reaches
+`--invocation-count-for-maglev`. With `--concurrent-recompilation` (the
+default) the graph is built at once and the IL generation and RyuJIT's
+fully optimized compile run on the background compile thread
+(`MaglevCompiler.CompileConcurrently`); INSTALL_MAGLEV_CODE installs the
+code on the feedback vector, which every closure of the CreateClosure site
+shares, unless a dependency was invalidated meanwhile. A frame stuck
 in a loop OSRs at its next JumpLoop budget interrupt
 (`MaglevExecution.TryGetOsrCode`, `RunOsr`): OSR code starts at the loop
 header with the interpreter's registers as initial values; back edges of

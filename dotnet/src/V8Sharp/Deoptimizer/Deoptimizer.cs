@@ -165,9 +165,14 @@ public static class Deoptimizer
             // is the function's active code; OSR code only when the exit is inside
             // the OSR'd loop. The function is re-optimized later with the
             // feedback the interpreter collects meanwhile.
+            // V8Sharp: OSR code whose exit after the loop is taken again is
+            // invalidated as well (V8 keeps it, but its function soon runs
+            // function-entry code instead; a function whose own compile
+            // failed re-entered the same OSR code and deoptimized at the
+            // same exit on every call, as Octane zlib's inflate did).
             bool invalidate = code.OsrOffset < 0
                 ? ReferenceEquals(code.FeedbackVector.MaglevCode, code)
-                : DeoptExitIsInsideOsrLoop(code, translation[0].BytecodeOffset);
+                : DeoptExitIsInsideOsrLoop(code, translation[0].BytecodeOffset) || point.Count >= 2;
             if (invalidate) MaglevCompiler.InvalidateCode(isolate, code, LazyDeoptimizeReason.kEagerDeopt);
         }
         isolate.MaglevDeoptPending = true;

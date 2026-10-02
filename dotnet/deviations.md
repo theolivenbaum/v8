@@ -314,10 +314,17 @@ for now, to be revisited when the reason goes away.
   and materializes the inlined ones at deopt and for stack walks). A deopt
   writes the translation's values into these frames instead of building new
   ones. Deopt exits copy the values into a per-isolate scratch buffer.
-- Compilation is synchronous on the main thread (V8 compiles concurrently
-  by default and installs the code later): `%OptimizeFunctionOnNextCall` and
-  `%OptimizeMaglevOnNextCall` compile immediately, and the tiering manager
-  compiles at the interrupt tick that decides to optimize.
+- Concurrent compilation (`--concurrent-recompilation`, on as in V8): the
+  tiering manager's requests build the graph on the main thread (V8 builds it
+  on a worker, with the heap broker's snapshot of the heap); the IL
+  generation and a fully optimized RyuJIT compile (`AggressiveOptimization`,
+  `RuntimeHelpers.PrepareMethod`) run on the process-wide background compile
+  thread the baseline tier uses, and the code is installed at the next
+  INSTALL_MAGLEV_CODE interrupt. The dependencies are registered when the
+  graph is built: an invalidation before the install marks the code and the
+  install drops it (V8 validates them at commit). `%OptimizeFunctionOnNextCall`,
+  `%OptimizeMaglevOnNextCall` and OSR compile synchronously (RyuJIT tier 0
+  first).
 - OSR: the check for OSR code runs at the JumpLoop budget interrupt (V8
   checks the OSR urgency on every back edge); OSR code takes the
   interpreter frame's registers as its initial values at the loop header,
