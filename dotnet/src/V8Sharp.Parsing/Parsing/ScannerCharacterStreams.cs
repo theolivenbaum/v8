@@ -6,7 +6,9 @@
 // src/parsing/scanner-character-streams.h/.cc.
 //
 // V8's buffer_start_/buffer_cursor_/buffer_end_ pointers become indices into
-// `buffer_`. Positions are UTF-16 code units, as in V8. Of V8's streams only
+// `buffer_`, a string: V8 scans a source string in place on the heap, and so
+// does this port (the stream reads the .NET string the script source is held
+// in, without copying it). Positions are UTF-16 code units, as in V8. Of V8's streams only
 // the ones that read UTF-16 or Latin-1 data from memory are ported
 // (Unbuffered/BufferedCharacterStream over a TestingStream or a string, and
 // the chunked variants used by the stream tests); the UTF-8 and
@@ -38,7 +40,7 @@ public abstract class Utf16CharacterStream
 {
     public const int kEndOfInput = -1;
 
-    private static readonly char[] s_emptyBuffer = [(char)0];
+    private const string s_emptyBuffer = "\0";
 
     // Fields describing the location of the current buffer physically in memory,
     // and semantically within the source string.
@@ -53,7 +55,7 @@ public abstract class Utf16CharacterStream
     //                                           |   |    |
     //                   Pointers:   buffer_start_   |    buffer_end_
     //                                         buffer_cursor_
-    protected internal char[] buffer_ = s_emptyBuffer;
+    protected internal string buffer_ = s_emptyBuffer;
     protected internal int buffer_start_;
     protected internal int buffer_cursor_;
     protected internal int buffer_end_;
@@ -62,7 +64,7 @@ public abstract class Utf16CharacterStream
 
     protected Utf16CharacterStream() { }
 
-    protected Utf16CharacterStream(char[] buffer, int buffer_start, int buffer_cursor, int buffer_end, int buffer_pos)
+    protected Utf16CharacterStream(string buffer, int buffer_start, int buffer_cursor, int buffer_end, int buffer_pos)
     {
         buffer_ = buffer;
         buffer_start_ = buffer_start;
@@ -71,7 +73,7 @@ public abstract class Utf16CharacterStream
         buffer_pos_ = buffer_pos;
     }
 
-    protected static char[] EmptyBuffer => s_emptyBuffer;
+    protected static string EmptyBuffer => s_emptyBuffer;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void set_parser_error()
@@ -121,7 +123,7 @@ public abstract class Utf16CharacterStream
     {
         while (true)
         {
-            char[] buffer = buffer_;
+            string buffer = buffer_;
             int end = buffer_end_;
             int i = buffer_cursor_;
             // A cursor past the end (after set_parser_error) behaves like
@@ -158,7 +160,7 @@ public abstract class Utf16CharacterStream
     {
         while (true)
         {
-            char[] buffer = buffer_;
+            string buffer = buffer_;
             int end = buffer_end_;
             int rangeStart = buffer_cursor_;
             if (rangeStart > end) rangeStart = end;
@@ -170,7 +172,7 @@ public abstract class Utf16CharacterStream
 
             if (i != rangeStart)
             {
-                check.OnRange(new ReadOnlySpan<char>(buffer, rangeStart, i - rangeStart));
+                check.OnRange(buffer.AsSpan(rangeStart, i - rangeStart));
             }
 
             if (i == end)
@@ -261,18 +263,22 @@ public abstract class Utf16CharacterStream
 public interface ICharacterSource
 {
     // Returns (array, start, length) of the data at pos; length 0 at the end.
-    (char[] Data, int Start, int Length) GetDataAt(int pos);
+    (string Data, int Start, int Length) GetDataAt(int pos);
     bool CanBeCloned { get; }
     bool CanAccessHeap { get; }
     ICharacterSource CloneSource();
 }
 
-// A Char stream backed by an array, optionally a window [start_offset,
+// A Char stream backed by a string, optionally a window [start_offset,
 // start_offset + end) of it. Covers V8's TestingStream, OnHeapStream and
 // ExternalStringStream.
-public sealed class ArrayCharacterSource(char[] data, int start_offset, int length, bool can_access_heap = false) : ICharacterSource
+public sealed class ArrayCharacterSource(string data, int start_offset, int length, bool can_access_heap = false) : ICharacterSource
 {
-    public (char[] Data, int Start, int Length) GetDataAt(int pos)
+    // A testing stream over UTF-16 data: the data is copied into a string once.
+    public ArrayCharacterSource(char[] data, int start_offset, int length, bool can_access_heap = false)
+        : this(new string(data, start_offset, length), 0, length, can_access_heap) { }
+
+    public (string Data, int Start, int Length) GetDataAt(int pos)
     {
         int p = Math.Min(length, pos);
         return (data, start_offset + p, length - p);
@@ -326,14 +332,16 @@ public sealed class UnbufferedCharacterStream : Utf16CharacterStream
 // source (V8 uses this for one-byte data, widening into a 512-unit buffer).
 public sealed class BufferedCharacterStream : Utf16CharacterStream
 {
+    // V8 widens one-byte data into a buffer of kBufferSize code units. The
+    // data here is already UTF-16, so the "buffer" is a window of at most
+    // kBufferSize code units of the source string, which keeps the block
+    // boundaries (and so the ReadBlock calls) of V8's stream.
     private const int kBufferSize = 512;
-    private readonly char[] _buffer = new char[kBufferSize];
     private readonly ICharacterSource _source;
 
     public BufferedCharacterStream(int pos, ICharacterSource source)
     {
         _source = source;
-        buffer_ = _buffer;
         buffer_pos_ = pos;
     }
 
@@ -345,20 +353,21 @@ public sealed class BufferedCharacterStream : Utf16CharacterStream
     protected override bool ReadBlock(int position)
     {
         buffer_pos_ = position;
-        buffer_ = _buffer;
-        buffer_start_ = 0;
-        buffer_cursor_ = 0;
 
         var (data, start, length) = _source.GetDataAt(position);
         if (length == 0)
         {
+            buffer_ = EmptyBuffer;
+            buffer_start_ = 0;
+            buffer_cursor_ = 0;
             buffer_end_ = 0;
             return false;
         }
 
-        int n = Math.Min(kBufferSize, length);
-        Array.Copy(data, start, _buffer, 0, n);
-        buffer_end_ = n;
+        buffer_ = data;
+        buffer_start_ = start;
+        buffer_cursor_ = start;
+        buffer_end_ = start + Math.Min(kBufferSize, length);
         return true;
     }
 }
@@ -368,7 +377,7 @@ public sealed class BufferedCharacterStream : Utf16CharacterStream
 public sealed class ChunkedCharacterSource : ICharacterSource
 {
     private readonly Func<char[]?>? _getMoreData;
-    private readonly List<(int Position, char[] Data)> _chunks;
+    private readonly List<(int Position, string Data)> _chunks;
 
     public ChunkedCharacterSource(Func<char[]?> getMoreData)
     {
@@ -384,7 +393,7 @@ public sealed class ChunkedCharacterSource : ICharacterSource
         _chunks = other._chunks;
     }
 
-    public (char[] Data, int Start, int Length) GetDataAt(int pos)
+    public (string Data, int Start, int Length) GetDataAt(int pos)
     {
         var chunk = FindChunk(pos);
         int bufferEnd = chunk.Data.Length;
@@ -393,7 +402,7 @@ public sealed class ChunkedCharacterSource : ICharacterSource
         return (chunk.Data, offset, bufferEnd - offset);
     }
 
-    private (int Position, char[] Data) FindChunk(int position)
+    private (int Position, string Data) FindChunk(int position)
     {
         if (_chunks.Count == 0) FetchChunk(0);
 
@@ -414,8 +423,8 @@ public sealed class ChunkedCharacterSource : ICharacterSource
     private void FetchChunk(int position)
     {
         if (_getMoreData == null) throw new InvalidOperationException("cloned ChunkedStream cannot fetch data");
-        char[] data = _getMoreData() ?? [];
-        _chunks.Add((position, data));
+        char[]? data = _getMoreData();
+        _chunks.Add((position, data == null ? "" : new string(data)));
     }
 
     public bool CanBeCloned => true;
@@ -433,20 +442,8 @@ public static class ScannerStream
     public static Utf16CharacterStream For(string data, int start_pos, int end_pos)
     {
         if (start_pos < 0 || start_pos > end_pos || end_pos > data.Length) throw new ArgumentOutOfRangeException(nameof(start_pos));
-        return new UnbufferedCharacterStream(start_pos, new ArrayCharacterSource(SourceChars(data, end_pos), 0, end_pos, can_access_heap: true));
+        return new UnbufferedCharacterStream(start_pos, new ArrayCharacterSource(data, 0, end_pos, can_access_heap: true));
     }
-
-    // V8 scans the source string on the heap. The streams here read a char[];
-    // a large source (a script, whose functions are each parsed again by lazy
-    // compilation) is copied once and the copy kept while the string lives,
-    // instead of copying the script up to the function for every lazy compile.
-    const int kMinCachedSourceLength = 4096;
-    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<string, char[]> s_sourceChars = new();
-
-    static char[] SourceChars(string data, int end_pos) =>
-        data.Length < kMinCachedSourceLength
-            ? data.ToCharArray(0, end_pos)
-            : s_sourceChars.GetValue(data, static source => source.ToCharArray());
 
     // Stream over a slice of an existing char array (V8: a SlicedString's
     // parent plus offset); positions are relative to `offset`.
@@ -454,14 +451,13 @@ public static class ScannerStream
         => new UnbufferedCharacterStream(start_pos, new ArrayCharacterSource(data, offset, end_pos, can_access_heap: true));
 
     public static Utf16CharacterStream For(ReadOnlyMemory<char> data)
-        => new UnbufferedCharacterStream(0, new ArrayCharacterSource(data.ToArray(), 0, data.Length, can_access_heap: true));
+        => new UnbufferedCharacterStream(0, new ArrayCharacterSource(new string(data.Span), 0, data.Length, can_access_heap: true));
 
     // ScannerStream::ForTesting(const char* data): one-byte data through a
     // BufferedCharacterStream<TestingStream>.
     public static Utf16CharacterStream ForTesting(string data)
     {
-        var chars = data.ToCharArray();
-        return new BufferedCharacterStream(0, new ArrayCharacterSource(chars, 0, chars.Length));
+        return new BufferedCharacterStream(0, new ArrayCharacterSource(data, 0, data.Length));
     }
 
     // ScannerStream::ForTesting(const uint16_t* data, size_t length).
