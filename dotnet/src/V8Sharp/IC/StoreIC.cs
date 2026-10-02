@@ -45,7 +45,11 @@ public sealed class StoreIC : IC
             HeapObject? feedback = slots[slot]._obj;
             Map map = obj.Map;
             HeapObject? found = ReferenceEquals(feedback, map) ? slots[slot + 1]._obj
-                : feedback is FixedArray polymorphic ? LoadIC.FindPolymorphicHandler(polymorphic, map) : null;
+                : feedback is FixedArray polymorphic ? LoadIC.FindPolymorphicHandler(polymorphic, map)
+                // StoreIC_Megamorphic: TryProbeStubCache (SetNamedProperty is
+                // never a DefineNamedOwn slot, so the store stub cache).
+                : ReferenceEquals(feedback, ReadOnlyRoots.megamorphic_symbol) && isolate.ICState is { } icState
+                    ? icState.StoreStubCache.Get(name, map) : null;
             if (found is StoreHandler handler)
             {
                 if (TryStoreOwnField(obj, handler, value)) return null;
