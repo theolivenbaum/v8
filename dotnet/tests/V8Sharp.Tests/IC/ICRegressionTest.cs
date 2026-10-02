@@ -119,6 +119,43 @@ public class ICRegressionTest : TestWithContext
     }
 
     [Fact]
+    public void TypedArrayCachedDataSeesDetachAndOffsets()
+    {
+        // The element fast paths read the data cached in the typed array: it
+        // must honour the view's byte offset, the element kind's conversions,
+        // a detach after the data was cached, and never apply to views of a
+        // resizable buffer.
+        Assert.Equal("9|undefined,0|9|7,7,undefined|255,4294967295,1.100000023841858|9,undefined,2|undefined,undefined", RunString("""
+            function ld(a, i) { return a[i]; }
+            function st(a, i, v) { a[i] = v; }
+            var b = new ArrayBuffer(16), a = new Int32Array(b);
+            for (var k = 0; k < 10; k++) { st(a, 1, k); ld(a, 1); }
+            var r1 = ld(a, 1);
+            var c = b.transfer();
+            st(a, 1, 5);
+            var r2 = String(ld(a, 1)) + ',' + a.length;
+            var r3 = ld(new Int32Array(c), 1);
+            var big = new Int16Array(8), sub = big.subarray(2, 4);
+            for (var k = 0; k < 10; k++) st(sub, 1, 7);
+            var r4 = [big[3], ld(sub, 1), String(ld(sub, 2))].join();
+            var u8 = new Uint8ClampedArray(1), u32 = new Uint32Array(1), f32 = new Float32Array(1);
+            for (var k = 0; k < 10; k++) { st(u8, 0, 300.7); st(u32, 0, -1); st(f32, 0, 1.1); }
+            var r5 = [ld(u8, 0), ld(u32, 0), ld(f32, 0)].join();
+            var rb = new ArrayBuffer(8, { maxByteLength: 16 }), ra = new Uint8Array(rb);
+            for (var k = 0; k < 10; k++) { st(ra, 0, 9); ld(ra, 0); }
+            var r6a = ld(ra, 0);
+            rb.resize(2);
+            var r6 = [r6a, String(ld(ra, 3)), ra.length].join();
+            var d = new ArrayBuffer(8), da = new Float64Array(d);
+            for (var k = 0; k < 10; k++) { st(da, 0, 1.5); ld(da, 0); }
+            d.transfer();
+            st(da, 0, 2);
+            var r7 = String(da[0]) + ',' + String(ld(da, 0));
+            [r1, r2, r3, r4, r5, r6, r7].join('|');
+            """));
+    }
+
+    [Fact]
     public void ThirtyThirdPropertyIsNotADuplicate()
     {
         // Adding the 33rd property sorts the descriptors; the collision check
