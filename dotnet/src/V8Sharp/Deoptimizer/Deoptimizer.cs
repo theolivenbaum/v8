@@ -49,6 +49,11 @@ public static class Deoptimizer
             DeoptFrameData f = translation[i];
             bool top = i == translation.Length - 1;
             int recordIndex = baseIndex + f.InliningDepth;
+            if (i > 0 && isolate.InterpreterFrameDepth <= recordIndex)
+            {
+                // A lazily pushed inlined frame the code had not needed yet.
+                MaglevBuiltins.EnterInlinedFrame(isolate, f.Function, f.Bytecode, f.Argc, f.IsConstruct);
+            }
             ref InterpreterFrameRecord record = ref frames[recordIndex];
             int fp = record.Fp;
             JSValue accumulator = JSValue.Undefined;

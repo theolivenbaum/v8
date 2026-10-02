@@ -42,10 +42,17 @@ namespace V8Sharp.Maglev
             frame.IsMaglev = true;
             JSValue result = code.Entry(isolate, ref state);
             if (!isolate.MaglevDeoptPending) return result;
+            return ContinueAfterDeopt(isolate, ref state);
+        }
+
+        /// <summary>
+        /// InterpreterEnterAtBytecode: after a deoptimization the materialised
+        /// frames continue in the interpreter.
+        /// </summary>
+        internal static JSValue ContinueAfterDeopt(Isolate isolate, ref InterpreterState state)
+        {
             isolate.MaglevDeoptPending = false;
-            isolate.InterpreterFrames[state.FrameIndex - 0].IsMaglev = false;
             ClearMaglevFlags(isolate, ref state);
-            // InterpreterEnterAtBytecode: the frames continue in the interpreter.
             return InterpreterExecution.Run(isolate, ref state);
         }
 

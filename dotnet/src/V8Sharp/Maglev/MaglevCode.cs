@@ -25,6 +25,9 @@ public sealed class DeoptFrameData
 {
     /// <summary>The inlining depth: the frame record is the optimized frame's + this.</summary>
     public int InliningDepth;
+    /// <summary>Inlined frames: the call's argument count and kind (for pushing the frame at a deopt).</summary>
+    public int Argc;
+    public bool IsConstruct;
     public JSFunction Function = null!;
     public BytecodeArray Bytecode = null!;
     public FeedbackVector? FeedbackVector;

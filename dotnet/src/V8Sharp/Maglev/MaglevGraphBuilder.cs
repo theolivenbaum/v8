@@ -876,15 +876,21 @@ public sealed partial class MaglevGraphBuilder
             }
             default:
             {
+                // A Smi (known, or assumed from kSignedSmall feedback): the float64
+                // value of its int32 untagging.
+                if (!value.IsConstant && (allowed == NodeType.kSmi || NodeTypes.Is(GetType(value), NodeType.kSmi)))
+                {
+                    return GetFloat64(GetInt32(value));
+                }
                 if (value.IsConstant)
                 {
                     if (value.TryGetFloat64Constant(out double d)) return GetFloat64Constant(d);
                     JSValue c = value.ConstantValue();
-                    if (c.IsOddball && !c.IsTheHole && NodeTypes.CanBe(allowed, NodeType.kOddball))
+                    if (c.IsOddball && !c.IsTheHole && NodeTypes.Is(NodeTypes.ForConstant(c), allowed))
                     {
                         return GetFloat64Constant(OddballToNumber(c));
                     }
-                    if (c.IsUndefined && NodeTypes.CanBe(allowed, NodeType.kUndefined)) return GetFloat64Constant(double.NaN);
+                    if (c.IsUndefined && NodeTypes.Is(NodeType.kUndefined, allowed)) return GetFloat64Constant(double.NaN);
                     EmitUnconditionalDeoptAndAbort(DeoptimizeReason.kNotANumber);
                 }
                 if (value.Opcode is Opcode.Int32ToNumber) return GetFloat64(value.Inputs[0], allowed);
@@ -940,7 +946,7 @@ public sealed partial class MaglevGraphBuilder
                 {
                     if (value.TryGetFloat64Constant(out double d)) return GetInt32Constant(Base.Numbers.Conversions.DoubleToInt32(d));
                     JSValue c = value.ConstantValue();
-                    if ((c.IsOddball || c.IsUndefined) && !c.IsTheHole && NodeTypes.CanBe(allowed, NodeType.kOddball))
+                    if ((c.IsOddball || c.IsUndefined) && !c.IsTheHole && NodeTypes.Is(NodeTypes.ForConstant(c), allowed))
                     {
                         return GetInt32Constant(Base.Numbers.Conversions.DoubleToInt32(OddballToNumber(c)));
                     }
@@ -950,6 +956,9 @@ public sealed partial class MaglevGraphBuilder
                 NodeInfo info = _frame.Known.GetOrCreateInfoFor(value);
                 if (info.Int32Alternative is { } i32) return i32;
                 if (info.TruncatedInt32Alternative is { } alt) return alt;
+                // Smi untagging is cached as an int32 alternative (and deopts on
+                // anything else when kSignedSmall feedback assumed a Smi).
+                if (allowed == NodeType.kSmi || NodeTypes.Is(GetType(value), NodeType.kSmi)) return GetInt32(value);
                 if (info.Float64Alternative is { } f64)
                 {
                     return info.TruncatedInt32Alternative = AddConversion(Opcode.TruncateFloat64ToInt32, ValueRepresentation.kInt32,

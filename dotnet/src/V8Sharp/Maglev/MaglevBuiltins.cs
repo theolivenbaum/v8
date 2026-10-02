@@ -377,7 +377,12 @@ public static class MaglevBuiltins
     /// feedback is collected.
     /// </summary>
     public static JSValue CallKnownJSFunction(Isolate isolate, JSValue target, JSValue receiver, int argsStart, int argc, int mode) =>
-        Baseline.BaselineCalls.Call(isolate, target, receiver, argsStart, argc, (ConvertReceiverMode)mode);
+        MaglevCalls.Call(isolate, target, receiver, argsStart, argc, (ConvertReceiverMode)mode);
+
+    /// <summary>Construct of a known base constructor with the receiver FastNewObject allocated.</summary>
+    public static JSValue ConstructKnownJSFunction(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, int argsStart,
+        int argc) =>
+        MaglevCalls.ConstructWithReceiver(isolate, target, receiver, newTarget, argsStart, argc);
 
     /// <summary>CheckConstructResult: an object result replaces the constructed receiver.</summary>
     [MethodImpl(Inline)]

@@ -6,6 +6,7 @@
 // object model.
 using System.Globalization;
 using V8Sharp.Base.Numbers;
+using V8Sharp.Interpreter;
 
 namespace V8Sharp.Runtime;
 
@@ -122,9 +123,23 @@ public static partial class RuntimeTest
     /// <summary>%ClearFunctionFeedback.</summary>
     public static JSValue ClearFunctionFeedback(Isolate isolate, JSValue functionObject)
     {
-        if (functionObject.HeapObjectOrNull is JSFunction function && JSFunctionFeedback.GetFeedbackVector(function) is { } vector)
+        if (functionObject.HeapObjectOrNull is not JSFunction function) return JSValue.Undefined;
+        if (JSFunctionFeedback.GetFeedbackVector(function) is { } vector)
         {
             vector.ClearSlots(isolate, ClearBehavior.kClearAll);
+        }
+        // JSFunction::ClearAllTypeFeedbackInfoForTesting: also zero the
+        // embedded-feedback bytes inside the BytecodeArray.
+        if (function.Shared.FunctionData is BytecodeArray bytecode)
+        {
+            for (var it = new BytecodeArrayIterator(bytecode); !it.Done(); it.Advance())
+            {
+                if (!Bytecodes.IsEmbeddedFeedbackBytecode(it.CurrentBytecode())) continue;
+                int operandIndex = Bytecodes.IsUnaryOpWithEmbeddedFeedback(it.CurrentBytecode())
+                    ? InterpreterConstants.kUnaryEmbeddedFeedbackOperandIndex
+                    : InterpreterConstants.kEmbeddedFeedbackOperandIndex;
+                bytecode.Bytecodes[it.GetEmbeddedFeedbackOffset(operandIndex)] = InterpreterConstants.kUninitializedEmbeddedFeedback;
+            }
         }
         return JSValue.Undefined;
     }

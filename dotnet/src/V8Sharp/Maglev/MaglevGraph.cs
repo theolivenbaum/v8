@@ -197,6 +197,15 @@ public sealed class MaglevCompilationUnit
     public BytecodeAnalysis BytecodeAnalysis =>
         _analysis ??= new BytecodeAnalysis(Bytecode, ConstantPool, IsInline ? -1 : Info.OsrOffset);
 
+    // Inlined units: the EnterInlinedFrame node, the call's argument count and
+    // kind, and whether the frame is pushed on entry (EagerFrame) or only when
+    // the inlined code first needs it (a call out, a throw, a frame access;
+    // the Deoptimizer pushes it for a deopt).
+    internal Node? EntryNode;
+    internal int Argc;
+    internal bool IsConstruct;
+    internal bool EagerFrame;
+
     // Code generation state of the unit's frame (inlined frames).
     internal LocalBuilder? FpLocal;
     internal LocalBuilder? FpRefLocal;

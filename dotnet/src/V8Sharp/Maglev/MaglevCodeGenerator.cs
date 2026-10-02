@@ -103,6 +103,7 @@ internal sealed class MaglevCodeGenerator
     static readonly FieldInfo s_theHole = typeof(JSValue).GetField(nameof(JSValue.TheHole))!;
     static readonly FieldInfo s_oddballTheHole = typeof(Oddball).GetField(nameof(Oddball.TheHole))!;
     static readonly FieldInfo s_registerStack = typeof(Isolate).GetField(nameof(Isolate.RegisterStack))!;
+    static readonly FieldInfo s_interpreterFrameDepth = typeof(Isolate).GetField(nameof(Isolate.InterpreterFrameDepth))!;
     static readonly MethodInfo s_interpreterFrames = typeof(Isolate).GetProperty(nameof(Isolate.InterpreterFrames))!.GetMethod!;
     static readonly FieldInfo s_stFp = typeof(InterpreterState).GetField(nameof(InterpreterState.Fp))!;
     static readonly FieldInfo s_stFrameIndex = typeof(InterpreterState).GetField(nameof(InterpreterState.FrameIndex))!;
@@ -417,10 +418,22 @@ internal sealed class MaglevCodeGenerator
         foreach (Node node in block.Nodes)
         {
             if (IsDeadNode(node)) continue;
+            if (node.Unit is { IsInline: true } unit && NeedsFrame(node)) EmitEnsureInlinedFrames(unit);
             EmitNode(node);
         }
         EmitControl(block, block.Control!);
     }
+
+    /// <summary>
+    /// Whether a node of inlined code needs its interpreter frame: it calls
+    /// out (the callee, a throw or a stack walk can observe the frame) or
+    /// reads or writes the frame's slots.
+    /// </summary>
+    static bool NeedsFrame(Node node) =>
+        node.Opcode is Opcode.CallBuiltin or Opcode.LoadRegister or Opcode.StoreRegister or Opcode.SetCurrentContext or
+            Opcode.HandleNoHeapWritesInterrupt ||
+        node.Opcode != Opcode.EnterInlinedFrame &&
+        (node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0;
 
     static bool IsDeadNode(Node node) =>
         node is ValueNode { UseCount: 0 } &&
@@ -662,6 +675,8 @@ internal sealed class MaglevCodeGenerator
                 data[i] = new DeoptFrameData
                 {
                     InliningDepth = unit.InliningDepth,
+                    Argc = unit.Argc,
+                    IsConstruct = unit.IsConstruct,
                     Function = unit.Function ?? _info.Function,
                     Bytecode = unit.Bytecode,
                     FeedbackVector = unit.Feedback,
@@ -981,7 +996,9 @@ internal sealed class MaglevCodeGenerator
             {
                 bool allowOddball = NodeTypes.CanBe((NodeType)node.Int0, NodeType.kOddball);
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
-                Call(allowOddball ? nameof(MaglevBuiltins.IsNumberOrOddball) : nameof(MaglevBuiltins.IsNumber));
+                Call(!allowOddball ? nameof(MaglevBuiltins.IsNumber)
+                    : (NodeType)node.Int0 == NodeType.kNumberOrBoolean ? nameof(MaglevBuiltins.IsNumberOrBoolean)
+                    : nameof(MaglevBuiltins.IsNumberOrOddball));
                 DeoptIfFalse(node);
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Call(nameof(MaglevBuiltins.NumberOrOddballToFloat64));
@@ -1259,12 +1276,24 @@ internal sealed class MaglevCodeGenerator
             case Opcode.LeaveInlinedFrame:
             {
                 var unit = (MaglevCompilationUnit)node.Obj0!;
+                Label notPushed = _il.DefineLabel();
+                if (!unit.EagerFrame)
+                {
+                    // A lazy frame: pop it only if the inlined code pushed it.
+                    _il.Emit(OpCodes.Ldarg_1);
+                    _il.Emit(OpCodes.Ldfld, s_interpreterFrameDepth);
+                    _il.Emit(OpCodes.Ldloc, _baseFrameIndex);
+                    _il.Emit(OpCodes.Ldc_I4, unit.InliningDepth);
+                    _il.Emit(OpCodes.Add);
+                    _il.Emit(OpCodes.Ble, notPushed);
+                }
                 _il.Emit(OpCodes.Ldarg_1);
                 _il.Emit(OpCodes.Ldloc, _baseFrameIndex);
                 _il.Emit(OpCodes.Ldc_I4, unit.InliningDepth);
                 _il.Emit(OpCodes.Add);
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Call(nameof(MaglevBuiltins.LeaveInlinedFrame));
+                _il.MarkLabel(notPushed);
                 return;
             }
             case Opcode.CallBuiltin:
@@ -1384,10 +1413,44 @@ internal sealed class MaglevCodeGenerator
     void EmitEnterInlinedFrame(Node node)
     {
         var unit = (MaglevCompilationUnit)node.Obj0!;
-        int argc = node.Int0;
         unit.FpLocal ??= _il.DeclareLocal(typeof(int));
         unit.FpRefLocal ??= _il.DeclareLocal(typeof(JSValue).MakeByRefType());
         unit.FrameRecordLocal ??= _il.DeclareLocal(typeof(InterpreterFrameRecord).MakeByRefType());
+        // Lazy frames are pushed by EmitEnsureInlinedFrames before the first
+        // node that needs them.
+        if (unit.EagerFrame) EmitPushInlinedFrame(unit);
+    }
+
+    /// <summary>
+    /// Pushes the frames of the inlined functions <paramref name="unit"/> is
+    /// nested in (and its own) that are not pushed yet: a frame at inlining
+    /// depth d exists when the frame depth exceeds the optimized frame's index + d.
+    /// </summary>
+    void EmitEnsureInlinedFrames(MaglevCompilationUnit unit)
+    {
+        Span<MaglevCompilationUnit?> chain = new MaglevCompilationUnit?[unit.InliningDepth + 1];
+        for (MaglevCompilationUnit? u = unit; u is { IsInline: true }; u = u.Caller) chain[u.InliningDepth] = u;
+        for (int d = 1; d <= unit.InliningDepth; d++)
+        {
+            MaglevCompilationUnit u = chain[d]!;
+            if (u.EagerFrame) continue;
+            Label pushed = _il.DefineLabel();
+            _il.Emit(OpCodes.Ldarg_1);
+            _il.Emit(OpCodes.Ldfld, s_interpreterFrameDepth);
+            _il.Emit(OpCodes.Ldloc, _baseFrameIndex);
+            _il.Emit(OpCodes.Ldc_I4, d);
+            _il.Emit(OpCodes.Add);
+            _il.Emit(OpCodes.Bgt, pushed);
+            EmitPushInlinedFrame(u);
+            _il.MarkLabel(pushed);
+        }
+    }
+
+    /// <summary>EnterInlinedFrame: pushes the frame of the inlined <paramref name="unit"/> and stores its receiver and arguments.</summary>
+    void EmitPushInlinedFrame(MaglevCompilationUnit unit)
+    {
+        Node node = unit.EntryNode!;
+        int argc = node.Int0;
         StoreBytecodeOffset(node);
         // fp = EnterInlinedFrame(isolate, function, bytecode, argc, isConstruct)
         _il.Emit(OpCodes.Ldarg_1);
@@ -1396,13 +1459,13 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldc_I4, argc);
         _il.Emit(node.Int1 != 0 ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0);
         Call(nameof(MaglevBuiltins.EnterInlinedFrame));
-        _il.Emit(OpCodes.Stloc, unit.FpLocal);
+        _il.Emit(OpCodes.Stloc, unit.FpLocal!);
         // fpRef = ref isolate.RegisterStack[fp]
         _il.Emit(OpCodes.Ldarg_1);
         _il.Emit(OpCodes.Ldfld, s_registerStack);
-        _il.Emit(OpCodes.Ldloc, unit.FpLocal);
+        _il.Emit(OpCodes.Ldloc, unit.FpLocal!);
         _il.Emit(OpCodes.Ldelema, typeof(JSValue));
-        _il.Emit(OpCodes.Stloc, unit.FpRefLocal);
+        _il.Emit(OpCodes.Stloc, unit.FpRefLocal!);
         // frame = ref isolate.InterpreterFrames[base + depth]
         _il.Emit(OpCodes.Ldarg_1);
         _il.Emit(OpCodes.Call, s_interpreterFrames);
@@ -1410,7 +1473,7 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldc_I4, unit.InliningDepth);
         _il.Emit(OpCodes.Add);
         _il.Emit(OpCodes.Ldelema, typeof(InterpreterFrameRecord));
-        _il.Emit(OpCodes.Stloc, unit.FrameRecordLocal);
+        _il.Emit(OpCodes.Stloc, unit.FrameRecordLocal!);
         // The receiver and the arguments (the new.target register of a construct).
         LoadFrameSlotAddress(unit, InterpreterRuntime.kReceiverOffset);
         Load(node.Inputs[0], ValueRepresentation.kTagged);

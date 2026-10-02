@@ -960,8 +960,8 @@ public sealed partial class MaglevGraphBuilder
 
     static NodeType BinopHintToAssumedInputType(BinaryOperationHint hint) => hint switch
     {
-        BinaryOperationHint.kSignedSmall or BinaryOperationHint.kSignedSmallInputs or BinaryOperationHint.kAdditiveSafeInteger or
-            BinaryOperationHint.kNumber => NodeType.kNumber,
+        BinaryOperationHint.kSignedSmall => NodeType.kSmi,
+        BinaryOperationHint.kSignedSmallInputs or BinaryOperationHint.kAdditiveSafeInteger or BinaryOperationHint.kNumber => NodeType.kNumber,
         _ => NodeType.kNumberOrOddball,
     };
 
@@ -1222,6 +1222,7 @@ public sealed partial class MaglevGraphBuilder
         ValueNode right = GetAccumulator();
         CompareOperationHint hint = CompareHint(1);
         bool isEquality = op is CompareOperation.kEqual or CompareOperation.kStrictEqual;
+        if (_info.IsTracing) Console.WriteLine($"[maglev] compare {op} hint {hint} left {left} right {right} types {GetType(left)} {GetType(right)}");
 
         // TryReduceCompareEqualAgainstConstant: a strict comparison with an oddball/undefined constant is a reference compare.
         if (op == CompareOperation.kStrictEqual && (IsReferenceCompareConstant(left) || IsReferenceCompareConstant(right)))

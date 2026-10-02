@@ -228,7 +228,7 @@ for now, to be revisited when the reason goes away.
   compiled on the main thread. IL generation is cheap, and RyuJIT compiles
   each method lazily on its first call (tier 0) and optimizes hot ones on a
   background thread (tier 1).
-- No optimizing tier yet: `Isolate.UseOptimizer` is false, so
+- Without `--maglev` (V8Sharp's default) `Isolate.UseOptimizer` is false, so
   `TieringManager` behaves as in a V8 built without Turbofan and Maglev
   (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the
   baseline bits). The interrupt budget after tier-up is
@@ -243,6 +243,49 @@ for now, to be revisited when the reason goes away.
   (the update would be a no-op).
 - `%CompileBaseline` on a non-user function, or when Sparkplug is disabled,
   throws an InvalidOperationException (V8: CHECK failure).
+
+## Optimizing compiler (Maglev) and deoptimizer
+
+- Temporary: `--maglev` is off by default (V8's x64 default is on) until the
+  tier is conformance-clean under forced optimization and a net win
+  (`todo.md`). `Isolate.UseOptimizer` is `--maglev && !--jitless`.
+- Code generation: IL in the baseline code space instead of machine code
+  (architecture.md section 9.2); values live in IL locals rather than
+  registers and stack slots, so there is no register allocator (RyuJIT
+  allocates) and no safepoint table. The code is never freed (the assembly
+  is not collectible); invalidated code is only unreferenced.
+- Frames: the optimized frame is the interpreter frame the call built, and
+  inlined functions push real interpreter frames (V8 has one optimized frame
+  and materializes the inlined ones at deopt and for stack walks). A deopt
+  writes the translation's values into these frames instead of building new
+  ones. Deopt exits copy the values into a per-isolate scratch buffer.
+- Compilation is synchronous on the main thread (V8 compiles concurrently
+  by default and installs the code later): `%OptimizeFunctionOnNextCall` and
+  `%OptimizeMaglevOnNextCall` compile immediately, and the tiering manager
+  compiles at the interrupt tick that decides to optimize.
+- OSR: the check for OSR code runs at the JumpLoop budget interrupt (V8
+  checks the OSR urgency on every back edge); OSR code takes the
+  interpreter frame's registers as its initial values at the loop header,
+  and runs in the same frame. No OSR from a Wide/ExtraWide JumpLoop.
+- Bytecode liveness is computed by an iterative fixed point over all
+  bytecodes (V8 does one backward pass plus a loop fix-up pass); the result
+  is the same.
+- Prototype chain checks of property accesses use the IC handler's validity
+  cell (CheckValidityCell) and the stable-map dependency, not V8's
+  per-holder map checks from the broker's PropertyAccessInfo.
+- Generic nodes call the baseline tier's builtins (`BaselineBuiltins`), which
+  collect feedback like the interpreter does; V8's generic Maglev nodes call
+  builtins that mostly do not. Calls with consecutive argument registers call
+  `MaglevCalls.Call` and do not collect feedback, as V8's.
+- Protectors are bools (Protectors.cs), not PropertyCells: code depending on
+  one registers on a stand-in Cell per protector, invalidated through
+  `Protectors.OnInvalidate`.
+- `MaglevCompiler.kMaxDeoptCount` (8) eager deopts disable optimization of a
+  function (V8 counts deopts with `--max-deopt-count` per feedback vector
+  only for Turbofan and lets Maglev re-optimize).
+- No escape analysis, loop peeling, LICM, or typed array/DataView/string
+  builder reductions yet; try/catch, generators and async functions are not
+  optimized (the compile bails out).
 
 ## Interpreter execution, ICs, runtime, compiler and modules
 

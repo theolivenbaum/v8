@@ -128,6 +128,12 @@ public sealed partial class MaglevGraphBuilder
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForCall);
             return;
         }
+        if (argsFirst.IsValid || args.Length == 0)
+        {
+            // V8's generic Call node: the Call builtin, without feedback collection.
+            SetAccumulator(BuildCall(callee, receiver, args, argsFirst, mode));
+            return;
+        }
         SetAccumulator(BuildGenericCall(bytecode, callee, receiver, args, slot));
     }
 
@@ -202,11 +208,15 @@ public sealed partial class MaglevGraphBuilder
     /// CheckValue); no call feedback is collected.
     /// </summary>
     ValueNode BuildCallKnownJSFunction(JSFunction target, ValueNode receiver, ValueNode[] args, Register argsFirst,
-        ConvertReceiverMode mode)
+        ConvertReceiverMode mode) =>
+        BuildCall(GetConstant(target), receiver, args, argsFirst, mode);
+
+    /// <summary>A call of <paramref name="callee"/> with the arguments in consecutive registers (MaglevCalls.Call).</summary>
+    ValueNode BuildCall(ValueNode callee, ValueNode receiver, ValueNode[] args, Register argsFirst, ConvertReceiverMode mode)
     {
         var stores = new (Register, ValueNode)[args.Length];
         for (int i = 0; i < args.Length; i++) stores[i] = (new Register(argsFirst.Index + i), args[i]);
-        return CallMaglev2("CallKnownJSFunction", [GetConstant(target), receiver],
+        return CallMaglev2("CallKnownJSFunction", [callee, receiver],
             [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1), args.Length == 0 ? BuiltinArg.I(0) : BuiltinArg.RegIndex(argsFirst),
              BuiltinArg.I(args.Length), BuiltinArg.I((int)mode)], stores);
     }
@@ -442,7 +452,7 @@ public sealed partial class MaglevGraphBuilder
         enterInputs.Add(context);
         enterInputs.Add(GetConstant(target));
         if (newTarget is not null) enterInputs.Add(GetTaggedValue(newTarget));
-        AddNewNode(new Node(Opcode.EnterInlinedFrame)
+        unit.EntryNode = AddNewNode(new Node(Opcode.EnterInlinedFrame)
         {
             Inputs = enterInputs.ToArray(),
             Obj0 = unit,
@@ -451,6 +461,11 @@ public sealed partial class MaglevGraphBuilder
             Int2 = newTarget is not null ? 1 : 0,
             Properties = OpProperties.kCanThrow | OpProperties.kCanWrite | OpProperties.kNotIdempotent,
         });
+        unit.Argc = args.Length;
+        unit.IsConstruct = isConstruct;
+        // Arguments beyond the formal parameters are in no deopt frame (they are
+        // only in the frame), so such a frame is pushed on entry.
+        unit.EagerFrame = args.Length > unit.Bytecode.ParameterCount - 1;
 
         BasicBlock callBlock = _currentBlock!;
         var inner = new MaglevGraphBuilder(_info, unit, this, parentFrame, taggedReceiver, taggedArgs, GetConstant(target), context,
@@ -560,7 +575,15 @@ public sealed partial class MaglevGraphBuilder
                 SetAccumulator(result);
                 return;
             }
-            // Not inlined: construct through the generic path (the receiver above is dead).
+            // Not inlined: the construct stub and the call with the allocated receiver.
+            var stores = new (Register, ValueNode)[args.Length];
+            for (int i = 0; i < args.Length; i++) stores[i] = (new Register(first.Index + i), args[i]);
+            ValueNode constructed = CallMaglev2("ConstructKnownJSFunction", [GetConstant(target), receiver, newTarget],
+                [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2),
+                 args.Length == 0 ? BuiltinArg.I(0) : BuiltinArg.RegIndex(first), BuiltinArg.I(args.Length)], stores);
+            constructed.Type = NodeType.kJSReceiver;
+            SetAccumulator(constructed);
+            return;
         }
         else if (speculate && nexus.IcState() == InlineCacheState.UNINITIALIZED && nexus.GetCallCount() == 0)
         {
