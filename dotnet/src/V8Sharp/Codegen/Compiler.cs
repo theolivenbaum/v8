@@ -321,7 +321,7 @@ namespace V8Sharp.Codegen
 
             // UpdateSharedFunctionFlagsAfterCompilation.
             shared.HasDuplicateParameters = literal.has_duplicate_parameters();
-            shared.ExpectedNofProperties = (byte)Math.Min(literal.expected_property_count(), byte.MaxValue);
+            shared.UpdateAndFinalizeExpectedNofPropertiesFromEstimate(literal);
             shared.SetScopeInfo((ScopeInfo)literal.scope().scope_info()!);
             shared.UpdateFunctionMapIndex();
 
