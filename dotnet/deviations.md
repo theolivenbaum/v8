@@ -420,6 +420,14 @@ for now, to be revisited when the reason goes away.
   the return offset of a call). The loop is AggressiveOptimization (it
   would otherwise run as OSR code). Wide/ExtraWide run one bytecode in the scaled loop, except
   LdaSmi, which the single-scale loop decodes itself.
+- JavaScript getters and setters found through the load/store feedback
+  (own accessor pairs, prototype-chain accessors, and accessors of
+  dictionary-mode holders through LoadNormal) are entered by the
+  GetNamedProperty/SetNamedProperty handlers like a CallProperty0/1, in the
+  same dispatch loop (V8 calls them with the CallFunction builtin). The IC
+  returns the accessor to the handler instead of calling it
+  (`LoadIC.LoadNamedOrGetter`, `StoreIC.StoreNamedOrSetter`); other callers
+  of the ICs (baseline, Maglev, runtime) still call through Execution.Call.
 - JumpLoop's OSR-to-baseline check (InterpreterAssembler::OnStackReplacement,
   case 3) runs only once the isolate has installed baseline code
   (`Isolate.MayHaveBaselineCode`); V8 compiles the check into every JumpLoop
@@ -483,6 +491,16 @@ for now, to be revisited when the reason goes away.
   (Builtins/BuiltinFastPaths.cs: Math.floor/ceil/round/trunc/abs/sqrt/max/min/
   pow/atan2 on numbers, charCodeAt/charAt on a String and a Smi index,
   toString() of a number, push/pop/shift), without BuiltinArguments.
+  Also there (2026-10-02 runtime pass): String.fromCharCode of one Number,
+  Math.imul, indexOf/substring/slice/substr on a String with String/Number
+  arguments; and, invoked without the frame record when called from their
+  own realm, RegExp.prototype.exec/test with an unmodified JSRegExp and a
+  String, and String.prototype.match/replace/split with a String or
+  unmodified JSRegExp pattern (TFJ builtins in V8: no frame, never in stack
+  traces; they keep their own prototype checks and slow paths). `new
+  Array()` / `new Array(n)` (small Smi n, Array as new.target, same realm)
+  is ArrayConstructorImpl's CSA dispatch and also runs without the frame
+  record (`BuiltinRegistry.CanConstructWithoutFrame`).
 - Stack limit: V8's limit is on the machine stack; V8Sharp limits the
   register stack to `--stack-size` KB / 8 slots and reserves 16 slots for the
   construct stub, which puts the RangeError at about the recursion depth V8
