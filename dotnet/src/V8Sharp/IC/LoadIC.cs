@@ -707,16 +707,31 @@ public sealed class KeyedLoadIC : IC
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static JSValue Load(Isolate isolate, FeedbackVector? vector, int slot, JSValue obj, JSValue key)
     {
-        // A monomorphic typed array element load (Emscripten's HEAP8/HEAP32 ...):
-        // the element handler's map check, then the cached data.
+        // A typed array element load (Emscripten's HEAP8/HEAP32 ..., pdf.js's
+        // byte streams of several kinds): the element handler's map check,
+        // monomorphic or polymorphic (HandlePolymorphicCase), then the cached data.
         if (vector is not null && key.IsNumber && obj._obj is JSTypedArray typedArray)
         {
             JSValue[] slots = vector.Slots;
-            if (ReferenceEquals(slots[slot]._obj, typedArray.Map) && slots[slot + 1]._obj is LoadHandler { HandlerKind: LoadHandler.Kind.kElement } typedHandler &&
+            HeapObject? feedback = slots[slot]._obj;
+            HeapObject? found = ReferenceEquals(feedback, typedArray.Map) ? slots[slot + 1]._obj
+                : feedback is FixedArray polymorphic ? LoadIC.FindPolymorphicHandler(polymorphic, typedArray.Map) : null;
+            if (found is LoadHandler { HandlerKind: LoadHandler.Kind.kElement } typedHandler &&
                 (ElementAccess.TryLoadTypedElementFast(isolate, typedArray, key._num, out JSValue typedResult) ||
                  ElementAccess.TryLoadFastElement(isolate, typedArray, key._num, typedHandler, out typedResult)))
             {
                 return typedResult;
+            }
+        }
+        else if (vector is not null && key.IsNumber && obj._obj is JSString str)
+        {
+            // LoadIndexedString: an in-bounds index of a String receiver whose
+            // feedback is the String map (StringCharCodeAt; a ConsString is
+            // flattened once, then indexed in its flat copy).
+            if (ReferenceEquals(vector.Slots[slot]._obj, isolate.Context?.NativeContext.ICPrimitiveMaps?.StringMap) &&
+                JSValue.TryGetIndex(key._num, out int index) && index < str.Length)
+            {
+                return isolate.Factory.LookupSingleCharacterStringFromCode(str.Get(index));
             }
         }
         else if (vector is not null && key.IsNumber && obj._obj is JSObject jsObject)
