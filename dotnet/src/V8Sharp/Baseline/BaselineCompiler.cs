@@ -1476,7 +1476,7 @@ public sealed partial class BaselineCompiler
                     RegNum(RegisterOperand(0));
                     Emit(OpCodes.Ldc_R8, 1.0);
                     Emit(OpCodes.Add);
-                    Emit(OpCodes.Stfld, s_num);
+                    StfldNum();
                 }
                 else
                 {

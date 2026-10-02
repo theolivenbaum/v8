@@ -687,6 +687,6 @@ public static class BaselineCalls
     static void StoreSlot(ref JSValue slot, JSValue value)
     {
         if (!ReferenceEquals(slot._obj, value._obj)) Unsafe.AsRef(in slot._obj) = value._obj;
-        Unsafe.AsRef(in slot._num) = value._num;
+        Unsafe.AsRef(in slot._bits) = value._bits;
     }
 }

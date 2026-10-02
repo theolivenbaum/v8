@@ -37,7 +37,24 @@ public sealed partial class BaselineCompiler
     const BindingFlags kAnyInstance = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
 
     static readonly FieldInfo s_obj = typeof(JSValue).GetField(nameof(JSValue._obj), kAnyInstance)!;
-    static readonly FieldInfo s_num = typeof(JSValue).GetField(nameof(JSValue._num), kAnyInstance)!;
+    // The number payload is the long field _bits (JSValue._num reads it as a
+    // double): loads and stores go through BitConverter, a register move.
+    static readonly FieldInfo s_bits = typeof(JSValue).GetField(nameof(JSValue._bits), kAnyInstance)!;
+    static readonly MethodInfo s_bitsToDouble = typeof(BitConverter).GetMethod(nameof(BitConverter.Int64BitsToDouble), [typeof(long)])!;
+
+    /// <summary>Ldfld of the number payload (a double on the stack).</summary>
+    void LdfldNum()
+    {
+        Emit(OpCodes.Ldfld, s_bits);
+        _il.Emit(OpCodes.Call, s_bitsToDouble);
+    }
+
+    /// <summary>Stfld of the number payload from a double on the stack.</summary>
+    void StfldNum()
+    {
+        _il.Emit(OpCodes.Call, s_doubleToBits);
+        Emit(OpCodes.Stfld, s_bits);
+    }
     static readonly FieldInfo s_numberTag = typeof(NumberTag).GetField(nameof(NumberTag.Instance))!;
     static readonly FieldInfo s_true = typeof(Oddball).GetField(nameof(Oddball.True))!;
     static readonly FieldInfo s_false = typeof(Oddball).GetField(nameof(Oddball.False))!;
@@ -114,7 +131,7 @@ public sealed partial class BaselineCompiler
     void AccNum()
     {
         Emit(OpCodes.Ldloca, _masm.Acc);
-        Emit(OpCodes.Ldfld, s_num);
+        LdfldNum();
     }
 
     void LocalObj(LocalBuilder value)
@@ -126,7 +143,7 @@ public sealed partial class BaselineCompiler
     void LocalNum(LocalBuilder value)
     {
         Emit(OpCodes.Ldloca, value);
-        Emit(OpCodes.Ldfld, s_num);
+        LdfldNum();
     }
 
     void RegObj(Register r)
@@ -148,7 +165,7 @@ public sealed partial class BaselineCompiler
             return;
         }
         RegRef(r);
-        Emit(OpCodes.Ldfld, s_num);
+        LdfldNum();
     }
 
     /// <summary>acc = the number in <paramref name="value"/> (a double local).</summary>
@@ -159,7 +176,7 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Stfld, s_obj);
         Emit(OpCodes.Ldloca, _masm.Acc);
         Emit(OpCodes.Ldloc, value);
-        Emit(OpCodes.Stfld, s_num);
+        StfldNum();
     }
 
     void SetAccNumber(double value)
@@ -169,7 +186,7 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Stfld, s_obj);
         Emit(OpCodes.Ldloca, _masm.Acc);
         Emit(OpCodes.Ldc_R8, value);
-        Emit(OpCodes.Stfld, s_num);
+        StfldNum();
     }
 
     /// <summary>acc = the heap object in the static field <paramref name="root"/> (true, false, null, the hole).</summary>
@@ -180,7 +197,7 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Stfld, s_obj);
         Emit(OpCodes.Ldloca, _masm.Acc);
         Emit(OpCodes.Ldc_R8, 0.0);
-        Emit(OpCodes.Stfld, s_num);
+        StfldNum();
     }
 
     void SetAccUndefined()
@@ -224,7 +241,7 @@ public sealed partial class BaselineCompiler
         _il.MarkLabel(skip);
         RegRef(target);
         LocalNum(value);
-        Emit(OpCodes.Stfld, s_num);
+        StfldNum();
     }
 
     void EmitStar(Register target) => StoreToRegister(target, _masm.Acc);
@@ -1149,7 +1166,7 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Conv_R8);
         Emit(OpCodes.Ldloc, TObj);
         Emit(OpCodes.Ldflda, s_arrayLength);
-        Emit(OpCodes.Ldfld, s_num);
+        LdfldNum();
         Emit(OpCodes.Bge_Un, slow);
         _il.MarkLabel(elements);
         int modes = GetKeyedPropertySite(slot);
