@@ -15,17 +15,34 @@ namespace V8Sharp.Codegen;
 /// (source, outer function, language mode, eval position), so that the same
 /// eval (a loop, a function called again, new Function with the same text)
 /// is compiled once. V8 keeps a FeedbackCell per native context beside the
-/// SharedFunctionInfo and ages entries whose bytecode was flushed; V8Sharp
-/// keeps the SharedFunctionInfo only (each hit gets a new feedback cell) and
-/// clears the table when it grows past <see cref="kCapacity"/> entries, as
-/// its regexp cache does.
+/// SharedFunctionInfo and ages entries out with bytecode flushing (old
+/// bytecode is dropped after some full GCs). V8Sharp keeps the
+/// SharedFunctionInfo only (each hit gets a new feedback cell) and ages the
+/// table by full .NET collections: an entry not used since the previous
+/// gen-2 collection is dropped at the next one, so a stream of distinct
+/// evals (Octane CodeLoad's salted sources) does not keep its scripts alive.
+/// The table is also cleared past <see cref="kCapacity"/> entries.
 /// </summary>
 public sealed class CompilationCacheEval
 {
     const int kCapacity = 4096;
 
-    readonly Dictionary<(string Source, SharedFunctionInfo OuterInfo, LanguageMode LanguageMode, int Position),
+    Dictionary<(string Source, SharedFunctionInfo OuterInfo, LanguageMode LanguageMode, int Position),
         SharedFunctionInfo> _table = new();
+    // The previous generation: entries not looked up since the last full GC.
+    Dictionary<(string Source, SharedFunctionInfo OuterInfo, LanguageMode LanguageMode, int Position),
+        SharedFunctionInfo> _old = new();
+    int _gen2Count = GC.CollectionCount(2);
+
+    /// <summary>CompilationCacheEval::Age, run when a full collection happened since the last call.</summary>
+    void MaybeAge()
+    {
+        int gen2Count = GC.CollectionCount(2);
+        if (gen2Count == _gen2Count) return;
+        _gen2Count = gen2Count;
+        (_old, _table) = (_table, _old);
+        _table.Clear();
+    }
 
     static readonly ConditionalWeakTable<Isolate, CompilationCacheEval> s_caches = new();
 
@@ -35,20 +52,25 @@ public sealed class CompilationCacheEval
 
     public SharedFunctionInfo? Lookup(string source, SharedFunctionInfo outerInfo, LanguageMode languageMode, int position)
     {
-        lock (_table)
+        lock (this)
         {
-            return _table.TryGetValue((source, outerInfo, languageMode, position), out SharedFunctionInfo? shared) &&
-                   shared.IsCompiled
-                ? shared
-                : null;
+            MaybeAge();
+            var key = (source, outerInfo, languageMode, position);
+            if (!_table.TryGetValue(key, out SharedFunctionInfo? shared))
+            {
+                if (!_old.Remove(key, out shared)) return null;
+                _table[key] = shared;
+            }
+            return shared.IsCompiled ? shared : null;
         }
     }
 
     public void Put(string source, SharedFunctionInfo outerInfo, LanguageMode languageMode, int position,
                     SharedFunctionInfo shared)
     {
-        lock (_table)
+        lock (this)
         {
+            MaybeAge();
             if (_table.Count >= kCapacity) _table.Clear();
             _table[(source, outerInfo, languageMode, position)] = shared;
         }
@@ -57,6 +79,10 @@ public sealed class CompilationCacheEval
     /// <summary>CompilationCache::Clear.</summary>
     public void Clear()
     {
-        lock (_table) _table.Clear();
+        lock (this)
+        {
+            _table.Clear();
+            _old.Clear();
+        }
     }
 }
