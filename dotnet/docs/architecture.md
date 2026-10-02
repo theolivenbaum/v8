@@ -364,7 +364,8 @@ instructions, basic blocks, local references) with MinOpts, which is slower
 than the interpreter. `BaselineILEmitter` counts them while the method is
 emitted; a function that would exceed them is compiled again without inline
 fast paths and register locals (compact code). Functions with more than 5000
-bytes of bytecode are not compiled (`Baseline.kMaxBytecodeLength`).
+bytes of bytecode do not tier up by themselves (`BaselineSupport.TiersUpToBaseline`;
+`%CompileBaseline` still compiles them).
 
 **Tiering.** `TieringManager.OnInterruptTick` is ported: the first budget
 interrupt allocates the feedback vector and enqueues the function to the

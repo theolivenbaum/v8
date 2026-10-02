@@ -8,7 +8,7 @@ namespace V8Sharp.Baseline;
 
 public static class BaselineSupport
 {
-    /// <summary>The largest bytecode array the baseline compiler compiles (a V8Sharp limit; see CanCompileWithBaseline).</summary>
+    /// <summary>The largest bytecode array that tiers up to baseline code by itself (a V8Sharp limit; see TiersUpToBaseline).</summary>
     public const int kMaxBytecodeLength = 5000;
 
     /// <summary>CanCompileWithBaseline.</summary>
@@ -22,17 +22,7 @@ public static class BaselineSupport
         if (isolate.Flags.sparkplug_needs_short_builtins) return false;
 
         // Check if we actually have bytecode.
-        if (shared.FunctionData is not BytecodeArray bytecode) return false;
-
-        // Deviation: V8 compiles functions of any size with Sparkplug. A
-        // function this large would be one IL method beyond RyuJIT's
-        // optimization limits even in the compact form (BaselineILEmitter:
-        // about 3 IL instructions and one local reference per bytecode byte),
-        // which RyuJIT compiles with minimal optimization only: slower than the
-        // interpreter, slow to compile, and with a .NET frame large enough to
-        // overflow the stack within a few levels of recursion. It stays in the
-        // interpreter.
-        if (bytecode.Length > kMaxBytecodeLength) return false;
+        if (shared.FunctionData is not BytecodeArray) return false;
 
         // (No debugger: no break points and no instrumented bytecode.)
 
@@ -41,6 +31,24 @@ public static class BaselineSupport
 
         return true;
     }
+
+    /// <summary>
+    /// Whether the tiering paths (batch compilation, --always-sparkplug)
+    /// compile the function: CanCompileWithBaseline, and not beyond the size
+    /// limit.
+    /// </summary>
+    /// <remarks>
+    /// Deviation: V8 tiers up functions of any size to Sparkplug. A function
+    /// with more than <see cref="kMaxBytecodeLength"/> bytes of bytecode would
+    /// be one IL method beyond RyuJIT's optimization limits even in the
+    /// compact form (BaselineILEmitter: about 3 IL instructions and one local
+    /// reference per bytecode byte), which RyuJIT compiles with minimal
+    /// optimization only: slower than the interpreter, slow to compile, and
+    /// with a large .NET frame. It stays in the interpreter unless compiled
+    /// explicitly (%CompileBaseline).
+    /// </remarks>
+    public static bool TiersUpToBaseline(Isolate isolate, SharedFunctionInfo shared) =>
+        CanCompileWithBaseline(isolate, shared) && ((BytecodeArray)shared.FunctionData!).Length <= kMaxBytecodeLength;
 
     /// <summary>GenerateBaselineCode.</summary>
     public static BaselineCode GenerateBaselineCode(Isolate isolate, SharedFunctionInfo shared)

@@ -41,6 +41,8 @@ public sealed class BaselineBatchCompiler(Isolate isolate)
     public void EnqueueFunction(JSFunction function)
     {
         SharedFunctionInfo shared = function.Shared;
+        // (A V8Sharp size limit: BaselineSupport.TiersUpToBaseline.)
+        if (!BaselineSupport.TiersUpToBaseline(isolate, shared)) return;
         // Immediately compile the function if batch compilation is disabled.
         if (!IsEnabled)
         {
@@ -129,7 +131,7 @@ public sealed class BaselineBatchCompiler(Isolate isolate)
         if (!entry.TryGetTarget(out JSFunction? function)) return false;
         SharedFunctionInfo shared = function.Shared;
         // Skip functions where the bytecode has been flushed.
-        if (!shared.IsCompiled) return false;
+        if (!shared.IsCompiled || !BaselineSupport.TiersUpToBaseline(isolate, shared)) return false;
         return Codegen.Compiler.CompileSharedWithBaseline(isolate, shared);
     }
 
@@ -216,7 +218,7 @@ internal sealed class BaselineBatchCompilerJob
     }
 
     internal static bool CanCompileWithConcurrentBaseline(SharedFunctionInfo shared, Isolate isolate) =>
-        !shared.HasBaselineCode && BaselineSupport.CanCompileWithBaseline(isolate, shared);
+        !shared.HasBaselineCode && BaselineSupport.TiersUpToBaseline(isolate, shared);
 }
 
 /// <summary>BaselineCompilerTask: one function of a concurrent batch.</summary>

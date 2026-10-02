@@ -58,7 +58,8 @@ public static partial class Compiler
         foreach (SharedFunctionInfo shared in compiled)
         {
             if (!shared.IsCompiled) continue;
-            if (!BaselineSupport.CanCompileWithBaseline(isolate, shared)) continue;
+            // (TiersUpToBaseline: a V8Sharp size limit.)
+            if (!BaselineSupport.TiersUpToBaseline(isolate, shared)) continue;
             CompileSharedWithBaseline(isolate, shared);
         }
     }

@@ -273,8 +273,10 @@ for now, to be revisited when the reason goes away.
 - Compact code and size limit: a function whose inline code would exceed
   RyuJIT's optimization limits (it would compile it with MinOpts) is
   compiled again with calls to the builtins only. Functions with more than
-  5000 bytes of bytecode stay interpreted (`Baseline.kMaxBytecodeLength`);
-  V8 compiles any size.
+  5000 bytes of bytecode do not tier up (batch compilation,
+  `--always-sparkplug`) and stay interpreted unless compiled explicitly with
+  `%CompileBaseline` (`BaselineSupport.TiersUpToBaseline`); V8 tiers up any
+  size.
 - No optimizing tier yet: `Isolate.UseOptimizer` is false, so
   `TieringManager` behaves as in a V8 built without Turbofan and Maglev
   (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the
