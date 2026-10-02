@@ -373,6 +373,10 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | 2026-09-28 | test262 | 85199 | 85891 | 99.2% | engine conformance pass; left: import defer (180), dynamic-import/catch (128, modules), decorators (34, not in V8 either), bytes imports, ShadowRealm importValue, RegExp legacy accessors; expectations regenerated |
 | 2026-09-28 | test262 | 94545 | 95123 | 99.4% | Temporal ported: built-ins/Temporal 9210/9210, staging/Temporal 4/4, Date.prototype.toTemporalInstant 16/16; Temporal SKIP globs removed (intl402 still not run without i18n); 0 newly failing elsewhere |
 | 2026-09-28 | mjsunit | 7259 | 7597 | 95.6% | engine conformance pass (Sparkplug off by default: opt-proto-seq/* fail); see "Engine-side conformance: what is left"; expectations regenerated |
+| 2026-10-02 | test262 | 94881 | 95123 | 99.7% | baseline performance pass, --always-sparkplug: 0 newly failing, 0 newly passing against test262.v8sharp.txt (run as built-ins and the rest) |
+| 2026-10-02 | mjsunit | 7378 | 7587 | 97.2% | baseline performance pass, --always-sparkplug: +3 (opt-proto-seq/**, private_fields/test_private_fields, regress-484904778), -3: regress-class-initializer-eval (fails in the interpreter too with --no-lazy-feedback-allocation), unicode-case-overoptimization0/1 (timeouts under load; 40 s alone in both tiers) |
+| 2026-10-02 | mjsunit | 7386 | 7600 | 97.2% | baseline performance pass, --sparkplug (tiering with concurrent compilation, feedback-guided code): +3 as above, -1 baseline/test-baseline (fixed since: the size limit no longer applies to %CompileBaseline) |
+| 2026-10-02 | mjsunit | 7330 | 7602 | 96.4% | baseline performance pass, default flags (Sparkplug off): 0 newly failing, +1 regress-484904778 |
 
 Octane, interpreter only, after the interpreter performance pass
 (2026-09-28, 4-core container shared with a test262 run; mean of 4 runs,
