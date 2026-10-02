@@ -26,7 +26,7 @@ public static class BaselineExecution
     public static JSValue Run(Isolate isolate, ref InterpreterState state, BaselineCode code)
     {
         isolate.InterpreterFrames[state.FrameIndex].IsBaseline = true;
-        BaselineCodeEntry entry = code.Entry;
+        BaselineCodeEntry entry = code.EntryFor(state.FeedbackVector);
         while (true)
         {
             try

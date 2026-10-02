@@ -78,9 +78,12 @@ public sealed partial class BaselineCompiler
     }
 
     public BaselineCompiler(Isolate isolate, SharedFunctionInfo sharedFunctionInfo, BytecodeArray bytecode, bool compact = false,
-        string? methodName = null, bool optimizeFully = false)
+        string? methodName = null, bool optimizeFully = false, FeedbackVector? feedback = null)
     {
         _isolate = isolate;
+        // --always-sparkplug compiles before anything ran: no feedback to go by.
+        _feedback = isolate.Flags.always_sparkplug ? null : feedback;
+        _feedbackGuided = !isolate.Flags.always_sparkplug && !s_noFeedbackGuidance;
         _compact = compact;
         _shared = sharedFunctionInfo;
         _bytecode = bytecode;
@@ -138,6 +141,26 @@ public sealed partial class BaselineCompiler
         $"il={_il.ILOffset} instructions={_il.Instructions} blocks<={_il.BlockBoundaries} localrefs={_il.LocalReferences}" +
         (_compact ? " compact" : "");
 
+    // V8SHARP_BASELINE_IL_PROFILE=1: IL instructions emitted per bytecode, printed at exit.
+    static readonly Dictionary<Bytecode, (long Count, long Instructions)>? s_ilProfile = CreateILProfile();
+
+    static Dictionary<Bytecode, (long Count, long Instructions)>? CreateILProfile()
+    {
+        if (Environment.GetEnvironmentVariable("V8SHARP_BASELINE_IL_PROFILE") != "1") return null;
+        var profile = new Dictionary<Bytecode, (long Count, long Instructions)>();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            long total = 0;
+            foreach (var entry in profile) total += entry.Value.Instructions;
+            foreach (var entry in profile.OrderByDescending(e => e.Value.Instructions).Take(40))
+            {
+                Console.Error.WriteLine($"{entry.Key,-32} count={entry.Value.Count,7} il={entry.Value.Instructions,9} " +
+                                        $"({100.0 * entry.Value.Instructions / total:F1}%, {(double)entry.Value.Instructions / entry.Value.Count:F1} each)");
+            }
+        };
+        return profile;
+    }
+
     /// <summary>BaselineCompiler::EstimateInstructionSize.</summary>
     public static long EstimateInstructionSize(BytecodeArray bytecode) => (long)bytecode.Length * kAverageBytecodeToInstructionRatio;
 
@@ -164,13 +187,30 @@ public sealed partial class BaselineCompiler
 
         SetUpRegisterCache();
         Prologue();
-        for (; !_iterator.Done(); _iterator.Advance()) VisitSingleBytecode();
+        for (; !_iterator.Done(); _iterator.Advance())
+        {
+            if (s_ilProfile is null)
+            {
+                VisitSingleBytecode();
+                continue;
+            }
+            Bytecode visited = _iterator.CurrentBytecode();
+            int before = _il.Instructions;
+            VisitSingleBytecode();
+            lock (s_ilProfile)
+            {
+                s_ilProfile.TryGetValue(visited, out (long Count, long Instructions) entry);
+                s_ilProfile[visited] = (entry.Count + 1, entry.Instructions + _il.Instructions - before);
+            }
+        }
 
         // Falling off the end is impossible (the bytecode ends in Return, Throw
         // or a jump), but IL requires a terminated method.
         _masm.LoadInt(_bytecode.Length);
         CallBuiltin("Illegal");
         _masm.Return();
+
+        EmitBackEdgeInterruptStub();
     }
 
     /// <summary>
@@ -671,7 +711,7 @@ public sealed partial class BaselineCompiler
             // ---- Globals ------------------------------------------------------------------------------------------
             case Bytecode.LdaGlobal:
             case Bytecode.LdaGlobalInsideTypeof:
-                if (_compact)
+                if (!LdaGlobalInline(FeedbackSlot(1)))
                 {
                     Isolate();
                     Fv();
@@ -753,7 +793,7 @@ public sealed partial class BaselineCompiler
 
             // ---- Property loads ----------------------------------------------------------------------------------------------
             case Bytecode.GetNamedProperty:
-                if (_compact)
+                if (GetNamedPropertySite(FeedbackSlot(2)) == NamedLoadPaths.None)
                 {
                     Isolate();
                     Fv();
@@ -779,7 +819,7 @@ public sealed partial class BaselineCompiler
                 SetAcc();
                 break;
             case Bytecode.GetKeyedProperty:
-                if (_compact)
+                if (GetKeyedPropertySite(FeedbackSlot(1)) == 0)
                 {
                     Isolate();
                     Fv();
@@ -837,7 +877,7 @@ public sealed partial class BaselineCompiler
 
             // ---- Property stores ----------------------------------------------------------------------------------------------------
             case Bytecode.SetNamedProperty:
-                if (_compact)
+                if (!SetNamedPropertyInline(FeedbackSlot(2)))
                 {
                     Isolate();
                     Fv();
@@ -862,7 +902,7 @@ public sealed partial class BaselineCompiler
                 CallBuiltin("DefineNamedOwnProperty");
                 break;
             case Bytecode.SetKeyedProperty:
-                if (_compact)
+                if (!SetKeyedPropertyInline(FeedbackSlot(2)))
                 {
                     Isolate();
                     Fv();
@@ -920,30 +960,30 @@ public sealed partial class BaselineCompiler
                 break;
 
             // ---- Binary operators ---------------------------------------------------------------------------------------------------
-            case Bytecode.Add: if (_compact) VisitBinaryOp("Add"); else VisitArithmetic(Operation.Add, false); break;
-            case Bytecode.Sub: if (_compact) VisitBinaryOp("Subtract"); else VisitArithmetic(Operation.Subtract, false); break;
-            case Bytecode.Mul: if (_compact) VisitBinaryOp("Multiply"); else VisitArithmetic(Operation.Multiply, false); break;
+            case Bytecode.Add: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("Add"); else VisitArithmetic(Operation.Add, false); break;
+            case Bytecode.Sub: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("Subtract"); else VisitArithmetic(Operation.Subtract, false); break;
+            case Bytecode.Mul: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("Multiply"); else VisitArithmetic(Operation.Multiply, false); break;
             case Bytecode.Div: VisitBinaryOp("Divide"); break;
             case Bytecode.Mod: VisitBinaryOp("Modulus"); break;
             case Bytecode.Exp: VisitBinaryOp("Exponentiate"); break;
-            case Bytecode.BitwiseOr: if (_compact) VisitBinaryOp("BitwiseOr"); else VisitBitwise(Operation.BitwiseOr, false); break;
-            case Bytecode.BitwiseXor: if (_compact) VisitBinaryOp("BitwiseXor"); else VisitBitwise(Operation.BitwiseXor, false); break;
-            case Bytecode.BitwiseAnd: if (_compact) VisitBinaryOp("BitwiseAnd"); else VisitBitwise(Operation.BitwiseAnd, false); break;
-            case Bytecode.ShiftLeft: if (_compact) VisitBinaryOp("ShiftLeft"); else VisitBitwise(Operation.ShiftLeft, false); break;
-            case Bytecode.ShiftRight: if (_compact) VisitBinaryOp("ShiftRight"); else VisitBitwise(Operation.ShiftRight, false); break;
-            case Bytecode.ShiftRightLogical: if (_compact) VisitBinaryOp("ShiftRightLogical"); else VisitBitwise(Operation.ShiftRightLogical, false); break;
-            case Bytecode.AddSmi: if (_compact) VisitBinaryOpWithSmi("Add"); else VisitArithmetic(Operation.Add, true); break;
-            case Bytecode.SubSmi: if (_compact) VisitBinaryOpWithSmi("Subtract"); else VisitArithmetic(Operation.Subtract, true); break;
-            case Bytecode.MulSmi: if (_compact) VisitBinaryOpWithSmi("Multiply"); else VisitArithmetic(Operation.Multiply, true); break;
+            case Bytecode.BitwiseOr: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("BitwiseOr"); else VisitBitwise(Operation.BitwiseOr, false); break;
+            case Bytecode.BitwiseXor: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("BitwiseXor"); else VisitBitwise(Operation.BitwiseXor, false); break;
+            case Bytecode.BitwiseAnd: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("BitwiseAnd"); else VisitBitwise(Operation.BitwiseAnd, false); break;
+            case Bytecode.ShiftLeft: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("ShiftLeft"); else VisitBitwise(Operation.ShiftLeft, false); break;
+            case Bytecode.ShiftRight: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("ShiftRight"); else VisitBitwise(Operation.ShiftRight, false); break;
+            case Bytecode.ShiftRightLogical: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("ShiftRightLogical"); else VisitBitwise(Operation.ShiftRightLogical, false); break;
+            case Bytecode.AddSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("Add"); else VisitArithmetic(Operation.Add, true); break;
+            case Bytecode.SubSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("Subtract"); else VisitArithmetic(Operation.Subtract, true); break;
+            case Bytecode.MulSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("Multiply"); else VisitArithmetic(Operation.Multiply, true); break;
             case Bytecode.DivSmi: VisitBinaryOpWithSmi("Divide"); break;
             case Bytecode.ModSmi: VisitBinaryOpWithSmi("Modulus"); break;
             case Bytecode.ExpSmi: VisitBinaryOpWithSmi("Exponentiate"); break;
-            case Bytecode.BitwiseOrSmi: if (_compact) VisitBinaryOpWithSmi("BitwiseOr"); else VisitBitwise(Operation.BitwiseOr, true); break;
-            case Bytecode.BitwiseXorSmi: if (_compact) VisitBinaryOpWithSmi("BitwiseXor"); else VisitBitwise(Operation.BitwiseXor, true); break;
-            case Bytecode.BitwiseAndSmi: if (_compact) VisitBinaryOpWithSmi("BitwiseAnd"); else VisitBitwise(Operation.BitwiseAnd, true); break;
-            case Bytecode.ShiftLeftSmi: if (_compact) VisitBinaryOpWithSmi("ShiftLeft"); else VisitBitwise(Operation.ShiftLeft, true); break;
-            case Bytecode.ShiftRightSmi: if (_compact) VisitBinaryOpWithSmi("ShiftRight"); else VisitBitwise(Operation.ShiftRight, true); break;
-            case Bytecode.ShiftRightLogicalSmi: if (_compact) VisitBinaryOpWithSmi("ShiftRightLogical"); else VisitBitwise(Operation.ShiftRightLogical, true); break;
+            case Bytecode.BitwiseOrSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("BitwiseOr"); else VisitBitwise(Operation.BitwiseOr, true); break;
+            case Bytecode.BitwiseXorSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("BitwiseXor"); else VisitBitwise(Operation.BitwiseXor, true); break;
+            case Bytecode.BitwiseAndSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("BitwiseAnd"); else VisitBitwise(Operation.BitwiseAnd, true); break;
+            case Bytecode.ShiftLeftSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("ShiftLeft"); else VisitBitwise(Operation.ShiftLeft, true); break;
+            case Bytecode.ShiftRightSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("ShiftRight"); else VisitBitwise(Operation.ShiftRight, true); break;
+            case Bytecode.ShiftRightLogicalSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("ShiftRightLogical"); else VisitBitwise(Operation.ShiftRightLogical, true); break;
             case Bytecode.Add_StringConstant_Internalize:
                 Isolate();
                 Fv();
@@ -956,8 +996,8 @@ public sealed partial class BaselineCompiler
                 break;
 
             // ---- Unary operators ------------------------------------------------------------------------------------------------------
-            case Bytecode.Inc: if (_compact) VisitUnaryOp("Increment"); else VisitIncDec(true); break;
-            case Bytecode.Dec: if (_compact) VisitUnaryOp("Decrement"); else VisitIncDec(false); break;
+            case Bytecode.Inc: if (BinaryOpSite(0) == NumberSite.Compact) VisitUnaryOp("Increment"); else VisitIncDec(true); break;
+            case Bytecode.Dec: if (BinaryOpSite(0) == NumberSite.Compact) VisitUnaryOp("Decrement"); else VisitIncDec(false); break;
             case Bytecode.Negate: VisitUnaryOp("Negate"); break;
             case Bytecode.BitwiseNot: VisitUnaryOp("BitwiseNot"); break;
             case Bytecode.ToBooleanLogicalNot:
@@ -1154,9 +1194,9 @@ public sealed partial class BaselineCompiler
                 break;
 
             // ---- Compare operations ---------------------------------------------------------------------------------------------------------
-            case Bytecode.TestEqual: if (_compact) VisitBinaryOp("TestEqual"); else VisitCompare(Operation.Equal); break;
+            case Bytecode.TestEqual: if (CompareSite(1) == NumberSite.Compact) VisitBinaryOp("TestEqual"); else VisitCompare(Operation.Equal); break;
             case Bytecode.TestEqualStrict:
-                if (_compact)
+                if (CompareSite(1) == NumberSite.Compact)
                 {
                     Reg(RegisterOperand(0));
                     Acc();
@@ -1169,10 +1209,10 @@ public sealed partial class BaselineCompiler
                     VisitCompare(Operation.StrictEqual);
                 }
                 break;
-            case Bytecode.TestLessThan: if (_compact) VisitBinaryOp("TestLessThan"); else VisitCompare(Operation.LessThan); break;
-            case Bytecode.TestGreaterThan: if (_compact) VisitBinaryOp("TestGreaterThan"); else VisitCompare(Operation.GreaterThan); break;
-            case Bytecode.TestLessThanOrEqual: if (_compact) VisitBinaryOp("TestLessThanOrEqual"); else VisitCompare(Operation.LessThanOrEqual); break;
-            case Bytecode.TestGreaterThanOrEqual: if (_compact) VisitBinaryOp("TestGreaterThanOrEqual"); else VisitCompare(Operation.GreaterThanOrEqual); break;
+            case Bytecode.TestLessThan: if (CompareSite(1) == NumberSite.Compact) VisitBinaryOp("TestLessThan"); else VisitCompare(Operation.LessThan); break;
+            case Bytecode.TestGreaterThan: if (CompareSite(1) == NumberSite.Compact) VisitBinaryOp("TestGreaterThan"); else VisitCompare(Operation.GreaterThan); break;
+            case Bytecode.TestLessThanOrEqual: if (CompareSite(1) == NumberSite.Compact) VisitBinaryOp("TestLessThanOrEqual"); else VisitCompare(Operation.LessThanOrEqual); break;
+            case Bytecode.TestGreaterThanOrEqual: if (CompareSite(1) == NumberSite.Compact) VisitBinaryOp("TestGreaterThanOrEqual"); else VisitCompare(Operation.GreaterThanOrEqual); break;
             case Bytecode.TestInstanceOf:
                 Isolate();
                 Fv();

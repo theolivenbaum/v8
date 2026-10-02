@@ -544,7 +544,7 @@ public static class BaselineCalls
             BaseFrameIndex = depth,
             Argc = args.Count,
         };
-        JSValue result = code.HasHandlers ? BaselineExecution.Run(isolate, ref state, code) : code.Entry(isolate, ref state);
+        JSValue result = code.HasHandlers ? BaselineExecution.Run(isolate, ref state, code) : code.EntryFor(vector)(isolate, ref state);
         LeaveFrame(isolate, depth, start, savedContext);
         return result;
     }

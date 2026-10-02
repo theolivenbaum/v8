@@ -23,9 +23,11 @@ public sealed class BaselineBatchCompiler(Isolate isolate)
 {
     public const int kInitialQueueSize = 32;
 
-    // Weak references to the SharedFunctionInfos of the current batch
-    // (V8: a WeakFixedArray behind a global handle).
-    readonly List<WeakReference<SharedFunctionInfo>> _compilationQueue = new(kInitialQueueSize);
+    // Weak references to the functions of the current batch (V8: a
+    // WeakFixedArray of SharedFunctionInfos behind a global handle; V8Sharp
+    // keeps the closure, whose feedback vector guides the code, see
+    // BaselineCompiler.Feedback.cs).
+    readonly List<WeakReference<JSFunction>> _compilationQueue = new(kInitialQueueSize);
 
     // Estimated instruction size of the current batch.
     int _estimatedInstructionSize;
@@ -49,7 +51,7 @@ public sealed class BaselineBatchCompiler(Isolate isolate)
         {
             if (isolate.Flags.concurrent_sparkplug)
             {
-                CompileBatchConcurrent(shared);
+                CompileBatchConcurrent(function);
             }
             else
             {
@@ -58,11 +60,11 @@ public sealed class BaselineBatchCompiler(Isolate isolate)
         }
         else
         {
-            Enqueue(shared);
+            Enqueue(function);
         }
     }
 
-    void Enqueue(SharedFunctionInfo shared) => _compilationQueue.Add(new WeakReference<SharedFunctionInfo>(shared));
+    void Enqueue(JSFunction function) => _compilationQueue.Add(new WeakReference<JSFunction>(function));
 
     /// <summary>Returns true if the current batch exceeds the threshold and should be compiled.</summary>
     bool ShouldCompileBatch(SharedFunctionInfo shared)
@@ -96,17 +98,17 @@ public sealed class BaselineBatchCompiler(Isolate isolate)
     void CompileBatch(JSFunction function)
     {
         Codegen.Compiler.CompileBaseline(isolate, function);
-        foreach (WeakReference<SharedFunctionInfo> entry in _compilationQueue)
+        foreach (WeakReference<JSFunction> entry in _compilationQueue)
         {
             MaybeCompileFunction(entry);
         }
         ClearBatch();
     }
 
-    /// <summary>Hands the current batch, with <paramref name="shared"/>, to the concurrent compiler.</summary>
-    void CompileBatchConcurrent(SharedFunctionInfo shared)
+    /// <summary>Hands the current batch, with <paramref name="function"/>, to the concurrent compiler.</summary>
+    void CompileBatchConcurrent(JSFunction function)
     {
-        Enqueue(shared);
+        Enqueue(function);
         _concurrentCompiler ??= new ConcurrentBaselineCompiler(isolate);
         _concurrentCompiler.CompileBatch(_compilationQueue);
         ClearBatch();
@@ -119,10 +121,11 @@ public sealed class BaselineBatchCompiler(Isolate isolate)
     /// Tries to compile an enqueued function. Returns false if compilation was
     /// not possible (the weak reference is no longer valid, ...).
     /// </summary>
-    bool MaybeCompileFunction(WeakReference<SharedFunctionInfo> entry)
+    bool MaybeCompileFunction(WeakReference<JSFunction> entry)
     {
         // Skip functions where the weak reference is no longer valid.
-        if (!entry.TryGetTarget(out SharedFunctionInfo? shared)) return false;
+        if (!entry.TryGetTarget(out JSFunction? function)) return false;
+        SharedFunctionInfo shared = function.Shared;
         // Skip functions where the bytecode has been flushed.
         if (!shared.IsCompiled) return false;
         return Codegen.Compiler.CompileSharedWithBaseline(isolate, shared);
@@ -148,7 +151,7 @@ internal sealed class ConcurrentBaselineCompiler(Isolate isolate)
     readonly HashSet<SharedFunctionInfo> _compiling = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>ConcurrentBaselineCompiler::CompileBatch.</summary>
-    public void CompileBatch(List<WeakReference<SharedFunctionInfo>> taskQueue)
+    public void CompileBatch(List<WeakReference<JSFunction>> taskQueue)
     {
         var job = new BaselineBatchCompilerJob(isolate, taskQueue, _compiling);
         if (job.IsEmpty) return;
@@ -173,18 +176,19 @@ internal sealed class BaselineBatchCompilerJob
     readonly List<BaselineCompilerTask> _tasks = [];
 
     /// <summary>Main thread: takes the functions of the batch that can still be compiled.</summary>
-    public BaselineBatchCompilerJob(Isolate isolate, List<WeakReference<SharedFunctionInfo>> taskQueue,
+    public BaselineBatchCompilerJob(Isolate isolate, List<WeakReference<JSFunction>> taskQueue,
         HashSet<SharedFunctionInfo> compiling)
     {
-        foreach (WeakReference<SharedFunctionInfo> entry in taskQueue)
+        foreach (WeakReference<JSFunction> entry in taskQueue)
         {
             // Skip functions where weak reference is no longer valid.
-            if (!entry.TryGetTarget(out SharedFunctionInfo? shared)) continue;
+            if (!entry.TryGetTarget(out JSFunction? function)) continue;
+            SharedFunctionInfo shared = function.Shared;
             // Skip functions where the bytecode has been flushed.
             if (!shared.IsCompiled || !CanCompileWithConcurrentBaseline(shared, isolate)) continue;
             // Skip functions that are already being compiled.
             if (!compiling.Add(shared)) continue;
-            _tasks.Add(new BaselineCompilerTask(isolate, shared));
+            _tasks.Add(new BaselineCompilerTask(isolate, shared, function.RawFeedbackCell.Value as FeedbackVector));
         }
     }
 
@@ -216,13 +220,33 @@ internal sealed class BaselineCompilerTask
     readonly Isolate _isolate;
     readonly BaselineCode _code;
     readonly string _name;
+    readonly FeedbackVector? _feedback;
     bool _compiled;
-    double _ms;
+    double _ms, _cpuMs;
+
+    /// <summary>The CPU time of the current thread (Linux /proc; 0 elsewhere), for --trace-baseline.</summary>
+    static double ThreadCpuMilliseconds()
+    {
+        try
+        {
+            string text = File.ReadAllText("/proc/thread-self/schedstat");
+            return long.Parse(text.AsSpan(0, text.IndexOf(' ')), System.Globalization.CultureInfo.InvariantCulture) / 1e6;
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return 0;
+        }
+    }
 
     /// <summary>Main thread: everything the background thread reads is prepared here.</summary>
-    public BaselineCompilerTask(Isolate isolate, SharedFunctionInfo shared)
+    public BaselineCompilerTask(Isolate isolate, SharedFunctionInfo shared, FeedbackVector? feedback)
     {
         _isolate = isolate;
+        _feedback = feedback;
         SharedFunctionInfo = shared;
         var bytecode = (BytecodeArray)shared.FunctionData!;
         // The compiler reads the materialized constant pool (jump tables,
@@ -237,10 +261,12 @@ internal sealed class BaselineCompilerTask
     /// <summary>Background thread: generates the code and has RyuJIT compile it.</summary>
     public void Compile()
     {
+        bool trace = _isolate.Flags.trace_baseline;
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        double cpuStart = trace ? ThreadCpuMilliseconds() : 0;
         try
         {
-            _code.GenerateConcurrently(_name);
+            _code.GenerateConcurrently(_name, _feedback);
             _compiled = true;
         }
         catch (Exception e) when (e is not OutOfMemoryException)
@@ -249,6 +275,7 @@ internal sealed class BaselineCompilerTask
             if (_isolate.Flags.trace_baseline) Console.WriteLine("[Concurrent Sparkplug] " + _name + " failed: " + e.Message);
         }
         _ms = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        if (trace) _cpuMs = ThreadCpuMilliseconds() - cpuStart;
     }
 
     /// <summary>Main thread: BaselineCompilerTask::Install.</summary>
@@ -267,7 +294,8 @@ internal sealed class BaselineCompilerTask
         if (_isolate.Flags.trace_baseline)
         {
             Console.WriteLine("[Concurrent Sparkplug Off Thread] Function " + _name + " installed (" +
-                              _ms.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture) + " ms)");
+                              _ms.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture) + " ms, cpu " +
+                              _cpuMs.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture) + " ms)");
         }
     }
 }

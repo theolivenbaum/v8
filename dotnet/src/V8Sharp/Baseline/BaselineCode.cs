@@ -61,8 +61,16 @@ public sealed class BaselineCode
     public BaselineCodeEntry Entry
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => _entry ?? Generate();
+        get => _entry ?? Generate(null);
     }
+
+    /// <summary>
+    /// The compiled method, generated (on first use) with the feedback of
+    /// <paramref name="vector"/> (the vector of the frame about to run it),
+    /// which decides where the code inlines fast paths (BaselineCompiler.Feedback.cs).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public BaselineCodeEntry EntryFor(FeedbackVector? vector) => _entry ?? Generate(vector);
 
     /// <summary>The size of the generated IL in bytes (V8: instruction_size); -1 before generation.</summary>
     public int ILSize => _ilSize;
@@ -99,11 +107,11 @@ public sealed class BaselineCode
     public static CodeKind Kind => CodeKind.BASELINE;
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    BaselineCodeEntry Generate()
+    BaselineCodeEntry Generate(FeedbackVector? vector)
     {
         // The code reads the materialized constant pool.
         if (Bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(_isolate, Bytecode);
-        return Generate(BaselineCompiler.MethodName(SharedFunctionInfo), prepare: false);
+        return Generate(BaselineCompiler.MethodName(SharedFunctionInfo), prepare: false, vector);
     }
 
     /// <summary>
@@ -112,22 +120,23 @@ public sealed class BaselineCode
     /// the first call runs compiled code. The constant pool was materialized
     /// and the name computed on the main thread.
     /// </summary>
-    internal void GenerateConcurrently(string methodName) => Generate(methodName, prepare: true);
+    internal void GenerateConcurrently(string methodName, FeedbackVector? vector) => Generate(methodName, prepare: true, vector);
 
     /// <summary>V8SHARP_BASELINE_TIERED=1: concurrently compiled code starts at RyuJIT's tier 0 too (for comparison).</summary>
     static readonly bool s_tieredConcurrentCode = Environment.GetEnvironmentVariable("V8SHARP_BASELINE_TIERED") == "1";
 
-    BaselineCodeEntry Generate(string methodName, bool prepare)
+    BaselineCodeEntry Generate(string methodName, bool prepare, FeedbackVector? vector)
     {
         bool optimizeFully = prepare && !s_tieredConcurrentCode;
-        var compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, methodName: methodName, optimizeFully: optimizeFully);
+        var compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, methodName: methodName, optimizeFully: optimizeFully,
+            feedback: vector);
         compiler.GenerateCode();
         if (compiler.ExceedsOptimizationLimits)
         {
             // RyuJIT would not optimize the method (BaselineILEmitter): emit the
             // compact form, whose bytecodes call out of line.
             compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, compact: true, methodName: methodName,
-                optimizeFully: optimizeFully);
+                optimizeFully: optimizeFully, feedback: vector);
             compiler.GenerateCode();
         }
         if (_isolate.Flags.trace_baseline)

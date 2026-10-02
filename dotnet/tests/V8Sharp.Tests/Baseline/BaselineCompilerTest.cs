@@ -372,8 +372,13 @@ public class BaselineCompilerTest
         }
     }
 
-    [Fact]
-    public void SameFeedbackInBothTiers()
+    [Theory]
+    // Every function compiled before it runs: the full inline paths.
+    [InlineData("--always-sparkplug")]
+    // Tiering up after a little feedback: the inline paths the feedback chose
+    // (BaselineCompiler.Feedback.cs), then feedback transitions in baseline code.
+    [InlineData("--sparkplug --no-concurrent-sparkplug --invocation-count-for-feedback-allocation=1 --baseline-batch-compilation-threshold=0")]
+    public void SameFeedbackInBothTiers(string baselineFlags)
     {
         // The inline fast paths of baseline code skip the feedback update only
         // when it would not change anything: the embedded feedback bytes and
@@ -424,6 +429,6 @@ public class BaselineCompilerTest
             }
             [arith, props, glob, calls, P].concat(clones);
             """;
-        Assert.Equal(RunAndDescribeFeedback("--no-sparkplug", source), RunAndDescribeFeedback("--always-sparkplug", source));
+        Assert.Equal(RunAndDescribeFeedback("--no-sparkplug", source), RunAndDescribeFeedback(baselineFlags, source));
     }
 }
