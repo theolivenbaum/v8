@@ -634,6 +634,42 @@ What blocks parity (44.5% of jitless by Octane's own score), measured:
   AggressiveOptimization loop calls are still compiled at tier 0 first.
 Beyond the interpreter, the IL tiers remain the lever.
 
+Runtime slow paths outside the dispatch loop on zlib, Mandreel, Gameboy,
+PdfJS and Box2D (2026-10-02, after the fourth pass; thread CPU,
+`octane-cpu`, V8SHARP_BENCH_SCALE=50, under the benchmark lock, 2-3
+interleaved runs per A/B; these benchmarks vary 3-5% run to run):
+- typed array element loads and stores read the backing array, offset
+  and length cached in the JSTypedArray (V8's data pointer) on the
+  monomorphic handler path: zlib +3.4%, Mandreel +3%, Gameboy +8%;
+- Wide Star/Ldar/Mov/GetKeyedProperty/SetKeyedProperty and the plain
+  JumpLoop run from RunPrefixed instead of a single step of
+  Loop<DoubleScale> (zlib executes ~185M Wide bytecodes per run in its
+  huge functions; the scaled loop's prologue cost more than the
+  bytecode): zlib +2.4%;
+- field and element stores skip the reference half (and its write
+  barrier) when it is unchanged, as register stores do: Box2D +5%,
+  DeltaBlue +2%, Gameboy +2%.
+Together, against the branch at b0e12315: zlib +2%, Mandreel +9%, Gameboy
++7%, Typescript +1.5%, PdfJS and Box2D within noise. Still 33% (zlib), 38%
+(Mandreel), 33% (Gameboy), 19% (PdfJS), 43% (Box2D) of V8 --jitless.
+Measured and left: inlining the typed array element hit into the loop's
+GetKeyedProperty case (within noise); slow IC entries are rare everywhere
+(Mandreel under 4K keyed per run). What remains outside the loop, by
+count per run at SCALE=5: PdfJS 430K polymorphic typed array loads and
+410K ConsString[i] loads through KeyedLoadIC.LoadSlow (hits, not misses),
+105K dictionary-mode named loads; Box2D 264K setter and 113K getter calls
+(JS accessors on prototypes: a re-entry through Execution.Call, 120 ns
+against V8 --jitless's 28 ns per access in a micro-benchmark; small in
+Box2D, about 1% of its time, but it is the frame protocol's to fix: V8
+calls accessors like any other call, without a new dispatch loop).
+On the short benchmarks the .NET tiering dominates the main thread in a
+`dotnet build` (TieredPGO's count probes alone are 8.7% of CodeLoad); see
+the publish configuration above.
+Conformance with these commits merged at b0e12315: test262 95123 run,
+0 newly failing; mjsunit 53 newly failing, 8 newly passing, the same 53
+fail at b0e12315 without them (maglev/, turboshaft/ and for-of/
+destructuring deopt tests: the expectations predate the Maglev merge).
+
 Performance with the baseline tier (Octane, 2026-09-28, 4-core container
 shared with other jobs, mean of 2 runs; V8Sharp.Bench):
 
