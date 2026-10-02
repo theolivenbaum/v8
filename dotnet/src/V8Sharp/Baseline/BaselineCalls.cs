@@ -56,7 +56,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return EnterValues(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), 0, default, default);
+            return Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new NoArguments());
         }
         return CallSlow0(isolate, callee, receiver, ConvertReceiverMode.NotNullOrUndefined);
     }
@@ -67,7 +67,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return EnterValues(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), 1, arg0, default);
+            return Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new OneArgument(arg0));
         }
         return CallSlow1(isolate, callee, receiver, arg0, ConvertReceiverMode.NotNullOrUndefined);
     }
@@ -79,7 +79,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return EnterValues(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), 2, arg0, arg1);
+            return Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new TwoArguments(arg0, arg1));
         }
         return CallSlow2(isolate, callee, receiver, arg0, arg1, ConvertReceiverMode.NotNullOrUndefined);
     }
@@ -90,7 +90,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return EnterValues(isolate, function, code, vector, UndefinedReceiver(function, code), 0, default, default);
+            return Enter(isolate, function, code, vector, UndefinedReceiver(function, code), new NoArguments());
         }
         return CallSlow0(isolate, callee, JSValue.Undefined, ConvertReceiverMode.NullOrUndefined);
     }
@@ -101,7 +101,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return EnterValues(isolate, function, code, vector, UndefinedReceiver(function, code), 1, arg0, default);
+            return Enter(isolate, function, code, vector, UndefinedReceiver(function, code), new OneArgument(arg0));
         }
         return CallSlow1(isolate, callee, JSValue.Undefined, arg0, ConvertReceiverMode.NullOrUndefined);
     }
@@ -113,7 +113,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return EnterValues(isolate, function, code, vector, UndefinedReceiver(function, code), 2, arg0, arg1);
+            return Enter(isolate, function, code, vector, UndefinedReceiver(function, code), new TwoArguments(arg0, arg1));
         }
         return CallSlow2(isolate, callee, JSValue.Undefined, arg0, arg1, ConvertReceiverMode.NullOrUndefined);
     }
@@ -126,7 +126,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return EnterRegisters(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), first + 1, count - 1);
+            return Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new RegisterArguments(first + 1, count - 1));
         }
         return CallSlowRegisters(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.NotNullOrUndefined);
     }
@@ -138,7 +138,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return EnterRegisters(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), first + 1, count - 1);
+            return Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new RegisterArguments(first + 1, count - 1));
         }
         return CallSlowRegisters(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.Any);
     }
@@ -149,7 +149,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return EnterRegisters(isolate, function, code, vector, UndefinedReceiver(function, code), first, count);
+            return Enter(isolate, function, code, vector, UndefinedReceiver(function, code), new RegisterArguments(first, count));
         }
         return CallSlowRegisters(isolate, callee, JSValue.Undefined, first, count, ConvertReceiverMode.NullOrUndefined);
     }
@@ -195,9 +195,9 @@ public static class BaselineCalls
     {
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
         {
-            return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), -1, 0, default, default);
+            return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), new NoArguments());
         }
-        if (IsFunctionPrototypeCall(callee) && TryEnterTarget(isolate, receiver, default, -1, 0, default, default, out JSValue called))
+        if (IsFunctionPrototypeCall(callee) && TryEnterTarget(isolate, receiver, default, new NoArguments(), out JSValue called))
         {
             return called;
         }
@@ -210,10 +210,10 @@ public static class BaselineCalls
     {
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
         {
-            return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), -1, 1, arg0, default);
+            return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), new OneArgument(arg0));
         }
         // f.call(thisArg).
-        if (IsFunctionPrototypeCall(callee) && TryEnterTarget(isolate, receiver, arg0, -1, 0, default, default, out JSValue called))
+        if (IsFunctionPrototypeCall(callee) && TryEnterTarget(isolate, receiver, arg0, new NoArguments(), out JSValue called))
         {
             return called;
         }
@@ -227,13 +227,13 @@ public static class BaselineCalls
     {
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
         {
-            return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), -1, 2, arg0, arg1);
+            return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), new TwoArguments(arg0, arg1));
         }
         if (callee._obj is JSFunction { Shared.BuiltinId: var builtin })
         {
             // f.call(thisArg, x).
             if (builtin == Builtin.FunctionPrototypeCall &&
-                TryEnterTarget(isolate, receiver, arg0, -1, 1, arg1, default, out JSValue called))
+                TryEnterTarget(isolate, receiver, arg0, new OneArgument(arg1), out JSValue called))
             {
                 return called;
             }
@@ -250,12 +250,13 @@ public static class BaselineCalls
     {
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
         {
-            return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), argsStart, argc, default,
-                default);
+            return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver),
+                new RegisterArguments(argsStart, argc));
         }
         // f.call(thisArg, x, y ...).
         if (argc > 0 && IsFunctionPrototypeCall(callee) &&
-            TryEnterTarget(isolate, receiver, isolate.RegisterStack[argsStart], argsStart + 1, argc - 1, default, default, out JSValue called))
+            TryEnterTarget(isolate, receiver, isolate.RegisterStack[argsStart], new RegisterArguments(argsStart + 1, argc - 1),
+                out JSValue called))
         {
             return called;
         }
@@ -275,18 +276,17 @@ public static class BaselineCalls
         callee._obj is JSFunction function && function.Shared.BuiltinId == Builtin.FunctionPrototypeCall;
 
     /// <summary>Calls <paramref name="target"/> with <paramref name="thisArg"/> when it runs baseline or interpreted code.</summary>
-    static bool TryEnterTarget(Isolate isolate, JSValue target, JSValue thisArg, int argsStart, int argc, JSValue arg0, JSValue arg1,
-        out JSValue result)
+    static bool TryEnterTarget<TArgs>(Isolate isolate, JSValue target, JSValue thisArg, TArgs args, out JSValue result)
+        where TArgs : struct, ICallArguments
     {
         if (TryGetBaselineCallee(target, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            result = Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, thisArg), argsStart, argc, arg0, arg1,
-                default, false);
+            result = Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, thisArg), args);
             return true;
         }
         if (TryGetInterpretedCallee(target, out function, out BytecodeArray bytecode))
         {
-            result = EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, thisArg), argsStart, argc, arg0, arg1);
+            result = EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, thisArg), args);
             return true;
         }
         result = default;
@@ -327,7 +327,7 @@ public static class BaselineCalls
             for (int i = 0; i < length; i++) stack[window + i] = doubles.IsTheHole(i) ? default : JSValue.FromNumber(doubles.GetScalar(i));
         }
         isolate.RegisterStackTop = window + length;
-        bool entered = TryEnterTarget(isolate, target, thisArg, window, length, default, default, out result);
+        bool entered = TryEnterTarget(isolate, target, thisArg, new RegisterArguments(window, length), out result);
         // The window's values stay above the top, in the dirty range.
         if (window + length > isolate.RegisterStackDirtyEnd) isolate.RegisterStackDirtyEnd = window + length;
         isolate.RegisterStackTop = window;
@@ -422,7 +422,7 @@ public static class BaselineCalls
                 implicitReceiver = AllocateReceiver(isolate, function, newTargetReceiver);
             }
             int stubStart = isolate.AllocateRegisters(kConstructStubFrameSlots);
-            JSValue result = Enter(isolate, function, code, vector, implicitReceiver, argsStart, argc, default, default, newTarget, true);
+            JSValue result = Enter(isolate, function, code, vector, implicitReceiver, new RegisterArguments(argsStart, argc), newTarget, true);
             isolate.RegisterStackTop = stubStart;
             // If the result is an object (in the ECMA sense), we should get rid
             // of the receiver and use the result; see ECMA-262 section 13.2.2-7
@@ -453,27 +453,65 @@ public static class BaselineCalls
 
     // ---- Entering the callee ---------------------------------------------------------------------
 
-    /// <summary>A call whose arguments are values (at most two).</summary>
-    [MethodImpl(Inline)]
-    static JSValue EnterValues(Isolate isolate, JSFunction function, BaselineCode code, FeedbackVector vector, JSValue receiver,
-        int argc, JSValue arg0, JSValue arg1) =>
-        Enter(isolate, function, code, vector, receiver, -1, argc, arg0, arg1, default, false);
+    /// <summary>
+    /// The arguments of a call, as a type: Enter is compiled once per form
+    /// (none, one or two values, or a register list), each with the argument
+    /// pushes straight-line.
+    /// </summary>
+    internal interface ICallArguments
+    {
+        int Count { get; }
 
-    /// <summary>A call whose arguments are the registers at <paramref name="argsStart"/>.</summary>
-    [MethodImpl(Inline)]
-    static JSValue EnterRegisters(Isolate isolate, JSFunction function, BaselineCode code, FeedbackVector vector, JSValue receiver,
-        int argsStart, int argc) =>
-        Enter(isolate, function, code, vector, receiver, argsStart, argc, default, default, default, false);
+        /// <summary>Stores the arguments from the first argument's slot downwards (V8's order: the last deepest).</summary>
+        void Store(ref JSValue stack0, ref JSValue firstArgumentSlot);
+    }
+
+    internal readonly struct NoArguments : ICallArguments
+    {
+        public int Count => 0;
+        public void Store(ref JSValue stack0, ref JSValue firstArgumentSlot) { }
+    }
+
+    internal readonly struct OneArgument(JSValue arg0) : ICallArguments
+    {
+        public int Count => 1;
+
+        [MethodImpl(Inline)]
+        public void Store(ref JSValue stack0, ref JSValue firstArgumentSlot) => StoreSlot(ref firstArgumentSlot, arg0);
+    }
+
+    internal readonly struct TwoArguments(JSValue arg0, JSValue arg1) : ICallArguments
+    {
+        public int Count => 2;
+
+        [MethodImpl(Inline)]
+        public void Store(ref JSValue stack0, ref JSValue firstArgumentSlot)
+        {
+            StoreSlot(ref firstArgumentSlot, arg0);
+            StoreSlot(ref Unsafe.Subtract(ref firstArgumentSlot, 1), arg1);
+        }
+    }
+
+    /// <summary>The <paramref name="count"/> registers at register stack index <paramref name="start"/>.</summary>
+    internal readonly struct RegisterArguments(int start, int count) : ICallArguments
+    {
+        public int Count => count;
+
+        [MethodImpl(Inline)]
+        public void Store(ref JSValue stack0, ref JSValue firstArgumentSlot)
+        {
+            ref JSValue src = ref Unsafe.Add(ref stack0, start);
+            for (int i = 0; i < count; i++) StoreSlot(ref Unsafe.Subtract(ref firstArgumentSlot, i), Unsafe.Add(ref src, i));
+        }
+    }
 
     /// <summary>
     /// Builds the callee's interpreter frame (the layout InterpreterExecution.EnterFrame
-    /// builds) and runs its baseline code. The arguments are the
-    /// <paramref name="argc"/> registers at <paramref name="argsStart"/>, or
-    /// <paramref name="arg0"/> / <paramref name="arg1"/> when argsStart is negative.
+    /// builds) and runs its baseline code.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    static JSValue Enter(Isolate isolate, JSFunction function, BaselineCode code, FeedbackVector vector, JSValue receiver,
-        int argsStart, int argc, JSValue arg0, JSValue arg1, JSValue newTarget, bool isConstruct)
+    static JSValue Enter<TArgs>(Isolate isolate, JSFunction function, BaselineCode code, FeedbackVector vector, JSValue receiver,
+        TArgs args, JSValue newTarget = default, bool isConstruct = false) where TArgs : struct, ICallArguments
     {
         // The interrupt check of the prologue's stack check, as on the
         // interpreter's entry (InterpreterInlineCalls.PushFrameCore).
@@ -491,8 +529,7 @@ public static class BaselineCalls
         Context? savedContext = isolate.Context;
         int start = isolate.RegisterStackTop;
         int fp = PushFrame(isolate, function, bytecode, code.FormalParameterCount, code.RegisterCount, code.IncomingNewTargetRegister,
-            receiver, argsStart, argc, arg0, arg1, newTarget, isConstruct, true);
-        StoreSlot(ref isolate.RegisterStack[fp + InterpreterRuntime.kFeedbackVectorOffset], vector);
+            receiver, args, newTarget, isConstruct, true, vector);
         vector.InvocationCount++;
 
         var state = new InterpreterState
@@ -502,11 +539,10 @@ public static class BaselineCalls
             Bytecode = bytecode,
             FeedbackVector = vector,
             Context = function.Context,
-            Pc = 0,
             Fp = fp,
             FrameIndex = depth,
             BaseFrameIndex = depth,
-            Argc = argc,
+            Argc = args.Count,
         };
         JSValue result = code.HasHandlers ? BaselineExecution.Run(isolate, ref state, code) : code.Entry(isolate, ref state);
         LeaveFrame(isolate, depth, start, savedContext);
@@ -520,8 +556,8 @@ public static class BaselineCalls
     /// without EnterFrame's try/finally.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    static JSValue EnterInterpreted(Isolate isolate, JSFunction function, BytecodeArray bytecode, JSValue receiver, int argsStart,
-        int argc, JSValue arg0, JSValue arg1)
+    static JSValue EnterInterpreted<TArgs>(Isolate isolate, JSFunction function, BytecodeArray bytecode, JSValue receiver, TArgs args)
+        where TArgs : struct, ICallArguments
     {
         if (isolate.StackGuard.HasPendingInterrupts) isolate.StackGuard.HandleInterrupts();
         // The interpreter's own calls do not recurse on the .NET stack.
@@ -531,7 +567,7 @@ public static class BaselineCalls
         int start = isolate.RegisterStackTop;
         Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
         int fp = PushFrame(isolate, function, bytecode, bytecode.ParameterCount - 1, bytecode.RegisterCount,
-            incoming.IsValid ? incoming.Index : int.MinValue, receiver, argsStart, argc, arg0, arg1, default, false, false);
+            incoming.IsValid ? incoming.Index : int.MinValue, receiver, args, default, false, false, null);
         FeedbackVector? vector = InterpreterExecution.FeedbackVectorOnEntry(isolate, function);
         StoreSlot(ref isolate.RegisterStack[fp + InterpreterRuntime.kFeedbackVectorOffset],
             vector is null ? JSValue.Undefined : vector);
@@ -549,7 +585,7 @@ public static class BaselineCalls
             Fp = fp,
             FrameIndex = depth,
             BaseFrameIndex = depth,
-            Argc = argc,
+            Argc = args.Count,
         };
         JSValue result = InterpreterExecution.Run(isolate, ref state);
         // The frames the loop ran inline are gone (they returned to this one).
@@ -560,14 +596,16 @@ public static class BaselineCalls
     /// <summary>
     /// The frame setup shared by <see cref="Enter"/> and <see cref="EnterInterpreted"/>:
     /// reserves the parameters, fixed slots and register file on the register
-    /// stack, stores the receiver, arguments, context and closure, pushes the
-    /// frame record and enters the function's context. Returns the frame pointer.
+    /// stack, stores the receiver, arguments, context, closure and feedback
+    /// vector (when known), pushes the frame record and enters the function's
+    /// context. Returns the frame pointer.
     /// </summary>
     [MethodImpl(Inline)]
-    static int PushFrame(Isolate isolate, JSFunction function, BytecodeArray bytecode, int formal, int registerCount,
-        int incomingNewTargetRegister, JSValue receiver, int argsStart, int argc, JSValue arg0, JSValue arg1, JSValue newTarget,
-        bool isConstruct, bool isBaseline)
+    static int PushFrame<TArgs>(Isolate isolate, JSFunction function, BytecodeArray bytecode, int formal, int registerCount,
+        int incomingNewTargetRegister, JSValue receiver, TArgs args, JSValue newTarget, bool isConstruct, bool isBaseline,
+        FeedbackVector? vector) where TArgs : struct, ICallArguments
     {
+        int argc = args.Count;
         int paramSlots = argc > formal ? argc : formal;
         int start = isolate.RegisterStackTop;
         int fp = start + paramSlots + InterpreterRuntime.kFixedSlotsAboveParams;
@@ -586,22 +624,14 @@ public static class BaselineCalls
         // Push the arguments in V8's order (the last argument deepest); missing
         // arguments are undefined (V8's argument adaption).
         StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset), receiver);
-        if (argsStart >= 0)
-        {
-            ref JSValue src = ref Unsafe.Add(ref stack0, argsStart);
-            for (int i = 0; i < argc; i++) StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i), Unsafe.Add(ref src, i));
-        }
-        else if (argc > 0)
-        {
-            StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset), arg0);
-            if (argc > 1) StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - 1), arg1);
-        }
+        args.Store(ref stack0, ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset));
         for (int i = argc; i < paramSlots; i++) StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i), default);
 
         Context context = function.Context;
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
         StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset), context);
         StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset), function);
+        if (vector is not null) StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset), vector);
         // The argument count slot (fp - 4) is not read in V8Sharp (frames keep
         // the count in their record), as for the interpreter's inline calls.
         if (isConstruct && incomingNewTargetRegister != int.MinValue) Unsafe.Add(ref fpRef, incomingNewTargetRegister) = newTarget;

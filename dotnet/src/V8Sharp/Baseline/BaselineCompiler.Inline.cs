@@ -46,6 +46,7 @@ public sealed partial class BaselineCompiler
     static readonly FieldInfo s_propertyCellHole = typeof(Oddball).GetField(nameof(Oddball.PropertyCellHole))!;
     static readonly FieldInfo s_instanceType = typeof(HeapObject).GetField(nameof(HeapObject.InstanceType))!;
     static readonly FieldInfo s_receiverMap = typeof(JSReceiver).GetField(nameof(JSReceiver.Map))!;
+    static readonly MethodInfo s_mapIsUndetectable = typeof(Map).GetProperty(nameof(Map.IsUndetectable))!.GetMethod!;
     static readonly FieldInfo s_contextSlots = typeof(Context).GetField(nameof(Context.Slots))!;
     static readonly FieldInfo s_feedbackSlots = typeof(FeedbackVector).GetField(nameof(FeedbackVector.Slots))!;
     static readonly FieldInfo s_cellValue = typeof(PropertyCell).GetField(nameof(PropertyCell.Value))!;
@@ -815,8 +816,9 @@ public sealed partial class BaselineCompiler
                 Emit(OpCodes.Ldfld, s_instanceType);
                 Emit(OpCodes.Ldc_I4, (int)InstanceTypeChecks.FirstJSReceiver);
                 Emit(OpCodes.Blt_Un, isFalse);
-                Acc();
-                CallBuiltin("IsUndetectableValue");
+                Emit(OpCodes.Ldloc, TObj);
+                Emit(OpCodes.Ldfld, s_receiverMap);
+                Emit(OpCodes.Call, s_mapIsUndetectable);
                 Emit(OpCodes.Brtrue, isTrue);
                 Emit(OpCodes.Br, isFalse);
                 break;
