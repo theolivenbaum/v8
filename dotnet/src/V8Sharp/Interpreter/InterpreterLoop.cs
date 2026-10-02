@@ -301,21 +301,19 @@ public static partial class InterpreterExecution
                 // ---- Property loads ------------------------------------------------------------------
                 case Bytecode.GetNamedProperty:
                 {
-                    // The hits of AccessorAssembler::HandleLoadICHandlerCase
-                    // (LoadIC.LoadNamed), monomorphic or polymorphic: an own field,
-                    // and a constant on the prototype chain (methods).
+                    // The monomorphic hits of AccessorAssembler::HandleLoadICHandlerCase
+                    // (LoadIC.LoadNamed): an own field, a constant on the prototype
+                    // chain (methods), an array's length. Polymorphic feedback is
+                    // LoadIC.LoadNamed's: a call here would keep {o} live across it,
+                    // and the JIT would spill it on the monomorphic path too.
                     HeapObject? o = RegAt(ref fpSlot, Signed<TS>(ref ip, 1))._obj;
                     FeedbackVector? fv = st.FeedbackVector;
                     if (fv is not null && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
                     {
                         JSValue[] slots = fv.Slots;
                         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
-                        HeapObject? feedback = slots[slot]._obj;
-                        Map map = Unsafe.As<JSReceiver>(o).Map;
-                        // Polymorphic feedback is a FixedArray of (map, handler) pairs.
-                        HeapObject? found = ReferenceEquals(feedback, map) ? slots[slot + 1]._obj
-                            : feedback is FixedArray polymorphic ? FindPolymorphicHandler(polymorphic, map) : null;
-                        if (found is LoadHandler handler)
+                        if ((uint)(slot + 1) < (uint)slots.Length &&
+                            ReferenceEquals(slots[slot]._obj, Unsafe.As<JSReceiver>(o).Map) && slots[slot + 1]._obj is LoadHandler handler)
                         {
                             if (handler.OwnFieldIndex >= 0)
                             {
