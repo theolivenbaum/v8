@@ -27,6 +27,16 @@ public sealed class CompilationCacheEval
 {
     const int kCapacity = 4096;
 
+    /// <summary>
+    /// Deviation: V8 caches evals of any length. An entry keeps the script, its
+    /// source and bytecode alive until it is aged out, and with the .NET GC that
+    /// makes every gen-2 collection in between mark it: compiling large distinct
+    /// sources through eval (the compile micro-benchmarks on Octane's PdfJS and
+    /// TypeScript sources) ran 25-30% slower with them cached. Sources longer
+    /// than this are compiled without the cache.
+    /// </summary>
+    public const int kMaxSourceLength = 16 * 1024;
+
     Dictionary<(string Source, SharedFunctionInfo OuterInfo, LanguageMode LanguageMode, int Position),
         SharedFunctionInfo> _table = new();
     // The previous generation: entries not looked up since the last full GC.

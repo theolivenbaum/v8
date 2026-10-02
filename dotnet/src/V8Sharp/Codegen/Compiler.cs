@@ -428,7 +428,9 @@ namespace V8Sharp.Codegen
                 // use the parameters_end_pos as the eval_position in the eval cache.
                 evalCachePosition = -parametersEndPos;
             }
-            CompilationCacheEval? cache = CompilationCacheEval.For(isolate);
+            CompilationCacheEval? cache = source.Length <= CompilationCacheEval.kMaxSourceLength
+                ? CompilationCacheEval.For(isolate)
+                : null;
             string? sourceString = null;
             if (cache is not null)
             {

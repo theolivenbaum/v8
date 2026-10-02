@@ -107,7 +107,10 @@ for now, to be revisited when the reason goes away.
   new[] / delete[] with the scanner).
 - Compiler: CompilationCacheEval keeps only the SharedFunctionInfo (no
   FeedbackCell per native context) and is cleared past 4096 entries instead
-  of being aged on GC; the script part of the compilation cache is not ported.
+  of being aged on GC (here: dropped after two full .NET collections unused),
+  and does not cache sources over 16K characters (they kept large scripts
+  alive across gen-2 collections: -30% on large distinct evals); the script
+  part of the compilation cache is not ported.
 - Parsing: VariableMap keeps up to 8 entries in an insertion-ordered array
   searched by identity, allocated on first use, plus a hash index beyond 8
   (V8: a ZoneHashMap of 8 entries).
