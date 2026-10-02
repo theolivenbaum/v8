@@ -636,6 +636,14 @@ public sealed partial class BaselineCompiler
     /// </summary>
     void EmitToBooleanBranch(Label isTrue, Label isFalse)
     {
+        if (_compact)
+        {
+            Acc();
+            CallBuiltin("ToBooleanValue");
+            Emit(OpCodes.Brtrue, isTrue);
+            Emit(OpCodes.Br, isFalse);
+            return;
+        }
         Label notNumber = _il.DefineLabel();
         AccObj();
         Emit(OpCodes.Stloc, TObj);

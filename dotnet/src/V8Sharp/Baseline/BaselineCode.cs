@@ -105,6 +105,17 @@ public sealed class BaselineCode
         if (Bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(_isolate, Bytecode);
         var compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode);
         compiler.GenerateCode();
+        if (compiler.ExceedsOptimizationLimits)
+        {
+            // RyuJIT would not optimize the method (BaselineILEmitter): emit the
+            // compact form, whose bytecodes call out of line.
+            compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, compact: true);
+            compiler.GenerateCode();
+        }
+        if (_isolate.Flags.trace_baseline)
+        {
+            Console.WriteLine("[baseline code for " + SharedFunctionInfo.Name() + ": bytecode=" + Bytecode.Length + " " + compiler.Statistics + "]");
+        }
         (BaselineCodeEntry entry, int ilSize) = compiler.Build(this);
         _ilSize = ilSize;
         return _entry = entry;

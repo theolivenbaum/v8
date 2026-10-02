@@ -64,6 +64,10 @@ public static partial class BaselineBuiltins
     public static bool StrictEqualSlow(JSValue lhs, JSValue rhs, ref byte feedback) =>
         InterpreterOps.StrictEqual(lhs, rhs, ref feedback).IsTrue;
 
+    /// <summary>ToBoolean (compact code).</summary>
+    [MethodImpl(Outline)]
+    public static bool ToBooleanValue(JSValue value) => InterpreterOps.ToBoolean(value);
+
     /// <summary>ToBoolean of a heap object other than true, false and the number tag.</summary>
     [MethodImpl(Outline)]
     public static bool ToBooleanSlow(HeapObject value) => InterpreterOps.ToBoolean(new JSValue(value));

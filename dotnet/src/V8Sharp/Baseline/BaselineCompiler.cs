@@ -48,7 +48,14 @@ public sealed partial class BaselineCompiler
     /// </summary>
     static readonly bool s_useDynamicMethod = Environment.GetEnvironmentVariable("V8SHARP_BASELINE_DYNAMICMETHOD") == "1";
     readonly BaselineAssembler _masm;
-    readonly ILGenerator _il;
+    readonly BaselineILEmitter _il;
+
+    /// <summary>
+    /// Compact code: the bytecodes call the out-of-line builtins instead of
+    /// emitting their fast paths, for a function whose full code would exceed
+    /// RyuJIT's optimization limits (BaselineILEmitter).
+    /// </summary>
+    readonly bool _compact;
     readonly BytecodeArrayIterator _iterator;
 
     // Labels at bytecode offsets (V8: labels_ / label_tags_).
@@ -63,9 +70,10 @@ public sealed partial class BaselineCompiler
     static readonly Dictionary<string, MethodInfo> s_calls = typeof(BaselineCalls).GetMethods(BindingFlags.Public | BindingFlags.Static)
         .ToDictionary(m => m.Name, StringComparer.Ordinal);
 
-    public BaselineCompiler(Isolate isolate, SharedFunctionInfo sharedFunctionInfo, BytecodeArray bytecode)
+    public BaselineCompiler(Isolate isolate, SharedFunctionInfo sharedFunctionInfo, BytecodeArray bytecode, bool compact = false)
     {
         _isolate = isolate;
+        _compact = compact;
         _shared = sharedFunctionInfo;
         _bytecode = bytecode;
         string name = sharedFunctionInfo.Name().ToString();
@@ -74,12 +82,12 @@ public sealed partial class BaselineCompiler
         {
             _method = new DynamicMethod(name, typeof(JSValue), [typeof(BaselineCode), typeof(Isolate), typeof(InterpreterState).MakeByRefType()],
                 typeof(BaselineCompiler).Module, skipVisibility: true);
-            _il = _method.GetILGenerator(Math.Max(64, bytecode.Length * 16));
+            _il = new BaselineILEmitter(_method.GetILGenerator(Math.Max(64, bytecode.Length * 16)));
         }
         else
         {
             (_type, _methodBuilder) = BaselineCodeSpace.For(isolate).DefineMethod(name);
-            _il = _methodBuilder.GetILGenerator(Math.Max(64, bytecode.Length * 16));
+            _il = new BaselineILEmitter(_methodBuilder.GetILGenerator(Math.Max(64, bytecode.Length * 16)));
         }
         _masm = new BaselineAssembler(_il);
         _iterator = new BytecodeArrayIterator(bytecode);
@@ -94,6 +102,26 @@ public sealed partial class BaselineCompiler
         foreach (MethodInfo m in typeof(BaselineExecution).GetMethods(BindingFlags.Public | BindingFlags.Static)) result[m.Name] = m;
         return result;
     }
+
+    // RyuJIT's MinOpts limits (compSetOptimizationLevel), with a margin.
+    const int kMaxOptimizedILBytes = 50000;
+    const int kMaxOptimizedInstructions = 16000;
+    const int kMaxOptimizedBlocks = 1600;
+    const int kMaxOptimizedLocalReferences = 6500;
+
+    /// <summary>
+    /// Whether RyuJIT would compile the generated method with minimal
+    /// optimization (BaselineILEmitter): the code is then generated again in
+    /// the compact form.
+    /// </summary>
+    public bool ExceedsOptimizationLimits =>
+        _il.ILOffset > kMaxOptimizedILBytes || _il.Instructions > kMaxOptimizedInstructions ||
+        _il.BlockBoundaries > kMaxOptimizedBlocks || _il.LocalReferences > kMaxOptimizedLocalReferences;
+
+    /// <summary>The emitter's counts (for tracing and tests).</summary>
+    internal string Statistics =>
+        $"il={_il.ILOffset} instructions={_il.Instructions} blocks<={_il.BlockBoundaries} localrefs={_il.LocalReferences}" +
+        (_compact ? " compact" : "");
 
     /// <summary>BaselineCompiler::EstimateInstructionSize.</summary>
     public static long EstimateInstructionSize(BytecodeArray bytecode) => (long)bytecode.Length * kAverageBytecodeToInstructionRatio;
@@ -202,7 +230,7 @@ public sealed partial class BaselineCompiler
     /// </summary>
     void Prologue()
     {
-        ILGenerator il = _il;
+        BaselineILEmitter il = _il;
         // fpRef = ref isolate.RegisterStack[st.Fp]; fp = st.Fp
         il.Emit(OpCodes.Ldarg_1);
         il.Emit(OpCodes.Ldfld, s_registerStack);
@@ -503,7 +531,8 @@ public sealed partial class BaselineCompiler
 
             // ---- Register transfers -------------------------------------------------------------------------
             case Bytecode.Star:
-                EmitStar(RegisterOperand(0));
+                if (_compact) _masm.StoreAccumulatorToRegister(RegisterOperand(0));
+                else EmitStar(RegisterOperand(0));
                 break;
             case Bytecode.Star0:
             case Bytecode.Star1:
@@ -521,10 +550,12 @@ public sealed partial class BaselineCompiler
             case Bytecode.Star13:
             case Bytecode.Star14:
             case Bytecode.Star15:
-                EmitStar(_iterator.GetStarTargetRegister());
+                if (_compact) _masm.StoreAccumulatorToRegister(_iterator.GetStarTargetRegister());
+                else EmitStar(_iterator.GetStarTargetRegister());
                 break;
             case Bytecode.Mov:
-                EmitMov(RegisterOperand(0), RegisterOperand(1));
+                if (_compact) _masm.MoveRegister(RegisterOperand(0), RegisterOperand(1));
+                else EmitMov(RegisterOperand(0), RegisterOperand(1));
                 break;
 
             case Bytecode.PushContext:
@@ -561,7 +592,16 @@ public sealed partial class BaselineCompiler
             case Bytecode.TestUndetectable:
             case Bytecode.TestNull:
             case Bytecode.TestUndefined:
-                VisitTestOddball(bytecode);
+                if (_compact)
+                {
+                    Acc();
+                    CallBuiltin(bytecode.ToString());
+                    SetAcc();
+                }
+                else
+                {
+                    VisitTestOddball(bytecode);
+                }
                 break;
             case Bytecode.TestTypeOf:
                 Acc();
@@ -573,7 +613,20 @@ public sealed partial class BaselineCompiler
             // ---- Globals ------------------------------------------------------------------------------------------
             case Bytecode.LdaGlobal:
             case Bytecode.LdaGlobalInsideTypeof:
-                VisitLdaGlobal(bytecode == Bytecode.LdaGlobalInsideTypeof);
+                if (_compact)
+                {
+                    Isolate();
+                    Fv();
+                    I(FeedbackSlot(1));
+                    Ctx();
+                    Const(ConstantPoolIndex(0));
+                    CallBuiltin(bytecode == Bytecode.LdaGlobal ? "LdaGlobalSlow" : "LdaGlobalInsideTypeofSlow");
+                    SetAcc();
+                }
+                else
+                {
+                    VisitLdaGlobal(bytecode == Bytecode.LdaGlobalInsideTypeof);
+                }
                 break;
             case Bytecode.StaGlobal:
                 Isolate();
@@ -642,7 +695,20 @@ public sealed partial class BaselineCompiler
 
             // ---- Property loads ----------------------------------------------------------------------------------------------
             case Bytecode.GetNamedProperty:
-                VisitGetNamedProperty();
+                if (_compact)
+                {
+                    Isolate();
+                    Fv();
+                    I(FeedbackSlot(2));
+                    Reg(RegisterOperand(0));
+                    Const(ConstantPoolIndex(1));
+                    CallBuiltin("GetNamedPropertySlow");
+                    SetAcc();
+                }
+                else
+                {
+                    VisitGetNamedProperty();
+                }
                 break;
             case Bytecode.GetNamedPropertyFromSuper:
                 Isolate();
@@ -655,7 +721,20 @@ public sealed partial class BaselineCompiler
                 SetAcc();
                 break;
             case Bytecode.GetKeyedProperty:
-                VisitGetKeyedProperty();
+                if (_compact)
+                {
+                    Isolate();
+                    Fv();
+                    I(FeedbackSlot(1));
+                    Reg(RegisterOperand(0));
+                    Acc();
+                    CallBuiltin("GetKeyedPropertySlow");
+                    SetAcc();
+                }
+                else
+                {
+                    VisitGetKeyedProperty();
+                }
                 break;
             case Bytecode.GetEnumeratedKeyedProperty:
                 Isolate();
@@ -700,7 +779,20 @@ public sealed partial class BaselineCompiler
 
             // ---- Property stores ----------------------------------------------------------------------------------------------------
             case Bytecode.SetNamedProperty:
-                VisitSetNamedProperty();
+                if (_compact)
+                {
+                    Isolate();
+                    Fv();
+                    I(FeedbackSlot(2));
+                    Reg(RegisterOperand(0));
+                    Const(ConstantPoolIndex(1));
+                    Acc();
+                    CallBuiltin("SetNamedPropertySlow");
+                }
+                else
+                {
+                    VisitSetNamedProperty();
+                }
                 break;
             case Bytecode.DefineNamedOwnProperty:
                 Isolate();
@@ -712,7 +804,20 @@ public sealed partial class BaselineCompiler
                 CallBuiltin("DefineNamedOwnProperty");
                 break;
             case Bytecode.SetKeyedProperty:
-                VisitSetKeyedProperty();
+                if (_compact)
+                {
+                    Isolate();
+                    Fv();
+                    I(FeedbackSlot(2));
+                    Reg(RegisterOperand(0));
+                    Reg(RegisterOperand(1));
+                    Acc();
+                    CallBuiltin("SetKeyedPropertySlow");
+                }
+                else
+                {
+                    VisitSetKeyedProperty();
+                }
                 break;
             case Bytecode.StaInArrayLiteral:
                 Isolate();
@@ -757,30 +862,30 @@ public sealed partial class BaselineCompiler
                 break;
 
             // ---- Binary operators ---------------------------------------------------------------------------------------------------
-            case Bytecode.Add: VisitArithmetic(Operation.Add, false); break;
-            case Bytecode.Sub: VisitArithmetic(Operation.Subtract, false); break;
-            case Bytecode.Mul: VisitArithmetic(Operation.Multiply, false); break;
+            case Bytecode.Add: if (_compact) VisitBinaryOp("Add"); else VisitArithmetic(Operation.Add, false); break;
+            case Bytecode.Sub: if (_compact) VisitBinaryOp("Subtract"); else VisitArithmetic(Operation.Subtract, false); break;
+            case Bytecode.Mul: if (_compact) VisitBinaryOp("Multiply"); else VisitArithmetic(Operation.Multiply, false); break;
             case Bytecode.Div: VisitBinaryOp("Divide"); break;
             case Bytecode.Mod: VisitBinaryOp("Modulus"); break;
             case Bytecode.Exp: VisitBinaryOp("Exponentiate"); break;
-            case Bytecode.BitwiseOr: VisitBitwise(Operation.BitwiseOr, false); break;
-            case Bytecode.BitwiseXor: VisitBitwise(Operation.BitwiseXor, false); break;
-            case Bytecode.BitwiseAnd: VisitBitwise(Operation.BitwiseAnd, false); break;
-            case Bytecode.ShiftLeft: VisitBitwise(Operation.ShiftLeft, false); break;
-            case Bytecode.ShiftRight: VisitBitwise(Operation.ShiftRight, false); break;
-            case Bytecode.ShiftRightLogical: VisitBitwise(Operation.ShiftRightLogical, false); break;
-            case Bytecode.AddSmi: VisitArithmetic(Operation.Add, true); break;
-            case Bytecode.SubSmi: VisitArithmetic(Operation.Subtract, true); break;
-            case Bytecode.MulSmi: VisitArithmetic(Operation.Multiply, true); break;
+            case Bytecode.BitwiseOr: if (_compact) VisitBinaryOp("BitwiseOr"); else VisitBitwise(Operation.BitwiseOr, false); break;
+            case Bytecode.BitwiseXor: if (_compact) VisitBinaryOp("BitwiseXor"); else VisitBitwise(Operation.BitwiseXor, false); break;
+            case Bytecode.BitwiseAnd: if (_compact) VisitBinaryOp("BitwiseAnd"); else VisitBitwise(Operation.BitwiseAnd, false); break;
+            case Bytecode.ShiftLeft: if (_compact) VisitBinaryOp("ShiftLeft"); else VisitBitwise(Operation.ShiftLeft, false); break;
+            case Bytecode.ShiftRight: if (_compact) VisitBinaryOp("ShiftRight"); else VisitBitwise(Operation.ShiftRight, false); break;
+            case Bytecode.ShiftRightLogical: if (_compact) VisitBinaryOp("ShiftRightLogical"); else VisitBitwise(Operation.ShiftRightLogical, false); break;
+            case Bytecode.AddSmi: if (_compact) VisitBinaryOpWithSmi("Add"); else VisitArithmetic(Operation.Add, true); break;
+            case Bytecode.SubSmi: if (_compact) VisitBinaryOpWithSmi("Subtract"); else VisitArithmetic(Operation.Subtract, true); break;
+            case Bytecode.MulSmi: if (_compact) VisitBinaryOpWithSmi("Multiply"); else VisitArithmetic(Operation.Multiply, true); break;
             case Bytecode.DivSmi: VisitBinaryOpWithSmi("Divide"); break;
             case Bytecode.ModSmi: VisitBinaryOpWithSmi("Modulus"); break;
             case Bytecode.ExpSmi: VisitBinaryOpWithSmi("Exponentiate"); break;
-            case Bytecode.BitwiseOrSmi: VisitBitwise(Operation.BitwiseOr, true); break;
-            case Bytecode.BitwiseXorSmi: VisitBitwise(Operation.BitwiseXor, true); break;
-            case Bytecode.BitwiseAndSmi: VisitBitwise(Operation.BitwiseAnd, true); break;
-            case Bytecode.ShiftLeftSmi: VisitBitwise(Operation.ShiftLeft, true); break;
-            case Bytecode.ShiftRightSmi: VisitBitwise(Operation.ShiftRight, true); break;
-            case Bytecode.ShiftRightLogicalSmi: VisitBitwise(Operation.ShiftRightLogical, true); break;
+            case Bytecode.BitwiseOrSmi: if (_compact) VisitBinaryOpWithSmi("BitwiseOr"); else VisitBitwise(Operation.BitwiseOr, true); break;
+            case Bytecode.BitwiseXorSmi: if (_compact) VisitBinaryOpWithSmi("BitwiseXor"); else VisitBitwise(Operation.BitwiseXor, true); break;
+            case Bytecode.BitwiseAndSmi: if (_compact) VisitBinaryOpWithSmi("BitwiseAnd"); else VisitBitwise(Operation.BitwiseAnd, true); break;
+            case Bytecode.ShiftLeftSmi: if (_compact) VisitBinaryOpWithSmi("ShiftLeft"); else VisitBitwise(Operation.ShiftLeft, true); break;
+            case Bytecode.ShiftRightSmi: if (_compact) VisitBinaryOpWithSmi("ShiftRight"); else VisitBitwise(Operation.ShiftRight, true); break;
+            case Bytecode.ShiftRightLogicalSmi: if (_compact) VisitBinaryOpWithSmi("ShiftRightLogical"); else VisitBitwise(Operation.ShiftRightLogical, true); break;
             case Bytecode.Add_StringConstant_Internalize:
                 Isolate();
                 Fv();
@@ -793,8 +898,8 @@ public sealed partial class BaselineCompiler
                 break;
 
             // ---- Unary operators ------------------------------------------------------------------------------------------------------
-            case Bytecode.Inc: VisitIncDec(true); break;
-            case Bytecode.Dec: VisitIncDec(false); break;
+            case Bytecode.Inc: if (_compact) VisitUnaryOp("Increment"); else VisitIncDec(true); break;
+            case Bytecode.Dec: if (_compact) VisitUnaryOp("Decrement"); else VisitIncDec(false); break;
             case Bytecode.Negate: VisitUnaryOp("Negate"); break;
             case Bytecode.BitwiseNot: VisitUnaryOp("BitwiseNot"); break;
             case Bytecode.ToBooleanLogicalNot:
@@ -991,12 +1096,25 @@ public sealed partial class BaselineCompiler
                 break;
 
             // ---- Compare operations ---------------------------------------------------------------------------------------------------------
-            case Bytecode.TestEqual: VisitCompare(Operation.Equal); break;
-            case Bytecode.TestEqualStrict: VisitCompare(Operation.StrictEqual); break;
-            case Bytecode.TestLessThan: VisitCompare(Operation.LessThan); break;
-            case Bytecode.TestGreaterThan: VisitCompare(Operation.GreaterThan); break;
-            case Bytecode.TestLessThanOrEqual: VisitCompare(Operation.LessThanOrEqual); break;
-            case Bytecode.TestGreaterThanOrEqual: VisitCompare(Operation.GreaterThanOrEqual); break;
+            case Bytecode.TestEqual: if (_compact) VisitBinaryOp("TestEqual"); else VisitCompare(Operation.Equal); break;
+            case Bytecode.TestEqualStrict:
+                if (_compact)
+                {
+                    Reg(RegisterOperand(0));
+                    Acc();
+                    Feedback(1);
+                    CallBuiltin("TestEqualStrict");
+                    SetAcc();
+                }
+                else
+                {
+                    VisitCompare(Operation.StrictEqual);
+                }
+                break;
+            case Bytecode.TestLessThan: if (_compact) VisitBinaryOp("TestLessThan"); else VisitCompare(Operation.LessThan); break;
+            case Bytecode.TestGreaterThan: if (_compact) VisitBinaryOp("TestGreaterThan"); else VisitCompare(Operation.GreaterThan); break;
+            case Bytecode.TestLessThanOrEqual: if (_compact) VisitBinaryOp("TestLessThanOrEqual"); else VisitCompare(Operation.LessThanOrEqual); break;
+            case Bytecode.TestGreaterThanOrEqual: if (_compact) VisitBinaryOp("TestGreaterThanOrEqual"); else VisitCompare(Operation.GreaterThanOrEqual); break;
             case Bytecode.TestInstanceOf:
                 Isolate();
                 Fv();

@@ -27,7 +27,7 @@ internal sealed class BaselineAssembler
 {
     static readonly int kJSValueSize = Unsafe.SizeOf<JSValue>();
 
-    readonly ILGenerator _il;
+    readonly BaselineILEmitter _il;
 
     public readonly LocalBuilder FpRef;       // ref JSValue: the slot at fp
     public readonly LocalBuilder Frame;       // ref InterpreterFrameRecord
@@ -41,7 +41,7 @@ internal sealed class BaselineAssembler
     public readonly LocalBuilder Fp;          // int
     public readonly LocalBuilder Scratch;     // int
 
-    public BaselineAssembler(ILGenerator il)
+    public BaselineAssembler(BaselineILEmitter il)
     {
         _il = il;
         FpRef = il.DeclareLocal(typeof(JSValue).MakeByRefType());
@@ -57,7 +57,7 @@ internal sealed class BaselineAssembler
         Scratch = il.DeclareLocal(typeof(int));
     }
 
-    public ILGenerator IL => _il;
+    public BaselineILEmitter IL => _il;
 
     // ---- Arguments --------------------------------------------------------------------------------
 
