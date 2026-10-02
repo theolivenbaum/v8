@@ -250,31 +250,61 @@ public sealed class ConsString : JSString
             _second = null;
             return _flat = firstSeq.Value;
         }
-        // Iterative in-order walk so deep left- or right-leaning ropes do not
-        // overflow the native stack.
-        string flat = string.Create(_length, this, static (span, root) =>
-        {
-            var stack = new Stack<JSString>();
-            stack.Push(root);
-            int pos = 0;
-            while (stack.Count > 0)
-            {
-                JSString s = stack.Pop();
-                if (s is ConsString c && c._flat is null)
-                {
-                    if (c._second is not null) stack.Push(c._second);
-                    stack.Push(c._first);
-                    continue;
-                }
-                string part = s.Flatten();
-                part.AsSpan().CopyTo(span[pos..]);
-                pos += part.Length;
-            }
-        });
+        string flat = string.Create(_length, this, static (span, root) => WriteToFlat(root, span));
         _flat = flat;
         _first = new SeqString(flat);
         _second = null;
         return flat;
+    }
+
+    /// <summary>
+    /// String::WriteToFlat for a cons string: copies the characters of
+    /// <paramref name="source"/> into <paramref name="sink"/>, recursing into
+    /// the shorter child and looping on the longer, so the recursion depth is
+    /// logarithmic in the length however the rope leans.
+    /// </summary>
+    static void WriteToFlat(JSString source, Span<char> sink)
+    {
+        while (true)
+        {
+            if (source is ConsString cons)
+            {
+                if (cons._flat is not null)
+                {
+                    cons._flat.AsSpan().CopyTo(sink);
+                    return;
+                }
+                JSString first = cons._first;
+                JSString? second = cons._second;
+                if (second is null)
+                {
+                    source = first;
+                    continue;
+                }
+                int boundary = first.Length;
+                if (sink.Length - boundary < boundary)
+                {
+                    // The second part is shorter: recurse into it, loop on the first.
+                    if (sink.Length > boundary) WriteToFlat(second, sink[boundary..]);
+                    source = first;
+                    sink = sink[..boundary];
+                }
+                else
+                {
+                    if (boundary > 0) WriteToFlat(first, sink[..boundary]);
+                    source = second;
+                    sink = sink[boundary..];
+                }
+                continue;
+            }
+            if (source is SeqString seq)
+            {
+                seq.Value.AsSpan().CopyTo(sink);
+                return;
+            }
+            source.FlatSpan().CopyTo(sink);
+            return;
+        }
     }
 }
 
