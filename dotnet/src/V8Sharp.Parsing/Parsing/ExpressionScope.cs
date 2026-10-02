@@ -10,6 +10,7 @@
 
 #nullable disable
 
+using System.Runtime.CompilerServices;
 using V8Sharp.Ast;
 using V8Sharp.Common;
 using static V8Sharp.Common.Globals;
@@ -301,7 +302,13 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
             parser_.expression_scope_ = parent_;
         }
 
-        protected internal ExpressionParsingScope AsExpressionParsingScope() => (ExpressionParsingScope)this;
+        // V8's As*() are static_casts checked by DCHECK: the scope type says
+        // which class the scope is, so the casts do not repeat a type check.
+        protected internal ExpressionParsingScope AsExpressionParsingScope()
+        {
+            System.Diagnostics.Debug.Assert(CanBeExpression());
+            return Unsafe.As<ExpressionParsingScope>(this);
+        }
 
         protected internal bool CanBeExpression()
             => type_ is >= ScopeType.kExpression and <= ScopeType.kMaybeAsyncArrowParameterDeclaration;
@@ -316,13 +323,23 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         protected bool IsAsyncArrowHeadParsingScope() => type_ == ScopeType.kMaybeAsyncArrowParameterDeclaration;
         protected bool IsVarDeclaration() => type_ == ScopeType.kVarDeclaration;
 
-        protected internal ArrowHeadParsingScope AsArrowHeadParsingScope() => (ArrowHeadParsingScope)this;
+        protected internal ArrowHeadParsingScope AsArrowHeadParsingScope()
+        {
+            System.Diagnostics.Debug.Assert(IsArrowHeadParsingScope());
+            return Unsafe.As<ArrowHeadParsingScope>(this);
+        }
 
         private ParameterDeclarationParsingScope AsParameterDeclarationParsingScope()
-            => (ParameterDeclarationParsingScope)this;
+        {
+            System.Diagnostics.Debug.Assert(IsCertainlyParameterDeclaration());
+            return Unsafe.As<ParameterDeclarationParsingScope>(this);
+        }
 
         private VariableDeclarationParsingScope AsVariableDeclarationParsingScope()
-            => (VariableDeclarationParsingScope)this;
+        {
+            System.Diagnostics.Debug.Assert(IsVariableDeclaration());
+            return Unsafe.As<VariableDeclarationParsingScope>(this);
+        }
 
         private bool IsArrowHeadParsingScope()
             => type_ is >= ScopeType.kMaybeArrowParameterDeclaration
