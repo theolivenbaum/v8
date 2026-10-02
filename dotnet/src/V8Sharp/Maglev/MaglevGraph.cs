@@ -187,6 +187,9 @@ public sealed class MaglevCompilationUnit
     public int InliningDepth { get; }
     public bool IsInline => Caller is not null;
 
+    /// <summary>The closure's value node (the frame's function_closure register).</summary>
+    public ValueNode? Closure { get; set; }
+
     public int ParameterCount => Bytecode.ParameterCount;
     public int RegisterCount => Bytecode.RegisterCount;
 

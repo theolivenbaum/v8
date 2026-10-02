@@ -179,8 +179,14 @@ public sealed class InterpreterFrameState
         return new Register(slot - unit.ParameterCount - 1);
     }
 
-    public ValueNode Get(Register reg) =>
-        Values[SlotOf(Unit, reg)] ?? throw new InvalidOperationException($"register {reg} has no value");
+    public ValueNode Get(Register reg)
+    {
+        // The function_closure register is not part of the frame state: it
+        // holds the same value throughout (V8 initialises it once in
+        // BuildRegisterFrameInitialization and never merges it).
+        if (reg.IsFunctionClosure) return Unit.Closure!;
+        return Values[SlotOf(Unit, reg)] ?? throw new InvalidOperationException($"register {reg} has no value");
+    }
 
     public ValueNode? TryGet(Register reg) => Values[SlotOf(Unit, reg)];
 

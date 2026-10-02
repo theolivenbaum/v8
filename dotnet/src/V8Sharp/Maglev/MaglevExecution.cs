@@ -61,25 +61,39 @@ namespace V8Sharp.Maglev
         /// </summary>
         public static JSValue RunOsr(Isolate isolate, ref InterpreterState state, MaglevCode code)
         {
-            // The OSR code runs this frame (and its inlined callees) from here;
-            // inline frames below it in the interpreter loop return to it as before.
+            // The OSR code runs this frame (and its inlined callees) from here:
+            // for the time it runs, the frame is the base frame of the state, so
+            // a deoptimization continues it in a nested interpreter loop that
+            // returns at its Return (an inline frame of an outer loop has
+            // InlineCall set, which would make that Return pop it and continue
+            // the caller in the nested loop). The outer loop pops it afterwards.
             int baseIndex = state.BaseFrameIndex;
-            state.BaseFrameIndex = state.FrameIndex;
-            ref InterpreterFrameRecord frame = ref isolate.InterpreterFrames[state.FrameIndex];
-            frame.IsMaglev = true;
-            // The code reads the frame's registers; the interpreter keeps the context in the state.
-            isolate.RegisterStack[state.Fp + InterpreterRuntime.kContextOffset] = state.Context;
-            JSValue result = code.Entry(isolate, ref state);
-            if (isolate.MaglevDeoptPending)
+            int frameIndex = state.FrameIndex;
+            state.BaseFrameIndex = frameIndex;
+            InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
+            bool inlineCall = frames[frameIndex].InlineCall;
+            frames[frameIndex].InlineCall = false;
+            frames[frameIndex].IsMaglev = true;
+            try
             {
-                isolate.MaglevDeoptPending = false;
-                ClearMaglevFlags(isolate, ref state);
-                result = InterpreterExecution.Run(isolate, ref state);
+                // The code reads the frame's registers; the interpreter keeps the context in the state.
+                isolate.RegisterStack[state.Fp + InterpreterRuntime.kContextOffset] = state.Context;
+                JSValue result = code.Entry(isolate, ref state);
+                if (isolate.MaglevDeoptPending)
+                {
+                    isolate.MaglevDeoptPending = false;
+                    ClearMaglevFlags(isolate, ref state);
+                    result = InterpreterExecution.Run(isolate, ref state);
+                }
+                return result;
             }
-            frame = ref isolate.InterpreterFrames[state.BaseFrameIndex];
-            frame.IsMaglev = false;
-            state.BaseFrameIndex = baseIndex;
-            return result;
+            finally
+            {
+                frames = isolate.InterpreterFrames;
+                frames[frameIndex].IsMaglev = false;
+                frames[frameIndex].InlineCall = inlineCall;
+                state.BaseFrameIndex = baseIndex;
+            }
         }
 
         /// <summary>

@@ -217,6 +217,15 @@ public sealed partial class MaglevGraphBuilder
     void BuildRegisterFrameInitialization()
     {
         int parameterCount = _unit.ParameterCount;
+        // The closure is read from the frame: the code is installed on the
+        // feedback vector, which all closures of a CreateClosure site share.
+        _unit.Closure = _unit.IsInline
+            ? _inlinedClosure!
+            : AddNewNode(new ValueNode(Opcode.InitialValue, ValueRepresentation.kTagged)
+            {
+                Int0 = InterpreterRuntime.kClosureOffset,
+                Type = NodeType.kJSFunction,
+            });
         if (_unit.IsInline)
         {
             _frame.Set(Register.FromParameterIndex(0), _inlinedReceiver!);
@@ -620,7 +629,7 @@ public sealed partial class MaglevGraphBuilder
 
     // ---- Deopt frames ---------------------------------------------------------------------------------
 
-    ValueNode ClosureNode => _unit.IsInline ? _inlinedClosure! : GetConstant(_unit.Function!);
+    ValueNode ClosureNode => _unit.Closure!;
 
     /// <summary>Records the frame at the start of a bytecode (the eager deopt checkpoint).</summary>
     void Checkpoint()
