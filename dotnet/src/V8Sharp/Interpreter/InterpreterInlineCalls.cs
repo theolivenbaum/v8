@@ -266,6 +266,7 @@ internal static class InterpreterInlineCalls
     /// (JSConstructStubGeneric) and enters the constructor like
     /// <see cref="EnterInline"/>. False, with nothing done, for other constructors.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryPushConstructFrame(Isolate isolate, ref InterpreterState st, FeedbackVector? feedbackVector, int slot, JSValue constructor,
         JSValue newTarget, int argsStart, int argc, int returnPc)
     {
@@ -306,7 +307,7 @@ internal static class InterpreterInlineCalls
         // from the context), the runtime otherwise.
         JSObject implicitReceiver = ReferenceEquals(newTargetObject, function) && function.PrototypeOrInitialMap is Map initialMap &&
             !initialMap.IsDictionaryMap
-            ? isolate.Factory.NewJSObjectFromMap(initialMap)
+            ? isolate.Factory.FastNewObject(initialMap)
             : NewImplicitReceiver(isolate, function, Unsafe.As<JSReceiver>(newTargetObject));
 
         // The construct stub's frame (see InterpreterCalls.ConstructInterpreted).

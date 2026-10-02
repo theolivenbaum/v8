@@ -323,6 +323,25 @@ public sealed partial class Factory(Isolate isolate)
         return obj;
     }
 
+    /// <summary>
+    /// FastNewObject (builtins-constructor-gen.cc) for a constructor's
+    /// initial map: an ordinary object with in-object slots allocated
+    /// without the generic checks, then the slack tracking step.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public JSObject FastNewObject(Map initialMap)
+    {
+        JSObject obj = initialMap.HasInObjectSlots && initialMap.InstanceType == InstanceType.JSObjectType &&
+                       initialMap.GetInObjectProperties() != 0 && initialMap.HasFastElements
+            ? JSObject.FastNewWithInObjectSlots(initialMap)
+            : initialMap.HasInObjectSlots ? JSObject.NewWithInObjectSlots(initialMap) : JSObject.AllocateForMap(initialMap);
+        if (initialMap.IsInobjectSlackTrackingInProgress()) SlackTrackingStep(initialMap);
+        return obj;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    void SlackTrackingStep(Map map) => map.FindRootMap().InobjectSlackTrackingStep(_isolate);
+
     /// <summary>Factory::NewSlowJSObjectFromMap: a dictionary-mode object.</summary>
     public JSObject NewSlowJSObjectFromMap(Map map, int capacity = NameDictionary.kInitialCapacity)
     {

@@ -94,6 +94,32 @@ public partial class JSObject
     }
 
     /// <summary>
+    /// FastNewObject's allocation (builtins-constructor-gen.cc): an ordinary
+    /// object for a constructor's initial map, which is in fast mode with
+    /// fast elements, so the header is the map and the empty elements and
+    /// the in-object slots start as undefined (the CLR's zeroed memory).
+    /// </summary>
+    internal static JSObject FastNewWithInObjectSlots(Map map)
+    {
+        Debug.Assert(map.InstanceType == InstanceType.JSObjectType && !map.IsDictionaryMap && map.HasFastElements);
+        FixedArray empty = FixedArray.Empty;
+        return map.GetInObjectProperties() switch
+        {
+            1 => new JSObjectInObject1(map, empty),
+            2 => new JSObjectInObject2(map, empty),
+            3 => new JSObjectInObject3(map, empty),
+            4 => new JSObjectInObject4(map, empty),
+            <= 8 => new JSObjectInObject8(map, empty),
+            <= 12 => new JSObjectInObject12(map, empty),
+            <= 16 => new JSObjectInObject16(map, empty),
+            <= 32 => new JSObjectInObject32(map, empty),
+            <= 64 => new JSObjectInObject64(map, empty),
+            <= 128 => new JSObjectInObject128(map, empty),
+            _ => new JSObjectInObject256(map, empty),
+        };
+    }
+
+    /// <summary>
     /// The field at <paramref name="storageIndex"/> (a <see cref="FieldIndex.StorageIndex"/>).
     /// The caller has checked the map, which guarantees the slot exists.
     /// </summary>
@@ -228,6 +254,8 @@ internal class JSObjectInObject1 : JSObject
 {
     internal InObjectSlots1 _slots0;
     public JSObjectInObject1(Map map) : base(map, inObjectSlots: true) { }
+    /// <summary>FastNewObject (see <see cref="JSObject.FastNewWithInObjectSlots"/>).</summary>
+    internal JSObjectInObject1(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
     protected JSObjectInObject1(JSObjectInObject1 source) : base(source) => _slots0 = source._slots0;
     internal override int InObjectSlotCapacity => 1;
     internal override JSObject CloneShallowCore() => new JSObjectInObject1(this);
@@ -238,6 +266,7 @@ internal class JSObjectInObject2 : JSObjectInObject1
 {
     internal InObjectSlots1 _slot1;
     public JSObjectInObject2(Map map) : base(map) { }
+    internal JSObjectInObject2(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
     protected JSObjectInObject2(JSObjectInObject2 source) : base(source) => _slot1 = source._slot1;
     internal override int InObjectSlotCapacity => 2;
     internal override JSObject CloneShallowCore() => new JSObjectInObject2(this);
@@ -248,6 +277,7 @@ internal class JSObjectInObject3 : JSObjectInObject2
 {
     internal InObjectSlots1 _slot2;
     public JSObjectInObject3(Map map) : base(map) { }
+    internal JSObjectInObject3(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
     protected JSObjectInObject3(JSObjectInObject3 source) : base(source) => _slot2 = source._slot2;
     internal override int InObjectSlotCapacity => 3;
     internal override JSObject CloneShallowCore() => new JSObjectInObject3(this);
@@ -258,6 +288,7 @@ internal class JSObjectInObject4 : JSObjectInObject3
 {
     internal InObjectSlots1 _slot3;
     public JSObjectInObject4(Map map) : base(map) { }
+    internal JSObjectInObject4(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
     protected JSObjectInObject4(JSObjectInObject4 source) : base(source) => _slot3 = source._slot3;
     internal override int InObjectSlotCapacity => 4;
     internal override JSObject CloneShallowCore() => new JSObjectInObject4(this);
@@ -268,6 +299,7 @@ internal class JSObjectInObject8 : JSObjectInObject4
 {
     internal InObjectSlots4 _slots1;
     public JSObjectInObject8(Map map) : base(map) { }
+    internal JSObjectInObject8(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
     protected JSObjectInObject8(JSObjectInObject8 source) : base(source) => _slots1 = source._slots1;
     internal override int InObjectSlotCapacity => 8;
     internal override JSObject CloneShallowCore() => new JSObjectInObject8(this);
@@ -278,6 +310,7 @@ internal class JSObjectInObject12 : JSObjectInObject8
 {
     internal InObjectSlots4 _slots2;
     public JSObjectInObject12(Map map) : base(map) { }
+    internal JSObjectInObject12(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
     protected JSObjectInObject12(JSObjectInObject12 source) : base(source) => _slots2 = source._slots2;
     internal override int InObjectSlotCapacity => 12;
     internal override JSObject CloneShallowCore() => new JSObjectInObject12(this);
@@ -288,6 +321,7 @@ internal class JSObjectInObject16 : JSObjectInObject12
 {
     internal InObjectSlots4 _slots3;
     public JSObjectInObject16(Map map) : base(map) { }
+    internal JSObjectInObject16(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
     protected JSObjectInObject16(JSObjectInObject16 source) : base(source) => _slots3 = source._slots3;
     internal override int InObjectSlotCapacity => 16;
     internal override JSObject CloneShallowCore() => new JSObjectInObject16(this);
@@ -298,6 +332,7 @@ internal class JSObjectInObject32 : JSObjectInObject16
 {
     internal InObjectSlots16 _slots4;
     public JSObjectInObject32(Map map) : base(map) { }
+    internal JSObjectInObject32(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
     protected JSObjectInObject32(JSObjectInObject32 source) : base(source) => _slots4 = source._slots4;
     internal override int InObjectSlotCapacity => 32;
     internal override JSObject CloneShallowCore() => new JSObjectInObject32(this);
@@ -308,6 +343,7 @@ internal class JSObjectInObject64 : JSObjectInObject32
 {
     internal InObjectSlots32 _slots5;
     public JSObjectInObject64(Map map) : base(map) { }
+    internal JSObjectInObject64(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
     protected JSObjectInObject64(JSObjectInObject64 source) : base(source) => _slots5 = source._slots5;
     internal override int InObjectSlotCapacity => 64;
     internal override JSObject CloneShallowCore() => new JSObjectInObject64(this);
@@ -318,6 +354,7 @@ internal class JSObjectInObject128 : JSObjectInObject64
 {
     internal InObjectSlots64 _slots6;
     public JSObjectInObject128(Map map) : base(map) { }
+    internal JSObjectInObject128(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
     protected JSObjectInObject128(JSObjectInObject128 source) : base(source) => _slots6 = source._slots6;
     internal override int InObjectSlotCapacity => 128;
     internal override JSObject CloneShallowCore() => new JSObjectInObject128(this);
@@ -328,6 +365,7 @@ internal sealed class JSObjectInObject256 : JSObjectInObject128
 {
     internal InObjectSlots128 _slots7;
     public JSObjectInObject256(Map map) : base(map) { }
+    internal JSObjectInObject256(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
     JSObjectInObject256(JSObjectInObject256 source) : base(source) => _slots7 = source._slots7;
     internal override int InObjectSlotCapacity => 256;
     internal override JSObject CloneShallowCore() => new JSObjectInObject256(this);
