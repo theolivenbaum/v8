@@ -761,8 +761,24 @@ Open, the next levers: the scanner and preparser
 per token (40% of a TypeScript compile, a third of it the scanner),
 StringTable lookups when internalizing (the AstRawString's hash is not
 reused), RegisterInfo and the other per-function allocations of the
-bytecode generator for lazy compiles, the script part of the compilation
-cache.
+bytecode generator for lazy compiles.
+
+Compilation cache, script part (2026-10-02): CompilationCacheScript ported
+(Compiler::GetSharedFunctionInfoForScript, ScriptCacheKey: source, name,
+offsets, origin options; scripts and modules), so compiling the same
+script again reuses its Script and SharedFunctionInfos (d8 load() of one
+file, Realm.eval of one source in several realms). The eval cache now
+keys by source hash (no strong copy of the source), demotes unused
+entries to weak references at full collections, and caches sources over
+16K weakly on first compile, strongly on the second. Tests:
+tests/V8Sharp.Tests/Codegen/CompilationCacheUnitTest.cs. Finding: Octane
+CodeLoad does not hit the compilation cache in V8 either: every run
+evaluates a source salted with a new value (the steady harness does not
+reset the salt between its warm-up and measured halves), and V8 --jitless
+scores the same with --no-compilation-cache (2300 vs 2538 steady, 15373 vs
+16717 wall, one unlocked run each). The CodeLoad gap is compile speed of
+fresh sources (indirect eval of the salted Closure source: V8 --jitless
+about 0.4 ms, V8Sharp about 3.2-4 ms per eval).
 
 Runtime slow paths outside the dispatch loop on zlib, Mandreel, Gameboy,
 PdfJS and Box2D (2026-10-02, after the fourth pass; thread CPU,
@@ -982,8 +998,10 @@ progress, also off by default.
 - Baseline: open items
   - Bytecode flushing and baseline code flushing (mjsunit/baseline/flush-*)
     are not implemented (no bytecode aging).
-  - No compilation cache, so closures from separately compiled identical
-    sources do not share baseline code (mjsunit/baseline/cross-realm).
+  - mjsunit/baseline/cross-realm: identical sources in two realms now share
+    the SharedFunctionInfo (script compilation cache), but a closure whose
+    SharedFunctionInfo already has baseline code does not get it on its
+    lazy compile (isBaseline(f2) is false after f2(0), line 35).
   - d8.test.verifySourcePositions (verify-bytecode-offsets) is not in the
     test host.
   - Compile cost: RyuJIT takes about 3-6 us per IL byte (about 10 us per
