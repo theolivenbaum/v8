@@ -8,9 +8,10 @@
 // context setup of Execution::CallScript (NewScriptContext,
 // src/execution/execution.cc).
 //
-// Deviations: source positions are collected eagerly; there is no
-// compilation cache (every script and eval compiles afresh); inner functions
-// are reparsed without preparse data.
+// The compilation cache (CompilationCacheScript, CompilationCacheEval) is in
+// CompilationCache.cs.
+//
+// Deviations: source positions are collected eagerly.
 using System.Runtime.CompilerServices;
 using V8Sharp.Ast;
 using V8Sharp.Interpreter;
@@ -136,31 +137,63 @@ namespace V8Sharp.Codegen
         }
 
         /// <summary>
-        /// Creates the Script for a source and compiles it; returns the toplevel
-        /// closure in the current native context (ScriptCompiler::Compile +
-        /// UnboundScript::BindToCurrentContext).
+        /// Compiler::GetSharedFunctionInfoForScript (GetSharedFunctionInfoForScriptImpl):
+        /// the toplevel SharedFunctionInfo of a script with this source and origin,
+        /// from the isolate's compilation cache or compiled into a new Script and
+        /// put in the cache. Throws the SyntaxError.
+        /// </summary>
+        public static SharedFunctionInfo GetSharedFunctionInfoForScript(Isolate isolate, JSString source,
+            in ScriptDetails scriptDetails)
+        {
+            LanguageMode languageMode = isolate.Flags.use_strict ? LanguageMode.Strict : LanguageMode.Sloppy;
+
+            // For extensions or REPL mode scripts neither do a compilation cache lookup,
+            // nor put the compilation result back into the cache.
+            CompilationCacheScript? cache = scriptDetails.IsReplMode ? null : CompilationCacheScript.For(isolate, languageMode);
+            string? sourceString = null;
+            if (cache is not null)
+            {
+                // First check per-isolate compilation cache.
+                sourceString = source.ToString();
+                if (cache.Lookup(sourceString, scriptDetails) is { } cached) return cached;
+            }
+
+            // No cache entry found compile the script.
+            Script script = isolate.Factory.NewScript(source);
+            if (sourceString is not null) script.SetSourceString(sourceString);
+            script.Name = scriptDetails.NameObj;
+            script.LineOffset = scriptDetails.LineOffset;
+            script.ColumnOffset = scriptDetails.ColumnOffset;
+            script.OriginOptionsIsModule = scriptDetails.IsModule;
+            script.OriginOptionsIsSharedCrossOrigin = scriptDetails.IsSharedCrossOrigin;
+            SharedFunctionInfo result = CompileScript(isolate, script, scriptDetails.IsReplMode);
+
+            // Add the result to the isolate cache.
+            cache?.Put(sourceString!, scriptDetails, result);
+            return result;
+        }
+
+        /// <summary>
+        /// Compiles a script (through the compilation cache) and returns its
+        /// toplevel closure in the current native context (ScriptCompiler::Compile
+        /// + UnboundScript::BindToCurrentContext).
         /// </summary>
         public static JSFunction CompileScript(Isolate isolate, JSString source, JSValue name, int lineOffset = 0,
             int columnOffset = 0, bool isReplMode = false)
         {
-            Script script = isolate.Factory.NewScript(source);
-            script.Name = name;
-            script.LineOffset = lineOffset;
-            script.ColumnOffset = columnOffset;
-            SharedFunctionInfo shared = CompileScript(isolate, script, isReplMode);
+            SharedFunctionInfo shared = GetSharedFunctionInfoForScript(isolate, source,
+                new ScriptDetails(name, lineOffset, columnOffset, IsReplMode: isReplMode));
             return isolate.Factory.NewFunction(shared, isolate.NativeContext);
         }
 
         /// <summary>
-        /// ScriptCompiler::CompileModule: compiles a module script and creates its
-        /// SourceTextModule (Factory::NewSourceTextModule). Throws the SyntaxError.
+        /// ScriptCompiler::CompileModule: compiles a module script (through the
+        /// compilation cache) and creates its SourceTextModule
+        /// (Factory::NewSourceTextModule). Throws the SyntaxError.
         /// </summary>
         public static SourceTextModule CompileModule(Isolate isolate, JSString source, JSValue name)
         {
-            Script script = isolate.Factory.NewScript(source);
-            script.Name = name;
-            script.OriginOptionsIsModule = true;
-            SharedFunctionInfo shared = CompileScript(isolate, script);
+            SharedFunctionInfo shared = GetSharedFunctionInfoForScript(isolate, source, new ScriptDetails(name, IsModule: true));
             return SourceTextModule.New(isolate, shared);
         }
 
@@ -428,9 +461,7 @@ namespace V8Sharp.Codegen
                 // use the parameters_end_pos as the eval_position in the eval cache.
                 evalCachePosition = -parametersEndPos;
             }
-            CompilationCacheEval? cache = source.Length <= CompilationCacheEval.kMaxSourceLength
-                ? CompilationCacheEval.For(isolate)
-                : null;
+            CompilationCacheEval? cache = CompilationCacheEval.For(isolate);
             string? sourceString = null;
             if (cache is not null)
             {
@@ -444,6 +475,7 @@ namespace V8Sharp.Codegen
             }
 
             Script script = isolate.Factory.NewScript(source);
+            if (sourceString is not null) script.SetSourceString(sourceString);
             script.Compilation = Script.CompilationType.Eval;
             script.EvalFromShared = outerInfo;
             if (evalPosition == Globals.kNoSourcePosition)
