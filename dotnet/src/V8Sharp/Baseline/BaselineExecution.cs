@@ -26,7 +26,7 @@ public static class BaselineExecution
     public static JSValue Run(Isolate isolate, ref InterpreterState state, BaselineCode code)
     {
         isolate.InterpreterFrames[state.FrameIndex].IsBaseline = true;
-        BaselineCodeEntry entry = code.Entry;
+        BaselineCodeEntry entry = code.EntryFor(state.FeedbackVector);
         while (true)
         {
             try
@@ -76,6 +76,15 @@ public static class BaselineExecution
         FeedbackCell cell = function.RawFeedbackCell;
         if ((cell.InterruptBudget -= weight) < 0) BytecodeBudgetInterrupt(isolate, function);
     }
+
+    /// <summary>The runtime call of baseline JumpLoop when the budget ran out or an interrupt is pending.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void BudgetInterruptOnJumpLoop(Isolate isolate, JSFunction function) =>
+        BytecodeBudgetInterruptWithStackCheck(isolate, function);
+
+    /// <summary>The runtime call of baseline Return when the budget ran out.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void BudgetInterruptOnReturn(Isolate isolate, JSFunction function) => BytecodeBudgetInterrupt(isolate, function);
 
     /// <summary>Runtime_BytecodeBudgetInterruptWithStackCheck_Sparkplug.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]

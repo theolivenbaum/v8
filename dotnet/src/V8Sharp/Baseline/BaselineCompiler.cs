@@ -30,7 +30,7 @@ using V8Sharp.Interpreter;
 
 namespace V8Sharp.Baseline;
 
-public sealed class BaselineCompiler
+public sealed partial class BaselineCompiler
 {
     /// <summary>kAverageBytecodeToInstructionRatio (x64).</summary>
     public const int kAverageBytecodeToInstructionRatio = 7;
@@ -48,7 +48,14 @@ public sealed class BaselineCompiler
     /// </summary>
     static readonly bool s_useDynamicMethod = Environment.GetEnvironmentVariable("V8SHARP_BASELINE_DYNAMICMETHOD") == "1";
     readonly BaselineAssembler _masm;
-    readonly ILGenerator _il;
+    readonly BaselineILEmitter _il;
+
+    /// <summary>
+    /// Compact code: the bytecodes call the out-of-line builtins instead of
+    /// emitting their fast paths, for a function whose full code would exceed
+    /// RyuJIT's optimization limits (BaselineILEmitter).
+    /// </summary>
+    readonly bool _compact;
     readonly BytecodeArrayIterator _iterator;
 
     // Labels at bytecode offsets (V8: labels_ / label_tags_).
@@ -60,24 +67,45 @@ public sealed class BaselineCompiler
     LocalBuilder? _valueTemp;
 
     static readonly Dictionary<string, MethodInfo> s_builtins = LoadBuiltins();
+    static readonly Dictionary<string, MethodInfo> s_calls = typeof(BaselineCalls).GetMethods(BindingFlags.Public | BindingFlags.Static)
+        .ToDictionary(m => m.Name, StringComparer.Ordinal);
 
-    public BaselineCompiler(Isolate isolate, SharedFunctionInfo sharedFunctionInfo, BytecodeArray bytecode)
+    /// <summary>The name of a function's baseline method (computed on the main thread: it reads the heap).</summary>
+    public static string MethodName(SharedFunctionInfo shared)
+    {
+        string name = shared.Name().ToString();
+        return "baseline:" + (name.Length == 0 ? "(anonymous)" : name);
+    }
+
+    public BaselineCompiler(Isolate isolate, SharedFunctionInfo sharedFunctionInfo, BytecodeArray bytecode, bool compact = false,
+        string? methodName = null, bool optimizeFully = false, FeedbackVector? feedback = null)
     {
         _isolate = isolate;
+        // --always-sparkplug compiles before anything ran: no feedback to go by.
+        _feedback = isolate.Flags.always_sparkplug ? null : feedback;
+        _feedbackGuided = !isolate.Flags.always_sparkplug && !s_noFeedbackGuidance;
+        _compact = compact;
         _shared = sharedFunctionInfo;
         _bytecode = bytecode;
-        string name = sharedFunctionInfo.Name().ToString();
-        name = "baseline:" + (name.Length == 0 ? "(anonymous)" : name);
+        string name = methodName ?? MethodName(sharedFunctionInfo);
         if (s_useDynamicMethod)
         {
-            _method = new DynamicMethod(name, typeof(JSValue), [typeof(Isolate), typeof(InterpreterState).MakeByRefType()],
+            _method = new DynamicMethod(name, typeof(JSValue), [typeof(BaselineCode), typeof(Isolate), typeof(InterpreterState).MakeByRefType()],
                 typeof(BaselineCompiler).Module, skipVisibility: true);
-            _il = _method.GetILGenerator(Math.Max(64, bytecode.Length * 16));
+            _il = new BaselineILEmitter(_method.GetILGenerator(Math.Max(64, bytecode.Length * 16)));
         }
         else
         {
             (_type, _methodBuilder) = BaselineCodeSpace.For(isolate).DefineMethod(name);
-            _il = _methodBuilder.GetILGenerator(Math.Max(64, bytecode.Length * 16));
+            // Code compiled on the concurrent compiler's thread is jitted there
+            // with full optimization right away (AggressiveOptimization skips
+            // RyuJIT's tier 0): the main thread never runs it unoptimized.
+            if (optimizeFully)
+            {
+                _methodBuilder.SetImplementationFlags(MethodImplAttributes.IL | MethodImplAttributes.Managed |
+                                                      MethodImplAttributes.AggressiveOptimization);
+            }
+            _il = new BaselineILEmitter(_methodBuilder.GetILGenerator(Math.Max(64, bytecode.Length * 16)));
         }
         _masm = new BaselineAssembler(_il);
         _iterator = new BytecodeArrayIterator(bytecode);
@@ -91,6 +119,46 @@ public sealed class BaselineCompiler
         foreach (MethodInfo m in typeof(BaselineBuiltins).GetMethods(BindingFlags.Public | BindingFlags.Static)) result[m.Name] = m;
         foreach (MethodInfo m in typeof(BaselineExecution).GetMethods(BindingFlags.Public | BindingFlags.Static)) result[m.Name] = m;
         return result;
+    }
+
+    // RyuJIT's MinOpts limits (compSetOptimizationLevel), with a margin.
+    const int kMaxOptimizedILBytes = 50000;
+    const int kMaxOptimizedInstructions = 16000;
+    const int kMaxOptimizedBlocks = 1600;
+    const int kMaxOptimizedLocalReferences = 6500;
+
+    /// <summary>
+    /// Whether RyuJIT would compile the generated method with minimal
+    /// optimization (BaselineILEmitter): the code is then generated again in
+    /// the compact form.
+    /// </summary>
+    public bool ExceedsOptimizationLimits =>
+        _il.ILOffset > kMaxOptimizedILBytes || _il.Instructions > kMaxOptimizedInstructions ||
+        _il.BlockBoundaries > kMaxOptimizedBlocks || _il.LocalReferences > kMaxOptimizedLocalReferences;
+
+    /// <summary>The emitter's counts (for tracing and tests).</summary>
+    internal string Statistics =>
+        $"il={_il.ILOffset} instructions={_il.Instructions} blocks<={_il.BlockBoundaries} localrefs={_il.LocalReferences}" +
+        (_compact ? " compact" : "");
+
+    // V8SHARP_BASELINE_IL_PROFILE=1: IL instructions emitted per bytecode, printed at exit.
+    static readonly Dictionary<Bytecode, (long Count, long Instructions)>? s_ilProfile = CreateILProfile();
+
+    static Dictionary<Bytecode, (long Count, long Instructions)>? CreateILProfile()
+    {
+        if (Environment.GetEnvironmentVariable("V8SHARP_BASELINE_IL_PROFILE") != "1") return null;
+        var profile = new Dictionary<Bytecode, (long Count, long Instructions)>();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            long total = 0;
+            foreach (var entry in profile) total += entry.Value.Instructions;
+            foreach (var entry in profile.OrderByDescending(e => e.Value.Instructions).Take(40))
+            {
+                Console.Error.WriteLine($"{entry.Key,-32} count={entry.Value.Count,7} il={entry.Value.Instructions,9} " +
+                                        $"({100.0 * entry.Value.Instructions / total:F1}%, {(double)entry.Value.Instructions / entry.Value.Count:F1} each)");
+            }
+        };
+        return profile;
     }
 
     /// <summary>BaselineCompiler::EstimateInstructionSize.</summary>
@@ -117,31 +185,58 @@ public sealed class BaselineCompiler
         for (; !_iterator.Done(); _iterator.Advance()) PreVisitSingleBytecode();
         _iterator.Reset();
 
+        SetUpRegisterCache();
         Prologue();
-        for (; !_iterator.Done(); _iterator.Advance()) VisitSingleBytecode();
+        for (; !_iterator.Done(); _iterator.Advance())
+        {
+            if (s_ilProfile is null)
+            {
+                VisitSingleBytecode();
+                continue;
+            }
+            Bytecode visited = _iterator.CurrentBytecode();
+            int before = _il.Instructions;
+            VisitSingleBytecode();
+            lock (s_ilProfile)
+            {
+                s_ilProfile.TryGetValue(visited, out (long Count, long Instructions) entry);
+                s_ilProfile[visited] = (entry.Count + 1, entry.Instructions + _il.Instructions - before);
+            }
+        }
 
         // Falling off the end is impossible (the bytecode ends in Return, Throw
         // or a jump), but IL requires a terminated method.
         _masm.LoadInt(_bytecode.Length);
         CallBuiltin("Illegal");
         _masm.Return();
+
+        EmitBackEdgeInterruptStub();
     }
 
-    /// <summary>BaselineCompiler::Build: the finished method and its IL size.</summary>
-    public (BaselineCodeEntry Entry, int ILSize) Build()
+    /// <summary>
+    /// BaselineCompiler::Build: the finished method and its IL size. The entry
+    /// delegate is closed over the code object (the method's first parameter),
+    /// which makes invoking it a direct call (an open static delegate goes
+    /// through a shuffle thunk).
+    /// </summary>
+    public (BaselineCodeEntry Entry, int ILSize) Build(BaselineCode code)
     {
         BaselineCodeEntry entry;
         if (_method is not null)
         {
-            entry = (BaselineCodeEntry)_method.CreateDelegate(typeof(BaselineCodeEntry));
+            entry = (BaselineCodeEntry)_method.CreateDelegate(typeof(BaselineCodeEntry), code);
         }
         else
         {
             Type type = BaselineCodeSpace.CreateType(_type!);
-            entry = (BaselineCodeEntry)type.GetMethod(_methodBuilder!.Name)!.CreateDelegate(typeof(BaselineCodeEntry));
+            CompiledMethod = type.GetMethod(_methodBuilder!.Name)!;
+            entry = (BaselineCodeEntry)CompiledMethod.CreateDelegate(typeof(BaselineCodeEntry), code);
         }
         return (entry, _il.ILOffset);
     }
+
+    /// <summary>The finished method (after Build; null for a DynamicMethod).</summary>
+    public MethodInfo? CompiledMethod { get; private set; }
 
     Label EnsureLabel(int offset)
     {
@@ -195,33 +290,33 @@ public sealed class BaselineCompiler
     /// </summary>
     void Prologue()
     {
-        ILGenerator il = _il;
+        BaselineILEmitter il = _il;
         // fpRef = ref isolate.RegisterStack[st.Fp]; fp = st.Fp
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, s_registerStack);
         il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldfld, s_registerStack);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFp);
         il.Emit(OpCodes.Ldelema, typeof(JSValue));
         il.Emit(OpCodes.Stloc, _masm.FpRef);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFp);
         il.Emit(OpCodes.Stloc, _masm.Fp);
         // frame = ref isolate.InterpreterFrames[st.FrameIndex]
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Call, s_interpreterFrames);
         il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Call, s_interpreterFrames);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFrameIndex);
         il.Emit(OpCodes.Ldelema, typeof(InterpreterFrameRecord));
         il.Emit(OpCodes.Stloc, _masm.Frame);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFunction);
         il.Emit(OpCodes.Stloc, _masm.Function);
         // (The entry materialized the constant pool.)
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stBytecode);
         il.Emit(OpCodes.Ldfld, s_constantPoolValues);
         il.Emit(OpCodes.Stloc, _masm.Constants);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stBytecode);
         il.Emit(OpCodes.Callvirt, s_bytecodes);
         il.Emit(OpCodes.Stloc, _masm.Code);
@@ -230,22 +325,33 @@ public sealed class BaselineCompiler
         // accumulator, context and target offset come from the state.
         _reenter = il.DefineLabel();
         il.MarkLabel(_reenter);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stAccumulator);
         il.Emit(OpCodes.Stloc, _masm.Acc);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stContext);
         il.Emit(OpCodes.Stloc, _masm.Context);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFeedbackVector);
         il.Emit(OpCodes.Stloc, _masm.Fv);
-        il.Emit(OpCodes.Ldarg_1);
+        // Baseline frames always have a feedback vector (Runtime_InstallBaselineCode).
+        il.Emit(OpCodes.Ldloc, _masm.Fv);
+        il.Emit(OpCodes.Ldfld, s_feedbackSlots);
+        il.Emit(OpCodes.Stloc, _masm.FeedbackSlots);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stPc);
         il.Emit(OpCodes.Stloc, _masm.Scratch);
 
+        var entryStubs = new List<(int Offset, Label Stub)>();
         foreach (int offset in _entryOffsets)
         {
             Label target = EnsureLabel(offset);
+            if (_registerLocals is not null)
+            {
+                // Cached registers are loaded from the frame on entry.
+                target = il.DefineLabel();
+                entryStubs.Add((offset, target));
+            }
             il.Emit(OpCodes.Ldloc, _masm.Scratch);
             if (offset == 0)
             {
@@ -261,6 +367,24 @@ public sealed class BaselineCompiler
         il.Emit(OpCodes.Ldloc, _masm.Scratch);
         CallBuiltin("Illegal");
         _masm.Return();
+
+        foreach ((int offset, Label stub) in entryStubs)
+        {
+            il.MarkLabel(stub);
+            if (offset == 0)
+            {
+                // A new frame: the register file is undefined (as the locals
+                // start out), except new.target, which the caller stored.
+                Register incoming = _bytecode.IncomingNewTargetOrGeneratorRegister;
+                if (incoming.IsValid && IsCached(incoming)) ReloadRegisters(incoming.Index, 1);
+            }
+            else
+            {
+                // OSR from the interpreter at a loop header.
+                ReloadRegisters(0, _registerLocals!.Length);
+            }
+            il.Emit(OpCodes.Br, _labels[offset]);
+        }
     }
 
     // ---- Operand helpers (BaselineCompiler::RegisterOperand, Constant, Uint ...) --------------------------
@@ -285,6 +409,8 @@ public sealed class BaselineCompiler
     int EmbeddedFeedbackOffset(int i) => Cursor + _iterator.CurrentOperandOffset(i);
 
     void CallBuiltin(string name) => _masm.Call(s_builtins[name]);
+
+    void CallCalls(string name) => _masm.Call(s_calls[name]);
 
     JSValue[] ConstantPoolValues => _bytecode.ConstantPoolValues ?? InterpreterRuntime.MaterializeConstantPool(_isolate, _bytecode);
 
@@ -347,7 +473,19 @@ public sealed class BaselineCompiler
     void Fv() => _masm.LoadFeedbackVector();
     void Fn() => _masm.LoadFunction();
     void I(int value) => _masm.LoadInt(value);
-    void Reg(Register r) => _masm.LoadRegister(r);
+    /// <summary>Pushes the value of register <paramref name="r"/> (its IL local when the register is cached).</summary>
+    void Reg(Register r)
+    {
+        if (IsCached(r)) Emit(OpCodes.Ldloc, _registerLocals![r.Index]);
+        else _masm.LoadRegister(r);
+    }
+
+    /// <summary>
+    /// Pushes the address of register <paramref name="r"/>'s frame slot. For a
+    /// cached register this is the frame copy: a bytecode whose builtin writes
+    /// a register through it has the register reloaded afterwards
+    /// (VisitSingleBytecode).
+    /// </summary>
     void RegRef(Register r) => _masm.LoadRegisterAddress(r);
     void RegIndex(Register r) => _masm.LoadRegisterStackIndex(r);
     void Const(int index) => _masm.LoadConstant(index);
@@ -440,6 +578,7 @@ public sealed class BaselineCompiler
 
         Bytecode bytecode = _iterator.CurrentBytecode();
         if (NeedsBytecodeOffset(bytecode)) _masm.StoreBytecodeOffset(Cursor);
+        if (_registerLocals is not null) SpillRegisterListOperands(bytecode);
 
         switch (bytecode)
         {
@@ -449,34 +588,26 @@ public sealed class BaselineCompiler
                 SetAcc();
                 break;
             case Bytecode.LdaZero:
-                CallBuiltin("Zero");
-                SetAcc();
+                SetAccNumber(0.0);
                 break;
             case Bytecode.LdaSmi:
-                I(Int(0));
-                CallBuiltin("Smi");
-                SetAcc();
+                SetAccNumber(Int(0));
                 break;
             case Bytecode.LdaUndefined:
-                _masm.LoadAccumulatorAddress();
-                _il.Emit(OpCodes.Initobj, typeof(JSValue));
+                SetAccUndefined();
                 break;
             case Bytecode.LdaNull:
-                CallBuiltin("Null");
-                SetAcc();
+                SetAccRoot(s_null);
                 break;
             case Bytecode.LdaTheHole:
             case Bytecode.LdaTdzHole:
-                CallBuiltin("TheHole");
-                SetAcc();
+                SetAccRoot(s_theHole);
                 break;
             case Bytecode.LdaTrue:
-                CallBuiltin("True");
-                SetAcc();
+                SetAccRoot(s_true);
                 break;
             case Bytecode.LdaFalse:
-                CallBuiltin("False");
-                SetAcc();
+                SetAccRoot(s_false);
                 break;
             case Bytecode.LdaConstant:
                 Const(ConstantPoolIndex(0));
@@ -488,24 +619,18 @@ public sealed class BaselineCompiler
             case Bytecode.LdaContextSlotNoCell:
             case Bytecode.LdaContextSlot:
             case Bytecode.LdaImmutableContextSlot:
-                Reg(RegisterOperand(0));
-                I(ContextSlot(1));
-                I(Uint(2));
-                CallBuiltin("LdaContextSlot");
-                SetAcc();
+                VisitLdaContextSlot(RegisterOperand(0), ContextSlot(1), Uint(2));
                 break;
             case Bytecode.LdaCurrentContextSlotNoCell:
             case Bytecode.LdaCurrentContextSlot:
             case Bytecode.LdaImmutableCurrentContextSlot:
-                Ctx();
-                I(ContextSlot(0));
-                CallBuiltin("LdaCurrentContextSlot");
-                SetAcc();
+                VisitLdaCurrentContextSlot(ContextSlot(0));
                 break;
 
             // ---- Register transfers -------------------------------------------------------------------------
             case Bytecode.Star:
-                _masm.StoreAccumulatorToRegister(RegisterOperand(0));
+                if (_compact) _masm.StoreAccumulatorToRegister(RegisterOperand(0));
+                else EmitStar(RegisterOperand(0));
                 break;
             case Bytecode.Star0:
             case Bytecode.Star1:
@@ -523,10 +648,12 @@ public sealed class BaselineCompiler
             case Bytecode.Star13:
             case Bytecode.Star14:
             case Bytecode.Star15:
-                _masm.StoreAccumulatorToRegister(_iterator.GetStarTargetRegister());
+                if (_compact) _masm.StoreAccumulatorToRegister(_iterator.GetStarTargetRegister());
+                else EmitStar(_iterator.GetStarTargetRegister());
                 break;
             case Bytecode.Mov:
-                _masm.MoveRegister(RegisterOperand(0), RegisterOperand(1));
+                if (_compact) _masm.MoveRegister(RegisterOperand(0), RegisterOperand(1));
+                else EmitMov(RegisterOperand(0), RegisterOperand(1));
                 break;
 
             case Bytecode.PushContext:
@@ -561,19 +688,18 @@ public sealed class BaselineCompiler
                 SetAcc();
                 break;
             case Bytecode.TestUndetectable:
-                Acc();
-                CallBuiltin("TestUndetectable");
-                SetAcc();
-                break;
             case Bytecode.TestNull:
-                Acc();
-                CallBuiltin("TestNull");
-                SetAcc();
-                break;
             case Bytecode.TestUndefined:
-                Acc();
-                CallBuiltin("TestUndefined");
-                SetAcc();
+                if (_compact)
+                {
+                    Acc();
+                    CallBuiltin(bytecode.ToString());
+                    SetAcc();
+                }
+                else
+                {
+                    VisitTestOddball(bytecode);
+                }
                 break;
             case Bytecode.TestTypeOf:
                 Acc();
@@ -585,13 +711,20 @@ public sealed class BaselineCompiler
             // ---- Globals ------------------------------------------------------------------------------------------
             case Bytecode.LdaGlobal:
             case Bytecode.LdaGlobalInsideTypeof:
-                Isolate();
-                Fv();
-                I(FeedbackSlot(1));
-                Ctx();
-                Const(ConstantPoolIndex(0));
-                CallBuiltin(bytecode == Bytecode.LdaGlobal ? "LdaGlobal" : "LdaGlobalInsideTypeof");
-                SetAcc();
+                if (!LdaGlobalInline(FeedbackSlot(1)))
+                {
+                    Isolate();
+                    Fv();
+                    I(FeedbackSlot(1));
+                    Ctx();
+                    Const(ConstantPoolIndex(0));
+                    CallBuiltin(bytecode == Bytecode.LdaGlobal ? "LdaGlobalSlow" : "LdaGlobalInsideTypeofSlow");
+                    SetAcc();
+                }
+                else
+                {
+                    VisitLdaGlobal(bytecode == Bytecode.LdaGlobalInsideTypeof);
+                }
                 break;
             case Bytecode.StaGlobal:
                 Isolate();
@@ -606,18 +739,11 @@ public sealed class BaselineCompiler
             // ---- Context stores ----------------------------------------------------------------------------------------
             case Bytecode.StaContextSlotNoCell:
             case Bytecode.StaContextSlot:
-                Reg(RegisterOperand(0));
-                I(ContextSlot(1));
-                I(Uint(2));
-                Acc();
-                CallBuiltin("StaContextSlot");
+                VisitStaContextSlot(RegisterOperand(0), ContextSlot(1), Uint(2));
                 break;
             case Bytecode.StaCurrentContextSlotNoCell:
             case Bytecode.StaCurrentContextSlot:
-                Ctx();
-                I(ContextSlot(0));
-                Acc();
-                CallBuiltin("StaCurrentContextSlot");
+                VisitStaCurrentContextSlot(ContextSlot(0));
                 break;
 
             // ---- Lookup slots ----------------------------------------------------------------------------------------------
@@ -667,13 +793,20 @@ public sealed class BaselineCompiler
 
             // ---- Property loads ----------------------------------------------------------------------------------------------
             case Bytecode.GetNamedProperty:
-                Isolate();
-                Fv();
-                I(FeedbackSlot(2));
-                Reg(RegisterOperand(0));
-                Const(ConstantPoolIndex(1));
-                CallBuiltin("GetNamedProperty");
-                SetAcc();
+                if (GetNamedPropertySite(FeedbackSlot(2)) == NamedLoadPaths.None)
+                {
+                    Isolate();
+                    Fv();
+                    I(FeedbackSlot(2));
+                    Reg(RegisterOperand(0));
+                    Const(ConstantPoolIndex(1));
+                    CallBuiltin("GetNamedPropertySlow");
+                    SetAcc();
+                }
+                else
+                {
+                    VisitGetNamedProperty();
+                }
                 break;
             case Bytecode.GetNamedPropertyFromSuper:
                 Isolate();
@@ -686,13 +819,20 @@ public sealed class BaselineCompiler
                 SetAcc();
                 break;
             case Bytecode.GetKeyedProperty:
-                Isolate();
-                Fv();
-                I(FeedbackSlot(1));
-                Reg(RegisterOperand(0));
-                Acc();
-                CallBuiltin("GetKeyedProperty");
-                SetAcc();
+                if (GetKeyedPropertySite(FeedbackSlot(1)) == 0)
+                {
+                    Isolate();
+                    Fv();
+                    I(FeedbackSlot(1));
+                    Reg(RegisterOperand(0));
+                    Acc();
+                    CallBuiltin("GetKeyedPropertySlow");
+                    SetAcc();
+                }
+                else
+                {
+                    VisitGetKeyedProperty();
+                }
                 break;
             case Bytecode.GetEnumeratedKeyedProperty:
                 Isolate();
@@ -737,6 +877,21 @@ public sealed class BaselineCompiler
 
             // ---- Property stores ----------------------------------------------------------------------------------------------------
             case Bytecode.SetNamedProperty:
+                if (!SetNamedPropertyInline(FeedbackSlot(2)))
+                {
+                    Isolate();
+                    Fv();
+                    I(FeedbackSlot(2));
+                    Reg(RegisterOperand(0));
+                    Const(ConstantPoolIndex(1));
+                    Acc();
+                    CallBuiltin("SetNamedPropertySlow");
+                }
+                else
+                {
+                    VisitSetNamedProperty();
+                }
+                break;
             case Bytecode.DefineNamedOwnProperty:
                 Isolate();
                 Fv();
@@ -744,9 +899,24 @@ public sealed class BaselineCompiler
                 Reg(RegisterOperand(0));
                 Const(ConstantPoolIndex(1));
                 Acc();
-                CallBuiltin(bytecode == Bytecode.SetNamedProperty ? "SetNamedProperty" : "DefineNamedOwnProperty");
+                CallBuiltin("DefineNamedOwnProperty");
                 break;
             case Bytecode.SetKeyedProperty:
+                if (!SetKeyedPropertyInline(FeedbackSlot(2)))
+                {
+                    Isolate();
+                    Fv();
+                    I(FeedbackSlot(2));
+                    Reg(RegisterOperand(0));
+                    Reg(RegisterOperand(1));
+                    Acc();
+                    CallBuiltin("SetKeyedPropertySlow");
+                }
+                else
+                {
+                    VisitSetKeyedProperty();
+                }
+                break;
             case Bytecode.StaInArrayLiteral:
                 Isolate();
                 Fv();
@@ -754,7 +924,7 @@ public sealed class BaselineCompiler
                 Reg(RegisterOperand(0));
                 Reg(RegisterOperand(1));
                 Acc();
-                CallBuiltin(bytecode == Bytecode.SetKeyedProperty ? "SetKeyedProperty" : "StaInArrayLiteral");
+                CallBuiltin("StaInArrayLiteral");
                 break;
             case Bytecode.DefineKeyedOwnProperty:
             case Bytecode.DefineKeyedOwnPropertyInLiteral:
@@ -790,30 +960,30 @@ public sealed class BaselineCompiler
                 break;
 
             // ---- Binary operators ---------------------------------------------------------------------------------------------------
-            case Bytecode.Add: VisitBinaryOp("Add"); break;
-            case Bytecode.Sub: VisitBinaryOp("Subtract"); break;
-            case Bytecode.Mul: VisitBinaryOp("Multiply"); break;
+            case Bytecode.Add: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("Add"); else VisitArithmetic(Operation.Add, false); break;
+            case Bytecode.Sub: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("Subtract"); else VisitArithmetic(Operation.Subtract, false); break;
+            case Bytecode.Mul: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("Multiply"); else VisitArithmetic(Operation.Multiply, false); break;
             case Bytecode.Div: VisitBinaryOp("Divide"); break;
             case Bytecode.Mod: VisitBinaryOp("Modulus"); break;
             case Bytecode.Exp: VisitBinaryOp("Exponentiate"); break;
-            case Bytecode.BitwiseOr: VisitBinaryOp("BitwiseOr"); break;
-            case Bytecode.BitwiseXor: VisitBinaryOp("BitwiseXor"); break;
-            case Bytecode.BitwiseAnd: VisitBinaryOp("BitwiseAnd"); break;
-            case Bytecode.ShiftLeft: VisitBinaryOp("ShiftLeft"); break;
-            case Bytecode.ShiftRight: VisitBinaryOp("ShiftRight"); break;
-            case Bytecode.ShiftRightLogical: VisitBinaryOp("ShiftRightLogical"); break;
-            case Bytecode.AddSmi: VisitBinaryOpWithSmi("Add"); break;
-            case Bytecode.SubSmi: VisitBinaryOpWithSmi("Subtract"); break;
-            case Bytecode.MulSmi: VisitBinaryOpWithSmi("Multiply"); break;
+            case Bytecode.BitwiseOr: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("BitwiseOr"); else VisitBitwise(Operation.BitwiseOr, false); break;
+            case Bytecode.BitwiseXor: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("BitwiseXor"); else VisitBitwise(Operation.BitwiseXor, false); break;
+            case Bytecode.BitwiseAnd: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("BitwiseAnd"); else VisitBitwise(Operation.BitwiseAnd, false); break;
+            case Bytecode.ShiftLeft: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("ShiftLeft"); else VisitBitwise(Operation.ShiftLeft, false); break;
+            case Bytecode.ShiftRight: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("ShiftRight"); else VisitBitwise(Operation.ShiftRight, false); break;
+            case Bytecode.ShiftRightLogical: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOp("ShiftRightLogical"); else VisitBitwise(Operation.ShiftRightLogical, false); break;
+            case Bytecode.AddSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("Add"); else VisitArithmetic(Operation.Add, true); break;
+            case Bytecode.SubSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("Subtract"); else VisitArithmetic(Operation.Subtract, true); break;
+            case Bytecode.MulSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("Multiply"); else VisitArithmetic(Operation.Multiply, true); break;
             case Bytecode.DivSmi: VisitBinaryOpWithSmi("Divide"); break;
             case Bytecode.ModSmi: VisitBinaryOpWithSmi("Modulus"); break;
             case Bytecode.ExpSmi: VisitBinaryOpWithSmi("Exponentiate"); break;
-            case Bytecode.BitwiseOrSmi: VisitBinaryOpWithSmi("BitwiseOr"); break;
-            case Bytecode.BitwiseXorSmi: VisitBinaryOpWithSmi("BitwiseXor"); break;
-            case Bytecode.BitwiseAndSmi: VisitBinaryOpWithSmi("BitwiseAnd"); break;
-            case Bytecode.ShiftLeftSmi: VisitBinaryOpWithSmi("ShiftLeft"); break;
-            case Bytecode.ShiftRightSmi: VisitBinaryOpWithSmi("ShiftRight"); break;
-            case Bytecode.ShiftRightLogicalSmi: VisitBinaryOpWithSmi("ShiftRightLogical"); break;
+            case Bytecode.BitwiseOrSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("BitwiseOr"); else VisitBitwise(Operation.BitwiseOr, true); break;
+            case Bytecode.BitwiseXorSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("BitwiseXor"); else VisitBitwise(Operation.BitwiseXor, true); break;
+            case Bytecode.BitwiseAndSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("BitwiseAnd"); else VisitBitwise(Operation.BitwiseAnd, true); break;
+            case Bytecode.ShiftLeftSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("ShiftLeft"); else VisitBitwise(Operation.ShiftLeft, true); break;
+            case Bytecode.ShiftRightSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("ShiftRight"); else VisitBitwise(Operation.ShiftRight, true); break;
+            case Bytecode.ShiftRightLogicalSmi: if (BinaryOpSite(1) == NumberSite.Compact) VisitBinaryOpWithSmi("ShiftRightLogical"); else VisitBitwise(Operation.ShiftRightLogical, true); break;
             case Bytecode.Add_StringConstant_Internalize:
                 Isolate();
                 Fv();
@@ -826,14 +996,12 @@ public sealed class BaselineCompiler
                 break;
 
             // ---- Unary operators ------------------------------------------------------------------------------------------------------
-            case Bytecode.Inc: VisitUnaryOp("Increment"); break;
-            case Bytecode.Dec: VisitUnaryOp("Decrement"); break;
+            case Bytecode.Inc: if (BinaryOpSite(0) == NumberSite.Compact) VisitUnaryOp("Increment"); else VisitIncDec(true); break;
+            case Bytecode.Dec: if (BinaryOpSite(0) == NumberSite.Compact) VisitUnaryOp("Decrement"); else VisitIncDec(false); break;
             case Bytecode.Negate: VisitUnaryOp("Negate"); break;
             case Bytecode.BitwiseNot: VisitUnaryOp("BitwiseNot"); break;
             case Bytecode.ToBooleanLogicalNot:
-                Acc();
-                CallBuiltin("ToBooleanLogicalNot");
-                SetAcc();
+                VisitToBoolean(negate: true);
                 break;
             case Bytecode.LogicalNot:
                 Acc();
@@ -881,6 +1049,20 @@ public sealed class BaselineCompiler
             case Bytecode.CallAnyReceiver:
             case Bytecode.CallProperty:
             case Bytecode.CallUndefinedReceiver:
+                Isolate();
+                Fv();
+                I(FeedbackSlot(3));
+                Reg(RegisterOperand(0));
+                RegIndex(RegisterOperand(1));
+                I(RegisterCount(2));
+                CallCalls(bytecode switch
+                {
+                    Bytecode.CallAnyReceiver => "CallAnyReceiver",
+                    Bytecode.CallProperty => "CallProperty",
+                    _ => "CallUndefinedReceiver",
+                });
+                SetAcc();
+                break;
             case Bytecode.CallWithSpread:
                 Isolate();
                 Fv();
@@ -888,13 +1070,7 @@ public sealed class BaselineCompiler
                 Reg(RegisterOperand(0));
                 RegIndex(RegisterOperand(1));
                 I(RegisterCount(2));
-                CallBuiltin(bytecode switch
-                {
-                    Bytecode.CallAnyReceiver => "CallAnyReceiver",
-                    Bytecode.CallProperty => "CallProperty",
-                    Bytecode.CallUndefinedReceiver => "CallUndefinedReceiver",
-                    _ => "CallWithSpread",
-                });
+                CallBuiltin("CallWithSpread");
                 SetAcc();
                 break;
             case Bytecode.CallProperty0:
@@ -903,7 +1079,7 @@ public sealed class BaselineCompiler
                 I(FeedbackSlot(2));
                 Reg(RegisterOperand(0));
                 Reg(RegisterOperand(1));
-                CallBuiltin("CallProperty0");
+                CallCalls("CallProperty0");
                 SetAcc();
                 break;
             case Bytecode.CallProperty1:
@@ -912,8 +1088,8 @@ public sealed class BaselineCompiler
                 I(FeedbackSlot(3));
                 Reg(RegisterOperand(0));
                 Reg(RegisterOperand(1));
-                RegIndex(RegisterOperand(2));
-                CallBuiltin("CallProperty1");
+                Reg(RegisterOperand(2));
+                CallCalls("CallProperty1");
                 SetAcc();
                 break;
             case Bytecode.CallProperty2:
@@ -922,9 +1098,9 @@ public sealed class BaselineCompiler
                 I(FeedbackSlot(4));
                 Reg(RegisterOperand(0));
                 Reg(RegisterOperand(1));
-                RegIndex(RegisterOperand(2));
-                RegIndex(RegisterOperand(3));
-                CallBuiltin("CallProperty2");
+                Reg(RegisterOperand(2));
+                Reg(RegisterOperand(3));
+                CallCalls("CallProperty2");
                 SetAcc();
                 break;
             case Bytecode.CallUndefinedReceiver0:
@@ -932,7 +1108,7 @@ public sealed class BaselineCompiler
                 Fv();
                 I(FeedbackSlot(1));
                 Reg(RegisterOperand(0));
-                CallBuiltin("CallUndefinedReceiver0");
+                CallCalls("CallUndefinedReceiver0");
                 SetAcc();
                 break;
             case Bytecode.CallUndefinedReceiver1:
@@ -940,8 +1116,8 @@ public sealed class BaselineCompiler
                 Fv();
                 I(FeedbackSlot(2));
                 Reg(RegisterOperand(0));
-                RegIndex(RegisterOperand(1));
-                CallBuiltin("CallUndefinedReceiver1");
+                Reg(RegisterOperand(1));
+                CallCalls("CallUndefinedReceiver1");
                 SetAcc();
                 break;
             case Bytecode.CallUndefinedReceiver2:
@@ -949,9 +1125,9 @@ public sealed class BaselineCompiler
                 Fv();
                 I(FeedbackSlot(3));
                 Reg(RegisterOperand(0));
-                RegIndex(RegisterOperand(1));
-                RegIndex(RegisterOperand(2));
-                CallBuiltin("CallUndefinedReceiver2");
+                Reg(RegisterOperand(1));
+                Reg(RegisterOperand(2));
+                CallCalls("CallUndefinedReceiver2");
                 SetAcc();
                 break;
             case Bytecode.CallRuntime:
@@ -1018,19 +1194,25 @@ public sealed class BaselineCompiler
                 break;
 
             // ---- Compare operations ---------------------------------------------------------------------------------------------------------
-            case Bytecode.TestEqual: VisitCompare("TestEqual"); break;
+            case Bytecode.TestEqual: if (CompareSite(1) == NumberSite.Compact) VisitBinaryOp("TestEqual"); else VisitCompare(Operation.Equal); break;
             case Bytecode.TestEqualStrict:
-                if (TryVisitCompareFusedWithJump("TestEqualStrictBool")) break;
-                Reg(RegisterOperand(0));
-                Acc();
-                Feedback(1);
-                CallBuiltin("TestEqualStrict");
-                SetAcc();
+                if (CompareSite(1) == NumberSite.Compact)
+                {
+                    Reg(RegisterOperand(0));
+                    Acc();
+                    Feedback(1);
+                    CallBuiltin("TestEqualStrict");
+                    SetAcc();
+                }
+                else
+                {
+                    VisitCompare(Operation.StrictEqual);
+                }
                 break;
-            case Bytecode.TestLessThan: VisitCompare("TestLessThan"); break;
-            case Bytecode.TestGreaterThan: VisitCompare("TestGreaterThan"); break;
-            case Bytecode.TestLessThanOrEqual: VisitCompare("TestLessThanOrEqual"); break;
-            case Bytecode.TestGreaterThanOrEqual: VisitCompare("TestGreaterThanOrEqual"); break;
+            case Bytecode.TestLessThan: if (CompareSite(1) == NumberSite.Compact) VisitBinaryOp("TestLessThan"); else VisitCompare(Operation.LessThan); break;
+            case Bytecode.TestGreaterThan: if (CompareSite(1) == NumberSite.Compact) VisitBinaryOp("TestGreaterThan"); else VisitCompare(Operation.GreaterThan); break;
+            case Bytecode.TestLessThanOrEqual: if (CompareSite(1) == NumberSite.Compact) VisitBinaryOp("TestLessThanOrEqual"); else VisitCompare(Operation.LessThanOrEqual); break;
+            case Bytecode.TestGreaterThanOrEqual: if (CompareSite(1) == NumberSite.Compact) VisitBinaryOp("TestGreaterThanOrEqual"); else VisitCompare(Operation.GreaterThanOrEqual); break;
             case Bytecode.TestInstanceOf:
                 Isolate();
                 Fv();
@@ -1080,9 +1262,7 @@ public sealed class BaselineCompiler
                 SetAcc();
                 break;
             case Bytecode.ToBoolean:
-                Acc();
-                CallBuiltin("ToBoolean");
-                SetAcc();
+                VisitToBoolean(negate: false);
                 break;
 
             // ---- Literals --------------------------------------------------------------------------------------------------------------------------
@@ -1218,51 +1398,35 @@ public sealed class BaselineCompiler
                 break;
             case Bytecode.JumpIfNullConstant:
             case Bytecode.JumpIfNull:
-                VisitJumpIf("IsNull", true);
-                break;
             case Bytecode.JumpIfNotNullConstant:
             case Bytecode.JumpIfNotNull:
-                VisitJumpIf("IsNull", false);
-                break;
             case Bytecode.JumpIfUndefinedConstant:
             case Bytecode.JumpIfUndefined:
-                VisitJumpIf("IsUndefined", true);
-                break;
             case Bytecode.JumpIfNotUndefinedConstant:
             case Bytecode.JumpIfNotUndefined:
-                VisitJumpIf("IsUndefined", false);
-                break;
             case Bytecode.JumpIfUndefinedOrNullConstant:
             case Bytecode.JumpIfUndefinedOrNull:
-                VisitJumpIf("IsUndefinedOrNull", true);
+            case Bytecode.JumpIfJSReceiverConstant:
+            case Bytecode.JumpIfJSReceiver:
+                VisitConditionalJump(bytecode);
                 break;
             case Bytecode.JumpIfTrueConstant:
             case Bytecode.JumpIfTrue:
-                VisitJumpIf("IsTrue", true);
-                break;
             case Bytecode.JumpIfFalseConstant:
             case Bytecode.JumpIfFalse:
-                VisitJumpIf("IsFalse", true);
-                break;
-            case Bytecode.JumpIfJSReceiverConstant:
-            case Bytecode.JumpIfJSReceiver:
-                VisitJumpIf("IsJSReceiver", true);
-                break;
             case Bytecode.JumpIfToBooleanTrueConstant:
             case Bytecode.JumpIfToBooleanTrue:
-                VisitJumpIf("ToBooleanBranch", true);
-                break;
             case Bytecode.JumpIfToBooleanFalseConstant:
             case Bytecode.JumpIfToBooleanFalse:
-                VisitJumpIf("ToBooleanBranch", false);
+                if (_fusedCompare is not null) VisitFusedJump(bytecode);
+                else VisitConditionalJump(bytecode);
                 break;
             case Bytecode.JumpIfForInDoneConstant:
             case Bytecode.JumpIfForInDone:
-                // index == cache length.
-                RegRef(RegisterOperand(1));
-                RegRef(RegisterOperand(2));
-                CallBuiltin("IsIdentical");
-                _masm.JumpIfTrue(_labels[JumpTargetOffset()]);
+                // index == cache length (both numbers: ForInPrepare / ForInStep).
+                RegNum(RegisterOperand(1));
+                RegNum(RegisterOperand(2));
+                Emit(OpCodes.Beq, _labels[JumpTargetOffset()]);
                 break;
             case Bytecode.SwitchOnSmiNoFeedback:
                 VisitSwitchOnSmiNoFeedback();
@@ -1305,8 +1469,20 @@ public sealed class BaselineCompiler
                 break;
             }
             case Bytecode.ForInStep:
-                RegRef(RegisterOperand(0));
-                CallBuiltin("ForInStep");
+                if (IsCached(RegisterOperand(0)))
+                {
+                    // The index is a number: only the payload changes.
+                    Emit(OpCodes.Ldloca, _registerLocals![RegisterOperand(0).Index]);
+                    RegNum(RegisterOperand(0));
+                    Emit(OpCodes.Ldc_R8, 1.0);
+                    Emit(OpCodes.Add);
+                    StfldNum();
+                }
+                else
+                {
+                    RegRef(RegisterOperand(0));
+                    CallBuiltin("ForInStep");
+                }
                 break;
             case Bytecode.ForOfNext:
                 Isolate();
@@ -1433,6 +1609,7 @@ public sealed class BaselineCompiler
                 CallBuiltin("Illegal");
                 break;
         }
+        if (_registerLocals is not null) ReloadRegisterOutputOperands(bytecode);
     }
 
     /// <summary>A binary operation with the register operand as lhs and embedded feedback (operand 1).</summary>
@@ -1468,67 +1645,6 @@ public sealed class BaselineCompiler
         SetAcc();
     }
 
-    /// <summary>A compare (operands: register, embedded feedback), fused with a following conditional jump when possible.</summary>
-    void VisitCompare(string builtin)
-    {
-        if (TryVisitCompareFusedWithJump(builtin + "Bool")) return;
-        VisitBinaryOp(builtin);
-    }
-
-    // The boolean of a compare fused with the conditional jump after it.
-    LocalBuilder? _fusedCondition;
-    bool _fusedPending;
-
-    /// <summary>
-    /// A compare followed by JumpIfTrue/JumpIfFalse/JumpIfToBoolean* that no
-    /// other jump reaches: the compare's builtin returns a bool that the jump
-    /// branches on (the accumulator still gets the boolean, as the bytecode
-    /// says). This is an IL-level peephole; the bytecode semantics are unchanged.
-    /// </summary>
-    bool TryVisitCompareFusedWithJump(string boolBuiltin)
-    {
-        Bytecode next = _iterator.NextBytecode();
-        bool fusable = next is Bytecode.JumpIfTrue or Bytecode.JumpIfFalse or Bytecode.JumpIfToBooleanTrue or
-            Bytecode.JumpIfToBooleanFalse or Bytecode.JumpIfTrueConstant or Bytecode.JumpIfFalseConstant or
-            Bytecode.JumpIfToBooleanTrueConstant or Bytecode.JumpIfToBooleanFalseConstant;
-        int nextOffset = _iterator.NextOffset();
-        if (!fusable || nextOffset >= _isJumpTarget.Length || _isJumpTarget[nextOffset]) return false;
-        _fusedCondition ??= _il.DeclareLocal(typeof(bool));
-        Isolate();
-        Reg(RegisterOperand(0));
-        Acc();
-        Feedback(1);
-        CallBuiltin(boolBuiltin);
-        _il.Emit(OpCodes.Stloc, _fusedCondition);
-        _il.Emit(OpCodes.Ldloc, _fusedCondition);
-        CallBuiltin("Bool");
-        SetAcc();
-        _fusedPending = true;
-        return true;
-    }
-
-    /// <summary>A conditional jump on a predicate of the accumulator.</summary>
-    void VisitJumpIf(string predicate, bool jumpIfTrue)
-    {
-        if (_fusedPending)
-        {
-            // The accumulator is the boolean in _fusedCondition: IsTrue and
-            // ToBoolean are the condition, IsFalse its negation.
-            _fusedPending = false;
-            bool branchOnTrue = predicate == "IsFalse" ? !jumpIfTrue : jumpIfTrue;
-            _il.Emit(OpCodes.Ldloc, _fusedCondition!);
-            Label fusedTarget = _labels[JumpTargetOffset()];
-            if (branchOnTrue) _masm.JumpIfTrue(fusedTarget);
-            else _masm.JumpIfFalse(fusedTarget);
-            return;
-        }
-        _masm.LoadAccumulatorAddress();
-        CallBuiltin(predicate);
-        Label target = _labels[JumpTargetOffset()];
-        if (jumpIfTrue) _masm.JumpIfTrue(target);
-        else _masm.JumpIfFalse(target);
-    }
-
     /// <summary>
     /// BaselineCompiler::VisitJumpLoop: the interrupt budget (with the stack
     /// check) and the back edge. There is no optimized OSR code to check for.
@@ -1538,23 +1654,17 @@ public sealed class BaselineCompiler
         int target = JumpTargetOffset();
         int weight = Uint(0) + _iterator.CurrentBytecodeSizeWithoutPrefix();
         // JumpLoop clobbers the accumulator.
-        _masm.LoadAccumulatorAddress();
-        _il.Emit(OpCodes.Initobj, typeof(JSValue));
-        Isolate();
-        Fn();
-        I(weight);
-        CallBuiltin("UpdateInterruptBudgetOnJumpLoop");
-        _masm.Jump(_labels[target]);
+        SetAccUndefined();
+        EmitUpdateInterruptBudget(weight, backEdge: true, _labels[target]);
     }
 
     /// <summary>BaselineCompiler::VisitReturn: BaselineLeaveFrame with the profiling weight.</summary>
     void VisitReturn()
     {
         int profilingWeight = _iterator.CurrentOffset() + _iterator.CurrentBytecodeSizeWithoutPrefix();
-        Isolate();
-        Fn();
-        I(profilingWeight);
-        CallBuiltin("UpdateInterruptBudgetOnReturn");
+        Label leave = _il.DefineLabel();
+        EmitUpdateInterruptBudget(profilingWeight, backEdge: false, leave);
+        _il.MarkLabel(leave);
         _masm.Return();
     }
 

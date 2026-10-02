@@ -194,7 +194,9 @@ public sealed class DescriptorArray : HeapObject
         if (newNumberOfDescriptors == kMaxElementsForLinearSearch + 1)
         {
             SortImpl(newNumberOfDescriptors);
-            CheckNameCollisionDuringInsertion(desc.Key, desc.Key.EnsureHash(), GetDetails(descriptorNumber).Pointer);
+            // As V8: the descriptor's own sorted key index (its details'
+            // pointer), not the sorted slot the sort gave it.
+            CheckNameCollisionDuringInsertion(desc.Key, desc.Key.EnsureHash(), desc.GetSortedKeyIndex());
             return;
         }
 

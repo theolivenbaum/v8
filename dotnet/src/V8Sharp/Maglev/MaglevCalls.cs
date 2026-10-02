@@ -43,7 +43,7 @@ public static class MaglevCalls
                 return result;
             }
         }
-        return Baseline.BaselineCalls.Call(isolate, callee, receiver, argsStart, argc, mode);
+        return InterpreterCalls.Call(isolate, callee, receiver, argsStart, argc, mode);
     }
 
     static bool TryBuiltinFastPath(Isolate isolate, JSValue callee, JSValue receiver, int argsStart, int argc, out JSValue result)

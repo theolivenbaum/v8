@@ -98,7 +98,7 @@ internal sealed class BaselineCodeSpace
         TypeBuilder type = _module.DefineType("Baseline" + id.ToString(System.Globalization.CultureInfo.InvariantCulture),
             TypeAttributes.Public | TypeAttributes.Sealed | TypeAttributes.Abstract | TypeAttributes.Class);
         MethodBuilder method = type.DefineMethod(name, MethodAttributes.Public | MethodAttributes.Static, typeof(JSValue),
-            [typeof(Isolate), typeof(Interpreter.InterpreterState).MakeByRefType()]);
+            [typeof(BaselineCode), typeof(Isolate), typeof(Interpreter.InterpreterState).MakeByRefType()]);
         return (type, method);
     }
 }

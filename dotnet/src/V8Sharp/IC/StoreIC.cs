@@ -74,9 +74,22 @@ public sealed class StoreIC : IC
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static bool FitsField(StoreHandler handler, in JSValue value)
     {
-        Representation representation = handler.Representation;
-        if (representation.IsTagged) return true;
-        if (!ObjectOps.FitsRepresentation(value, representation)) return false;
+        // ObjectOps.FitsRepresentation (with coercion) by kind, inline: the
+        // monomorphic store hit runs it for every field store.
+        switch (handler.Representation.kind)
+        {
+            case Representation.Kind.Tagged:
+                return true;
+            case Representation.Kind.Smi:
+                return value.IsSmi;
+            case Representation.Kind.Double:
+                return value.IsNumber;
+            case Representation.Kind.HeapObject:
+                if (value.IsNumber) return false;
+                break;
+            case Representation.Kind.None:
+                return false;
+        }
         Map? fieldClass = handler.FieldTypeClass;
         if (fieldClass is not null)
         {
@@ -498,7 +511,7 @@ public sealed class StoreIC : IC
     /// <summary>MayHaveTypedArrayInPrototypeChain (ic.cc).</summary>
     internal static bool MayHaveTypedArrayInPrototypeChain(Isolate isolate, JSObject obj)
     {
-        for (var iter = new PrototypeIterator(isolate, obj, WhereToStart.StartAtReceiver); !iter.IsAtEnd; iter.Advance())
+        for (var iter = new PrototypeIterator(isolate, obj, WhereToStart.StartAtPrototype); !iter.IsAtEnd; iter.Advance())
         {
             // Be conservative, don't walk into proxies.
             if (iter.GetCurrent() is JSProxy or JSTypedArray) return true;
@@ -1221,10 +1234,16 @@ public sealed class KeyedStoreIC : IC
                 storeMode = KeyedAccessStoreMode.kInBounds;
             }
         }
+        else if (ElementsKinds.IsTypedArrayOrRabGsabTypedArrayElementsKind(kind))
+        {
+            // StoreFastElementBuiltin, without a validity cell: typed array
+            // elements never consult the prototype chain.
+            return StoreHandler.StoreElement(_isolate, kind, null, storeMode);
+        }
         else
         {
-            // Sealed, non-extensible, frozen, typed array and dictionary elements
-            // go through the runtime in V8Sharp.
+            // Sealed, non-extensible, frozen and dictionary elements go through
+            // the runtime in V8Sharp.
             return StoreHandler.StoreSlow(_isolate);
         }
         if (IsAnyDefineOwn || IsStoreInArrayLiteralIC) return StoreHandler.StoreElement(_isolate, kind, null, storeMode);

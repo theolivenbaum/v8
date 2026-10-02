@@ -50,9 +50,16 @@ object. V8Sharp's equivalent is a 16-byte struct:
 public readonly struct JSValue
 {
     internal readonly HeapObject? _obj;   // null => undefined
-    internal readonly double _num;        // payload when _obj is NumberTag
+    internal readonly long _bits;         // the double payload's bits when _obj is NumberTag
+    internal double _num => BitConverter.Int64BitsToDouble(_bits);
 }
 ```
+
+The payload is stored as a `long` so that the value is two integer words
+for the JIT: the System V x64 ABI has no callee-saved XMM registers, so a
+double that lives across calls (the dispatch loop's accumulator) would sit in
+a stack slot, while a long gets a callee-saved general register (the
+accumulator is then two registers, as V8's is one).
 
 - `_obj == null` is **undefined**, so `default(JSValue)` and a fresh
   `new JSValue[n]` are all-undefined, which is what V8's register file and
@@ -188,6 +195,62 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   (`RuntimeHelpers.TryEnsureSufficientExecutionStack`) and raised as V8's
   `RangeError: Maximum call stack size exceeded`. Hosts run the engine on a
   thread with a large stack (d8sharp: 256 MB).
+- **Interpreter frame layout** (`Interpreter/InterpreterFrames.cs`,
+  `InterpreterRuntime.k*Offset`; what the baseline and optimizing tiers,
+  deoptimization and the stack walker rely on). A frame is a window of
+  `Isolate.RegisterStack` around its frame pointer `fp` (an index), laid out
+  as V8's x64 `InterpreterFrameConstants`:
+
+  ```
+  fp - 10 - i   argument i (parameter register a_i); argc may exceed the
+                formal count, the window holds max(argc, formals) arguments
+  fp - 9        receiver                      (kReceiverOffset)
+  fp - 8, -7    unused (V8's caller fp / return address)
+  fp - 6        current context               (kContextOffset)
+  fp - 5        closure                       (kClosureOffset)
+  fp - 4        argc (kArgcOffset): written on entry from EnterFrame and
+                by baseline calls, not by inline calls; read the count
+                from the frame record
+  fp - 3, -2    unused (bytecode array / offset live in the frame record)
+  fp - 1        feedback vector               (kFeedbackVectorOffset)
+  fp + 0 ...    register file r0 .. r(RegisterCount - 1)
+  ```
+
+  A register operand `o` addresses `fp - 7 - o`
+  (`kRegisterOperandBase`, `Register::FromOperand`), so `r0` is operand -7,
+  the receiver operand 2 and `a_i` operand 3 + i, as V8 encodes them in the
+  bytecode.
+  The window starts at the stack top before the call (`RegisterStart`) and
+  ends at `fp + RegisterCount` (`RegisterStackTop`). Slots above the top are
+  undefined except below `RegisterStackDirtyEnd`, where a returned inline
+  frame left its values; a new frame clears the part of its register file
+  below that mark.
+
+  Each frame also has an `InterpreterFrameRecord` in
+  `Isolate.InterpreterFrames[0 .. InterpreterFrameDepth)`: `Function`,
+  `Bytecode`, `Fp`, `Pc` (the current bytecode offset, saved before any
+  call or throw), `Argc`, `Kind` (interpreted or builtin exit),
+  `IsConstructor`, `IsBaseline` (the frame runs baseline code with this
+  layout), and for frames entered from a caller's dispatch loop without a
+  .NET call `InlineCall`, `ReturnPc` and `RegisterStart`. The stack walker,
+  `Error.stack`, `arguments` materialization and the debugger read the
+  record, the fixed slots and the parameter slots. Missing arguments are
+  undefined in the parameter slots (V8's argument adaptation).
+
+  While a frame runs, the dispatch loop (`InterpreterExecution.Loop<TS>`)
+  keeps `ip` (a `ref byte` into the bytecode), `fp` (a `ref JSValue` into the
+  register stack) and the accumulator in locals, and the rest of the frame's
+  state in the `ref struct InterpreterState` (`Function`, `Bytecode`,
+  `FeedbackVector`, `Context`, `Pc`, `Fp`, `FrameIndex`, `Argc`,
+  `BaseFrameIndex`). A JS-to-JS call from the loop pushes the callee's frame
+  and record and continues in the same loop (`InterpreterInlineCalls`);
+  `Return` pops back to the caller's record (`ReturnPc`). Calls from
+  builtins and runtime code enter a new loop through
+  `InterpreterExecution.EnterFrame` / `Run`, which is also where the baseline
+  tier enters (OSR from `JumpLoop` sets `InterpreterState.OsrToBaseline`,
+  and `Run` continues the frame in baseline code at `Pc`). A tier that
+  materializes an interpreter frame (deoptimization) writes the fixed slots,
+  the register file and a record with `Pc` and continues it through `Run`.
 - **Exceptions.** A JS throw that is caught in the same interpreter frame is
   dispatched through the frame's handler table without .NET exceptions. A
   throw that leaves a frame is a .NET `JavaScriptException` carrying the
@@ -227,9 +290,10 @@ V8: Ignition -> Sparkplug (baseline) -> Maglev (mid-tier, SSA + feedback) ->
 Turbofan/Turboshaft. V8Sharp keeps the tiering policy (interrupt budget,
 `TieringManager`, OSR at `JumpLoop`) and replaces code generation with IL:
 
-1. **Baseline (Sparkplug analogue).** A single pass from bytecode to IL via
-   `DynamicMethod`: one IL block per bytecode, same frame layout, calls into
-   the same runtime/IC helpers. Removes dispatch and operand decoding; RyuJIT
+1. **Baseline (Sparkplug analogue).** A single pass from bytecode to IL
+   (Reflection.Emit): one IL block per bytecode, same frame layout, the
+   ICs' monomorphic hits and number fast paths inline, calls into the same
+   runtime/IC helpers otherwise. Removes dispatch and operand decoding; RyuJIT
    does register allocation. Implemented in `src/V8Sharp/Baseline/`
    (section 9.1).
 2. **Optimizing (Maglev analogue).** A graph built from bytecode + feedback:
@@ -261,16 +325,22 @@ Turbofan/Turboshaft. V8Sharp keeps the tiering policy (interrupt budget,
 ### 9.1 The baseline tier (src/baseline -> `Baseline/`)
 
 Files: `BaselineCompiler.cs` (baseline-compiler.cc: PreVisit, Prologue,
-`VisitSingleBytecode`), `BaselineAssembler.cs` (baseline-assembler.h over an
-`ILGenerator`), `BaselineBuiltins.cs` (what the Visit* methods call),
-`BaselineCode.cs` (Code of kind BASELINE), `BaselineExecution.cs` (entry,
-OSR, budget interrupts), `BaselineBatchCompiler.cs`, `Baseline.cs`
+`VisitSingleBytecode`), `BaselineCompiler.Inline.cs` (the fast paths emitted
+as IL), `BaselineCompiler.Feedback.cs` (which fast paths, from the
+feedback), `BaselineCompiler.Registers.cs` (registers in IL locals),
+`BaselineAssembler.cs` (baseline-assembler.h over an `ILGenerator`, through
+`BaselineILEmitter`, which counts what RyuJIT's limits count),
+`BaselineBuiltins*.cs` (what the Visit* methods call), `BaselineCalls.cs`
+(calls from baseline code), `BaselineCode.cs` (Code of kind BASELINE),
+`BaselineExecution.cs` (entry, OSR, budget interrupts),
+`BaselineBatchCompiler.cs` (batches, concurrent compilation), `Baseline.cs`
 (CanCompileWithBaseline), `Execution/TieringManager.cs`,
 `Codegen/Compiler.Baseline.cs` (CompileSharedWithBaseline, CompileBaseline,
 CompileAllWithBaseline).
 
 **Code shape.** A baseline function is one static method
-`JSValue (Isolate, ref InterpreterState)` in its own type of a process-wide
+`JSValue (BaselineCode, Isolate, ref InterpreterState)` (the entry delegate
+is closed over the BaselineCode) in its own type of a process-wide
 Reflection.Emit assembly (`BaselineCodeSpace`; the assembly carries
 `IgnoresAccessChecksTo("V8Sharp")` so the code may reach engine internals). Each bytecode becomes an IL
 block; operands are decoded at compile time and pushed as constants.
@@ -284,10 +354,18 @@ builds it on the register stack and pushes the frame record, then runs the
 SharedFunctionInfo's baseline code instead of the dispatch loop. Registers are
 accessed as `ref JSValue` at `fpRef + index` (a managed pointer local), so
 generators, `arguments`, stack traces and the frame walker see the same slots.
-The accumulator, the current context, the feedback vector, the constant pool
-and the bytecode array live in IL locals; the context is also written to its
-frame slot and to `isolate.Context` where the interpreter does it. The
-record's `IsBaseline` flag tells `%GetOptimizationStatus` the frame's tier.
+The accumulator, the current context, the feedback vector and its slot
+array, the constant pool and the bytecode array live in IL locals; the
+context is also written to its frame slot and to `isolate.Context` where the
+interpreter does it. In functions without exception handlers that are not
+resumable, the registers r0..rN (up to 64) live in IL locals too, and the
+frame copy is written only where something reads it (register lists passed
+to calls, the back edges' interrupt call) and reloaded where a builtin
+writes it (header of BaselineCompiler.Registers.cs); parameters and the
+fixed slots always stay in the frame. Register stores to the frame compare
+before storing, as the interpreter's do, to skip the GC write barrier when
+the value is unchanged. The record's `IsBaseline` flag tells
+`%GetOptimizationStatus` the frame's tier.
 
 **Bytecode offset.** Before every bytecode that can throw or call out, the
 code stores the bytecode offset (after any prefix, as the interpreter does)
@@ -305,15 +383,52 @@ and `ReThrow` with a handler in the same frame branch back to the dispatch
 without a .NET exception. IL `try` regions are not used: they cannot be
 entered by a branch, and the handler table already has the ranges.
 
-**Calling helpers.** Every non-trivial bytecode calls a static method of
+**Fast paths.** The hot paths of the interpreter's cases are emitted as IL
+(BaselineCompiler.Inline.cs), reading the interpreter's and the ICs' data
+structures directly: Smi and number arithmetic, bitwise operations and
+comparisons (a comparison followed by a conditional jump branches directly),
+ToBoolean, TestUndetectable/TestNull/TestUndefined, context slots, global
+loads from a PropertyCell, and the monomorphic hits of the named and keyed
+load and store ICs (own fields, prototype constants, array length, in-bounds
+FixedArray and FixedDoubleArray elements). Each fast path also records the
+feedback the interpreter would (or checks that the feedback would not
+change); anything else calls the out-of-line builtin, which is the complete
+operation. Which paths are emitted is decided per bytecode from the feedback
+at compile time (BaselineCompiler.Feedback.cs): an operation that never ran,
+or whose feedback rules the fast path out, gets only the builtin call; for
+an operation whose feedback is already Number, the feedback check is left
+out. `--always-sparkplug` emits every fast path.
+
+**Calling helpers.** Every other bytecode calls a static method of
 `BaselineBuiltins` that does what the interpreter's case does (the same IC
 entry points, runtime functions, `InterpreterOps`, `InterpreterCalls`).
-RyuJIT inlines the small ones into the method (verified with
-`DOTNET_JitDisasm`), including the ICs' monomorphic fast paths. The binary
-and unary operations have Smi fast paths in IL-inlined form: when the
-embedded feedback is already SignedSmall and operands and result are Smis,
-only the result is computed; anything else takes the interpreter's helper,
-which records feedback.
+The slow paths of the inline code are `NoInlining` so that RyuJIT does not
+grow the baseline method with them; all builtins are
+`AggressiveOptimization` (at RyuJIT's tier 0 they were slower than the
+interpreter).
+
+**Calls.** `BaselineCalls` handles the call bytecodes. A JSFunction callee
+whose SharedFunctionInfo has baseline code (and no exception handlers) is
+entered directly: `Enter<TArgs>` pushes the frame record and the register
+window, copies the arguments from IL locals or a register list
+(`ICallArguments` structs, so the copy is specialized per form), and calls
+the callee's entry delegate; the teardown is not in a `finally` (a throw
+leaves the frame stack to the catching frame's handler lookup, which
+restores it). Interpreted callees enter the interpreter's `Run` on the same
+frame protocol. `Function.prototype.call` and `apply` with a JSFunction
+target enter the target without a builtin frame. Anything else (bound
+functions, proxies, API functions, builtins without a fast path) goes
+through `InterpreterCalls`. The JS stack limit is checked every
+fourth call depth, or every call for functions with more than 1024 bytes of
+bytecode.
+
+**Compact code.** RyuJIT compiles a method beyond its limits (IL size,
+instructions, basic blocks, local references) with MinOpts, which is slower
+than the interpreter. `BaselineILEmitter` counts them while the method is
+emitted; a function that would exceed them is compiled again without inline
+fast paths and register locals (compact code). Functions with more than 5000
+bytes of bytecode do not tier up by themselves (`BaselineSupport.TiersUpToBaseline`;
+`%CompileBaseline` still compiles them).
 
 **Tiering.** `TieringManager.OnInterruptTick` is ported: the first budget
 interrupt allocates the feedback vector and enqueues the function to the
@@ -328,18 +443,30 @@ when its bytecode is finalized. A running interpreter frame switches at its
 next `JumpLoop` (OSR to baseline, `InterpreterOnStackReplacement_ToBaseline`):
 the dispatch loop returns to `Run`, which continues the same frame in the
 baseline code at the loop header. `--jitless` implies `--no-sparkplug`.
-(Temporarily `--sparkplug` defaults to off in V8Sharp; see deviations.md.)
+The interrupt budget's runtime call on a back edge is in one stub per method
+that every loop's budget check jumps to (with the loop's index), so the
+loops' code stays small.
 
-**RyuJIT.** Methods of a (non-collectible) dynamic assembly take part in
-RyuJIT's tiered compilation: a baseline method is first jitted quickly at
-tier 0, hot ones are rejitted at tier 1 with dynamic PGO, and long-running
-loops in tier-0 code switch to optimized code through RyuJIT's OSR. This is
-what makes Sparkplug's "compile fast" property hold: a `DynamicMethod` is
-always compiled with full optimization, which with the inlined IC and
-arithmetic fast paths cost ~7 ms per function (eval-heavy code became 30x
-slower than the interpreter). `V8SHARP_BASELINE_DYNAMICMETHOD=1` switches back
-to collectible DynamicMethods for comparison. The generated IL stays small
-by calling helpers, because very large methods fall back to MinOpts.
+**Concurrent compilation and RyuJIT.** With `--concurrent-sparkplug` (the
+default, as in V8 on x64), a batch is compiled by one process-wide background
+thread (`BaselineCompileThread`; V8: `ConcurrentBaselineCompiler` on the
+platform's workers). The main thread materializes the constant pools and the
+names; the background task emits the IL and has RyuJIT compile the method
+fully optimized (`AggressiveOptimization`, `RuntimeHelpers.PrepareMethod`),
+so no time is spent in tier-0 code; the main thread installs the code at the
+next INSTALL_BASELINE_CODE interrupt. This is what makes Sparkplug's
+"compile fast" property hold on the main thread: an optimized compile costs
+about 1-35 ms per function (median ~6 ms in PdfJS). Without concurrency
+(`--no-concurrent-sparkplug`, `--always-sparkplug`, `%CompileBaseline`),
+methods of the (non-collectible) dynamic assembly take part in RyuJIT's
+tiered compilation: tier 0 at the first call, tier 1 with dynamic PGO when
+hot, and OSR for long-running loops in tier-0 code.
+`V8SHARP_BASELINE_DYNAMICMETHOD=1` switches back to collectible
+DynamicMethods for comparison; `V8SHARP_BASELINE_TIERED=1` makes
+concurrently compiled code start at tier 0 too,
+`V8SHARP_BASELINE_NO_FEEDBACK_GUIDANCE=1` emits every fast path,
+`V8SHARP_BASELINE_NO_REGISTER_CACHE=1` keeps the registers in the frame, and
+`V8SHARP_BASELINE_IL_PROFILE=1` prints the IL emitted per bytecode at exit.
 
 ### 9.2 The optimizing tier (src/maglev -> `Maglev/`, src/deoptimizer -> `Deoptimizer/`)
 

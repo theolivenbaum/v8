@@ -597,19 +597,22 @@ public static class ObjectOps
             // DoubleToBoolean: false for 0, -0 and NaN.
             return d != 0 && !double.IsNaN(d);
         }
-        HeapObject? o = obj.HeapObjectOrNull;
+        HeapObject? o = obj._obj;
+        if (o is null) return false;
+        // By instance type: type tests of the abstract classes are calls to
+        // the runtime's cast helpers, and `if (node)` on objects is hot.
+        InstanceType type = o.InstanceType;
+        if (type >= InstanceTypeChecks.FirstJSReceiver)
+        {
+            return !Unsafe.As<JSReceiver>(o).Map.IsUndetectable;  // Undetectable object is false.
+        }
+        if (type <= InstanceTypeChecks.LastString) return Unsafe.As<JSString>(o).Length != 0;
         switch (o)
         {
-            case null:
-                return false;
             case Oddball oddball:
                 return oddball.Kind == Oddball.OddballKind.True;
-            case JSString s:
-                return s.Length != 0;
             case BigInt b:
                 return !b.IsZero;
-            case JSReceiver r:
-                return !r.Map.IsUndetectable;  // Undetectable object is false.
             default:
                 return true;
         }

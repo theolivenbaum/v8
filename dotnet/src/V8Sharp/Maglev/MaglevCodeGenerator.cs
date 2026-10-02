@@ -36,6 +36,13 @@ internal sealed class MaglevCodeGenerator
 {
     static readonly int kJSValueSize = Unsafe.SizeOf<JSValue>();
 
+    /// <summary>JSValue (on the stack) -> its number payload as a double.</summary>
+    void EmitLoadNumber()
+    {
+        _il.Emit(OpCodes.Ldfld, s_bits);
+        _il.Emit(OpCodes.Call, s_int64BitsToDouble);
+    }
+
     readonly MaglevCompilationInfo _info;
     readonly Graph _graph;
     readonly MaglevCode _code;
@@ -116,7 +123,9 @@ internal sealed class MaglevCodeGenerator
     // ---- Reflection handles ------------------------------------------------------------------------------
 
     static readonly FieldInfo s_obj = typeof(JSValue).GetField("_obj", BindingFlags.NonPublic | BindingFlags.Instance)!;
-    static readonly FieldInfo s_num = typeof(JSValue).GetField("_num", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    // A number's payload is JSValue._bits (the double's bits).
+    static readonly FieldInfo s_bits = typeof(JSValue).GetField("_bits", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    static readonly MethodInfo s_int64BitsToDouble = typeof(BitConverter).GetMethod(nameof(BitConverter.Int64BitsToDouble), [typeof(long)])!;
     static readonly ConstructorInfo s_jsValueFromDouble = typeof(JSValue).GetConstructor([typeof(double)])!;
     static readonly FieldInfo s_numberTag = typeof(NumberTag).GetField(nameof(NumberTag.Instance))!;
     static readonly FieldInfo s_null = typeof(JSValue).GetField(nameof(JSValue.Null))!;
@@ -1211,7 +1220,7 @@ internal sealed class MaglevCodeGenerator
                 return;
             case Opcode.UnsafeSmiUntag:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Ldfld, s_num);
+                EmitLoadNumber();
                 _il.Emit(OpCodes.Conv_I4);
                 Store(v!);
                 return;
@@ -1233,14 +1242,14 @@ internal sealed class MaglevCodeGenerator
                     _il.Emit(OpCodes.Ldsfld, s_numberTag);
                     _il.Emit(OpCodes.Bne_Un, EagerExit(node.EagerDeoptInfo!));
                     Load(node.Inputs[0], ValueRepresentation.kTagged);
-                    _il.Emit(OpCodes.Ldfld, s_num);
+                    EmitLoadNumber();
                 }
                 Store(v!);
                 return;
             }
             case Opcode.UnsafeNumberToFloat64:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Ldfld, s_num);
+                EmitLoadNumber();
                 Store(v!);
                 return;
             case Opcode.Int32ToNumber:
@@ -1726,7 +1735,7 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldsfld, s_numberTag);
         _il.Emit(OpCodes.Bne_Un, exit);
         Load(node.Inputs[0], ValueRepresentation.kTagged);
-        _il.Emit(OpCodes.Ldfld, s_num);
+        EmitLoadNumber();
         _il.Emit(OpCodes.Stloc, _tmpDouble);
         EmitCheckedFloat64ToInt32(node);
         Store((ValueNode)node);

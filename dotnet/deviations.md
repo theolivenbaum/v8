@@ -92,6 +92,12 @@ for now, to be revisited when the reason goes away.
   `PreparseData` class for V8's zone and heap forms (release byte format);
   flags passed per parse (`ParsingFlags`) instead of global.
 - Parsing: AstPrinter/ScopePrinter are always compiled (DEBUG-only in V8).
+- Parsing: the character streams read a `char[]`, not the source string on
+  the heap (V8's OnHeapStream). A source of 4096 characters or more is copied
+  once and the copy kept beside the string (a ConditionalWeakTable in
+  `ScannerStream`), so each lazy compile of one of its functions does not copy
+  the script again (it did: a large-object allocation per lazy compile, 10% of
+  Octane CodeLoad).
 - Parsing: stack_limit_ is a budget of 4 x --stack-size bytes of .NET stack
   from where each parser starts (V8: the isolate's C stack limit). The .NET
   parser frames are about four times V8's, so the RangeError comes at about
@@ -202,8 +208,13 @@ for now, to be revisited when the reason goes away.
 
 - Temporary: `--sparkplug` is off by default (V8's x64 default is on), so
   V8Sharp runs the interpreter only unless `--sparkplug` or
-  `--always-sparkplug` is passed, while interpreter correctness and
-  performance come first. Turn it back on in FlagList.Generated.cs.
+  `--always-sparkplug` is passed. Baseline code is faster than the
+  interpreter once compiled (1.2-1.8x on the long-running Octane
+  benchmarks), but compiling costs far more than V8's Sparkplug: RyuJIT
+  takes about 3-6 us per byte of IL, about 10 us per byte of bytecode
+  (2.5-3 s of background CPU for PdfJS or Box2D), so short programs on a
+  machine without idle cores run slower than in the interpreter. Turn it
+  back on in FlagList.Generated.cs when the compile cost is down.
 - Code generation: IL in a static method of a dynamic assembly per function
   instead of machine code (architecture.md section 9.1). The assembly is not
   collectible (RyuJIT does not tier collectible code), so baseline code is
@@ -224,10 +235,54 @@ for now, to be revisited when the reason goes away.
   JumpLoop's pc; V8Sharp does the check after the back edge and enters at the
   loop header (the same bytecode runs next). The max_arguments stack check
   before OSR is not needed (arguments are not pushed on a machine stack).
-- `--concurrent-sparkplug` is off (V8's x64 default is on): the batch is
-  compiled on the main thread. IL generation is cheap, and RyuJIT compiles
-  each method lazily on its first call (tier 0) and optimizes hot ones on a
-  background thread (tier 1).
+- `--concurrent-sparkplug` (on, as in V8 on x64): one process-wide
+  background thread (`BaselineCompileThread`) compiles every isolate's
+  batches, where V8 posts jobs to the platform's worker pool. The task
+  generates the IL and has RyuJIT compile it fully optimized
+  (`AggressiveOptimization`, `RuntimeHelpers.PrepareMethod`) off the main
+  thread; the main thread only materializes the constant pool and the name
+  before, and installs the code at the next INSTALL_BASELINE_CODE interrupt.
+  The batch queue holds the closures (weakly), not their SharedFunctionInfos.
+  Without concurrency (`--no-concurrent-sparkplug`, `--always-sparkplug`,
+  `%CompileBaseline`) the IL is generated on the main thread and RyuJIT
+  compiles the method at its first call, at tier 0 first. The builtins and
+  call paths baseline code calls are `AggressiveOptimization` in both modes:
+  at tier 0 they ran slower than the interpreter's own (optimized) loop.
+- Calls: a call from baseline code to a function with baseline code (and no
+  exception handlers) enters it directly, C# call to C# call, through
+  `BaselineCalls.Enter` with the arguments in registers or locals
+  (`ICallArguments`), pushing the frame record and the register window
+  itself. V8 calls through the Call builtins and the callee's prologue
+  builtin. The baseline frame's teardown is not in a `finally`: a throw
+  unwinds C# frames to the catching frame, which restores the frame stack
+  (as the interpreter's handler lookup does). `Function.prototype.call` and
+  `apply` with a JSFunction target enter the target without a builtin
+  frame (V8 has a builtin frame for them; it is not observable in stack
+  traces, which skip it). The JS stack limit is checked every fourth call
+  depth (every call for functions with more than 1024 bytes of bytecode),
+  not at every entry; the .NET stack is large enough for the slack.
+- Registers: in functions without exception handlers or generator
+  resumption, up to 64 interpreter registers live in IL locals; the frame
+  copy is written only where something reads it (register lists passed to
+  calls and runtime functions, the interrupt budget's runtime call on a back
+  edge) and reloaded where a builtin writes it (header of
+  BaselineCompiler.Registers.cs). V8's Sparkplug keeps every register in the
+  frame.
+- Inline fast paths: V8's Sparkplug code calls the same builtins as Ignition
+  for every bytecode; V8Sharp emits the hot paths (Smi and number
+  arithmetic, comparisons fused with the following conditional jump,
+  ToBoolean, monomorphic named and keyed loads and stores, global loads from
+  a PropertyCell, context slots) directly as IL, with the out-of-line
+  builtin as the slow path, and chooses per bytecode from the feedback at
+  compile time which paths to emit (header of BaselineCompiler.Feedback.cs).
+  The emitted code records the same feedback as the interpreter.
+- Compact code and size limit: a function whose inline code would exceed
+  RyuJIT's optimization limits (it would compile it with MinOpts) is
+  compiled again with calls to the builtins only. Functions with more than
+  5000 bytes of bytecode do not tier up (batch compilation,
+  `--always-sparkplug`) and stay interpreted unless compiled explicitly with
+  `%CompileBaseline` (`BaselineSupport.TiersUpToBaseline`); V8 tiers up any
+  size.
 - Without `--maglev` (V8Sharp's default) `Isolate.UseOptimizer` is false, so
   `TieringManager` behaves as in a V8 built without Turbofan and Maglev
   (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the
@@ -235,12 +290,12 @@ for now, to be revisited when the reason goes away.
   `invocation_count_for_turbofan` x bytecode length, as V8 computes it; the
   ticks only raise it.
 - `BaselineBuiltins`: V8's baseline code calls the same builtins as Ignition's
-  handlers; V8Sharp's builtins are small C# methods that repeat the glue of
-  the interpreter's dispatch-loop cases (register windows, feedback
-  collection) around the shared helpers, so the dispatch loop needs no
-  refactoring. The Smi fast paths of the arithmetic builtins skip the
-  feedback update only when the embedded feedback is already SignedSmall
-  (the update would be a no-op).
+  handlers; V8Sharp's builtins are C# methods in Baseline/ that repeat the
+  glue of the interpreter's dispatch-loop cases (register windows, feedback
+  collection) around the shared helpers, so the interpreter needs no
+  refactoring. The slow paths of the inline code
+  (BaselineBuiltins.SlowPaths.cs) are `NoInlining`, so RyuJIT keeps them out
+  of the baseline methods.
 - `%CompileBaseline` on a non-user function, or when Sparkplug is disabled,
   throws an InvalidOperationException (V8: CHECK failure).
 
@@ -327,10 +382,16 @@ for now, to be revisited when the reason goes away.
   and field-adding transitions, fast element loads and stores, global
   PropertyCell loads); the others are NoInlining methods in
   InterpreterHandlers.cs, and the rare bytecodes sit in `LoopCold<TS>`, so
-  that RyuJIT keeps the accumulator, offset, bytecode and frame pointer in
-  registers (it stops promoting structs and inlining in a method with too
-  many locals). The loop is AggressiveOptimization (it would otherwise run
-  as OSR code). Wide/ExtraWide run one bytecode in the scaled loop, except
+  that RyuJIT keeps the accumulator, the current bytecode and the frame
+  pointer in registers (it stops promoting structs and inlining in a method
+  with too many locals). The current bytecode is a `ref byte` into the
+  bytecode array rather than V8's (array, offset) pair, so the loop needs
+  one register for it, and the accumulator's number payload is a long
+  (JSValue._bits), so the accumulator lives in two callee-saved general
+  registers: on System V x64 a double local would sit in a stack slot. The
+  offset is computed from the reference where a handler needs it (SavePc,
+  the return offset of a call). The loop is AggressiveOptimization (it
+  would otherwise run as OSR code). Wide/ExtraWide run one bytecode in the scaled loop, except
   LdaSmi, which the single-scale loop decodes itself.
 - JumpLoop's OSR-to-baseline check (InterpreterAssembler::OnStackReplacement,
   case 3) runs only once the isolate has installed baseline code
