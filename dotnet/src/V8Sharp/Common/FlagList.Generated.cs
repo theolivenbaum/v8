@@ -44,7 +44,7 @@ public sealed partial class FlagList
     public uint scavenger_chaos_mode_threshold = unchecked((uint)(50));
     public bool local_off_stack_check = false;  // build default; V8: V8_ENABLE_LOCAL_OFF_STACK_CHECK_BOOL
     public bool force_emit_interrupt_budget_checks = false;
-    public bool maglev = true;
+    public bool maglev = false;  // build default; V8: true. Off in V8Sharp until the Maglev port is conformance-clean under forced optimization (deviations.md)
     public bool maglev_future = false;
     public bool optimize_on_next_call_optimizes_to_maglev = false;
     public bool stress_maglev = false;

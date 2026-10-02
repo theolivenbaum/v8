@@ -305,17 +305,17 @@ public static partial class RuntimeTable
         });
         Register(FunctionId.ArrayBufferMaxByteLength, static (i, a) => JSValue.FromNumber(JSArrayBuffer.kMaxByteLength));
         Register(FunctionId.GetOptimizationStatus, static (i, a) => RuntimeTest.GetOptimizationStatus(i, a.Length > 0 ? a[0] : default));
-        Register(FunctionId.PrepareFunctionForOptimization, static (i, a) => RuntimeTest.EnsureFeedbackVector(i, a[0]));
+        Register(FunctionId.PrepareFunctionForOptimization, static (i, a) => RuntimeTest.PrepareFunctionForOptimization(i, a[0]));
         Register(FunctionId.EnsureFeedbackVectorForFunction, static (i, a) => RuntimeTest.EnsureFeedbackVector(i, a[0]));
-        Register(FunctionId.OptimizeFunctionOnNextCall, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.OptimizeMaglevOnNextCall, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.OptimizeOsr, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.NeverOptimizeFunction, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.DeoptimizeFunction, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.DeoptimizeNow, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.OptimizeFunctionOnNextCall, static (i, a) => RuntimeTest.OptimizeMaglevOnNextCall(i, a));
+        Register(FunctionId.OptimizeMaglevOnNextCall, static (i, a) => RuntimeTest.OptimizeMaglevOnNextCall(i, a));
+        Register(FunctionId.OptimizeOsr, static (i, a) => RuntimeTest.OptimizeOsr(i, a));
+        Register(FunctionId.NeverOptimizeFunction, static (i, a) => RuntimeTest.NeverOptimizeFunction(i, a));
+        Register(FunctionId.DeoptimizeFunction, static (i, a) => RuntimeTest.DeoptimizeFunction(i, a));
+        Register(FunctionId.DeoptimizeNow, static (i, a) => RuntimeTest.DeoptimizeNow(i));
         Register(FunctionId.CompileBaseline, static (i, a) => RuntimeTest.CompileBaseline(i, a[0]));
-        Register(FunctionId.WaitForBackgroundOptimization, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.FinalizeOptimization, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.WaitForBackgroundOptimization, RuntimeTest.WaitForBackgroundOptimization);
+        Register(FunctionId.FinalizeOptimization, RuntimeTest.WaitForBackgroundOptimization);
         Register(FunctionId.SetAllocationTimeout, RuntimeTest.ReturnUndefined);
         Register(FunctionId.NotifyContextDisposed, RuntimeTest.ReturnUndefined);
         Register(FunctionId.SimulateNewspaceFull, RuntimeTest.ReturnUndefined);
@@ -323,7 +323,7 @@ public static partial class RuntimeTable
         Register(FunctionId.AssertPeeled, RuntimeTest.ReturnUndefined);
         Register(FunctionId.AssertEscapeAnalysisElided, RuntimeTest.ReturnUndefined);
         Register(FunctionId.HeapObjectVerify, RuntimeTest.ReturnTrue);
-        Register(FunctionId.IsBeingInterpreted, RuntimeTest.ReturnTrue);
+        Register(FunctionId.IsBeingInterpreted, static (i, a) => RuntimeTest.IsBeingInterpreted(i));
         Register(FunctionId.IsTurbofanEnabled, RuntimeTest.ReturnFalse);
         Register(FunctionId.IsConcurrentRecompilationSupported, RuntimeTest.ReturnFalse);
         Register(FunctionId.IsDictPropertyConstTrackingEnabled, RuntimeTest.ReturnFalse);
@@ -432,12 +432,12 @@ public static partial class RuntimeTable
 
         // Tiering and heap-layout queries, as a V8 without Maglev and Turbofan answers them.
         Register(FunctionId.ICsAreEnabled, static (i, a) => JSValue.FromBoolean(i.Flags.use_ic));
-        Register(FunctionId.IsMaglevEnabled, RuntimeTest.ReturnFalse);
+        Register(FunctionId.IsMaglevEnabled, static (i, a) => JSValue.FromBoolean(i.UseOptimizer));
         Register(FunctionId.IsSparkplugEnabled, static (i, a) => JSValue.FromBoolean(i.Flags.sparkplug));
         Register(FunctionId.IsUndefinedDoubleEnabled, RuntimeTest.ReturnFalse);
         Register(FunctionId.RunningInSimulator, RuntimeTest.ReturnFalse);
         Register(FunctionId.ActiveTierIsTurbofan, RuntimeTest.ReturnFalse);
-        Register(FunctionId.ActiveTierIsMaglev, RuntimeTest.ReturnFalse);
+        Register(FunctionId.ActiveTierIsMaglev, static (i, a) => RuntimeTest.ActiveTierIsMaglev(a[0]));
         Register(FunctionId.ActiveTierIsSparkplug, static (i, a) => RuntimeTest.ActiveTierIsSparkplug(a[0]));
         Register(FunctionId.CurrentFrameIsTurbofan, RuntimeTest.ReturnFalse);
         Register(FunctionId.InYoungGeneration, RuntimeTest.ReturnFalse);

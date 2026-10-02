@@ -2031,35 +2031,3 @@ public sealed class Cell(JSValue value) : HeapObject(InstanceType.CellType)
     public JSValue Value = value;
 }
 
-/// <summary>
-/// V8's DependentCode: optimized code registered on maps and cells. The
-/// optimizing tiers are not ported yet, so there is nothing to deoptimize;
-/// the hook stays so the IL tiers can register dependencies later.
-/// </summary>
-public static class DependentCode
-{
-    [Flags]
-    public enum DependencyGroups
-    {
-        None = 0,
-        Transition = 1 << 0,
-        PrototypeCheck = 1 << 1,
-        PropertyCellChanged = 1 << 2,
-        FieldConst = 1 << 3,
-        FieldType = 1 << 4,
-        FieldRepresentation = 1 << 5,
-        InitialMapChanged = 1 << 6,
-        AllocationSiteTenuringChanged = 1 << 7,
-        AllocationSiteTransitionChanged = 1 << 8,
-        ScriptContextSlotPropertyChanged = 1 << 9,
-        EmptyContextExtension = 1 << 10,
-    }
-
-    /// <summary>Called when dependencies of <paramref name="obj"/> are invalidated.</summary>
-    public static event Action<Isolate, HeapObject, DependencyGroups>? OnDeoptimize;
-
-    public static void DeoptimizeDependencyGroups(Isolate isolate, HeapObject obj, DependencyGroups groups)
-    {
-        if (groups != DependencyGroups.None) OnDeoptimize?.Invoke(isolate, obj, groups);
-    }
-}

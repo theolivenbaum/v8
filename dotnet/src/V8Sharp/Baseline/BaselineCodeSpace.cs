@@ -76,6 +76,22 @@ internal sealed class BaselineCodeSpace
         lock (s_lock) return type.CreateType();
     }
 
+    /// <summary>
+    /// Defines a type holding one static method with the given signature
+    /// (Maglev code: static JSValue (MaglevCode, Isolate, ref InterpreterState)).
+    /// </summary>
+    public (TypeBuilder Type, MethodBuilder Method) DefineMethod(string name, Type returnType, Type[] parameterTypes)
+    {
+        lock (s_lock)
+        {
+            int id = ++_counter;
+            TypeBuilder type = _module.DefineType("Code" + id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                TypeAttributes.Public | TypeAttributes.Sealed | TypeAttributes.Abstract | TypeAttributes.Class);
+            MethodBuilder method = type.DefineMethod(name, MethodAttributes.Public | MethodAttributes.Static, returnType, parameterTypes);
+            return (type, method);
+        }
+    }
+
     (TypeBuilder Type, MethodBuilder Method) DefineMethodLocked(string name)
     {
         int id = ++_counter;

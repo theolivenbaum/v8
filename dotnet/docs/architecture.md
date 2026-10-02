@@ -467,3 +467,105 @@ concurrently compiled code start at tier 0 too,
 `V8SHARP_BASELINE_NO_FEEDBACK_GUIDANCE=1` emits every fast path,
 `V8SHARP_BASELINE_NO_REGISTER_CACHE=1` keeps the registers in the frame, and
 `V8SHARP_BASELINE_IL_PROFILE=1` prints the IL emitted per bytecode at exit.
+
+### 9.2 The optimizing tier (src/maglev -> `Maglev/`, src/deoptimizer -> `Deoptimizer/`)
+
+Files: `MaglevGraphBuilder*.cs` (maglev-graph-builder.cc: frame state,
+merge points and loop phis, speculation from feedback, property access,
+calls and inlining), `MaglevIR.cs` (maglev-ir.h: opcodes, value
+representations, node types, deopt info), `MaglevGraph.cs` (graph, basic
+blocks, compilation unit and info, dependencies),
+`MaglevInterpreterFrameState.cs` (KnownNodeAspects, merge states),
+`BytecodeAnalysis.cs` (src/compiler/bytecode-analysis: loops, liveness),
+`MaglevPhiRepresentationSelector.cs`, `MaglevCodeGenerator.cs` (the IL
+emitter), `MaglevCompiler.cs` (the pipeline, code installation, disabling),
+`MaglevBuiltins.cs` (helpers the IL calls), `MaglevCalls.cs` (calls into
+Maglev code), `MaglevExecution.cs` (entry, OSR, continuation after a deopt),
+`Deoptimizer/Deoptimizer.cs`, `Objects/DependentCode.cs`,
+`Runtime/RuntimeTest.Maglev.cs` (the natives), `Execution/TieringManager.cs`.
+
+**Pipeline.** As V8: the graph builder walks the bytecode once with an
+abstract interpreter frame (a ValueNode per register), creating merge states
+(phis) at jump targets and loop headers from the bytecode analysis
+(liveness and loop assignments), speculating from the feedback vector and
+the embedded feedback (Smi/Int32 and Float64 arithmetic with overflow
+checks, map checks with known-map tracking, field loads/stores from IC
+handlers, element accesses on fast elements, global property cells, known
+call targets, builtins such as Math.*), and inlining small functions. The
+phi representation selector untags phis to Int32/Float64. Unsupported
+bytecodes (generators, async functions, ...) abort the compilation and
+disable optimization of the function, as V8's bailouts do.
+
+**Exceptions.** As V8's graph builder, a node that can throw inside a try
+block gets an `ExceptionHandlerInfo`: the catch block's merge state merges
+the frame at the node (`MergeThrow`), and values that differ between the
+throwing nodes become exception phis whose inputs are those values, in throw
+order. In the IL the whole body is one .NET try region; a throwing node
+stores its index in a local before it runs (and -1 after), the region's
+filtered catch clause runs that node's trampoline (the exception phis from
+the node's values, the exception into the accumulator phi, the pending
+message) and leaves to the start of the region, whose first instruction
+dispatches to the catch block. The catch block then runs in the same
+method with the same locals. Functions with handlers, and calls inside try
+blocks, are not inlined.
+
+**Code.** The graph becomes one static method `JSValue Code(MaglevCode,
+Isolate, ref InterpreterState)` in the dynamic assembly baseline code uses
+(`BaselineCodeSpace`), so RyuJIT tiers it like baseline code. Each value
+node gets an IL local of its representation (`JSValue`, `int`, `uint`,
+`double`): untagged values never touch the heap. Phis are moves on the
+edges. Checks branch to deopt exits; small operations are inline IL, others
+call `MaglevBuiltins` or the `BaselineBuiltins` the baseline tier uses
+(generic nodes: the same IC entry points and runtime functions). Constants
+are static fields of the method's type.
+
+**Frames.** The optimized frame *is* the interpreter frame
+`InterpreterExecution.EnterFrame` (or `MaglevCalls.EnterFrame`) built:
+registers are not kept in it while the code runs (values live in IL
+locals), only the fixed slots (receiver, arguments, context, closure,
+feedback vector) and the frame record, so stack traces, `arguments` and
+the frame walker work unchanged. Inlined functions get real frames too
+(`EnterInlinedFrame` pushes an interpreter frame record and its register
+area; `LeaveInlinedFrame` pops it), which keeps stack traces exact and
+makes deopts of inlined code cheap. The current bytecode offset of every
+frame is stored in its record before anything that can throw or call.
+
+**Deoptimization.** A deopt exit stores the values of the frame state of
+its checkpoint (V8's translation: every live register, the context and the
+accumulator of each frame, outermost first) into `isolate.MaglevDeoptScratch`
+and calls `Deoptimizer.Deoptimize`, which writes them into the frames'
+registers, makes inlined frames interpreter inline frames (their Return
+resumes the caller in the same dispatch loop, `InterpreterInlineCalls`),
+points the `InterpreterState` at the innermost frame and sets
+`MaglevDeoptPending`; the IL then returns and the caller of the code
+(`MaglevExecution.Run`, `MaglevCalls.EnterFrame`, `RunOsr`) continues in
+`InterpreterExecution.Run` (InterpreterEnterAtBytecode). Eager deopts
+continue at the bytecode whose check failed; lazy deopts (after a call,
+when the code was invalidated meanwhile: the IL tests
+`MaglevCode.MarkedForDeoptimization` after every call) continue after the
+call with its result. An eager deopt invalidates the code (except OSR early
+exits, and OSR code deopting outside its loop); after `kMaxDeoptCount`
+invalidations the tiering manager does not optimize the function again. A
+deopt of a check made while reducing a builtin call disallows speculation
+on the call's feedback (out of bounds first only disallows bounds-check
+speculation), as V8's feedback_to_update.
+
+**Dependencies.** Code depends on stable maps (prototype chains, known
+maps), property cells (global constants), initial maps (FastNewObject) and
+protectors. `DependentCode` keeps a weak table from the object to the code;
+the object model calls `DeoptimizeDependencyGroups` where V8 does, which
+marks the code (lazy deopt).
+
+**Tiering.** `--maglev` (off by default in V8Sharp) makes
+`Isolate.UseOptimizer` true; `TieringManager.OnInterruptTick` requests a
+compile once a function's invocation count reaches
+`--invocation-count-for-maglev`. With `--concurrent-recompilation` (the
+default) the graph is built at once and the IL generation and RyuJIT's
+fully optimized compile run on the background compile thread
+(`MaglevCompiler.CompileConcurrently`); INSTALL_MAGLEV_CODE installs the
+code on the feedback vector, which every closure of the CreateClosure site
+shares, unless a dependency was invalidated meanwhile. A frame stuck
+in a loop OSRs at its next JumpLoop budget interrupt
+(`MaglevExecution.TryGetOsrCode`, `RunOsr`): OSR code starts at the loop
+header with the interpreter's registers as initial values; back edges of
+enclosing loops leave it (kOSREarlyExit).

@@ -6,14 +6,21 @@
 // object model.
 using System.Globalization;
 using V8Sharp.Base.Numbers;
+using V8Sharp.Interpreter;
 
 namespace V8Sharp.Runtime;
 
-public static class RuntimeTest
+public static partial class RuntimeTest
 {
     // OptimizationStatus (src/runtime/runtime.h).
     const int kIsFunction = 1 << 0;
     const int kNeverOptimize = 1 << 1;
+    const int kMaybeDeopted = 1 << 2;
+    const int kOptimized = 1 << 3;
+    const int kMaglevved = 1 << 4;
+    const int kMarkedForDeoptimization = 1 << 13;
+    const int kTopmostFrameIsMaglev = 1 << 18;
+    const int kOptimizeOnNextCallOptimizesToMaglev = 1 << 19;
     const int kInterpreted = 1 << 6;
     const int kIsExecuting = 1 << 10;
     const int kLiteMode = 1 << 12;
@@ -26,11 +33,21 @@ public static class RuntimeTest
     public static JSValue GetOptimizationStatus(Isolate isolate, JSValue functionObject)
     {
         // These modes cannot optimize. Unit tests should handle these the same way.
-        // (V8Sharp has no Turbofan: !V8_ENABLE_TURBOFAN_BOOL, and !use_optimizer().)
-        int status = kLiteMode | kNeverOptimize;
+        // V8Sharp without --maglev answers as a V8 built without optimizing
+        // compilers (lite mode); with --maglev as V8 run with --maglev
+        // --no-turbofan, where %OptimizeFunctionOnNextCall optimizes to Maglev.
+        int status = 0;
+        if (!isolate.UseOptimizer) status |= kLiteMode | kNeverOptimize;
+        else status |= kOptimizeOnNextCallOptimizesToMaglev;
+        if (isolate.Flags.deopt_every_n_times != 0) status |= kMaybeDeopted;
         if (functionObject.IsUndefined) return JSValue.FromInt(status);
         if (functionObject.HeapObjectOrNull is not JSFunction function) return JSValue.FromInt(status);
         status |= kIsFunction;
+        if (function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: { } code })
+        {
+            status |= code.MarkedForDeoptimization ? kMarkedForDeoptimization : kOptimized;
+            status |= kMaglevved;
+        }
         if (function.Shared.HasBaselineCode) status |= kBaseline;
         // ActiveTierIsIgnition, or not compiled yet (the CompileLazy trampoline).
         if (TieringManager.ActiveTierIsIgnition(function) || !function.Shared.IsCompiled) status |= kInterpreted;
@@ -43,7 +60,8 @@ public static class RuntimeTest
         {
             if (ReferenceEquals(frames[i].Function, function) && frames[i].Kind == InterpreterFrameKind.Interpreted)
             {
-                status |= kIsExecuting | (frames[i].IsBaseline ? kTopmostFrameIsBaseline : kTopmostFrameIsInterpreted);
+                status |= kIsExecuting | (frames[i].IsMaglev ? kTopmostFrameIsMaglev
+                    : frames[i].IsBaseline ? kTopmostFrameIsBaseline : kTopmostFrameIsInterpreted);
                 break;
             }
         }
@@ -105,14 +123,32 @@ public static class RuntimeTest
     /// <summary>%ClearFunctionFeedback.</summary>
     public static JSValue ClearFunctionFeedback(Isolate isolate, JSValue functionObject)
     {
-        if (functionObject.HeapObjectOrNull is JSFunction function && JSFunctionFeedback.GetFeedbackVector(function) is { } vector)
+        if (functionObject.HeapObjectOrNull is not JSFunction function) return JSValue.Undefined;
+        if (JSFunctionFeedback.GetFeedbackVector(function) is { } vector)
         {
             vector.ClearSlots(isolate, ClearBehavior.kClearAll);
+        }
+        // JSFunction::ClearAllTypeFeedbackInfoForTesting: also zero the
+        // embedded-feedback bytes inside the BytecodeArray.
+        if (function.Shared.FunctionData is BytecodeArray bytecode)
+        {
+            for (var it = new BytecodeArrayIterator(bytecode); !it.Done(); it.Advance())
+            {
+                if (!Bytecodes.IsEmbeddedFeedbackBytecode(it.CurrentBytecode())) continue;
+                int operandIndex = Bytecodes.IsUnaryOpWithEmbeddedFeedback(it.CurrentBytecode())
+                    ? InterpreterConstants.kUnaryEmbeddedFeedbackOperandIndex
+                    : InterpreterConstants.kEmbeddedFeedbackOperandIndex;
+                bytecode.Bytecodes[it.GetEmbeddedFeedbackOffset(operandIndex)] = InterpreterConstants.kUninitializedEmbeddedFeedback;
+            }
         }
         return JSValue.Undefined;
     }
 
-    /// <summary>%IsBeingInterpreted: always, V8Sharp has only the interpreter.</summary>
+    /// <summary>
+    /// Runtime_IsBeingInterpreted: always true (Turbofan lowers the call to
+    /// false, so it never reaches the runtime from optimized code; Maglev does
+    /// not lower it).
+    /// </summary>
     public static JSValue IsBeingInterpreted(Isolate isolate) => JSValue.True;
 
     /// <summary>%HasFastProperties.</summary>

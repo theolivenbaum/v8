@@ -1,13 +1,14 @@
 // Port of src/execution/tiering-manager.{h,cc}: the interrupt budget and the
 // tiering decisions taken when it runs out (OnInterruptTick).
 //
-// V8Sharp's tiers are Ignition and Sparkplug (baseline IL, src/V8Sharp/Baseline);
-// there is no Maglev or Turbofan yet, so V8Sharp behaves like a V8 built with
-// v8_enable_turbofan=false and v8_enable_maglev=false: isolate->use_optimizer()
-// is false, the first tick allocates the feedback vector and tiers up to
-// Sparkplug, and later ticks only raise the budget. The optimization paths
-// (MaybeOptimizeFrame, ShouldOptimize, OSR urgency) are ported for when the
-// optimizing tier lands, and are reached only through use_optimizer().
+// V8Sharp's tiers are Ignition, Sparkplug (baseline IL, src/V8Sharp/Baseline)
+// and Maglev (optimized IL, src/V8Sharp/Maglev); there is no Turbofan, so with
+// --maglev V8Sharp behaves like V8 run with --maglev --no-turbofan: the first
+// tick allocates the feedback vector and tiers up to Sparkplug, a later tick
+// optimizes with Maglev (synchronously), and a function stuck in a loop
+// raises its OSR urgency so that its next JumpLoop interrupt OSRs into
+// Maglev code. Maglev is off by default in V8Sharp for now (deviations.md),
+// which makes use_optimizer() false as in a V8 built without optimizers.
 using V8Sharp.Baseline;
 using V8Sharp.Codegen;
 using V8Sharp.Interpreter;
@@ -26,10 +27,10 @@ public sealed partial class Isolate
     public BaselineBatchCompiler BaselineBatchCompiler => _baselineBatchCompiler ??= new BaselineBatchCompiler(this);
 
     /// <summary>
-    /// Isolate::use_optimizer: V8Sharp has no optimizing compiler yet (as a V8
-    /// built without Turbofan and Maglev).
+    /// Isolate::use_optimizer: Maglev is V8Sharp's only optimizing compiler
+    /// (there is no Turbofan), enabled with --maglev.
     /// </summary>
-    public bool UseOptimizer => false;
+    public bool UseOptimizer => Flags.maglev && !Flags.jitless;
 }
 
 /// <summary>OptimizationReason (tiering-manager.cc).</summary>
@@ -68,6 +69,7 @@ public sealed class TieringManager(Isolate isolate)
     public static CodeKind? GetActiveTier(JSFunction function)
     {
         SharedFunctionInfo shared = function.Shared;
+        if (function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: not null }) return CodeKind.MAGLEV;
         if (shared.HasBaselineCode) return CodeKind.BASELINE;
         if (shared.FunctionData is BytecodeArray) return CodeKind.INTERPRETED_FUNCTION;
         return null;
@@ -78,6 +80,9 @@ public sealed class TieringManager(Isolate isolate)
 
     /// <summary>JSFunction::ActiveTierIsBaseline.</summary>
     public static bool ActiveTierIsBaseline(JSFunction function) => GetActiveTier(function) == CodeKind.BASELINE;
+
+    /// <summary>JSFunction::ActiveTierIsMaglev.</summary>
+    public static bool ActiveTierIsMaglev(JSFunction function) => GetActiveTier(function) == CodeKind.MAGLEV;
 
     // ---- Budgets ---------------------------------------------------------------------
 
@@ -105,18 +110,18 @@ public sealed class TieringManager(Isolate isolate)
         (ActiveTierIsIgnition(function) && BaselineSupport.CanCompileWithBaseline(isolate, function.Shared) &&
          function.Shared.CachedTieringDecision == CachedTieringDecision.kPending);
 
-    /// <summary>maglev::IsMaglevEnabled: V8Sharp has no Maglev.</summary>
-    static bool IsMaglevEnabled() => false;
+    /// <summary>maglev::IsMaglevEnabled.</summary>
+    static bool IsMaglevEnabled(Isolate isolate) => isolate.UseOptimizer;
 
-    static bool TiersUpToMaglev(CodeKind? codeKind) =>
-        IsMaglevEnabled() && codeKind is { } kind && CodeKindHelpers.IsUnoptimizedJSFunction(kind);
+    static bool TiersUpToMaglev(Isolate isolate, CodeKind? codeKind) =>
+        IsMaglevEnabled(isolate) && codeKind is { } kind && CodeKindHelpers.IsUnoptimizedJSFunction(kind);
 
     /// <summary>The anonymous InterruptBudgetFor of tiering-manager.cc (no tiering is ever in progress).</summary>
     static int InterruptBudgetFor(Isolate isolate, CodeKind? codeKind, JSFunction function,
         CachedTieringDecision cachedTieringDecision, int bytecodeLength)
     {
         FlagList flags = isolate.Flags;
-        if (TiersUpToMaglev(codeKind))
+        if (TiersUpToMaglev(isolate, codeKind))
         {
             if (flags.profile_guided_optimization)
             {
@@ -235,19 +240,41 @@ public sealed class TieringManager(Isolate isolate)
     }
 
     /// <summary>
-    /// TieringManager::MaybeOptimizeFrame. Unreachable until the optimizing
-    /// tier exists (use_optimizer() is false); kept so the decision logic has
-    /// its place.
+    /// TieringManager::MaybeOptimizeFrame. Maglev compilation is synchronous
+    /// (V8 marks the function for concurrent optimization and installs the
+    /// code when the job finishes).
     /// </summary>
     void MaybeOptimizeFrame(JSFunction function, CodeKind currentCodeKind)
     {
         if (JSFunctionFeedback.GetFeedbackVector(function) is not { } vector) return;
-        OptimizationDecision d = ShouldOptimize(vector, currentCodeKind);
-        if (d.ShouldOptimize && isolate.Flags.use_osr && vector.OsrState < FeedbackVector.kMaxOsrUrgency)
+        if (Maglev.MaglevCompiler.OptimizationDisabled(function.Shared)) return;
+        if (isolate.Flags.allow_natives_syntax && Maglev.MaglevCompiler.IsMarkedForManualOptimization(function)) return;
+
+        if (isolate.Flags.always_osr) TryIncrementOsrUrgency(vector);
+
+        // The function has Maglev code but this frame runs a lower tier: it is
+        // stuck in a loop. OSR kicks in at its next JumpLoop interrupt.
+        if (vector.MaglevCode is not null && currentCodeKind < CodeKind.MAGLEV)
         {
-            // TryIncrementOsrUrgency for a function stuck in a lower tier.
-            vector.OsrState = (byte)Math.Min(vector.OsrState + 1, FeedbackVector.kMaxOsrUrgency);
+            if (isolate.Flags.maglev_osr) TryIncrementOsrUrgency(vector);
+            return;
         }
+
+        OptimizationDecision d = ShouldOptimize(vector, currentCodeKind);
+        if (!d.ShouldOptimize || d.CodeKind != CodeKind.MAGLEV) return;
+        if (Compiler.CompileMaglev(isolate, function, byTieringManager: true) && isolate.Flags.maglev_osr)
+        {
+            // This tick came from the running function's own frame: if it is in
+            // a loop, the next JumpLoop interrupt OSRs.
+            TryIncrementOsrUrgency(vector);
+        }
+    }
+
+    /// <summary>TryIncrementOsrUrgency.</summary>
+    void TryIncrementOsrUrgency(FeedbackVector vector)
+    {
+        if (!isolate.Flags.use_osr) return;
+        if (vector.OsrUrgency < FeedbackVector.kMaxOsrUrgency) vector.OsrUrgency = vector.OsrUrgency + 1;
     }
 
     /// <summary>TieringManager::ShouldOptimize.</summary>
@@ -255,7 +282,10 @@ public sealed class TieringManager(Isolate isolate)
     {
         SharedFunctionInfo shared = feedbackVector.SharedFunctionInfo;
         if (currentCodeKind == CodeKind.TURBOFAN_JS) return OptimizationDecision.DoNotOptimize();
-        if (TiersUpToMaglev(currentCodeKind)) return OptimizationDecision.Maglev();
+        if (TiersUpToMaglev(isolate, currentCodeKind) && !Maglev.MaglevCompiler.OptimizationDisabled(shared))
+        {
+            return OptimizationDecision.Maglev();
+        }
         if (!isolate.Flags.turbofan || !isolate.UseOptimizer) return OptimizationDecision.DoNotOptimize();
         if (shared.FunctionData is BytecodeArray bytecode && bytecode.Length > isolate.Flags.max_optimized_bytecode_size)
         {

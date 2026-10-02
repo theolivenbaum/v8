@@ -16,7 +16,8 @@ Engines: `v8:jit` (V8 as shipped), `v8:maglev` (`--no-turbofan`),
 `v8:sparkplug` (`--no-maglev --no-turbofan`), `v8:jitless` (`--jitless`,
 Ignition only), and V8Sharp in-process: `v8sharp` (its defaults: Ignition +
 baseline IL), `v8sharp:jitless` (the interpreter only), `v8sharp:sparkplug`
-(same as `v8sharp`) and `v8sharp:always-sparkplug`. `V8SHARP_BENCH_FLAGS`
+(same as `v8sharp`), `v8sharp:always-sparkplug` and `v8sharp:maglev`
+(`--maglev`: the optimizing tier, off by default). `V8SHARP_BENCH_FLAGS`
 adds V8 flags to the v8sharp runs. Suites: `octane` (all), `octane:<name>`,
 `perf:<dir>` for a directory of `test/js-perf-test`, and `micro:<name>` /
 `micro:all` for the interpreter micro-benchmarks in `micro/` (property

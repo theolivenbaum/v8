@@ -57,6 +57,8 @@ namespace V8Sharp
         /// BaselineFrame, which has the interpreter frame's layout.
         /// </summary>
         public bool IsBaseline;
+        /// <summary>An interpreted frame that runs Maglev code (V8's MaglevFrame).</summary>
+        public bool IsMaglev;
         /// <summary>
         /// The frame was entered by a call from the dispatch loop of its caller
         /// without a new .NET frame (InterpreterInlineCalls); Return resumes the
