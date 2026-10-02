@@ -680,7 +680,7 @@ one source: 3644 to 1080 ms; aged by full GCs; sources over 16K characters
 are not cached, since keeping large scripts alive across gen-2 collections
 cost 25-30% on large distinct evals).
 
-Open: Next levers: the scanner and preparser
+Open, the next levers: the scanner and preparser
 per token (40% of a TypeScript compile, a third of it the scanner),
 StringTable lookups when internalizing (the AstRawString's hash is not
 reused), RegisterInfo and the other per-function allocations of the
