@@ -244,7 +244,22 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   `FeedbackVector`, `Context`, `Pc`, `Fp`, `FrameIndex`, `Argc`,
   `BaseFrameIndex`). A JS-to-JS call from the loop pushes the callee's frame
   and record and continues in the same loop (`InterpreterInlineCalls`);
-  `Return` pops back to the caller's record (`ReturnPc`). Calls from
+  `Return` pops back to the caller's record (`ReturnPc`). The call protocol
+  of such an inline call, in order: the callee's `SharedFunctionInfo.InterpreterCallMode`
+  (cached, reset by the setters of the fields it depends on) says whether it
+  runs in the loop; `EnterInline` reserves parameters, fixed slots and
+  register file at the stack top, clears the register file below
+  `RegisterStackDirtyEnd`, copies the receiver and arguments from the
+  caller's registers into the parameter slots (the only copy; V8's
+  InterpreterPushArgsThenCall pushes them too), stores context, closure and
+  feedback vector, pushes the record at `InterpreterFrameDepth` (the caller's
+  record is the one below it, which gets `ReturnPc`) and points
+  `InterpreterState` at the callee. Every reference store into the register
+  stack or the record compares first, since a returned frame at the same
+  depth leaves its values behind: a repeated call stores no references and
+  pays no GC write barriers. A return restores `InterpreterState` from the
+  caller's record and fixed slots and leaves the callee's slots and record
+  as they are (below `RegisterStackDirtyEnd`). Calls from
   builtins and runtime code enter a new loop through
   `InterpreterExecution.EnterFrame` / `Run`, which is also where the baseline
   tier enters (OSR from `JumpLoop` sets `InterpreterState.OsrToBaseline`,

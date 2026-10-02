@@ -634,6 +634,84 @@ What blocks parity (44.5% of jitless by Octane's own score), measured:
   AggressiveOptimization loop calls are still compiled at tier 0 first.
 Beyond the interpreter, the IL tiers remain the lever.
 
+Fifth interpreter performance pass: calls and dispatch (2026-10-02; parity
+publish, under the benchmark lock; "before" is 2a352966, "after" this pass;
+micro best of 5 x 3 runs, octane-cpu SCALE=10 mean of 2, wall Octane mean
+of 2; V8 --jitless in ClearScript crashes on some runs, its mean is over
+the runs that finished):
+
+| | before | after | V8 --jitless | before / after of jitless |
+|---|---|---|---|---|
+| micro/cpu.js geomean (18) | 22.17 | 23.98 | 44.95 | 49.3% / 53.3% |
+| octane-cpu geomean (14, no zlib/latency) | 230.4 | 239.5 | 548.9 | 42.0% / 43.6% |
+| Octane wall geomean (17 scores) | 1790 | 1843 | 3934 | 45.5% / 46.8% |
+
+octane-cpu per benchmark (after/before): Richards +3.7%, DeltaBlue +8.1%,
+Crypto +2.2%, RayTrace +2.1%, EarleyBoyer +5.0%, RegExp -3.3%, Splay -1.3%,
+NavierStokes +9.9%, PdfJS +2.7%, Mandreel +8.8%, Gameboy +9.6%, CodeLoad
++4.9%, Box2D -2.6%, zlib +3.4%, Typescript +6.9% (run-to-run noise is
+3-10% per benchmark on this shared host).
+
+The pass, one commit each (git log 2a352966..):
+- Inline calls (InterpreterInlineCalls.EnterInline): a call and return
+  took about 490 instructions (CanInline read six SharedFunctionInfo
+  fields per call; PushFrameCore was a 12-parameter call taking the
+  receiver and arguments by value, with the frame's addresses spilled
+  around every write barrier; the return went through two calls). The
+  SharedFunctionInfo now caches its call mode (InterpreterCallMode,
+  reset by the setters of what it depends on) and the call handlers push
+  the frame straight-line per argument form; `new`, f.call and f.apply
+  share the entry. octane-cpu +6.1% on 8 call-heavy benchmarks
+  (Richards +4.6%, DeltaBlue +5.2%, EarleyBoyer +7.2%). The call path is
+  now about 200 instructions per call and return, flat (no single hot
+  spot): CallProperty0/1 and the return are 15% of Richards (21% before).
+- Number fast paths that never call out (Add, Sub, Mul, Inc, Dec, AddSmi,
+  SubSmi, comparisons): inline only when the embedded feedback already
+  covers the operation, so RyuJIT no longer spills the operands on every
+  execution (Add went from ~25 instructions with three stack stores and a
+  store-to-load round trip to ~12 with none). micro +10%, octane-cpu +2%
+  (Crypto +13%).
+- GetNamedProperty: only monomorphic hits inline (the polymorphic lookup
+  call made the JIT spill the receiver on the monomorphic path): micro
+  ProtoMethod +41%, octane neutral.
+- StoreRegister stores the payload before the reference (no spill around
+  the barrier): 2 instructions less per Star, neutral.
+
+Tried and dropped, measured:
+- Threaded dispatch by replicated dispatch switches (a `switch` with a
+  `goto` per bytecode at the end of each hot handler, so every handler has
+  its own indirect jump, as V8's Dispatch does): with 14 handlers it was
+  within noise (+2% micro geomean); with 87 handlers the loop runs 2.5x
+  slower (RyuJIT stops optimizing a method of that size; the loop needs
+  a different shape for this, not more blocks).
+- A 256-case dispatch switch: RyuJIT keeps the range check (`cmp edi,
+  255; ja`) although the operand is a zero-extended byte.
+- GetKeyedProperty monomorphic only inline (as GetNamedProperty): mixed,
+  Crypto -9%, NavierStokes +13%; context slot stores through StoreRegister
+  (skipping unchanged references): +1.7% octane, -7% micro, i.e. noise
+  and code placement.
+
+What blocks parity now (micro: V8 --jitless is 1.87x on the geomean; empty
+loop 1.1x, add loop 1.7x, int arithmetic 2.6x, call 2.0x, prototype method
+2.1x, `new` 3.6x, object literal 2.7x):
+- Dispatch: ~25% of the loop's time in dispatch-heavy code is the
+  9-instruction shared dispatch (bounds check, relative jump table, one
+  indirect jump for all handlers) plus a jump back to it from every
+  handler; V8 needs 3-4 instructions and a jump per handler. RyuJIT gives
+  no way to emit V8's form from C# (see the threaded dispatch attempt).
+- Calls: ~200 instructions per call and return, spread over the frame
+  push (receiver/argument copies, register file clearing, ~10 record
+  fields, the state update) and the call feedback; the next step is
+  fewer fields per frame (the record, InterpreterState and the fixed slots
+  hold the function, bytecode, context and feedback vector two or three
+  times).
+- Write barriers: 11% of Richards (field stores of objects; the register
+  stack's are mostly skipped now).
+- Allocation (`new` 3.6x, object literal 2.7x) and closures (2.5x) are the
+  other agents' (object layout, Factory).
+Conformance at the end of the pass: mjsunit 7602 run, 0 newly failing, 0
+newly passing; test262 95123 run, 0 newly failing, 0 newly passing.
+
 Runtime slow paths outside the dispatch loop on zlib, Mandreel, Gameboy,
 PdfJS and Box2D (2026-10-02, after the fourth pass; thread CPU,
 `octane-cpu`, V8SHARP_BENCH_SCALE=50, under the benchmark lock, 2-3

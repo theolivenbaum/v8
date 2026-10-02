@@ -439,7 +439,21 @@ for now, to be revisited when the reason goes away.
   function runs in the caller's dispatch loop (`InterpreterInlineCalls`)
   without a .NET frame; generators, async functions, class and derived
   constructors, builtins and wide-operand calls take the ordinary path through
-  `Execution`/`InterpreterExecution.Invoke`.
+  `Execution`/`InterpreterExecution.Invoke`. Whether a callee runs in the loop
+  is cached on its SharedFunctionInfo (`InterpreterCallMode`: not inline,
+  inline, inline with sloppy receiver conversion, or check the closure's
+  Maglev code), reset by the setters of the fields it is computed from
+  (function data, builtin id, baseline code, MayHaveMaglevCode, kind,
+  language mode, native); V8 decides by the JSFunction's code field, which
+  the tiers update. The call handlers push the callee's frame straight-line
+  per argument form (`EnterInline`, with BaselineCalls' `ICallArguments`).
+- The number fast paths of the loop (Add, Sub, Mul, Inc, Dec, AddSmi,
+  SubSmi, the comparisons) run inline only when the embedded feedback
+  already covers the operation (number-saturated, or Smi feedback with Smi
+  operands and result); otherwise the handler computes the result and
+  updates the feedback. V8's handlers update the feedback inline; here a
+  call on the fast path would make RyuJIT spill the operands on every
+  execution.
 - Builtin calls: a builtin runs under a frame record of kind Builtin (V8's
   builtin frame, so it shows in stack traces), in its function's context,
   with register-stack slots reserved for recursion. A [[Call]] of a leaf
