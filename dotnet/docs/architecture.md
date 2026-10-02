@@ -195,6 +195,62 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   (`RuntimeHelpers.TryEnsureSufficientExecutionStack`) and raised as V8's
   `RangeError: Maximum call stack size exceeded`. Hosts run the engine on a
   thread with a large stack (d8sharp: 256 MB).
+- **Interpreter frame layout** (`Interpreter/InterpreterFrames.cs`,
+  `InterpreterRuntime.k*Offset`; what the baseline and optimizing tiers,
+  deoptimization and the stack walker rely on). A frame is a window of
+  `Isolate.RegisterStack` around its frame pointer `fp` (an index), laid out
+  as V8's x64 `InterpreterFrameConstants`:
+
+  ```
+  fp - 10 - i   argument i (parameter register a_i); argc may exceed the
+                formal count, the window holds max(argc, formals) arguments
+  fp - 9        receiver                      (kReceiverOffset)
+  fp - 8, -7    unused (V8's caller fp / return address)
+  fp - 6        current context               (kContextOffset)
+  fp - 5        closure                       (kClosureOffset)
+  fp - 4        argc (kArgcOffset): written on entry from EnterFrame and
+                by baseline calls, not by inline calls; read the count
+                from the frame record
+  fp - 3, -2    unused (bytecode array / offset live in the frame record)
+  fp - 1        feedback vector               (kFeedbackVectorOffset)
+  fp + 0 ...    register file r0 .. r(RegisterCount - 1)
+  ```
+
+  A register operand `o` addresses `fp - 7 - o`
+  (`kRegisterOperandBase`, `Register::FromOperand`), so `r0` is operand -7,
+  the receiver operand 2 and `a_i` operand 3 + i, as V8 encodes them in the
+  bytecode.
+  The window starts at the stack top before the call (`RegisterStart`) and
+  ends at `fp + RegisterCount` (`RegisterStackTop`). Slots above the top are
+  undefined except below `RegisterStackDirtyEnd`, where a returned inline
+  frame left its values; a new frame clears the part of its register file
+  below that mark.
+
+  Each frame also has an `InterpreterFrameRecord` in
+  `Isolate.InterpreterFrames[0 .. InterpreterFrameDepth)`: `Function`,
+  `Bytecode`, `Fp`, `Pc` (the current bytecode offset, saved before any
+  call or throw), `Argc`, `Kind` (interpreted or builtin exit),
+  `IsConstructor`, `IsBaseline` (the frame runs baseline code with this
+  layout), and for frames entered from a caller's dispatch loop without a
+  .NET call `InlineCall`, `ReturnPc` and `RegisterStart`. The stack walker,
+  `Error.stack`, `arguments` materialization and the debugger read the
+  record, the fixed slots and the parameter slots. Missing arguments are
+  undefined in the parameter slots (V8's argument adaptation).
+
+  While a frame runs, the dispatch loop (`InterpreterExecution.Loop<TS>`)
+  keeps `ip` (a `ref byte` into the bytecode), `fp` (a `ref JSValue` into the
+  register stack) and the accumulator in locals, and the rest of the frame's
+  state in the `ref struct InterpreterState` (`Function`, `Bytecode`,
+  `FeedbackVector`, `Context`, `Pc`, `Fp`, `FrameIndex`, `Argc`,
+  `BaseFrameIndex`). A JS-to-JS call from the loop pushes the callee's frame
+  and record and continues in the same loop (`InterpreterInlineCalls`);
+  `Return` pops back to the caller's record (`ReturnPc`). Calls from
+  builtins and runtime code enter a new loop through
+  `InterpreterExecution.EnterFrame` / `Run`, which is also where the baseline
+  tier enters (OSR from `JumpLoop` sets `InterpreterState.OsrToBaseline`,
+  and `Run` continues the frame in baseline code at `Pc`). A tier that
+  materializes an interpreter frame (deoptimization) writes the fixed slots,
+  the register file and a record with `Pc` and continues it through `Run`.
 - **Exceptions.** A JS throw that is caught in the same interpreter frame is
   dispatched through the frame's handler table without .NET exceptions. A
   throw that leaves a frame is a .NET `JavaScriptException` carrying the
