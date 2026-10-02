@@ -780,32 +780,18 @@ public sealed class KeyedLoadIC : IC
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static JSValue Load(Isolate isolate, FeedbackVector? vector, int slot, JSValue obj, JSValue key)
     {
-        // A typed array element load (Emscripten's HEAP8/HEAP32 ..., pdf.js's
-        // byte streams of several kinds): the element handler's map check,
-        // monomorphic or polymorphic (HandlePolymorphicCase), then the cached data.
+        // A monomorphic typed array element load (Emscripten's HEAP8/HEAP32 ...):
+        // the element handler's map check, then the cached data. (The
+        // polymorphic and String cases are LoadSlow's: more code here keeps
+        // RyuJIT from inlining this path into the interpreter's handler.)
         if (vector is not null && key.IsNumber && obj._obj is JSTypedArray typedArray)
         {
             JSValue[] slots = vector.Slots;
-            HeapObject? feedback = slots[slot]._obj;
-            HeapObject? found = ReferenceEquals(feedback, typedArray.Map) ? slots[slot + 1]._obj
-                : feedback is FixedArray polymorphic ? LoadIC.FindPolymorphicHandler(polymorphic, typedArray.Map) : null;
-            if (found is LoadHandler { HandlerKind: LoadHandler.Kind.kElement } typedHandler &&
+            if (ReferenceEquals(slots[slot]._obj, typedArray.Map) && slots[slot + 1]._obj is LoadHandler { HandlerKind: LoadHandler.Kind.kElement } typedHandler &&
                 (ElementAccess.TryLoadTypedElementFast(isolate, typedArray, key._num, out JSValue typedResult) ||
                  ElementAccess.TryLoadFastElement(isolate, typedArray, key._num, typedHandler, out typedResult)))
             {
                 return typedResult;
-            }
-        }
-        else if (vector is not null && key.IsNumber && obj._obj is { IsString: true } stringObject)
-        {
-            JSString str = Unsafe.As<JSString>(stringObject);
-            // LoadIndexedString: an in-bounds index of a String receiver whose
-            // feedback is the String map (StringCharCodeAt; a ConsString is
-            // flattened once, then indexed in its flat copy).
-            if (ReferenceEquals(vector.Slots[slot]._obj, isolate.Context?.NativeContext.ICPrimitiveMaps?.StringMap) &&
-                JSValue.TryGetIndex(key._num, out int index) && index < str.Length)
-            {
-                return isolate.Factory.LookupSingleCharacterStringFromCode(str.Get(index));
             }
         }
         else if (vector is not null && key.IsNumber && ICMaps.AsJSObject(obj._obj) is { } jsObject)
@@ -854,14 +840,24 @@ public sealed class KeyedLoadIC : IC
                     return cachedResult;
                 }
             }
-            else if (obj._obj is JSObject jsObject && key.IsNumber && feedback._obj is FixedArray polymorphic &&
-                     LoadIC.FindPolymorphicHandler(polymorphic, jsObject.Map) is LoadHandler { HandlerKind: LoadHandler.Kind.kElement or LoadHandler.Kind.kElementWithTransition } elementHandler &&
-                     ElementAccess.TryLoadFastElement(isolate, jsObject, key._num, elementHandler, out JSValue elementResult))
+            else if (ICMaps.AsJSObject(obj._obj) is { } jsObject && key.IsNumber && feedback._obj is FixedArray polymorphic &&
+                     LoadIC.FindPolymorphicHandler(polymorphic, jsObject.Map) is LoadHandler { HandlerKind: LoadHandler.Kind.kElement or LoadHandler.Kind.kElementWithTransition } elementHandler)
             {
-                return elementResult;
+                // HandlePolymorphicCase: a typed array of one of several kinds
+                // (pdf.js's byte streams) reads its cached data first.
+                if (jsObject is JSTypedArray typedArray && elementHandler.HandlerKind == LoadHandler.Kind.kElement &&
+                    ElementAccess.TryLoadTypedElementFast(isolate, typedArray, key._num, out JSValue typedResult))
+                {
+                    return typedResult;
+                }
+                if (ElementAccess.TryLoadFastElement(isolate, jsObject, key._num, elementHandler, out JSValue elementResult)) return elementResult;
             }
-            else if (obj.HeapObjectOrNull is JSString str && key.IsNumber && ReferenceEquals(feedback._obj, ICMaps.MapOf(isolate, obj)))
+            else if (obj._obj is { IsString: true } stringObject && key.IsNumber &&
+                     ReferenceEquals(feedback._obj, isolate.Context?.NativeContext.ICPrimitiveMaps?.StringMap))
             {
+                // LoadIndexedString (a ConsString is flattened once, then
+                // indexed in its flat copy).
+                JSString str = Unsafe.As<JSString>(stringObject);
                 double index = key._num;
                 if (index >= 0 && index < str.Length && (int)index == index)
                 {
