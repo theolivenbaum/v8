@@ -115,7 +115,14 @@ internal static class InterpreterInlineCalls
     public static void EnterInline<TArgs>(Isolate isolate, ref InterpreterState st, JSFunction function, int mode,
         JSValue receiver, TArgs args, int returnPc) where TArgs : struct, Baseline.BaselineCalls.ICallArguments
     {
-        if (mode == kCallModeInlineSloppy && !receiver.IsJSReceiver) receiver = InterpreterCalls.ConvertReceiver(isolate, function, receiver);
+        if (mode == kCallModeInlineSloppy && !receiver.IsJSReceiver)
+        {
+            // CallFunction's receiver conversion: the global proxy for
+            // null and undefined (inline), ToObject otherwise.
+            receiver = receiver.IsNullOrUndefined
+                ? function.Context.NativeContext.Slots[(int)Context.Field.GLOBAL_PROXY_INDEX]
+                : InterpreterCalls.ConvertReceiver(isolate, function, receiver);
+        }
         EnterInlineCore(isolate, ref st, function, receiver, args, returnPc, -1, false, default);
     }
 
