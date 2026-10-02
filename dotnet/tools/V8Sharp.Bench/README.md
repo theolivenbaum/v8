@@ -56,9 +56,32 @@ dotnet tools/V8Sharp.Bench/bin/Release/net10.0/V8Sharp.Bench.dll compare --suite
     --engines v8sharp@artifacts/bench-r2r,d8sharp@artifacts/d8-r2r,v8:jitless --runs 3
 ```
 
-Octane's own scores (after its warm-up) barely move with ReadyToRun (hot
-code is rejitted at tier 1 with dynamic PGO either way); `TieredPGO` is
-worth about 20% of the interpreter's Octane score and stays on.
+**The parity configuration** (what V8Sharp is compared with V8 `--jitless`
+on): a ReadyToRun composite, self-contained publish, as V8 ships its
+builtins precompiled in its snapshot. Publishing for a runtime also turns
+off `TieredPGO` and sets `System.Runtime.TieredCompilation.CallCountingDelayMs`
+to 0 (`V8Sharp.D8.csproj`, `V8Sharp.Bench.csproj`):
+
+```bash
+dotnet publish -c Release tools/V8Sharp.Bench -r linux-x64 --self-contained true -o artifacts/bench-r2r
+dotnet publish -c Release src/V8Sharp.D8 -r linux-x64 --self-contained true -o artifacts/d8-r2r
+```
+
+Why: Octane's large benchmarks (PdfJS, CodeLoad, Gameboy, TypeScript) run
+12000-15000 engine methods through the JIT, 3-6.5 s of compile time per
+CodeLoad or PdfJS process from `bin/`. ReadyToRun removes most tier-0
+compiles, but with `TieredPGO` hot precompiled code is first rejitted with
+instrumentation and only later at tier 1, and the 100 ms call-counting
+delay restarts with every new tier-0 method, so a big script keeps hot
+code unoptimized for seconds. Measured on CodeLoad, Octane-like short runs
+(us per run, from `bin/` / R2R / R2R without PGO / R2R with delay 0 / both):
+Closure 5085 / 3129 / 1953 / 2982 / 1686, jQuery 45667 / 47219 / 23857 /
+23500 / 19190. The dispatch loop itself is `AggressiveOptimization`
+(compiled once at full optimization in every configuration); the
+NoInlining handlers only it calls are not precompiled (crossgen does not
+compile the loop, so it never sees those instantiations) and start at
+tier 0. From `bin/`, `TieredPGO` stays on: there it is worth about 20% of
+the steady-state score of the eight classic benchmarks.
 
 The yardsticks: phase 1 (interpreter) is measured against `v8:jitless`,
 the baseline IL tier against `v8:sparkplug`, the optimizing tier against

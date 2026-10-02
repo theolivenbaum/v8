@@ -21,7 +21,16 @@
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
     <PublishReadyToRun>true</PublishReadyToRun>
     <PublishReadyToRunComposite Condition="'$(SelfContained)' == 'true'">true</PublishReadyToRunComposite>
+    <!-- The tiering of a precompiled engine (the parity configuration,
+         tools/V8Sharp.Bench/README.md): hot ReadyToRun code goes straight to
+         tier 1 instead of through an instrumented tier, and call counting
+         starts at once instead of waiting for 100 ms without new tier-0
+         methods, which a large script (Octane CodeLoad, PdfJS) never gives. -->
+    <TieredPGO>false</TieredPGO>
   </PropertyGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <RuntimeHostConfigurationOption Include="System.Runtime.TieredCompilation.CallCountingDelayMs" Value="0" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../../src/V8Sharp/V8Sharp.csproj" />
