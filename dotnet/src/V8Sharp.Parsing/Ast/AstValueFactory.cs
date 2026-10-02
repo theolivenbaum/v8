@@ -134,7 +134,7 @@ public sealed class AstRawString
         string_ = internalize(this);
     }
 
-    internal void set_string(object s) => string_ = s;
+    public void set_string(object s) => string_ = s;
 
     public override string ToString() => _value;
 }

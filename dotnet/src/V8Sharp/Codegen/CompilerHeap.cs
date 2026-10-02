@@ -42,7 +42,7 @@ public sealed class CompilerHeap(Isolate isolate, Script script) : IBytecodeGene
     {
         FunctionKind kind = literal.kind();
         // FunctionLiteral::GetName: no shared name without a raw name.
-        JSString? name = literal.raw_name() is { } rawName ? isolate.Factory.InternalizeString(rawName.ToFlatString()) : null;
+        JSString? name = literal.raw_name() is { } rawName ? InternalizedName(isolate, rawName) : null;
         SharedFunctionInfo shared = isolate.Factory.NewSharedFunctionInfo(name, null, Builtin.CompileLazy, 0, false, kind);
         if (name is null) shared.ClearName();
         shared.BuiltinId = Builtin.CompileLazy;
@@ -84,7 +84,9 @@ public sealed class CompilerHeap(Isolate isolate, Script script) : IBytecodeGene
         // V8 skips the UncompiledData for functions it is about to compile
         // eagerly; V8Sharp always creates it (the SFI stays "not compiled" until
         // its bytecode is installed).
-        JSString inferredName = isolate.Factory.InternalizeString(lit.raw_inferred_name()?.ToFlatString() ?? "");
+        JSString inferredName = lit.raw_inferred_name() is { } rawInferredName
+            ? InternalizedName(isolate, rawInferredName)
+            : isolate.Factory.InternalizeString("");
         shared.FunctionData = new UncompiledData(inferredName, lit.start_position(), lit.end_position());
     }
 
@@ -178,10 +180,36 @@ public sealed class CompilerHeap(Isolate isolate, Script script) : IBytecodeGene
 
     public object RawString(object rawString) => rawString switch
     {
-        AstRawString s => isolate.Factory.InternalizeString(s.Value),
+        // AstRawString::Internalize: the string is internalized once and kept.
+        AstRawString s => s.string_ ?? InternalizeRawString(s),
         string s => isolate.Factory.InternalizeString(s),
         _ => throw new InvalidOperationException("V8Sharp: unexpected raw string " + rawString.GetType().Name),
     };
+
+    object InternalizeRawString(AstRawString s) => InternalizeRawString(isolate, s);
+
+    static JSString InternalizeRawString(Isolate isolate, AstRawString s)
+    {
+        JSString result = isolate.Factory.InternalizeString(s.Value);
+        s.set_string(result);
+        return result;
+    }
+
+    /// <summary>
+    /// A function name as an internalized string. A one-segment name (most of
+    /// them) is its raw string, internalized once (AstRawString::Internalize);
+    /// a longer one is flattened and the result kept on the cons string.
+    /// </summary>
+    static JSString InternalizedName(Isolate isolate, AstConsString name)
+    {
+        if (name.string_ is JSString cached) return cached;
+        IReadOnlyList<AstRawString> segments = name.ToRawStrings();
+        JSString result = segments.Count == 1
+            ? segments[0].string_ as JSString ?? InternalizeRawString(isolate, segments[0])
+            : isolate.Factory.InternalizeString(name.ToFlatString());
+        name.string_ = result;
+        return result;
+    }
 
     public object ConsString(object consString) => consString switch
     {
