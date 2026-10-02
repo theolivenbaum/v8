@@ -19,6 +19,10 @@ namespace V8Sharp.Maglev;
 public static class MaglevBuiltins
 {
     const MethodImplOptions Inline = MethodImplOptions.AggressiveInlining;
+    // Out-of-line helpers Maglev code calls are compiled fully optimized at
+    // once (no RyuJIT tier 0 or instrumented tier): optimized code calls them
+    // from its first run, as baseline code its call paths (BaselineCalls).
+    const MethodImplOptions Outline = MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization;
 
     // ---- Type tests (CheckSmi, CheckNumber, CheckHeapObject, CheckString ...) -------------------------
 
@@ -267,6 +271,7 @@ public static class MaglevBuiltins
     /// in-bounds integer index of an attached, fixed-length typed array (the
     /// builtin's typed array case); everything else through the keyed store IC.
     /// </summary>
+    [MethodImpl(Outline)]
     public static void KeyedStoreICMegamorphic(Isolate isolate, FeedbackVector? fv, int slot, JSValue obj, JSValue key, JSValue value)
     {
         if (obj._obj is JSTypedArray a && key.IsNumber && value.IsNumber && !a.IsVariableLength && !a.IsBigIntArray)
@@ -286,6 +291,7 @@ public static class MaglevBuiltins
     }
 
     /// <summary>LoadTypedArrayLength: the length, 0 when detached (or out of bounds of a resizable buffer).</summary>
+    [MethodImpl(Inline)]
     public static int TypedArrayLength(JSValue obj)
     {
         var a = Unsafe.As<JSTypedArray>(obj._obj!);
@@ -293,6 +299,7 @@ public static class MaglevBuiltins
         return length > int.MaxValue ? int.MaxValue : (int)length;
     }
 
+    [MethodImpl(Inline)]
     public static bool TypedArrayIndexInBounds(JSValue obj, int index) => (uint)index < (uint)TypedArrayLength(obj);
 
     [MethodImpl(Inline)]
@@ -302,24 +309,38 @@ public static class MaglevBuiltins
         return ref a.Buffer.BackingStoreBuffer[(int)a.ByteOffset + index * size];
     }
 
+    [MethodImpl(Inline)]
     public static int LoadInt8Element(JSValue obj, int index) => (sbyte)TypedElement(obj, index, 1);
+    [MethodImpl(Inline)]
     public static int LoadUint8Element(JSValue obj, int index) => TypedElement(obj, index, 1);
+    [MethodImpl(Inline)]
     public static int LoadInt16Element(JSValue obj, int index) => Unsafe.ReadUnaligned<short>(ref TypedElement(obj, index, 2));
+    [MethodImpl(Inline)]
     public static int LoadUint16Element(JSValue obj, int index) => Unsafe.ReadUnaligned<ushort>(ref TypedElement(obj, index, 2));
     /// <summary>Int32 and Uint32 elements (a Uint32 value is the int32 of the same bits).</summary>
+    [MethodImpl(Inline)]
     public static int LoadInt32Element(JSValue obj, int index) => Unsafe.ReadUnaligned<int>(ref TypedElement(obj, index, 4));
+    [MethodImpl(Inline)]
     public static double LoadFloat32Element(JSValue obj, int index) => Unsafe.ReadUnaligned<float>(ref TypedElement(obj, index, 4));
+    [MethodImpl(Inline)]
     public static double LoadFloat64Element(JSValue obj, int index) => Unsafe.ReadUnaligned<double>(ref TypedElement(obj, index, 8));
 
+    [MethodImpl(Inline)]
     public static void StoreInt8Element(JSValue obj, int index, int value) => TypedElement(obj, index, 1) = (byte)value;
+    [MethodImpl(Inline)]
     public static void StoreInt16Element(JSValue obj, int index, int value) =>
         Unsafe.WriteUnaligned(ref TypedElement(obj, index, 2), (short)value);
+    [MethodImpl(Inline)]
     public static void StoreInt32Element(JSValue obj, int index, int value) => Unsafe.WriteUnaligned(ref TypedElement(obj, index, 4), value);
+    [MethodImpl(Inline)]
     public static void StoreFloat32Element(JSValue obj, int index, double value) =>
         Unsafe.WriteUnaligned(ref TypedElement(obj, index, 4), (float)value);
+    [MethodImpl(Inline)]
     public static void StoreFloat64Element(JSValue obj, int index, double value) => Unsafe.WriteUnaligned(ref TypedElement(obj, index, 8), value);
+    [MethodImpl(Inline)]
     public static void StoreUint8ClampedInt32(JSValue obj, int index, int value) =>
         TypedElement(obj, index, 1) = (byte)(value < 0 ? 0 : value > 255 ? 255 : value);
+    [MethodImpl(Inline)]
     public static void StoreUint8ClampedFloat64(JSValue obj, int index, double value) =>
         TypedElement(obj, index, 1) = TypedArrayScalars.ClampDouble(value);
 
@@ -566,6 +587,7 @@ public static class MaglevBuiltins
     /// graph checked it), with the arguments in the frame's registers; no call
     /// feedback is collected.
     /// </summary>
+    [MethodImpl(Outline)]
     public static JSValue CallKnownJSFunction(Isolate isolate, JSValue target, JSValue receiver, int argsStart, int argc, int mode) =>
         MaglevCalls.Call(isolate, target, receiver, argsStart, argc, (ConvertReceiverMode)mode);
 
@@ -574,6 +596,7 @@ public static class MaglevBuiltins
     /// arguments object. An elided object (undefined here) means the frame's
     /// actual arguments are passed; otherwise CallWithArrayLike.
     /// </summary>
+    [MethodImpl(Outline)]
     public static JSValue CallForwardArguments(Isolate isolate, ref InterpreterState state, JSValue target, JSValue receiver,
         JSValue argumentsObject)
     {
@@ -597,6 +620,7 @@ public static class MaglevBuiltins
     }
 
     /// <summary>Construct of a known base constructor with the receiver FastNewObject allocated.</summary>
+    [MethodImpl(Outline)]
     public static JSValue ConstructKnownJSFunction(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, int argsStart,
         int argc) =>
         MaglevCalls.ConstructWithReceiver(isolate, target, receiver, newTarget, argsStart, argc);

@@ -481,6 +481,28 @@ public class MaglevCompilerTest
     }
 
     [Fact]
+    public void GenericCallsDoNotPreventOptimization()
+    {
+        // Megamorphic call sites of every call bytecode become generic call
+        // nodes (the baseline tier's call paths), not bailouts.
+        Assert.Equal("ok,8", Run("--maglev", """
+            var fs = [];
+            for (var i = 0; i < 6; i++) fs.push(new Function('a', 'b', 'return (a | 0) + (b | 0) + ' + i + ';'));
+            function f(k) {
+              var o = { m: fs[k % 6] }, g = fs[(k + 1) % 6];
+              return o.m() + o.m(1) + o.m(1, 2) + o.m(1, 2, 3) + g() + g(1) + g(1, 2) + g(1, 2, 3);
+            }
+            %PrepareFunctionForOptimization(f);
+            var expect = [];
+            for (var k = 0; k < 12; k++) expect.push(f(k));
+            %OptimizeFunctionOnNextCall(f);
+            var same = true;
+            for (var k = 0; k < 12; k++) same = same && f(k) === expect[k];
+            [same ? "ok" : "differs", %GetOptimizationStatus(f) & 8].join();
+            """));
+    }
+
+    [Fact]
     public void MaglevIsOffByDefault()
     {
         Assert.Equal("false,false", Run("", """

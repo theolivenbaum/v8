@@ -295,41 +295,25 @@ public sealed partial class MaglevGraphBuilder
                     [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.RegIndex(first), BuiltinArg.I(count)],
                     RegisterListStores(first, count))!;
             }
+            // The baseline tier's call paths (BaselineCalls) take the arguments as values.
             case Bytecode.CallProperty0:
-                return CallBaseline("CallProperty0", [callee, receiver],
-                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1)])!;
+                return CallBaselineCalls("CallProperty0", [callee, receiver],
+                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1)]);
             case Bytecode.CallProperty1:
-            {
-                Register a0 = _it.GetRegisterOperand(2);
-                return CallBaseline("CallProperty1", [callee, receiver],
-                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.RegIndex(a0)],
-                    [(a0, args[0])])!;
-            }
+                return CallBaselineCalls("CallProperty1", [callee, receiver, args[0]],
+                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)]);
             case Bytecode.CallProperty2:
-            {
-                Register a0 = _it.GetRegisterOperand(2);
-                Register a1 = _it.GetRegisterOperand(3);
-                return CallBaseline("CallProperty2", [callee, receiver],
-                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.RegIndex(a0),
-                     BuiltinArg.RegIndex(a1)], [(a0, args[0]), (a1, args[1])])!;
-            }
+                return CallBaselineCalls("CallProperty2", [callee, receiver, args[0], args[1]],
+                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2), BuiltinArg.In(3)]);
             case Bytecode.CallUndefinedReceiver0:
-                return CallBaseline("CallUndefinedReceiver0", [callee],
-                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0)])!;
+                return CallBaselineCalls("CallUndefinedReceiver0", [callee],
+                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0)]);
             case Bytecode.CallUndefinedReceiver1:
-            {
-                Register a0 = _it.GetRegisterOperand(1);
-                return CallBaseline("CallUndefinedReceiver1", [callee],
-                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.RegIndex(a0)], [(a0, args[0])])!;
-            }
+                return CallBaselineCalls("CallUndefinedReceiver1", [callee, args[0]],
+                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1)]);
             default:
-            {
-                Register a0 = _it.GetRegisterOperand(1);
-                Register a1 = _it.GetRegisterOperand(2);
-                return CallBaseline("CallUndefinedReceiver2", [callee],
-                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.RegIndex(a0), BuiltinArg.RegIndex(a1)],
-                    [(a0, args[0]), (a1, args[1])])!;
-            }
+                return CallBaselineCalls("CallUndefinedReceiver2", [callee, args[0], args[1]],
+                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)]);
         }
     }
 

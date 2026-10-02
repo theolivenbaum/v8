@@ -19,6 +19,7 @@ public static class MaglevCalls
     /// Calls <paramref name="callee"/> with the arguments in the register stack at
     /// <paramref name="argsStart"/>.
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
     public static JSValue Call(Isolate isolate, JSValue callee, JSValue receiver, int argsStart, int argc, ConvertReceiverMode mode)
     {
         if (callee._obj is JSFunction function)
@@ -62,6 +63,7 @@ public static class MaglevCalls
     /// (FastNewObject): the construct stub's frame, the call, and the result
     /// selection (an object result replaces the receiver).
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
     public static JSValue ConstructWithReceiver(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, int argsStart,
         int argc)
     {
@@ -78,6 +80,7 @@ public static class MaglevCalls
     /// Builds the callee's interpreter frame (as InterpreterExecution.EnterFrame
     /// does) and runs its Maglev code.
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
     static JSValue EnterFrame(Isolate isolate, JSFunction function, MaglevCode code, FeedbackVector vector, JSValue receiver,
         int argsStart, int argc, JSValue newTarget, bool isConstruct)
     {

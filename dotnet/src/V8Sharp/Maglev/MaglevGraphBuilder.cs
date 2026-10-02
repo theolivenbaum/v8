@@ -1361,6 +1361,16 @@ public sealed partial class MaglevGraphBuilder
 
     static readonly Dictionary<string, MethodInfo> s_baselineBuiltins = LoadBuiltins(typeof(BaselineBuiltins));
     static readonly Dictionary<string, MethodInfo> s_maglevBuiltins = LoadBuiltins(typeof(MaglevBuiltins));
+    static readonly Dictionary<string, MethodInfo> s_baselineCalls = LoadBuiltins(typeof(BaselineCalls));
+
+    /// <summary>A generic call node calling BaselineCalls.<paramref name="name"/> (the baseline tier's call bytecodes).</summary>
+    ValueNode CallBaselineCalls(string name, ValueNode[] inputs, BuiltinArg[] args)
+    {
+        MethodInfo method = s_baselineCalls.TryGetValue(name, out MethodInfo? m) ? m
+            : throw new MaglevBailoutException("no baseline call path " + name);
+        for (int i = 0; i < inputs.Length; i++) inputs[i] = GetTaggedValue(inputs[i]);
+        return BuildCallBuiltin(method, name, inputs, args, null, OpProperties.kGenericCall)!;
+    }
 
     static Dictionary<string, MethodInfo> LoadBuiltins(Type type)
     {
