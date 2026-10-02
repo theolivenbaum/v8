@@ -72,6 +72,8 @@ public sealed class BaselineBatchCompiler(Isolate isolate)
         // Early return if the function is compiled with baseline already or it is not
         // suitable for baseline compilation.
         if (shared.HasBaselineCode) return false;
+        // If we're already compiling this function, return.
+        if (_concurrentCompiler is not null && _concurrentCompiler.IsCompiling(shared)) return false;
         if (!BaselineSupport.CanCompileWithBaseline(isolate, shared)) return false;
 
         long estimatedSize = BaselineCompiler.EstimateInstructionSize((BytecodeArray)shared.FunctionData!);
@@ -149,6 +151,9 @@ internal sealed class ConcurrentBaselineCompiler(Isolate isolate)
     // The functions of jobs not installed yet (SharedFunctionInfo::is_sparkplug_compiling;
     // main thread only).
     readonly HashSet<SharedFunctionInfo> _compiling = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>SharedFunctionInfo::is_sparkplug_compiling.</summary>
+    public bool IsCompiling(SharedFunctionInfo shared) => _compiling.Contains(shared);
 
     /// <summary>ConcurrentBaselineCompiler::CompileBatch.</summary>
     public void CompileBatch(List<WeakReference<JSFunction>> taskQueue)
