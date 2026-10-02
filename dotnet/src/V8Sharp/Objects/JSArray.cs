@@ -2,6 +2,7 @@
 // src/objects/objects.cc (DefineOwnProperty, AnythingToArrayLength,
 // ArraySetLength, SetLength, WouldChangeReadOnlyLength) and objects-inl.h
 // (MayHaveReadOnlyLength, HasReadOnlyLength).
+using System.Runtime.CompilerServices;
 using V8Sharp.Common;
 using V8Sharp.Roots;
 
@@ -20,7 +21,7 @@ public sealed class JSArray : JSObject
     /// <summary>A field-for-field copy (JSObject.CloneShallow).</summary>
     internal JSArray(JSArray source) : base(source)
     {
-        Length = source.Length;
+        _length = source._length;
         AllocationMementoSite = source.AllocationMementoSite;
     }
 
@@ -47,8 +48,25 @@ public sealed class JSArray : JSObject
     /// <summary>JSArray::kInitialMaxFastElementArray (kMaxRegularHeapObjectSize based).</summary>
     public const int kInitialMaxFastElementArray = (128 * 1024 - 8 - 16 - 8) >> 3;
 
+    /// <summary>
+    /// The length (a number in uint32 range), as its double: V8's length field
+    /// always holds a Number, and a double field is 8 bytes smaller than a
+    /// JSValue and is written without a GC write barrier (every push writes it).
+    /// </summary>
+    internal double _length;
+
     /// <summary>The length property (a number in uint32 range).</summary>
-    public JSValue Length = JSValue.Zero;
+    public JSValue Length
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => JSValue.FromNumber(_length);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        set
+        {
+            Debug.Assert(value.IsNumber, "an array length is a Number");
+            _length = value._num;
+        }
+    }
 
     /// <summary>
     /// The AllocationMemento's site: V8 places a memento behind an array
