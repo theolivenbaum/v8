@@ -69,6 +69,32 @@ public sealed partial class JSTypedArray(Map map) : JSArrayBufferView(map)
     /// <summary>The bytes of the view in its buffer (V8's DataPtr()).</summary>
     public Span<byte> DataSpan() => Buffer.BackingStoreBuffer.AsSpan((int)ByteOffset);
 
+    // V8 keeps the data pointer in the typed array itself (external_pointer +
+    // base_pointer), so the element access fast paths (EmitElementLoad,
+    // EmitElementStore) read it without going through the buffer and its
+    // backing store. V8Sharp caches the backing store's array, the byte offset
+    // and the length here, for views of a fixed length over a buffer that is
+    // not resizable: their array never changes, except that detaching drops
+    // it, which the fast paths check (the buffer's detached bit, skipped while
+    // the ArrayBufferDetaching protector is intact). Filled lazily by the
+    // element access slow paths (InitializeFastData).
+    internal byte[]? FastData;
+    internal int FastByteOffset;
+    internal int FastLength;
+
+    /// <summary>Fills the fast data fields when the view qualifies (see <see cref="FastData"/>).</summary>
+    internal void InitializeFastData()
+    {
+        JSArrayBuffer buffer = Buffer;
+        if (IsLengthTracking || IsBackedByRab || buffer.IsResizableByJs || buffer.WasDetached) return;
+        byte[] data = buffer.BackingStoreBuffer;
+        ulong byteLength = RawLength * (ulong)ElementSize;
+        if (ByteOffset > (ulong)data.Length || byteLength > (ulong)data.Length - ByteOffset) return;
+        FastByteOffset = (int)ByteOffset;
+        FastLength = (int)RawLength;
+        FastData = data;
+    }
+
     /// <summary>The bytes of elements [start, start + count) (V8's DataPtr() + start * element_size).</summary>
     public Span<byte> DataSpan(ulong start, ulong count)
     {

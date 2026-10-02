@@ -119,6 +119,97 @@ public class ICRegressionTest : TestWithContext
     }
 
     [Fact]
+    public void TypedArrayCachedDataSeesDetachAndOffsets()
+    {
+        // The element fast paths read the data cached in the typed array: it
+        // must honour the view's byte offset, the element kind's conversions,
+        // a detach after the data was cached, and never apply to views of a
+        // resizable buffer.
+        Assert.Equal("9|undefined,0|9|7,7,undefined|255,4294967295,1.100000023841858|9,undefined,2|undefined,undefined", RunString("""
+            function ld(a, i) { return a[i]; }
+            function st(a, i, v) { a[i] = v; }
+            var b = new ArrayBuffer(16), a = new Int32Array(b);
+            for (var k = 0; k < 10; k++) { st(a, 1, k); ld(a, 1); }
+            var r1 = ld(a, 1);
+            var c = b.transfer();
+            st(a, 1, 5);
+            var r2 = String(ld(a, 1)) + ',' + a.length;
+            var r3 = ld(new Int32Array(c), 1);
+            var big = new Int16Array(8), sub = big.subarray(2, 4);
+            for (var k = 0; k < 10; k++) st(sub, 1, 7);
+            var r4 = [big[3], ld(sub, 1), String(ld(sub, 2))].join();
+            var u8 = new Uint8ClampedArray(1), u32 = new Uint32Array(1), f32 = new Float32Array(1);
+            for (var k = 0; k < 10; k++) { st(u8, 0, 300.7); st(u32, 0, -1); st(f32, 0, 1.1); }
+            var r5 = [ld(u8, 0), ld(u32, 0), ld(f32, 0)].join();
+            var rb = new ArrayBuffer(8, { maxByteLength: 16 }), ra = new Uint8Array(rb);
+            for (var k = 0; k < 10; k++) { st(ra, 0, 9); ld(ra, 0); }
+            var r6a = ld(ra, 0);
+            rb.resize(2);
+            var r6 = [r6a, String(ld(ra, 3)), ra.length].join();
+            var d = new ArrayBuffer(8), da = new Float64Array(d);
+            for (var k = 0; k < 10; k++) { st(da, 0, 1.5); ld(da, 0); }
+            d.transfer();
+            st(da, 0, 2);
+            var r7 = String(da[0]) + ',' + String(ld(da, 0));
+            [r1, r2, r3, r4, r5, r6, r7].join('|');
+            """));
+    }
+
+    [Fact]
+    public void WideBytecodesInAHugeFunction()
+    {
+        // More than 128 registers and 256 feedback slots: Wide Star, Ldar, Mov,
+        // GetKeyedProperty, SetKeyedProperty and JumpLoop (run outside the
+        // scaled loop), including a keyed load that throws into a handler of
+        // the same frame. Expected values from the oracle.
+        Assert.Equal("55861222|165834,166167,166500,166833|1003,1001,1002|Error: boom|139", RunString("""
+            var src = 'var s = 0, a = [1, 2, 3], o = {};\n';
+            for (var j = 0; j < 140; j++) src += 'var v' + j + ' = ' + j + ';\n';
+            for (var j = 0; j < 140; j++) src += 'o.p' + j + ' = v' + j + ';\n';
+            src += 'var h = new Int32Array(4);\n';
+            src += 'for (var i = 0; i < n; i++) { var t = v139; v138 = t; h[i & 3] = h[(i + 1) & 3] + i; ' +
+                   'a[i % 3] = a[(i + 2) % 3] + 1; s = s + v138 + h[i & 3] | 0; }\n';
+            src += 'var e = "none"; try { s += g[0]; } catch (x) { e = String(x); }\n';
+            src += 'return [s, h.join(), a.join(), e, v138].join("|");';
+            var f = new Function('n', 'g', src);
+            f(1000, { get 0() { throw new Error("boom"); } });
+            """));
+    }
+
+    [Fact]
+    public void TypedArrayLengthGetterThroughLoadIC()
+    {
+        // The accessor handler takes TypedArrayPrototypeLength's fast case:
+        // offsets, resizable buffers, detached arrays, a non-typed-array
+        // receiver (throws in the builtin) and an own length that shadows it.
+        // Expected values from the oracle.
+        Assert.Equal("10,3,4,0,12,0,TypeError,99", RunString("""
+            function len(a) { return a.length; }
+            var a = new Uint8Array(10), b = new Float64Array(new ArrayBuffer(64), 8, 3);
+            var r = [];
+            for (var i = 0; i < 20; i++) { len(a); len(b); }
+            r.push(len(a), len(b));
+            var buf = new ArrayBuffer(8, { maxByteLength: 16 });
+            var t = new Uint8Array(buf, 4);
+            for (var i = 0; i < 20; i++) len(t);
+            r.push(len(t));
+            buf.resize(2);
+            r.push(len(t));
+            buf.resize(16);
+            r.push(len(t));
+            var d = new ArrayBuffer(8), u = new Int16Array(d);
+            for (var i = 0; i < 20; i++) len(u);
+            d.transfer();
+            r.push(len(u));
+            var p = Object.create(Uint8Array.prototype);
+            try { r.push(len(p)); } catch (e) { r.push(e.constructor.name); }
+            Object.defineProperty(a, 'length', { value: 99 });
+            r.push(len(a));
+            r.join();
+            """));
+    }
+
+    [Fact]
     public void ThirtyThirdPropertyIsNotADuplicate()
     {
         // Adding the 33rd property sorts the descriptors; the collision check

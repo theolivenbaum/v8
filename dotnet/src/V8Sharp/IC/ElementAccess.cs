@@ -75,18 +75,61 @@ public static class ElementAccess
     }
 
     /// <summary>
+    /// EmitElementLoad for an in-bounds element of a typed array whose data is
+    /// cached in the array (<see cref="JSTypedArray.FastData"/>): no buffer or
+    /// backing store loads. False when the slower checks are needed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryLoadTypedElementFast(Isolate isolate, JSTypedArray array, double key, out JSValue result)
+    {
+        byte[]? data = array.FastData;
+        if (data is not null && JSValue.TryGetIndex(key, out int index) && (uint)index < (uint)array.FastLength &&
+            (Protectors.IsArrayBufferDetachingIntact(isolate) || !array.Buffer.WasDetached))
+        {
+            result = TypedArrayElementsOps.LoadElement(isolate, data, array.FastByteOffset, array.Map.ElementsKind, index);
+            return true;
+        }
+        result = default;
+        return false;
+    }
+
+    /// <summary>
+    /// EmitElementStore of a Number into an in-bounds element of a typed array
+    /// of a Number kind whose data is cached in the array (see
+    /// <see cref="TryLoadTypedElementFast"/>). False when the slower checks are needed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryStoreTypedElementFast(Isolate isolate, JSTypedArray array, double key, JSValue value)
+    {
+        byte[]? data = array.FastData;
+        if (data is not null && value.IsNumber && JSValue.TryGetIndex(key, out int index) && (uint)index < (uint)array.FastLength)
+        {
+            ElementsKind kind = array.Map.ElementsKind;
+            if (!ElementsKinds.IsBigIntTypedArrayElementsKind(kind) &&
+                (Protectors.IsArrayBufferDetachingIntact(isolate) || !array.Buffer.WasDetached) &&
+                (Protectors.IsArrayBufferMutableIntact(isolate) || !array.Buffer.IsImmutable))
+            {
+                TypedArrayElementsOps.StoreElement(data, array.FastByteOffset, kind, index, value._num);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// EmitElementLoad for the typed array kinds: an in-bounds element, or
     /// undefined out of bounds (including detached) when the handler allows it.
     /// </summary>
     static bool TryLoadTypedElement(Isolate isolate, JSTypedArray array, double key, LoadHandler handler, out JSValue result)
     {
-        result = default;
+        if (TryLoadTypedElementFast(isolate, array, key, out result)) return true;
         long index = (long)key;
         if (index != key || index < 0) return false;
         if (TypedArrayElementsOps.TryGetFixedLength(array, out ulong fixedLength))
         {
             if ((ulong)index < fixedLength)
             {
+                array.InitializeFastData();
                 result = TypedArrayElementsOps.LoadElement(isolate, array, array.Map.ElementsKind, (int)index);
                 return true;
             }
@@ -134,7 +177,7 @@ public static class ElementAccess
         if (!ElementsKinds.IsFastElementsKind(kind))
         {
             return ElementsKinds.IsTypedArrayOrRabGsabTypedArrayElementsKind(handler.ElementsKind) && obj is JSTypedArray typedArray &&
-                   TryStoreTypedElement(typedArray, key, handler, value);
+                   TryStoreTypedElement(isolate, typedArray, key, handler, value);
         }
 
         // The value must fit the elements kind without a transition.
@@ -203,7 +246,7 @@ public static class ElementAccess
             }
             ref JSValue slot = ref data[index];
             if (ReferenceEquals(slot._obj, Oddball.TheHole)) return false;
-            slot = value;
+            JSValue.StoreSlot(ref slot, value);
             return true;
         }
         if (elements is FixedDoubleArray doubleArray)
@@ -227,8 +270,9 @@ public static class ElementAccess
     /// store is skipped when the handler's store mode ignores out-of-bounds
     /// stores and misses otherwise.
     /// </summary>
-    static bool TryStoreTypedElement(JSTypedArray array, double key, StoreHandler handler, JSValue value)
+    static bool TryStoreTypedElement(Isolate isolate, JSTypedArray array, double key, StoreHandler handler, JSValue value)
     {
+        if (TryStoreTypedElementFast(isolate, array, key, value)) return true;
         if (ElementsKinds.IsBigIntTypedArrayElementsKind(handler.ElementsKind) ? value._obj is not BigInt : !value.IsNumber)
         {
             return false;
@@ -238,6 +282,7 @@ public static class ElementAccess
         if (value.IsNumber && TypedArrayElementsOps.TryGetFixedLength(array, out ulong fixedLength) && (ulong)index < fixedLength &&
             !array.Buffer.IsImmutable)
         {
+            array.InitializeFastData();
             TypedArrayElementsOps.StoreElement(array, array.Map.ElementsKind, (int)index, value._num);
             return true;
         }
@@ -273,7 +318,7 @@ public static class ElementAccess
         if (elements is FixedArray fixedArray)
         {
             if (!ElementsKinds.IsSmiOrObjectElementsKind(kind)) return false;
-            fixedArray._data[index] = value;
+            JSValue.StoreSlot(ref fixedArray._data[index], value);
             return true;
         }
         if (elements is FixedDoubleArray doubleArray)

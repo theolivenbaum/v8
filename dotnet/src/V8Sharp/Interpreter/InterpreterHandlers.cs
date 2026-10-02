@@ -122,12 +122,65 @@ public static partial class InterpreterExecution
     static bool RunPrefixed(Isolate isolate, ref InterpreterState st)
     {
         bool wide = (Bytecode)st.Bytecode.Bytecodes[st.Pc - 1] == Bytecode.Wide;
+        if (wide && TryRunWide(isolate, ref st)) return false;
         if (wide) Loop<DoubleScale>(isolate, ref st);
         else Loop<QuadrupleScale>(isolate, ref st);
         if (st.Done)
         {
             st.Done = false;
             return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The Wide bytecodes that are frequent in huge functions (more than 128
+    /// registers or 256 feedback slots, such as Emscripten's): register moves,
+    /// keyed element accesses and the plain backward jump, run here without
+    /// entering Loop&lt;DoubleScale&gt; for a single step (its prologue alone costs
+    /// more than these bytecodes). False leaves the bytecode to the loop.
+    /// </summary>
+    static bool TryRunWide(Isolate isolate, ref InterpreterState st)
+    {
+        ref byte ip = ref IpAt(st.Bytecode, st.Pc);
+        ref JSValue fp = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), st.Fp);
+        switch ((Bytecode)ip)
+        {
+            case Bytecode.Star:
+                StoreRegister(ref RegAt(ref fp, Signed<DoubleScale>(ref ip, 1)), st.Accumulator);
+                st.Pc += 1 + 2;
+                return true;
+            case Bytecode.Ldar:
+                st.Accumulator = RegAt(ref fp, Signed<DoubleScale>(ref ip, 1));
+                st.Pc += 1 + 2;
+                return true;
+            case Bytecode.Mov:
+                StoreRegister(ref RegAt(ref fp, Signed<DoubleScale>(ref ip, 1 + 2)), RegAt(ref fp, Signed<DoubleScale>(ref ip, 1)));
+                st.Pc += 1 + 2 * 2;
+                return true;
+            case Bytecode.GetKeyedProperty:
+                st.Accumulator = GetKeyedProperty<DoubleScale>(isolate, ref st, ref fp, ref ip, st.Accumulator);
+                st.Pc += 1 + 2 * 2;
+                return true;
+            case Bytecode.SetKeyedProperty:
+                SetKeyedProperty<DoubleScale>(isolate, ref st, ref fp, ref ip, st.Accumulator);
+                st.Pc += 1 + 3 * 2;
+                return true;
+            case Bytecode.JumpLoop:
+            {
+                // Loop's JumpLoop without its interrupt and OSR cases.
+                int relative = Unsigned<DoubleScale>(ref ip, 1);
+                FeedbackCell cell = st.Function.RawFeedbackCell;
+                if (cell.InterruptBudget - relative < 0 || isolate.StackGuard.HasPendingInterrupts ||
+                    (isolate.MayHaveBaselineCode && st.Function.Shared.BaselineCode is not null))
+                {
+                    return false;
+                }
+                cell.InterruptBudget -= relative;
+                st.Accumulator = default;
+                st.Pc -= relative;
+                return true;
+            }
         }
         return false;
     }

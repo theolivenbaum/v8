@@ -5,6 +5,7 @@
 // HandleLoadICSmiHandlerCase, HandleLoadICProtoHandler, LoadIC_BytecodeHandler,
 // the megamorphic stub cache probe).
 using System.Runtime.CompilerServices;
+using V8Sharp.Builtins;
 using V8Sharp.Interpreter;
 using V8Sharp.Runtime;
 
@@ -706,7 +707,19 @@ public sealed class KeyedLoadIC : IC
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static JSValue Load(Isolate isolate, FeedbackVector? vector, int slot, JSValue obj, JSValue key)
     {
-        if (vector is not null && key.IsNumber && obj._obj is JSObject jsObject)
+        // A monomorphic typed array element load (Emscripten's HEAP8/HEAP32 ...):
+        // the element handler's map check, then the cached data.
+        if (vector is not null && key.IsNumber && obj._obj is JSTypedArray typedArray)
+        {
+            JSValue[] slots = vector.Slots;
+            if (ReferenceEquals(slots[slot]._obj, typedArray.Map) && slots[slot + 1]._obj is LoadHandler { HandlerKind: LoadHandler.Kind.kElement } typedHandler &&
+                (ElementAccess.TryLoadTypedElementFast(isolate, typedArray, key._num, out JSValue typedResult) ||
+                 ElementAccess.TryLoadFastElement(isolate, typedArray, key._num, typedHandler, out typedResult)))
+            {
+                return typedResult;
+            }
+        }
+        else if (vector is not null && key.IsNumber && obj._obj is JSObject jsObject)
         {
             JSValue[] slots = vector.Slots;
             if (ReferenceEquals(slots[slot]._obj, jsObject.Map) && slots[slot + 1]._obj is LoadHandler handler &&

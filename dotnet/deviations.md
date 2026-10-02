@@ -788,9 +788,14 @@ d8 host in the TestRunner (tools/V8Sharp.TestRunner/Shell)
   `Array.MaxLength` fail with "Array buffer allocation failed", although
   `kMaxByteLength` is V8's 32GB - 1 (the sandbox build's limit).
 - Typed arrays are always off-heap (no on-heap JSTypedArray elements below
-  `typed_array_max_size_in_heap`), and the data pointer is recomputed from the
-  buffer and byte offset on each access. Array buffers do not keep a list of
-  their views: a view checks `buffer.WasDetached` instead of being marked.
+  `typed_array_max_size_in_heap`). V8 keeps the data pointer in the typed
+  array (external_pointer + base_pointer); V8Sharp caches the backing store's
+  array, the byte offset and the length in the view (`JSTypedArray.FastData`)
+  for fixed-length views of non-resizable buffers, filled by the element IC
+  slow paths, and recomputes them from the buffer everywhere else. Array
+  buffers do not keep a list of their views: a view checks
+  `buffer.WasDetached` instead of being marked (the element fast paths skip
+  the check while the ArrayBufferDetaching protector is intact).
 - The typed array constructors keep JS_FUNCTION_TYPE maps (V8 gives them
   JS_*_TYPED_ARRAY_CONSTRUCTOR_TYPE); nothing observable depends on it.
 - `v8_enable_undefined_double` is not modelled: double elements never hold
