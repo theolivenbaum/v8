@@ -105,7 +105,7 @@ public static partial class InterpreterExecution
         ref JSValue fpRef = ref stack[fp];
         Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset) = context;
         Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset) = function;
-        Unsafe.Add(ref fpRef, InterpreterRuntime.kArgcOffset) = JSValue.FromInt(argc);
+        InterpreterRuntime.InitializeFrameSlots(ref fpRef, bytecode, argc);
 
         // The trampoline fills the register file with undefined.
         stack.AsSpan(fp, bytecode.RegisterCount).Clear();
@@ -115,19 +115,10 @@ public static partial class InterpreterExecution
 
         int depth = isolate.InterpreterFrameDepth;
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
-        frame.Function = function;
-        frame.Bytecode = bytecode;
         frame.Fp = fp;
-        frame.Pc = 0;
-        frame.Argc = argc;
-        frame.Kind = InterpreterFrameKind.Interpreted;
-        frame.IsConstructor = isConstruct;
-        frame.IsBaseline = false;
-        frame.IsMaglev = false;
-        frame.InlineCall = false;
+        frame.Flags = isConstruct ? InterpreterFrameFlags.Constructor : InterpreterFrameFlags.None;
         frame.ReturnPc = 0;
         frame.RegisterStart = 0;
-        frame.Receiver = default;
 
         // BaselineOrInterpreterEntry: a function whose SharedFunctionInfo has
         // baseline code runs it (Runtime_InstallBaselineCode gives it the
@@ -144,16 +135,11 @@ public static partial class InterpreterExecution
         var state = new InterpreterState
         {
             Isolate = isolate,
-            Function = function,
-            Bytecode = bytecode,
-            FeedbackVector = feedbackVector,
-            Context = context,
             Accumulator = JSValue.Undefined,
             Pc = 0,
             Fp = fp,
             FrameIndex = depth,
             BaseFrameIndex = depth,
-            Argc = argc,
         };
         try
         {
@@ -244,7 +230,7 @@ public static partial class InterpreterExecution
     {
         byte[] handlerTableBytes = state.Bytecode.HandlerTable;
         if (handlerTableBytes.Length == 0) return false;
-        int pc = isolate.InterpreterFrames[state.FrameIndex].Pc;
+        int pc = InterpreterRuntime.FramePc(isolate, state.Fp);
         return new HandlerTable(handlerTableBytes).LookupHandlerIndexForRange(pc) >= 0;
     }
 
@@ -258,7 +244,7 @@ public static partial class InterpreterExecution
     {
         // The current offset is kept in the frame record (the handlers store it
         // before they call out, InterpreterExecution.SavePc).
-        int pc = isolate.InterpreterFrames[state.FrameIndex].Pc;
+        int pc = InterpreterRuntime.FramePc(isolate, state.Fp);
         byte[] handlerTableBytes = state.Bytecode.HandlerTable;
         if (handlerTableBytes.Length == 0) return false;
         var table = new HandlerTable(handlerTableBytes);

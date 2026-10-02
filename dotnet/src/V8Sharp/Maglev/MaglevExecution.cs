@@ -89,8 +89,6 @@ namespace V8Sharp.Maglev
             frames[frameIndex].IsMaglev = true;
             try
             {
-                // The code reads the frame's registers; the interpreter keeps the context in the state.
-                isolate.RegisterStack[state.Fp + InterpreterRuntime.kContextOffset] = state.Context;
                 JSValue result = code.Entry(isolate, ref state);
                 if (isolate.MaglevDeoptPending)
                 {

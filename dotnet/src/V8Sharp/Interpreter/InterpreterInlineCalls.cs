@@ -160,7 +160,7 @@ internal static class InterpreterInlineCalls
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
         StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset), context);
         StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset), function);
-        // The argument count slot (fp - 4) is not written : frames keep the count in their record.
+        InterpreterRuntime.InitializeFrameSlots(ref fpRef, bytecode, argc);
         if (isConstruct)
         {
             Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
@@ -177,29 +177,15 @@ internal static class InterpreterInlineCalls
         // The caller is the frame below (the loop runs the innermost frame).
         Debug.Assert(st.FrameIndex == depth - 1);
         Unsafe.Subtract(ref frame, 1).ReturnPc = returnPc;
-        // PopFrame leaves Function and Bytecode in the record.
-        if (!ReferenceEquals(frame.Function, function)) frame.Function = function;
-        if (!ReferenceEquals(frame.Bytecode, bytecode)) frame.Bytecode = bytecode;
         frame.Fp = fp;
-        frame.Pc = 0;
-        frame.Argc = argc;
-        frame.Kind = InterpreterFrameKind.Interpreted;
-        frame.IsConstructor = isConstruct;
-        frame.IsBaseline = false;
-        frame.IsMaglev = false;
-        frame.InlineCall = true;
+        frame.Flags = isConstruct ? InterpreterFrameFlags.InlineCall | InterpreterFrameFlags.Constructor : InterpreterFrameFlags.InlineCall;
         frame.RegisterStart = registerStart >= 0 ? registerStart : start;
 
-        st.Function = function;
-        st.Bytecode = bytecode;
         if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
-        st.FeedbackVector = feedbackVector;
-        st.Context = context;
         st.Accumulator = default;
         st.Pc = 0;
         st.Fp = fp;
         st.FrameIndex = depth;
-        st.Argc = argc;
     }
 
     /// <summary>
@@ -391,7 +377,7 @@ internal static class InterpreterInlineCalls
         // If the result is an object (in the ECMA sense), we should get rid
         // of the receiver and use the result; see ECMA-262 section 13.2.2-7
         // on page 74.
-        if (frame.IsConstructor && !result.IsJSReceiver)
+        if ((frame.Flags & InterpreterFrameFlags.Constructor) != 0 && !result.IsJSReceiver)
         {
             result = isolate.RegisterStack[frame.Fp + InterpreterRuntime.kReceiverOffset];
         }
@@ -413,8 +399,9 @@ internal static class InterpreterInlineCalls
     {
         InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
         ref InterpreterFrameRecord frame = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(frames), st.FrameIndex);
-        if (!frame.InlineCall) return false;
-        if (frame.IsConstructor && !result.IsJSReceiver)
+        InterpreterFrameFlags flags = frame.Flags;
+        if ((flags & InterpreterFrameFlags.InlineCall) == 0) return false;
+        if ((flags & InterpreterFrameFlags.Constructor) != 0 && !result.IsJSReceiver)
         {
             result = isolate.RegisterStack[frame.Fp + InterpreterRuntime.kReceiverOffset];
         }
@@ -433,11 +420,7 @@ internal static class InterpreterInlineCalls
     static void PopFrame(Isolate isolate, ref InterpreterState st, InterpreterFrameRecord[] frames, ref InterpreterFrameRecord record)
     {
         int start = record.RegisterStart;
-        // The record is left as it is: every push sets all of its fields but
-        // Function and Bytecode, which it compares first (functions and their
-        // bytecode are long-lived; keeping them lets the next call at this depth
-        // skip the reference stores), and Receiver, which only builtin frames
-        // set and clear.
+        // The record is left as it is: every push sets the fields it reads.
         isolate.InterpreterFrameDepth = st.FrameIndex;
         // The frame's slots are not cleared: they stay below
         // RegisterStackDirtyEnd for the next call at this depth (EnterInlineCore).
@@ -447,21 +430,14 @@ internal static class InterpreterInlineCalls
         int callerIndex = st.FrameIndex - 1;
         // The record below a frame entered inline is its caller's.
         ref InterpreterFrameRecord caller = ref Unsafe.Subtract(ref record, 1);
-        BytecodeArray bytecode = caller.Bytecode!;
         int fp = caller.Fp;
         ref JSValue fpRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), fp);
-        Context context = Unsafe.As<Context>(Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset)._obj!);
+        Context context = InterpreterRuntime.FrameContext(ref fpRef);
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
 
-        st.Function = caller.Function;
-        st.Bytecode = bytecode;
-        // The slot holds the frame's FeedbackVector or undefined.
-        st.FeedbackVector = Unsafe.As<FeedbackVector?>(Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset)._obj);
-        if (!ReferenceEquals(st.Context, context)) st.Context = context;
         st.Pc = caller.ReturnPc;
         st.Fp = fp;
         st.FrameIndex = callerIndex;
-        st.Argc = caller.Argc;
     }
 
     /// <summary>Whether some frame of this loop, from the innermost inline one down, handles the current offset.</summary>
@@ -471,8 +447,8 @@ internal static class InterpreterInlineCalls
         for (int index = st.FrameIndex; index >= st.BaseFrameIndex; index--)
         {
             ref InterpreterFrameRecord frame = ref frames[index];
-            byte[] handlerTableBytes = frame.Bytecode!.HandlerTable;
-            if (handlerTableBytes.Length != 0 && new HandlerTable(handlerTableBytes).LookupHandlerIndexForRange(frame.Pc) >= 0)
+            byte[] handlerTableBytes = frame.GetBytecode(isolate).HandlerTable;
+            if (handlerTableBytes.Length != 0 && new HandlerTable(handlerTableBytes).LookupHandlerIndexForRange(frame.GetPc(isolate)) >= 0)
             {
                 return true;
             }
@@ -491,7 +467,7 @@ internal static class InterpreterInlineCalls
         {
             PopFrame(isolate, ref st);
             // The caller's offset is its call bytecode, where the exception now is.
-            st.Pc = isolate.InterpreterFrames[st.FrameIndex].Pc;
+            st.Pc = InterpreterRuntime.FramePc(isolate, st.Fp);
         }
     }
 }

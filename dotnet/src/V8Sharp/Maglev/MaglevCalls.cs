@@ -111,10 +111,12 @@ public static class MaglevCalls
         Context context = function.Context;
         Context? savedContext = isolate.Context;
         if (!ReferenceEquals(savedContext, context)) isolate.Context = context;
-        // The context, closure and feedback vector slots are not written: the
-        // code reads them from the state, and the Deoptimizer writes them when
-        // the frame continues in the interpreter (each is a GC write barrier).
-        Unsafe.Add(ref fpRef, InterpreterRuntime.kArgcOffset) = JSValue.FromInt(argc);
+        // The fixed slots, each compared first: a returned frame at the same
+        // position usually leaves the same values (no GC write barrier).
+        JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset), context);
+        JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset), function);
+        JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset), vector);
+        InterpreterRuntime.InitializeFrameSlots(ref fpRef, bytecode, argc);
         // The registers are undefined, as the interpreter's trampoline leaves
         // them: a deopt writes the live ones, the frame walker may read the
         // others. Only the values a popped frame left (dirty) need clearing.
@@ -127,37 +129,21 @@ public static class MaglevCalls
 
         int depth = isolate.InterpreterFrameDepth;
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
-        // The record of a popped frame keeps Function and Bytecode (as
-        // InterpreterInlineCalls does): a call at the same depth skips the stores.
-        if (!ReferenceEquals(frame.Function, function)) frame.Function = function;
-        if (!ReferenceEquals(frame.Bytecode, bytecode)) frame.Bytecode = bytecode;
         frame.Fp = fp;
-        frame.Pc = 0;
-        frame.Argc = argc;
-        frame.Kind = InterpreterFrameKind.Interpreted;
-        frame.IsConstructor = isConstruct;
-        frame.IsBaseline = false;
-        frame.IsMaglev = true;
-        frame.InlineCall = false;
+        frame.Flags = isConstruct ? InterpreterFrameFlags.Maglev | InterpreterFrameFlags.Constructor : InterpreterFrameFlags.Maglev;
         frame.ReturnPc = 0;
         frame.RegisterStart = 0;
-        frame.Receiver = default;
 
         vector.InvocationCount++;
 
         var state = new InterpreterState
         {
             Isolate = isolate,
-            Function = function,
-            Bytecode = bytecode,
-            FeedbackVector = vector,
-            Context = context,
             Accumulator = JSValue.Undefined,
             Pc = 0,
             Fp = fp,
             FrameIndex = depth,
             BaseFrameIndex = depth,
-            Argc = argc,
         };
         try
         {
