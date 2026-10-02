@@ -156,6 +156,27 @@ public class ICRegressionTest : TestWithContext
     }
 
     [Fact]
+    public void WideBytecodesInAHugeFunction()
+    {
+        // More than 128 registers and 256 feedback slots: Wide Star, Ldar, Mov,
+        // GetKeyedProperty, SetKeyedProperty and JumpLoop (run outside the
+        // scaled loop), including a keyed load that throws into a handler of
+        // the same frame. Expected values from the oracle.
+        Assert.Equal("55861222|165834,166167,166500,166833|1003,1001,1002|Error: boom|139", RunString("""
+            var src = 'var s = 0, a = [1, 2, 3], o = {};\n';
+            for (var j = 0; j < 140; j++) src += 'var v' + j + ' = ' + j + ';\n';
+            for (var j = 0; j < 140; j++) src += 'o.p' + j + ' = v' + j + ';\n';
+            src += 'var h = new Int32Array(4);\n';
+            src += 'for (var i = 0; i < n; i++) { var t = v139; v138 = t; h[i & 3] = h[(i + 1) & 3] + i; ' +
+                   'a[i % 3] = a[(i + 2) % 3] + 1; s = s + v138 + h[i & 3] | 0; }\n';
+            src += 'var e = "none"; try { s += g[0]; } catch (x) { e = String(x); }\n';
+            src += 'return [s, h.join(), a.join(), e, v138].join("|");';
+            var f = new Function('n', 'g', src);
+            f(1000, { get 0() { throw new Error("boom"); } });
+            """));
+    }
+
+    [Fact]
     public void ThirtyThirdPropertyIsNotADuplicate()
     {
         // Adding the 33rd property sorts the descriptors; the collision check
