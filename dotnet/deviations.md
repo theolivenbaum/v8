@@ -99,6 +99,15 @@ for now, to be revisited when the reason goes away.
 - Parsing: the expression scopes, AccumulationScope, Target, FunctionState
   and PreParserExpressionList (C++ stack objects in V8) are objects recycled
   through per-parser (per-thread for the expression lists) free lists.
+- Parsing: AstValueFactory probes the isolate's constants table and then its
+  own (V8 copies the constants' table into each factory); strings hash with
+  FNV-1a (V8: rapidhash with the isolate seed), only for hash tables.
+- Parsing: the scanner's token LiteralBuffer storage goes back to a small
+  per-thread pool when Parser::ParseProgram / ParseFunction finish (V8:
+  new[] / delete[] with the scanner).
+- Compiler: CompilationCacheEval keeps only the SharedFunctionInfo (no
+  FeedbackCell per native context) and is cleared past 4096 entries instead
+  of being aged on GC; the script part of the compilation cache is not ported.
 - Parsing: VariableMap keeps up to 8 entries in an insertion-ordered array
   searched by identity, allocated on first use, plus a hash index beyond 8
   (V8: a ZoneHashMap of 8 entries).

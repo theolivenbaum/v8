@@ -626,13 +626,63 @@ What blocks parity (44.5% of jitless by Octane's own score), measured:
 - Allocation and GC: write barriers are 10-12% of Richards, DeltaBlue and
   EarleyBoyer; a new object is two allocations (JSObject and its field
   array) against V8's one bump allocation.
-- Parsing and compiling: CodeLoad and TypeScript; the parser's
-  ParserBase<...> is instantiated over reference types, so it runs as
-  shared generic code (runtime dictionary lookups).
+- Parsing and compiling: CodeLoad and TypeScript (see the front-end pass
+  below: compiles are now 37-57% of V8 --jitless on the large sources,
+  CodeLoad 47%; what is left is the scanner and preparser per token, GC of
+  the AST and of the large eval'd source strings, and StringTable lookups
+  when constants are internalized).
 - The .NET JIT: 12000-15000 engine methods compiled per large benchmark;
   the publish configuration removes most of it, the handlers only the
   AggressiveOptimization loop calls are still compiled at tier 0 first.
 Beyond the interpreter, the IL tiers remain the lever.
+
+Front end and bytecode compilation pass (2026-10-02; parity publish,
+thread CPU, under the benchmark lock, mean of 3 interleaved runs).
+`micro:compile` (tools/V8Sharp.Bench/micro/compile.js: Octane's sources
+compiled through indirect eval with a salt, compiles per CPU second; Run*
+evaluates Closure / jQuery as CodeLoad does) and octane-cpu, V8Sharp before
+(the branch at 2a352966) and after this pass, against V8 --jitless:
+
+| benchmark | before | after | V8 --jitless | before / after of jitless |
+|---|---|---|---|---|
+| CompileTypeScript | 25.4 | 30.5 | 82.3 | 31% / 37% |
+| CompilePdfJS | 13.8 | 12.0 | 45.9 | 30% / 26% |
+| CompileClosure | 2174 | 3343 | 5914 | 37% / 57% |
+| CompileJQuery | 149 | 186 | 369 | 40% / 50% |
+| RunClosure | 1415 | 1686 | 4195 | 34% / 40% |
+| RunJQuery | 64.8 | 99.2 | 104.6 | 62% / 95% |
+| CodeLoad (octane-cpu) | 1523 | 2099 | 4465 | 34% / 47% |
+| Typescript (octane-cpu) | 222 | 225 | 648 | 34% / 35% |
+| PdfJS (octane-cpu) | 499 | 524 | 2005 | 25% / 26% |
+| Box2D (octane-cpu) | 578 | 533 | 989 | noise (490-680 per run) |
+
+Changes, one commit each (git log 858a5ebc..): ParserBase<Parser> and
+ParserBase<PreParser> generated as non-generic classes from the generic
+template at build time (ParserBase.Specialize.targets; -11% of a
+typescript-compiler.js compile, harness, bin); expression scopes, Targets,
+FunctionStates and preparser expression lists recycled through free lists
+(-10%, 24.9 to 16.6 MB allocated per typescript-compiler.js compile);
+VariableMap linear for small maps (-3%, to 13.9 MB); the scanner reads the
+source string in place (no large-object copy per compile, to 11.4 MB);
+an open-addressing AstValueFactory string table probing the isolate's
+constants instead of copying them; one AstStringConstants per isolate (it
+was built per parse: 2.6% of a CodeLoad-like loop); AstRawStrings keep
+their internalized string; preparse data kept on UncompiledData and
+consumed by lazy compiles (inner functions are skipped, not preparsed
+again: CodeLoad-like loop 21.4 to 18.5 ms per run); the runtime stack
+check only when deeper; ExpressionScope casts without type checks; the
+scanner's literal buffers pooled per thread (lazy compiles of small
+functions: 56.5 to 41.0 MB per 2000); CompilationCacheEval (20000 evals of
+one source: 3644 to 1080 ms; aged by full GCs).
+
+Open: CompilePdfJS is 12% slower after the pass and the cause is not
+found (the harness compile of pdfjs.js, without eval, is faster; ageing
+the eval cache did not change it). Next levers: the scanner and preparser
+per token (40% of a TypeScript compile, a third of it the scanner),
+StringTable lookups when internalizing (the AstRawString's hash is not
+reused), RegisterInfo and the other per-function allocations of the
+bytecode generator for lazy compiles, the script part of the compilation
+cache.
 
 Runtime slow paths outside the dispatch loop on zlib, Mandreel, Gameboy,
 PdfJS and Box2D (2026-10-02, after the fourth pass; thread CPU,
