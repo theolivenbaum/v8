@@ -14,8 +14,10 @@
 // for an arithmetic operation whose feedback is already Number, no feedback
 // check, since a number operation cannot change it). Feedback only moves up
 // its lattice, so what the code checks at run time stays correct; only the
-// speed of a path that becomes hot later differs. With --always-sparkplug,
-// which compiles before anything ran, every operation gets its full inline path.
+// speed of a path that becomes hot later differs. An IC slot that is still
+// empty is no evidence (SlotFeedbackUnknown) and gets the full inline path, as
+// does every operation with --always-sparkplug, which compiles before
+// anything ran.
 using V8Sharp.IC;
 using V8Sharp.Interpreter;
 using BOF = V8Sharp.Interpreter.BinaryOperationFeedback;
@@ -93,6 +95,22 @@ public sealed partial class BaselineCompiler
     /// <summary>Whether the feedback is unknown, so the full inline path is emitted.</summary>
     bool FeedbackUnknown => !_feedbackGuided || _feedback is null;
 
+    /// <summary>
+    /// Whether a feedback vector slot says nothing yet. The vector is allocated
+    /// at the first interrupt budget tick, which is also when the function is
+    /// queued for baseline compilation, so an IC slot can be empty although
+    /// its operation ran (in the interpreter, before the vector existed): an
+    /// empty slot gets the full inline path. (Embedded feedback, in the
+    /// bytecode array, covers the function's whole history.)
+    /// </summary>
+    bool SlotFeedbackUnknown(int slot)
+    {
+        if (FeedbackUnknown) return true;
+        HeapObject? feedback = CompileTimeFeedback(slot);
+        return feedback is null || ReferenceEquals(feedback, ReadOnlyRoots.uninitialized_symbol) ||
+               ReferenceEquals(feedback, FeedbackVector.ClearedValue);
+    }
+
     /// <summary>The kinds of GetNamedProperty hit inlined.</summary>
     [Flags]
     enum NamedLoadPaths
@@ -108,7 +126,7 @@ public sealed partial class BaselineCompiler
     NamedLoadPaths GetNamedPropertySite(int slot)
     {
         if (_compact) return NamedLoadPaths.None;
-        if (FeedbackUnknown) return NamedLoadPaths.All;
+        if (SlotFeedbackUnknown(slot)) return NamedLoadPaths.All;
         if (CompileTimeFeedback(slot) is not Map || CompileTimeFeedback(slot + 1) is not LoadHandler handler) return NamedLoadPaths.None;
         if (handler.OwnFieldIndex >= 0) return NamedLoadPaths.OwnField;
         if (handler.IsPrototypeConstant) return NamedLoadPaths.PrototypeConstant;
@@ -118,22 +136,22 @@ public sealed partial class BaselineCompiler
 
     /// <summary>Whether SetNamedProperty's monomorphic store is inlined.</summary>
     bool SetNamedPropertyInline(int slot) =>
-        !_compact && (FeedbackUnknown || (CompileTimeFeedback(slot) is Map && CompileTimeFeedback(slot + 1) is StoreHandler));
+        !_compact && (SlotFeedbackUnknown(slot) || (CompileTimeFeedback(slot) is Map && CompileTimeFeedback(slot + 1) is StoreHandler));
 
     /// <summary>The fast elements kinds (1: FixedArray, 2: FixedDoubleArray) GetKeyedProperty inlines: 3 both, 0 none.</summary>
     int GetKeyedPropertySite(int slot)
     {
         if (_compact) return 0;
-        if (FeedbackUnknown) return 3;
+        if (SlotFeedbackUnknown(slot)) return 3;
         if (CompileTimeFeedback(slot) is not Map || CompileTimeFeedback(slot + 1) is not LoadHandler handler) return 0;
         return handler.FastElementsMode;
     }
 
     /// <summary>Whether SetKeyedProperty's monomorphic element store is inlined.</summary>
     bool SetKeyedPropertyInline(int slot) =>
-        !_compact && (FeedbackUnknown ||
+        !_compact && (SlotFeedbackUnknown(slot) ||
                       (CompileTimeFeedback(slot) is Map && CompileTimeFeedback(slot + 1) is StoreHandler { IsSimpleElementStore: true }));
 
     /// <summary>Whether LdaGlobal's PropertyCell hit is inlined.</summary>
-    bool LdaGlobalInline(int slot) => !_compact && (FeedbackUnknown || CompileTimeFeedback(slot) is PropertyCell);
+    bool LdaGlobalInline(int slot) => !_compact && (SlotFeedbackUnknown(slot) || CompileTimeFeedback(slot) is PropertyCell);
 }
