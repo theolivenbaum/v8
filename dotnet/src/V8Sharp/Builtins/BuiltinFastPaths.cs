@@ -8,8 +8,8 @@
 //                    receiver and a Smi position (ToInteger_Inline's fast case).
 //   number.tq        NumberPrototypeToString without a radix: NumberToString
 //                    (the number-string cache).
-//   typed-array.tq   TypedArrayPrototypeLength (the length getter, also taken
-//                    by LoadIC's accessor handlers) for a JSTypedArray receiver.
+//   typed_array.tq   TypedArrayPrototypeLength (the length getter) of an
+//                    attached fixed-length typed array.
 //   array-push/pop/shift (builtins-array-gen.cc): BuiltinsArray.TryFastPush,
 //                    TryFastPop, TryFastShift.
 // Each returns false, having done nothing, when its fast case does not apply;
@@ -53,13 +53,11 @@ public static class BuiltinFastPaths
                 }
                 break;
             case Builtin.TypedArrayPrototypeLength:
-                // typed-array.tq TypedArrayPrototypeLength for a JSTypedArray
-                // receiver: the length, or 0 when detached or out of bounds.
-                if (receiver._obj is JSTypedArray typedArray)
+                // The getter (typed_array.tq) on an attached fixed-length array:
+                // JSTypedArray::length.
+                if (receiver._obj is JSTypedArray typedArray && TypedArrayElementsOps.TryGetFixedLength(typedArray, out ulong length))
                 {
-                    result = TypedArrayElementsOps.TryGetLengthAndValidate(typedArray, TypedArrayAccessMode.kRead, out ulong length)
-                        ? JSValue.FromNumber(length)
-                        : JSValue.Zero;
+                    result = JSValue.FromNumber(length);
                     return true;
                 }
                 break;

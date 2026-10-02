@@ -76,6 +76,13 @@ public sealed class LoadIC : IC
                     // (kField with kArrayLengthFieldDescriptorIndex); the handler
                     // is recorded only for JSArray maps.
                     if (handler.HandlerKind == LoadHandler.Kind.kArrayLength) return Unsafe.As<JSArray>(r).Length;
+                    // A builtin getter on the prototype chain whose fast case needs
+                    // no frame (typed array length: BuiltinFastPaths.TryCall0).
+                    if (handler.HandlerKind == LoadHandler.Kind.kAccessorFromPrototype && handler.IsValid && !map.IsDictionaryMap &&
+                        BuiltinFastPaths.TryCall0(isolate, handler.Data, receiver, out JSValue getterResult))
+                    {
+                        return getterResult;
+                    }
                     // F.prototype (LoadHandler::LoadFunctionPrototype: LoadJSFunctionPrototype).
                     if (handler.HandlerKind == LoadHandler.Kind.kFunctionPrototype && r is JSFunction function &&
                         !function.PrototypeRequiresRuntimeLookup() && function.HasPrototype)
@@ -220,10 +227,12 @@ public sealed class LoadIC : IC
                 result = JSValue.Undefined;
                 return true;
             case LoadHandler.Kind.kAccessorFromPrototype:
-                // A getter builtin with a frameless fast case (typed array length):
-                // its result without the call.
-                if (BuiltinFastPaths.TryCall0(isolate, handler.Data, receiver, out result)) return true;
-                result = ObjectOps.GetPropertyWithDefinedGetter(isolate, receiver, handler.Data.As<JSReceiver>());
+                // A builtin getter's fast case first (typed array length), as
+                // the getter builtin takes it on entry.
+                if (!BuiltinFastPaths.TryCall0(isolate, handler.Data, receiver, out result))
+                {
+                    result = ObjectOps.GetPropertyWithDefinedGetter(isolate, receiver, handler.Data.As<JSReceiver>());
+                }
                 return true;
             case LoadHandler.Kind.kAccessorPair:
             {
