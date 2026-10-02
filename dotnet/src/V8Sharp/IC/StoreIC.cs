@@ -62,7 +62,7 @@ public sealed class StoreIC : IC
         {
             case StoreHandler.Kind.kField:
                 if (!FitsField(handler, value)) return false;
-                obj.FieldAt(handler.FieldIndex) = handler.Representation.IsDouble ? CanonicalizeDouble(value) : value;
+                JSValue.StoreSlot(ref obj.FieldAt(handler.FieldIndex), handler.Representation.IsDouble ? CanonicalizeDouble(value) : value);
                 return true;
             case StoreHandler.Kind.kTransitionToField:
                 return TryStoreTransition(obj, handler, value);

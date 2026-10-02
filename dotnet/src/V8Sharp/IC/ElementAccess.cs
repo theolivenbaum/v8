@@ -246,7 +246,7 @@ public static class ElementAccess
             }
             ref JSValue slot = ref data[index];
             if (ReferenceEquals(slot._obj, Oddball.TheHole)) return false;
-            slot = value;
+            JSValue.StoreSlot(ref slot, value);
             return true;
         }
         if (elements is FixedDoubleArray doubleArray)
@@ -318,7 +318,7 @@ public static class ElementAccess
         if (elements is FixedArray fixedArray)
         {
             if (!ElementsKinds.IsSmiOrObjectElementsKind(kind)) return false;
-            fixedArray._data[index] = value;
+            JSValue.StoreSlot(ref fixedArray._data[index], value);
             return true;
         }
         if (elements is FixedDoubleArray doubleArray)
