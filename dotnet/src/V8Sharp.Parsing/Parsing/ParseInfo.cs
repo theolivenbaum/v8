@@ -345,6 +345,13 @@ public sealed class ParseInfo
         }
     }
 
+    // A ParseInfo over the isolate's AstStringConstants (V8:
+    // ReusableUnoptimizedCompileState(isolate) takes isolate->ast_string_constants()).
+    public ParseInfo(UnoptimizedCompileFlags flags, AstStringConstants ast_string_constants, ParsingFlags? v8_flags)
+        : this(flags, new UnoptimizedCompileState(), new ReusableUnoptimizedCompileState(ast_string_constants), v8_flags)
+    {
+    }
+
     // Convenience: a ParseInfo with fresh state (V8 tests' ParseInfo setup).
     public ParseInfo(UnoptimizedCompileFlags flags, ParsingFlags? v8_flags = null)
         : this(flags, new UnoptimizedCompileState(), new ReusableUnoptimizedCompileState(), v8_flags)

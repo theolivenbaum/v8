@@ -105,9 +105,16 @@ namespace V8Sharp.Codegen
             shared.IsToplevel,
             shared.IsHoistedInContext);
 
+        // isolate->ast_string_constants(): created once per isolate (they cache
+        // their internalized strings, CompilerHeap.RawString), not per parse.
+        static readonly ConditionalWeakTable<Isolate, AstStringConstants> s_astStringConstants = new();
+
+        static AstStringConstants AstStringConstantsFor(Isolate isolate) =>
+            s_astStringConstants.GetValue(isolate, static _ => new AstStringConstants());
+
         static ParseInfo NewParseInfo(Isolate isolate, UnoptimizedCompileFlags flags)
         {
-            var parseInfo = new ParseInfo(flags, ParsingFlagsFor(isolate));
+            var parseInfo = new ParseInfo(flags, AstStringConstantsFor(isolate), ParsingFlagsFor(isolate));
             parseInfo.set_scope_info_provider(ScopeInfoProviderFor(isolate));
             parseInfo.set_regexp_syntax_validator(RegExpSyntaxValidator.Instance);
             return parseInfo;
