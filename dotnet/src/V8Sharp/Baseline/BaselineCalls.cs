@@ -515,7 +515,7 @@ public static class BaselineCalls
         TArgs args, JSValue newTarget = default, bool isConstruct = false) where TArgs : struct, ICallArguments
     {
         // The interrupt check of the prologue's stack check, as on the
-        // interpreter's entry (InterpreterInlineCalls.PushFrameCore).
+        // interpreter's entry (InterpreterInlineCalls.EnterInlineCore).
         if (isolate.StackGuard.HasPendingInterrupts) isolate.StackGuard.HandleInterrupts();
         int depth = isolate.InterpreterFrameDepth;
         // The native stack check of the prologue (V8's StackOverflow on entry).

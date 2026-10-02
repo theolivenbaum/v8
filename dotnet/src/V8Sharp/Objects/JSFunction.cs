@@ -230,14 +230,35 @@ public sealed class SharedFunctionInfo : HeapObject
     // --- function data -----------------------------------------------------
 
     /// <summary>The builtin this function runs, or <see cref="Builtin.NoBuiltinId"/>.</summary>
-    public Builtin BuiltinId = Builtin.NoBuiltinId;
+    public Builtin BuiltinId
+    {
+        get => _builtinId;
+        set { _builtinId = value; InterpreterCallMode = 0; }
+    }
+    Builtin _builtinId = Builtin.NoBuiltinId;
+
+    /// <summary>
+    /// How the interpreter's dispatch loop calls this function, cached from
+    /// the fields it depends on (function data, builtin id, baseline code,
+    /// Maglev code, kind, language mode), whose setters reset it:
+    /// 0 not computed, else an InterpreterInlineCalls.kCallMode* value.
+    /// V8 keeps the equivalent in the JSFunction's code field (the
+    /// interpreter entry trampoline vs. other code); see
+    /// InterpreterInlineCalls.InlineCallMode.
+    /// </summary>
+    public byte InterpreterCallMode;
 
     /// <summary>
     /// V8's function_data: the BytecodeArray once compiled (the interpreter's
     /// type), an <see cref="Objects.UncompiledData"/> before, or null for builtins.
     /// TODO(merge): type as V8Sharp.Interpreter.BytecodeArray once the interpreter lands.
     /// </summary>
-    public object? FunctionData;
+    public object? FunctionData
+    {
+        get => _functionData;
+        set { _functionData = value; InterpreterCallMode = 0; }
+    }
+    object? _functionData;
 
     /// <summary>
     /// SharedFunctionInfo::baseline_code: the Sparkplug code compiled from the
@@ -245,13 +266,23 @@ public sealed class SharedFunctionInfo : HeapObject
     /// function_data (a Code object that points to the bytecode); V8Sharp keeps
     /// function_data the BytecodeArray and holds the code beside it.
     /// </summary>
-    public Baseline.BaselineCode? BaselineCode;
+    public Baseline.BaselineCode? BaselineCode
+    {
+        get => _baselineCode;
+        set { _baselineCode = value; InterpreterCallMode = 0; }
+    }
+    Baseline.BaselineCode? _baselineCode;
 
     /// <summary>
     /// Some closure of this function got Maglev code (on its feedback
     /// vector): calls must go through the entry that checks for it.
     /// </summary>
-    public bool MayHaveMaglevCode;
+    public bool MayHaveMaglevCode
+    {
+        get => _mayHaveMaglevCode;
+        set { _mayHaveMaglevCode = value; InterpreterCallMode = 0; }
+    }
+    bool _mayHaveMaglevCode;
 
     /// <summary>SharedFunctionInfo::HasBaselineCode.</summary>
     public bool HasBaselineCode => BaselineCode is not null;
@@ -387,10 +418,26 @@ public sealed class SharedFunctionInfo : HeapObject
 
     // --- flags ---------------------------------------------------------------
 
-    public FunctionKind Kind;
-    public LanguageMode LanguageMode;
+    // Kind, LanguageMode and Native reset InterpreterCallMode like the function data.
+    public FunctionKind Kind
+    {
+        get => _kind;
+        set { _kind = value; InterpreterCallMode = 0; }
+    }
+    FunctionKind _kind;
+    public LanguageMode LanguageMode
+    {
+        get => _languageMode;
+        set { _languageMode = value; InterpreterCallMode = 0; }
+    }
+    LanguageMode _languageMode;
     public FunctionSyntaxKind SyntaxKind;
-    public bool Native;
+    public bool Native
+    {
+        get => _native;
+        set { _native = value; InterpreterCallMode = 0; }
+    }
+    bool _native;
     public bool IsToplevel;
     public bool AllowsLazyCompilation;
     public bool HasDuplicateParameters;

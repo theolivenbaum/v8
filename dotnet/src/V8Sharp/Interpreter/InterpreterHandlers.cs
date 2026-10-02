@@ -665,9 +665,10 @@ public static partial class InterpreterExecution
         InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
         if (typeof(TS) == typeof(SingleScale))
         {
-            if (InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+            if (InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
             {
-                InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, st.Fp + first + 1, count - 1, default, default, PcOf(ref st, ref ip) + 1 + 4 * S);
+                InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
+                    new Baseline.BaselineCalls.RegisterArguments(st.Fp + first + 1, count - 1), PcOf(ref st, ref ip) + 1 + 4 * S);
                 return true;
             }
             // f.call(thisArg, ...args).
@@ -695,9 +696,10 @@ public static partial class InterpreterExecution
         JSValue receiver = Reg<TS>(ref fp, ref ip, 1 + S);
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
         InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
-            InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, 0, 0, default, default, PcOf(ref st, ref ip) + 1 + 3 * S);
+            InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver, new Baseline.BaselineCalls.NoArguments(),
+                PcOf(ref st, ref ip) + 1 + 3 * S);
             return true;
         }
         // a.pop(), a.shift(), n.toString(): the builtins' CSA fast paths.
@@ -723,10 +725,10 @@ public static partial class InterpreterExecution
         InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
         if (typeof(TS) == typeof(SingleScale))
         {
-            if (InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+            if (InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
             {
-                InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
-                    default, default, PcOf(ref st, ref ip) + 1 + 4 * S);
+                InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
+                    new Baseline.BaselineCalls.OneArgument(Unsafe.Subtract(ref fp, kRegBase + argOperand)), PcOf(ref st, ref ip) + 1 + 4 * S);
                 return true;
             }
             // f.call(thisArg).
@@ -762,11 +764,11 @@ public static partial class InterpreterExecution
         InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
         if (typeof(TS) == typeof(SingleScale))
         {
-            if (InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+            if (InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
             {
-                InterpreterInlineCalls.PushFrame(isolate, ref st, target, receiver,
-                    arg1 == arg0 - 1 ? st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0 : -1, 2,
-                    Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1), PcOf(ref st, ref ip) + 1 + 5 * S);
+                InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
+                    new Baseline.BaselineCalls.TwoArguments(Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1)),
+                    PcOf(ref st, ref ip) + 1 + 5 * S);
                 return true;
             }
             // f.call(thisArg, arg).
@@ -808,9 +810,10 @@ public static partial class InterpreterExecution
         int count = Unsigned<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
         InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
-            InterpreterInlineCalls.PushFrame(isolate, ref st, target, default(JSValue), st.Fp + first, count, default, default, PcOf(ref st, ref ip) + 1 + 4 * S);
+            InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
+                new Baseline.BaselineCalls.RegisterArguments(st.Fp + first, count), PcOf(ref st, ref ip) + 1 + 4 * S);
             return true;
         }
         st.Accumulator = InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + first, count, ConvertReceiverMode.NullOrUndefined);
@@ -826,9 +829,10 @@ public static partial class InterpreterExecution
         JSValue callee = Reg<TS>(ref fp, ref ip, 1);
         int slot = Unsigned<TS>(ref ip, 1 + S);
         InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
-            InterpreterInlineCalls.PushFrame(isolate, ref st, target, default(JSValue), 0, 0, default, default, PcOf(ref st, ref ip) + 1 + 2 * S);
+            InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue), new Baseline.BaselineCalls.NoArguments(),
+                PcOf(ref st, ref ip) + 1 + 2 * S);
             return true;
         }
         st.Accumulator = InterpreterCalls.Call(isolate, callee, default(JSValue), 0, 0, ConvertReceiverMode.NullOrUndefined);
@@ -845,10 +849,10 @@ public static partial class InterpreterExecution
         int argOperand = Signed<TS>(ref ip, 1 + S);
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
         InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
-            InterpreterInlineCalls.PushFrame(isolate, ref st, target, default(JSValue), st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
-                default, default, PcOf(ref st, ref ip) + 1 + 3 * S);
+            InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
+                new Baseline.BaselineCalls.OneArgument(Unsafe.Subtract(ref fp, kRegBase + argOperand)), PcOf(ref st, ref ip) + 1 + 3 * S);
             return true;
         }
         if (BuiltinFastPaths.TryCall1(isolate, callee, default(JSValue), Unsafe.Subtract(ref fp, kRegBase + argOperand), out JSValue fastResult))
@@ -872,11 +876,11 @@ public static partial class InterpreterExecution
         int arg1 = Signed<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
         InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.CanInline(callee, out JSFunction target))
+        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
-            InterpreterInlineCalls.PushFrame(isolate, ref st, target, default(JSValue),
-                arg1 == arg0 - 1 ? st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0 : -1, 2,
-                Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1), PcOf(ref st, ref ip) + 1 + 4 * S);
+            InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
+                new Baseline.BaselineCalls.TwoArguments(Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1)),
+                PcOf(ref st, ref ip) + 1 + 4 * S);
             return true;
         }
         if (BuiltinFastPaths.TryCall2(callee, Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1),

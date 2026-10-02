@@ -21,60 +21,199 @@ namespace V8Sharp.Interpreter;
 
 internal static class InterpreterInlineCalls
 {
-    /// <summary>Whether a call to <paramref name="callee"/> can run in the caller's dispatch loop.</summary>
+    // SharedFunctionInfo.InterpreterCallMode: how a call from the dispatch loop
+    // enters the function (0 is "not computed").
+    /// <summary>Not in the loop: builtins, uncompiled, class constructors, generators, baseline code.</summary>
+    public const byte kCallModeNotInline = 1;
+    /// <summary>In the loop; a strict or native function takes the receiver as it is.</summary>
+    public const byte kCallModeInline = 2;
+    /// <summary>In the loop; a sloppy function gets a non-receiver receiver converted (ConvertReceiver).</summary>
+    public const byte kCallModeInlineSloppy = 3;
+    /// <summary>In the loop unless the closure has Maglev code (<see cref="CanInline"/> decides per call).</summary>
+    public const byte kCallModeCheckClosure = 4;
+
+    /// <summary>
+    /// The call mode of <paramref name="shared"/>: one load and compare per
+    /// call instead of CanInline's six fields (V8 decides by the JSFunction's
+    /// code field, which the tiers update, in the same way).
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool CanInline(JSValue callee, out JSFunction function)
+    public static int InlineCallMode(SharedFunctionInfo shared)
+    {
+        int mode = shared.InterpreterCallMode;
+        return mode != 0 ? mode : ComputeInlineCallMode(shared);
+    }
+
+    /// <summary>
+    /// Whether a call from the dispatch loop to <paramref name="callee"/> runs in
+    /// the loop (<see cref="EnterInline"/>), and with which mode.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryGetInlineMode(JSValue callee, out JSFunction function, out int mode)
     {
         if (callee._obj is JSFunction f)
         {
-            SharedFunctionInfo shared = f.Shared;
-            // A function with baseline code runs it (through InterpreterCalls.Call
-            // and InterpreterExecution.EnterFrame), not inline in the interpreter.
-            if (shared.FunctionData is BytecodeArray && !shared.HasBuiltinId && !shared.IsClassConstructor &&
-                !Globals.IsResumableFunction(shared.Kind) && shared.BaselineCode is null &&
-                // A closure with Maglev code runs it (through InterpreterExecution.EnterFrame).
-                (!shared.MayHaveMaglevCode || f.RawFeedbackCell.Value is not FeedbackVector { MaglevCode: not null }))
+            function = f;
+            mode = InlineCallMode(f.Shared);
+            if ((uint)(mode - kCallModeInline) <= kCallModeInlineSloppy - kCallModeInline) return true;
+            if (mode == kCallModeCheckClosure)
             {
-                function = f;
-                return true;
+                mode = CheckClosure(f);
+                return mode != 0;
             }
+            return false;
         }
         function = null!;
+        mode = 0;
         return false;
     }
 
     /// <summary>
-    /// Enters <paramref name="function"/> from the current frame of
-    /// <paramref name="st"/>: pushes the receiver and the arguments (the
-    /// <paramref name="argc"/> registers at stack index <paramref name="argsStart"/>,
-    /// or <paramref name="arg0"/> / <paramref name="arg1"/> when argsStart is
-    /// negative), the fixed slots and the register file, a frame record, and makes
-    /// <paramref name="st"/> describe the callee at offset 0.
+    /// kCallModeCheckClosure: the mode of a call to <paramref name="function"/>,
+    /// or 0 when the closure has Maglev code, which it runs (through
+    /// InterpreterExecution.EnterFrame).
     /// </summary>
-    public static void PushFrame(Isolate isolate, ref InterpreterState st, JSFunction function, JSValue receiver, int argsStart,
-        int argc, JSValue arg0, JSValue arg1, int returnPc)
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CheckClosure(JSFunction function)
     {
+        if (function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: not null }) return 0;
         SharedFunctionInfo shared = function.Shared;
-        if (!shared.Native && shared.LanguageMode == LanguageMode.Sloppy && !receiver.IsJSReceiver)
+        return !shared.Native && shared.LanguageMode == LanguageMode.Sloppy ? kCallModeInlineSloppy : kCallModeInline;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int ComputeInlineCallMode(SharedFunctionInfo shared)
+    {
+        byte mode = kCallModeNotInline;
+        if (shared.FunctionData is BytecodeArray && !shared.HasBuiltinId && !shared.IsClassConstructor &&
+            !Globals.IsResumableFunction(shared.Kind) && shared.BaselineCode is null)
         {
-            receiver = InterpreterCalls.ConvertReceiver(isolate, function, receiver);
+            mode = shared.MayHaveMaglevCode ? kCallModeCheckClosure
+                : !shared.Native && shared.LanguageMode == LanguageMode.Sloppy ? kCallModeInlineSloppy
+                : kCallModeInline;
         }
-        PushFrameCore(isolate, ref st, function, receiver, argsStart, argc, arg0, arg1, returnPc, isolate.RegisterStackTop,
-            false, default);
+        shared.InterpreterCallMode = mode;
+        return mode;
+    }
+
+    /// <summary>
+    /// Enters <paramref name="function"/>, whose <see cref="InlineCallMode"/> is
+    /// <paramref name="mode"/> (kCallModeInline or kCallModeInlineSloppy), from
+    /// the innermost frame of <paramref name="st"/>: the callee's frame (the
+    /// layout and record InterpreterExecution.EnterFrame builds) on the register
+    /// stack, and <paramref name="st"/> describing the callee at offset 0. The
+    /// caller resumes at <paramref name="returnPc"/>.
+    /// </summary>
+    // The interpreter's InterpreterPushArgsThenCall + InterpreterEntryTrampoline,
+    // straight-line per argument form (the call handlers inline it): the
+    // arguments go from the caller's registers into the callee's parameter
+    // slots, and every reference store into the register stack or the record
+    // is skipped when the slot already holds the value (a returned frame at
+    // the same depth leaves its values), so a repeated call pays no GC write
+    // barriers.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void EnterInline<TArgs>(Isolate isolate, ref InterpreterState st, JSFunction function, int mode,
+        JSValue receiver, TArgs args, int returnPc) where TArgs : struct, Baseline.BaselineCalls.ICallArguments
+    {
+        if (mode == kCallModeInlineSloppy && !receiver.IsJSReceiver) receiver = InterpreterCalls.ConvertReceiver(isolate, function, receiver);
+        EnterInlineCore(isolate, ref st, function, receiver, args, returnPc, -1, false, default);
+    }
+
+    /// <summary>
+    /// <see cref="EnterInline"/> with the receiver converted. Stack space
+    /// reserved below the frame (an apply's arguments, the construct stub's
+    /// slots) starts at <paramref name="registerStart"/> and is released with it;
+    /// a construct call (<paramref name="isConstruct"/>) passes the implicit
+    /// receiver and new.target.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static void EnterInlineCore<TArgs>(Isolate isolate, ref InterpreterState st, JSFunction function, JSValue receiver,
+        TArgs args, int returnPc, int registerStart, bool isConstruct, JSValue newTarget)
+        where TArgs : struct, Baseline.BaselineCalls.ICallArguments
+    {
+        // The interrupt check of the entry's stack check.
+        if (isolate.StackGuard.HasPendingInterrupts) isolate.StackGuard.HandleInterrupts();
+
+        // The mode established the type.
+        var bytecode = Unsafe.As<BytecodeArray>(function.Shared.FunctionData!);
+        int argc = args.Count;
+        int formal = bytecode.ParameterCount - 1;
+        int start = isolate.RegisterStackTop;
+        int fp = start + (argc > formal ? argc : formal) + InterpreterRuntime.kFixedSlotsAboveParams;
+        int end = fp + bytecode.RegisterCount;
+        if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
+        isolate.RegisterStackTop = end;
+
+        ref JSValue stack0 = ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack);
+        ref JSValue fpRef = ref Unsafe.Add(ref stack0, fp);
+        // The register file is undefined: the stack above its top is, except
+        // below RegisterStackDirtyEnd, where returned frames left their values.
+        int dirtyEnd = isolate.RegisterStackDirtyEnd;
+        if (fp < dirtyEnd) ClearSlots(ref fpRef, (end < dirtyEnd ? end : dirtyEnd) - fp);
+
+        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset), receiver);
+        args.Store(ref stack0, ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset));
+        // Missing arguments are undefined (V8's argument adaption).
+        for (int i = argc; i < formal; i++) StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i), default);
+
+        Context context = function.Context;
+        if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
+        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset), context);
+        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset), function);
+        // The argument count slot (fp - 4) is not written : frames keep the count in their record.
+        if (isConstruct)
+        {
+            Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
+            if (incoming.IsValid) Unsafe.Add(ref fpRef, incoming.Index) = newTarget;
+        }
+        FeedbackVector? feedbackVector = InterpreterExecution.FeedbackVectorOnEntry(isolate, function);
+        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset),
+            feedbackVector is null ? JSValue.Undefined : feedbackVector);
+
+        int depth = isolate.InterpreterFrameDepth;
+        if ((uint)depth >= (uint)Isolate.kMaxInterpreterFrames) isolate.StackOverflow();
+        isolate.InterpreterFrameDepth = depth + 1;
+        ref InterpreterFrameRecord frame = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.InterpreterFrames), depth);
+        // The caller is the frame below (the loop runs the innermost frame).
+        Debug.Assert(st.FrameIndex == depth - 1);
+        Unsafe.Subtract(ref frame, 1).ReturnPc = returnPc;
+        // PopFrame leaves Function and Bytecode in the record.
+        if (!ReferenceEquals(frame.Function, function)) frame.Function = function;
+        if (!ReferenceEquals(frame.Bytecode, bytecode)) frame.Bytecode = bytecode;
+        frame.Fp = fp;
+        frame.Pc = 0;
+        frame.Argc = argc;
+        frame.Kind = InterpreterFrameKind.Interpreted;
+        frame.IsConstructor = isConstruct;
+        frame.IsBaseline = false;
+        frame.IsMaglev = false;
+        frame.InlineCall = true;
+        frame.RegisterStart = registerStart >= 0 ? registerStart : start;
+
+        st.Function = function;
+        st.Bytecode = bytecode;
+        if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
+        st.FeedbackVector = feedbackVector;
+        st.Context = context;
+        st.Accumulator = default;
+        st.Pc = 0;
+        st.Fp = fp;
+        st.FrameIndex = depth;
+        st.Argc = argc;
     }
 
     /// <summary>
     /// A call of Function.prototype.call (<paramref name="callTarget"/> is its
     /// receiver) whose target can run in this loop: the target is entered with
     /// <paramref name="thisArg"/> and the argument window after it, like
-    /// <see cref="PushFrame"/> (Function.prototype.call is an ASM builtin in V8,
+    /// <see cref="EnterInline"/> (Function.prototype.call is an ASM builtin in V8,
     /// with no frame of its own).
     /// </summary>
     public static bool TryPushFunctionCallFrame(Isolate isolate, ref InterpreterState st, JSValue callTarget, JSValue thisArg,
         int argsStart, int argc, int returnPc)
     {
-        if (!CanInline(callTarget, out JSFunction function)) return false;
-        PushFrame(isolate, ref st, function, thisArg, argsStart, argc, default, default, returnPc);
+        if (!TryGetInlineMode(callTarget, out JSFunction function, out int mode)) return false;
+        EnterInline(isolate, ref st, function, mode, thisArg, new Baseline.BaselineCalls.RegisterArguments(argsStart, argc), returnPc);
         return true;
     }
 
@@ -83,14 +222,14 @@ internal static class InterpreterInlineCalls
     /// receiver) whose target can run in this loop and whose argument list is
     /// an unmodified arguments object or a fast array (CallWithArrayLike's fast
     /// paths): the elements are pushed like an argument window and the target
-    /// entered like <see cref="PushFrame"/>. Function.prototype.apply is an ASM
+    /// entered like <see cref="EnterInline"/>. Function.prototype.apply is an ASM
     /// builtin in V8, with no frame of its own. False, with nothing done, for
     /// anything else.
     /// </summary>
     public static bool TryPushApplyFrame(Isolate isolate, ref InterpreterState st, JSValue applyTarget, JSValue thisArg,
         JSValue argumentsList, int returnPc)
     {
-        if (!CanInline(applyTarget, out JSFunction function)) return false;
+        if (!TryGetInlineMode(applyTarget, out JSFunction function, out int mode)) return false;
         FixedArrayBase? elements = null;
         int length = 0;
         if (!argumentsList.IsNullOrUndefined &&
@@ -122,12 +261,9 @@ internal static class InterpreterInlineCalls
         }
         isolate.RegisterStackTop = windowStart + length;
 
-        SharedFunctionInfo shared = function.Shared;
-        if (!shared.Native && shared.LanguageMode == LanguageMode.Sloppy && !thisArg.IsJSReceiver)
-        {
-            thisArg = InterpreterCalls.ConvertReceiver(isolate, function, thisArg);
-        }
-        PushFrameCore(isolate, ref st, function, thisArg, windowStart, length, default, default, returnPc, windowStart, false, default);
+        if (mode == kCallModeInlineSloppy && !thisArg.IsJSReceiver) thisArg = InterpreterCalls.ConvertReceiver(isolate, function, thisArg);
+        EnterInlineCore(isolate, ref st, function, thisArg, new Baseline.BaselineCalls.RegisterArguments(windowStart, length), returnPc,
+            windowStart, false, default);
         return true;
     }
 
@@ -135,7 +271,7 @@ internal static class InterpreterInlineCalls
     /// The Construct bytecode for an ordinary (not derived) constructor with
     /// bytecode: collects the construct feedback, allocates the receiver
     /// (JSConstructStubGeneric) and enters the constructor like
-    /// <see cref="PushFrame"/>. False, with nothing done, for other constructors.
+    /// <see cref="EnterInline"/>. False, with nothing done, for other constructors.
     /// </summary>
     public static bool TryPushConstructFrame(Isolate isolate, ref InterpreterState st, int slot, JSValue constructor,
         JSValue newTarget, int argsStart, int argc, int returnPc)
@@ -179,99 +315,9 @@ internal static class InterpreterInlineCalls
 
         // The construct stub's frame (see InterpreterCalls.ConstructInterpreted).
         int stubStart = isolate.AllocateRegisters(InterpreterCalls.kConstructStubFrameSlots);
-        PushFrameCore(isolate, ref st, function, implicitReceiver, argsStart, argc, default, default, returnPc, stubStart, true,
-            newTarget);
+        EnterInlineCore(isolate, ref st, function, implicitReceiver, new Baseline.BaselineCalls.RegisterArguments(argsStart, argc),
+            returnPc, stubStart, true, newTarget);
         return true;
-    }
-
-    static void PushFrameCore(Isolate isolate, ref InterpreterState st, JSFunction function, JSValue receiver, int argsStart,
-        int argc, JSValue arg0, JSValue arg1, int returnPc, int registerStart, bool isConstruct, JSValue newTarget)
-    {
-        SharedFunctionInfo shared = function.Shared;
-        if (isolate.StackGuard.HasPendingInterrupts) isolate.StackGuard.HandleInterrupts();
-
-        // CanInline established the type.
-        var bytecode = Unsafe.As<BytecodeArray>(shared.FunctionData!);
-        JSValue[] stack = isolate.RegisterStack;
-        int formal = bytecode.ParameterCount - 1;
-        int paramSlots = argc > formal ? argc : formal;
-        int start = isolate.RegisterStackTop;
-        int fp = start + paramSlots + InterpreterRuntime.kFixedSlotsAboveParams;
-        int registerCount = bytecode.RegisterCount;
-        int end = fp + registerCount;
-        if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
-        isolate.RegisterStackTop = end;
-
-        ref JSValue stack0 = ref MemoryMarshal.GetArrayDataReference(stack);
-        ref JSValue fpRef = ref Unsafe.Add(ref stack0, fp);
-        // The trampoline fills the register file with undefined. The stack
-        // above its top is undefined except below RegisterStackDirtyEnd, where
-        // frames returned from inline left their values (PopFrame).
-        int dirtyEnd = isolate.RegisterStackDirtyEnd;
-        if (fp < dirtyEnd) ClearSlots(ref fpRef, (end < dirtyEnd ? end : dirtyEnd) - fp);
-        Debug.Assert(MemoryMarshal.CreateSpan(ref fpRef, registerCount).IndexOfAnyExcept(default(JSValue)) < 0);
-
-        // Reference stores cost a GC write barrier each. The parameters and
-        // fixed slots may still hold the previous frame's values at this depth
-        // (often the same closure, context and feedback vector, the same
-        // receiver, number arguments): StoreSlot skips an unchanged reference.
-        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset), receiver);
-        if (argsStart >= 0)
-        {
-            ref JSValue src = ref Unsafe.Add(ref stack0, argsStart);
-            for (int i = 0; i < argc; i++) StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i), Unsafe.Add(ref src, i));
-        }
-        else
-        {
-            StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset), arg0);
-            StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - 1), arg1);
-        }
-        // Missing arguments are undefined (V8's argument adaption).
-        for (int i = argc; i < paramSlots; i++) StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i), default);
-
-        Context context = function.Context;
-        if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
-        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset), context);
-        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset), function);
-        // The argument count slot (fp - 4) is not read in V8Sharp: frames keep
-        // the count in their record, so it is not written (a reference store).
-        if (isConstruct)
-        {
-            Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
-            if (incoming.IsValid) Unsafe.Add(ref fpRef, incoming.Index) = newTarget;
-        }
-
-        FeedbackVector? feedbackVector = InterpreterExecution.FeedbackVectorOnEntry(isolate, function);
-        StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset),
-            feedbackVector is null ? JSValue.Undefined : feedbackVector);
-
-        int depth = isolate.InterpreterFrameDepth;
-        ref InterpreterFrameRecord frame = ref isolate.PushFrame();
-        // PopFrame leaves Function and Bytecode in the record.
-        if (!ReferenceEquals(frame.Function, function)) frame.Function = function;
-        if (!ReferenceEquals(frame.Bytecode, bytecode)) frame.Bytecode = bytecode;
-        frame.Fp = fp;
-        frame.Pc = 0;
-        frame.Argc = argc;
-        frame.Kind = InterpreterFrameKind.Interpreted;
-        frame.IsConstructor = isConstruct;
-        frame.IsBaseline = false;
-        frame.IsMaglev = false;
-        frame.InlineCall = true;
-        frame.RegisterStart = registerStart;
-        // The caller resumes after the call bytecode.
-        isolate.InterpreterFrames[st.FrameIndex].ReturnPc = returnPc;
-
-        st.Function = function;
-        st.Bytecode = bytecode;
-        if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
-        st.FeedbackVector = feedbackVector;
-        if (!ReferenceEquals(st.Context, context)) st.Context = context;
-        st.Accumulator = JSValue.Undefined;
-        st.Pc = 0;
-        st.Fp = fp;
-        st.FrameIndex = depth;
-        st.Argc = argc;
     }
 
     /// <summary>
@@ -334,7 +380,7 @@ internal static class InterpreterInlineCalls
     public static bool TryReturnInline(Isolate isolate, ref InterpreterState st, JSValue result)
     {
         InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
-        ref InterpreterFrameRecord frame = ref frames[st.FrameIndex];
+        ref InterpreterFrameRecord frame = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(frames), st.FrameIndex);
         if (!frame.InlineCall) return false;
         if (frame.IsConstructor && !result.IsJSReceiver)
         {
@@ -351,6 +397,7 @@ internal static class InterpreterInlineCalls
         PopFrame(isolate, ref st, frames, ref frames[st.FrameIndex]);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static void PopFrame(Isolate isolate, ref InterpreterState st, InterpreterFrameRecord[] frames, ref InterpreterFrameRecord record)
     {
         int start = record.RegisterStart;
@@ -361,23 +408,23 @@ internal static class InterpreterInlineCalls
         // set and clear.
         isolate.InterpreterFrameDepth = st.FrameIndex;
         // The frame's slots are not cleared: they stay below
-        // RegisterStackDirtyEnd for the next call at this depth (PushFrameCore).
+        // RegisterStackDirtyEnd for the next call at this depth (EnterInlineCore).
         int top = isolate.RegisterStackTop;
         if (top > isolate.RegisterStackDirtyEnd) isolate.RegisterStackDirtyEnd = top;
         isolate.RegisterStackTop = start;
-        JSValue[] stack = isolate.RegisterStack;
-
         int callerIndex = st.FrameIndex - 1;
-        ref InterpreterFrameRecord caller = ref frames[callerIndex];
+        // The record below a frame entered inline is its caller's.
+        ref InterpreterFrameRecord caller = ref Unsafe.Subtract(ref record, 1);
         BytecodeArray bytecode = caller.Bytecode!;
         int fp = caller.Fp;
-        Context context = stack[fp + InterpreterRuntime.kContextOffset].UncheckedAs<Context>();
+        ref JSValue fpRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), fp);
+        Context context = Unsafe.As<Context>(Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset)._obj!);
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
 
         st.Function = caller.Function;
         st.Bytecode = bytecode;
         // The slot holds the frame's FeedbackVector or undefined.
-        st.FeedbackVector = Unsafe.As<FeedbackVector?>(stack[fp + InterpreterRuntime.kFeedbackVectorOffset]._obj);
+        st.FeedbackVector = Unsafe.As<FeedbackVector?>(Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset)._obj);
         if (!ReferenceEquals(st.Context, context)) st.Context = context;
         st.Pc = caller.ReturnPc;
         st.Fp = fp;
