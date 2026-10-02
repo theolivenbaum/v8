@@ -295,7 +295,7 @@ public partial class JSObject : JSReceiver
 
     /// <summary>JSObject::FastPropertyAtPut.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void FastPropertyAtPut(FieldIndex index, JSValue value) => FieldAt(index.StorageIndex) = value;
+    public void FastPropertyAtPut(FieldIndex index, JSValue value) => JSValue.StoreSlot(ref FieldAt(index.StorageIndex), value);
 
     /// <summary>
     /// JSObject::FastPropertyAt: numbers are unboxed values in V8Sharp, so no
