@@ -51,8 +51,8 @@ public partial class JSObject
     /// <summary>
     /// Whether objects of <paramref name="type"/> keep their in-object fields in
     /// object slots (the classes above). These are the ordinary objects that
-    /// AllocateForMap creates as plain JSObjects. Other JSObject subclasses
-    /// (arrays, functions, regexps, arguments ...) keep them at the start of the
+    /// AllocateForMap creates as plain JSObjects, and arguments objects. Other JSObject subclasses
+    /// (arrays, functions, regexps ...) keep them at the start of the
     /// PropertyArray instead (deviations.md, "Heap and object model").
     /// </summary>
     internal static bool UsesInObjectSlots(InstanceType type) => type switch
@@ -63,7 +63,8 @@ public partial class JSObject
         InstanceType.JSArrayIteratorPrototypeType or InstanceType.JSPromisePrototypeType or
         InstanceType.JSRegExpPrototypeType or InstanceType.JSStringIteratorPrototypeType or
         InstanceType.JSMapIteratorPrototypeType or InstanceType.JSSetIteratorPrototypeType or
-        InstanceType.JSSetPrototypeType or InstanceType.JSTypedArrayPrototypeType => true,
+        InstanceType.JSSetPrototypeType or InstanceType.JSTypedArrayPrototypeType or
+        InstanceType.JSArgumentsObjectType => true,
         _ => false,
     };
 
@@ -73,6 +74,7 @@ public partial class JSObject
     /// <summary>An ordinary object of the smallest class with room for <paramref name="map"/>'s in-object properties.</summary>
     internal static JSObject NewWithInObjectSlots(Map map)
     {
+        if (map.InstanceType == InstanceType.JSArgumentsObjectType) return new JSArgumentsObject(map);
         int count = map.GetInObjectProperties();
         return count switch
         {

@@ -78,7 +78,11 @@ public sealed class CompilerHeap(Isolate isolate, Script script) : IBytecodeGene
 
         shared.Length = (ushort)lit.function_length();
         shared.HasDuplicateParameters = lit.has_duplicate_parameters();
-        shared.ExpectedNofProperties = (byte)Math.Min(lit.expected_property_count(), byte.MaxValue);
+        // For lazily parsed functions the estimate is inaccurate; it is set
+        // again in UpdateSharedFunctionFlagsAfterCompilation (Compiler.cs) when
+        // the function is really parsed and compiled.
+        if (lit.ShouldEagerCompile()) shared.UpdateAndFinalizeExpectedNofPropertiesFromEstimate(lit);
+        else shared.UpdateExpectedNofPropertiesFromEstimate(lit);
         shared.UpdateFunctionMapIndex();
 
         // V8 skips the UncompiledData for functions it is about to compile

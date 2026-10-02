@@ -82,7 +82,7 @@ public sealed partial class BaselineCompiler
     static readonly FieldInfo s_shIsSimpleElementStore = typeof(StoreHandler).GetField(nameof(StoreHandler.IsSimpleElementStore))!;
     static readonly FieldInfo s_representationKind = typeof(Representation).GetField("_kind", kAnyInstance)!;
     static readonly MethodInfo s_fieldAt = typeof(JSObject).GetMethod(nameof(JSObject.FieldAt), kAnyInstance)!;
-    static readonly FieldInfo s_arrayLength = typeof(JSArray).GetField(nameof(JSArray.Length))!;
+    static readonly FieldInfo s_arrayLength = typeof(JSArray).GetField(nameof(JSArray._length), BindingFlags.NonPublic | BindingFlags.Instance)!;
     static readonly FieldInfo s_elements = typeof(JSObject).GetField(nameof(JSObject.Elements))!;
     static readonly FieldInfo s_fixedArrayData = typeof(FixedArray).GetField(nameof(FixedArray._data), kAnyInstance)!;
     static readonly FieldInfo s_doubleArrayData = typeof(FixedDoubleArray).GetField(nameof(FixedDoubleArray._data), kAnyInstance)!;
@@ -93,6 +93,7 @@ public sealed partial class BaselineCompiler
         typeof(StackGuard).GetProperty(nameof(StackGuard.HasPendingInterrupts))!.GetMethod!;
     static readonly MethodInfo s_truncate = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.TruncateToInt32))!;
     static readonly MethodInfo s_doubleToBits = typeof(BitConverter).GetMethod(nameof(BitConverter.DoubleToInt64Bits))!;
+    static readonly MethodInfo s_fromNumber = typeof(JSValue).GetMethod(nameof(JSValue.FromNumber))!;
 
     // ---- Scratch locals (declared on first use; shared by all bytecodes) -------------------------
 
@@ -1038,6 +1039,7 @@ public sealed partial class BaselineCompiler
             Emit(OpCodes.Bne_Un, slow);
             Emit(OpCodes.Ldloc, TObj);
             Emit(OpCodes.Ldfld, s_arrayLength);
+            Emit(OpCodes.Call, s_fromNumber);
             SetAcc();
             Emit(OpCodes.Br, done);
         }
@@ -1165,8 +1167,7 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Ldloc, TInt2);
         Emit(OpCodes.Conv_R8);
         Emit(OpCodes.Ldloc, TObj);
-        Emit(OpCodes.Ldflda, s_arrayLength);
-        LdfldNum();
+        Emit(OpCodes.Ldfld, s_arrayLength);
         Emit(OpCodes.Bge_Un, slow);
         _il.MarkLabel(elements);
         int modes = GetKeyedPropertySite(slot);

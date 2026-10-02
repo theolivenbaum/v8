@@ -117,6 +117,8 @@ public static partial class Program
         string engine = Arg(args, "--engine") ?? throw new ArgumentException("--engine");
         string suite = Arg(args, "--suite") ?? throw new ArgumentException("--suite");
         var (workDir, files, driver) = Workload(suite);
+        using var allocationProfile = Environment.GetEnvironmentVariable("V8SHARP_BENCH_ALLOCPROFILE") == "1"
+            ? new AllocationProfile() : null;
 
         IBenchHost host = CreateHost(engine, workDir);
         var sw = Stopwatch.StartNew();
@@ -129,8 +131,21 @@ public static partial class Program
             // The whole process: start-up, the JIT's background compilation, GC.
             double cpu = Process.GetCurrentProcess().TotalProcessorTime.TotalMilliseconds;
             Console.WriteLine($"{suite[11..]}.process(Score): {(1e6 / cpu).ToString("G6", CultureInfo.InvariantCulture)}");
+            if (engine.StartsWith("v8sharp", StringComparison.Ordinal))
+            {
+                // The CLR heap's share (V8Sharp only; the oracle allocates in V8's
+                // heap): MB allocated by the process and the GCs per generation,
+                // start-up included. Printed as scores, so lower is better here.
+                string n = suite[11..];
+                double mb = GC.GetTotalAllocatedBytes(precise: true) / 1048576.0;
+                Console.WriteLine($"{n}.allocMB(Score): {mb.ToString("F1", CultureInfo.InvariantCulture)}");
+                for (int g = 0; g <= 2; g++)
+                    Console.WriteLine($"{n}.gen{g}(Score): {GC.CollectionCount(g).ToString(CultureInfo.InvariantCulture)}");
+                Console.WriteLine($"{n}.gcPauseMs(Score): {GC.GetTotalPauseDuration().TotalMilliseconds.ToString("F1", CultureInfo.InvariantCulture)}");
+            }
         }
         host.Dispose();
+        allocationProfile?.Print(Console.Out);
         return 0;
     }
 
@@ -345,6 +360,15 @@ public static partial class Program
             }
             // A build outside the tree finds dotnet/ (Octane, micro/) through this.
             psi.Environment["V8SHARP_BENCH_ROOT"] = Paths.DotnetRoot;
+            // <dir>/bench.env: KEY=VALUE lines set for runs of that build, for
+            // runtime knobs that only the environment sets (DOTNET_GCgen0size).
+            string envFile = Path.Combine(buildDir, "bench.env");
+            if (File.Exists(envFile))
+                foreach (string line in File.ReadAllLines(envFile))
+                {
+                    int eq = line.IndexOf('=');
+                    if (eq > 0 && !line.StartsWith('#')) psi.Environment[line[..eq].Trim()] = line[(eq + 1)..].Trim();
+                }
         }
         // Environment.ProcessPath is the apphost; when run as `dotnet V8Sharp.Bench.dll`
         // it is `dotnet` and the dll has to be passed along.

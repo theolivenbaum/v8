@@ -904,7 +904,6 @@ public partial class JSObject
         dictionary.MayHaveInterestingProperties = map.MayHaveInterestingProperties;
 
         obj.Map = newMap;
-        obj.SetProperties(dictionary);
 
         // Ensure that in-object space of slow-mode object does not contain random
         // garbage.
@@ -912,12 +911,11 @@ public partial class JSObject
         if (newMap.HasInObjectSlots)
         {
             obj.ClearInObjectSlots(obj.InObjectSlotCapacity, JSValue.Zero);
-            obj._fields = EmptyFields;
+            obj.InitializeDictionaryStorage(dictionary, 0);
         }
         else
         {
-            obj._fields = inobjectProperties == 0 ? EmptyFields : new JSValue[inobjectProperties];
-            for (int i = 0; i < inobjectProperties; i++) obj._fields[i] = JSValue.Zero;
+            obj.InitializeDictionaryStorage(dictionary, inobjectProperties);
         }
     }
 
@@ -1260,7 +1258,6 @@ public partial class JSObject
             // Transform the object.
             newMap.SetInObjectUnusedPropertyFields(inobjectProps);
             obj.Map = newMap;
-            obj._dictionary = null;
             obj.SetFieldsByPropertyIndex(newMap, inobjectProps == 0 ? EmptyFields : new JSValue[inobjectProps]);
             return;
         }
@@ -1331,7 +1328,6 @@ public partial class JSObject
 
         // Transform the object.
         obj.Map = newMap;
-        obj._dictionary = null;
         obj.SetFieldsByPropertyIndex(newMap, fields);
     }
 

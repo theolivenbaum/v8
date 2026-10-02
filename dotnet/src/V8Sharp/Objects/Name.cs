@@ -160,7 +160,12 @@ public abstract partial class JSString : Name
     public abstract int Length { get; }
 
     /// <summary>True once this string is the canonical copy in the string table.</summary>
-    public bool IsInternalized { get; internal set; }
+    public bool IsInternalized
+    {
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        get => _headerFlags != 0;
+        internal set => _headerFlags = value ? (byte)1 : (byte)0;
+    }
 
     /// <summary>
     /// The internalized copy of this string, once known (V8 turns such a string

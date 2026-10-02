@@ -79,6 +79,9 @@ sealed class V8SharpHost : IBenchHost
             Install(context, global, "quit", static (Isolate i, in BuiltinArguments a) => JSValue.Undefined);
             Install(context, global, "cpuTimeMs",
                 static (Isolate i, in BuiltinArguments a) => JSValue.FromNumber(Program.ThreadCpuTimeMs()));
+            // Bytes the CLR allocated on this thread (micro/cpu.js prints bytes per iteration).
+            Install(context, global, "allocatedBytes",
+                static (Isolate i, in BuiltinArguments a) => JSValue.FromNumber(GC.GetAllocatedBytesForCurrentThread()));
             JSObject d8 = _isolate.Factory.NewJSObject(context.ObjectFunction);
             JSObject file = _isolate.Factory.NewJSObject(context.ObjectFunction);
             Install(context, file, "execute", Load);

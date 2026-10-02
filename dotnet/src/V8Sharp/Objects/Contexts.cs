@@ -70,11 +70,11 @@ public partial class Context : HeapObject
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get => Slots[index];
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        set => Slots[index] = value;
+        set => JSValue.StoreSlot(ref Slots[index], value);
     }
 
     public JSValue Get(int index) => Slots[index];
-    public void Set(int index, JSValue value) => Slots[index] = value;
+    public void Set(int index, JSValue value) => JSValue.StoreSlot(ref Slots[index], value);
 
     public ScopeInfo ScopeInfo
     {

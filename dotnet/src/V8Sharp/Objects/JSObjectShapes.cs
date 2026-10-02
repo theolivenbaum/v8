@@ -21,12 +21,24 @@ namespace V8Sharp.Objects;
 
 // ---- Arguments --------------------------------------------------------------------
 
-/// <summary>V8's JSArgumentsObject (sloppy and strict arguments objects).</summary>
-public sealed class JSArgumentsObject(Map map) : JSObject(map)
+/// <summary>
+/// V8's JSArgumentsObject (sloppy and strict arguments objects). Its in-object
+/// properties (length, and callee for sloppy ones: at most two, and arguments
+/// objects have no subclasses) are object slots, as for ordinary objects
+/// (JSObjects.InObject.cs), so an arguments object is not also a PropertyArray.
+/// </summary>
+internal sealed class JSArgumentsObject : JSObjectInObject2
 {
     /// <summary>JSSloppyArgumentsObject::kLengthIndex / kCalleeIndex: in-object property indices.</summary>
     public const int kLengthIndex = 0;
     public const int kCalleeIndex = 1;
+
+    public JSArgumentsObject(Map map) : base(map) =>
+        Debug.Assert(map.GetInObjectProperties() <= 2, "arguments maps have at most two in-object properties");
+
+    JSArgumentsObject(JSArgumentsObject source) : base(source) { }
+
+    internal override JSObject CloneShallowCore() => new JSArgumentsObject(this);
 }
 
 /// <summary>

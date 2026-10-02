@@ -19,10 +19,8 @@ public static class InterpreterArguments
         // descriptors, JSSloppyArgumentsObject::kLengthIndex / kCalleeIndex)
         // rather than through Object::SetProperty as the runtime does.
         Debug.Assert(result.Map.InstanceDescriptors.GetKey(new InternalIndex(JSArgumentsObject.kLengthIndex)) == ReadOnlyRoots.length_string);
-        // Arguments objects keep their in-object fields in the PropertyArray (JSObjects.InObject.cs).
-        JSValue[] fields = result._fields;
-        fields[JSArgumentsObject.kLengthIndex] = JSValue.FromInt(length);
-        if (!strict) fields[JSArgumentsObject.kCalleeIndex] = callee;
+        result.InObjectSlot(JSArgumentsObject.kLengthIndex) = JSValue.FromInt(length);
+        if (!strict) result.InObjectSlot(JSArgumentsObject.kCalleeIndex) = callee;
         return result;
     }
 

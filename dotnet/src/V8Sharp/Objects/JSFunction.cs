@@ -456,6 +456,42 @@ public sealed class SharedFunctionInfo : HeapObject
     public void UpdateFunctionMapIndex() =>
         FunctionMapIndex = Context.FunctionMapIndex(LanguageMode, Kind, HasSharedName);
 
+    /// <summary>SharedFunctionInfo::get_property_estimate_from_literal.</summary>
+    int GetPropertyEstimateFromLiteral(V8Sharp.Ast.FunctionLiteral literal)
+    {
+        int estimate = literal.expected_property_count();
+        // If this is a class constructor, we may have already parsed fields.
+        if (IsClassConstructor) estimate += ExpectedNofProperties;
+        return estimate;
+    }
+
+    /// <summary>SharedFunctionInfo::UpdateExpectedNofPropertiesFromEstimate.</summary>
+    public void UpdateExpectedNofPropertiesFromEstimate(V8Sharp.Ast.FunctionLiteral literal)
+    {
+        // Limit actual estimate to fit in a 8 bit field, we will never allocate
+        // more than this in any case.
+        int estimate = GetPropertyEstimateFromLiteral(literal);
+        ExpectedNofProperties = (byte)Math.Min(estimate, byte.MaxValue);
+    }
+
+    /// <summary>SharedFunctionInfo::UpdateAndFinalizeExpectedNofPropertiesFromEstimate.</summary>
+    public void UpdateAndFinalizeExpectedNofPropertiesFromEstimate(V8Sharp.Ast.FunctionLiteral literal)
+    {
+        if (ArePropertiesFinal) return;
+        int estimate = GetPropertyEstimateFromLiteral(literal);
+
+        // If no properties are added in the constructor, they are more likely
+        // to be added later.
+        if (estimate == 0) estimate = 2;
+
+        // Limit actual estimate to fit in a 8 bit field, we will never allocate
+        // more than this in any case.
+        estimate = Math.Min(estimate, byte.MaxValue);
+
+        ExpectedNofProperties = (byte)estimate;
+        ArePropertiesFinal = true;
+    }
+
     public bool IsWrapped => SyntaxKind == FunctionSyntaxKind.Wrapped;
     public bool IsClassConstructor => Globals.IsClassConstructor(Kind);
     public bool IsScript => IsToplevel && NameOrScopeInfo is ScopeInfo si && si.IsScriptScope;

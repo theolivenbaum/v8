@@ -20,6 +20,13 @@ public abstract class HeapObject(InstanceType instanceType)
     /// </summary>
     private protected uint _hashField;
 
+    /// <summary>
+    /// Per-class flag bits (JSString: internalized). They sit in the header
+    /// word's padding after InstanceType and the hash field, where a bool of a
+    /// subclass would add 8 bytes to every instance.
+    /// </summary>
+    private protected byte _headerFlags;
+
     public bool IsString => InstanceTypeChecks.IsString(InstanceType);
     public bool IsName => InstanceTypeChecks.IsName(InstanceType);
     public bool IsJSReceiver => InstanceTypeChecks.IsJSReceiver(InstanceType);
