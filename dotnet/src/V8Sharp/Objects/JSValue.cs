@@ -1,5 +1,7 @@
 // The port of V8's Tagged<Object>: see dotnet/docs/architecture.md section 3.
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 
 namespace V8Sharp.Objects;
 
@@ -104,14 +106,43 @@ public readonly struct JSValue : IEquatable<JSValue>
     /// </summary>
     public bool IsSmi
     {
-        get
-        {
-            if (!IsNumber) return false;
-            double d = _num;
-            if (d < SmiMinValue || d > SmiMaxValue) return false;
-            int i = (int)d;
-            return i == d && (i != 0 || !double.IsNegative(d));
-        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => IsNumber && IsSmiDouble(_num);
+    }
+
+    /// <summary>
+    /// Whether a double would be a Smi in V8 (31-bit, integral, not -0).
+    /// Comparing the bits of the int round trip rejects fractions, NaN and -0
+    /// in one compare (a double compare needs a parity branch for NaN and
+    /// cannot tell -0 from 0).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool IsSmiDouble(double d)
+    {
+        int i = TruncateToInt32(d);
+        return BitConverter.DoubleToInt64Bits(i) == BitConverter.DoubleToInt64Bits(d) &&
+            (uint)(i - SmiMinValue) <= (uint)(SmiMaxValue - SmiMinValue);
+    }
+
+    /// <summary>
+    /// The double truncated to an int32, or int.MinValue when it is NaN or out
+    /// of range (cvttsd2si). C#'s (int) cast saturates, which costs a NaN mask
+    /// and a compare; callers that check the round trip do not need it.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int TruncateToInt32(double d) =>
+        Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(d)) : (int)d;
+
+    /// <summary>
+    /// The array index a number key names when it is an integer in [0, 2^31):
+    /// V8's TryToIntptr for a keyed access (-0 is index 0).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool TryGetIndex(double d, out int index)
+    {
+        int i = TruncateToInt32(d);
+        index = i;
+        return i >= 0 && i == d;
     }
 
     public const int SmiMinValue = -(1 << 30);

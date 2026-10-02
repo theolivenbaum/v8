@@ -350,16 +350,15 @@ public static partial class InterpreterExecution
                     {
                         JSValue[] slots = fv.Slots;
                         int slot = Unsigned<TS>(ref ip, 1 + S);
-                        int index = (int)acc._num;
                         HeapObject? feedback = slots[slot]._obj;
                         Map map = Unsafe.As<JSReceiver>(o).Map;
                         HeapObject? found = ReferenceEquals(feedback, map) ? slots[slot + 1]._obj
                             : feedback is FixedArray polymorphic ? FindPolymorphicHandler(polymorphic, map) : null;
-                        if (found is LoadHandler handler && handler.FastElementsMode != 0 && index == acc._num && index >= 0)
+                        if (found is LoadHandler handler && handler.FastElementsMode != 0 && JSValue.TryGetIndex(acc._num, out int index))
                         {
                             // The map matched the handler's receiver map: {o} is a JSObject.
                             FixedArrayBase elements = Unsafe.As<JSObject>(o).Elements;
-                            if (!handler.IsJSArray || index < (int)Unsafe.As<JSArray>(o).Length._num)
+                            if (!handler.IsJSArray || index < Unsafe.As<JSArray>(o).Length._num)
                             {
                                 if (elements is FixedArray fixedArray)
                                 {

@@ -170,12 +170,10 @@ public static class ElementAccess
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryStoreInBounds(JSObject obj, double key, JSValue value)
     {
-        int index = (int)key;
-        if (index != key || index < 0) return false;
+        if (!JSValue.TryGetIndex(key, out int index)) return false;
         FixedArrayBase elements = obj.Elements;
         ElementsKind kind = obj.Map.ElementsKind;
-        int length = obj.InstanceType == InstanceType.JSArrayType ? (int)Unsafe.As<JSArray>(obj).Length._num : int.MaxValue;
-        if (index >= length) return false;
+        if (obj.InstanceType == InstanceType.JSArrayType && index >= Unsafe.As<JSArray>(obj).Length._num) return false;
         if (elements is FixedArray fixedArray)
         {
             JSValue[] data = fixedArray._data;

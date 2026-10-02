@@ -74,9 +74,22 @@ public sealed class StoreIC : IC
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static bool FitsField(StoreHandler handler, in JSValue value)
     {
-        Representation representation = handler.Representation;
-        if (representation.IsTagged) return true;
-        if (!ObjectOps.FitsRepresentation(value, representation)) return false;
+        // ObjectOps.FitsRepresentation (with coercion) by kind, inline: the
+        // monomorphic store hit runs it for every field store.
+        switch (handler.Representation.kind)
+        {
+            case Representation.Kind.Tagged:
+                return true;
+            case Representation.Kind.Smi:
+                return value.IsSmi;
+            case Representation.Kind.Double:
+                return value.IsNumber;
+            case Representation.Kind.HeapObject:
+                if (value.IsNumber) return false;
+                break;
+            case Representation.Kind.None:
+                return false;
+        }
         Map? fieldClass = handler.FieldTypeClass;
         if (fieldClass is not null)
         {
