@@ -12,6 +12,12 @@ function benchCpu(name, fn, n) {
     if (t < best) best = t;
   }
   print(name + '(Score): ' + Math.round(n / best / 1000 * 100) / 100);
+  if (typeof allocatedBytes === 'function') {
+    // V8Sharp: CLR bytes allocated per iteration (lower is better).
+    var b0 = allocatedBytes();
+    fn(n);
+    print(name + '.bytes(Score): ' + Math.round((allocatedBytes() - b0) / n * 10) / 10);
+  }
 }
 
 benchCpu('CpuEmptyLoop', function (n) { var s = 0; for (var i = 0; i < n; i++) { } return s; }, 4000000);
