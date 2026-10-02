@@ -97,6 +97,28 @@ public class ICRegressionTest : TestWithContext
     }
 
     [Fact]
+    public void TypedArrayElementStores()
+    {
+        // Typed array element store handlers: in bounds, out of bounds (ignored
+        // once the handler ignores OOB), negative and fractional keys, values
+        // that need ToNumber, polymorphic receivers and BigInt arrays.
+        Assert.Equal("0,44,88,132|undefined,undefined|7,9|1,2.5,3|5,5", RunString("""
+            function g(x, i, v) { x[i] = v; }
+            var d = new Uint8Array(4);
+            for (var k = 0; k < 10; k++) g(d, k, k * 300);
+            g(d, -1, 1); g(d, 1.5, 1);
+            var o = new Uint8Array(2);
+            g(o, 0, "7"); g(o, 1, { valueOf() { return 9; } });
+            var f = new Float64Array(3), i32 = new Int32Array(3);
+            for (var k = 0; k < 3; k++) { g(f, k, k + 1); g(i32, k, k + 1); }
+            g(f, 1, 2.5);
+            var e = new BigInt64Array(2);
+            for (var k = 0; k < 4; k++) g(e, k, 5n);
+            [d.join(), String(d[-1]) + ',' + String(d[1.5]), o.join(), f.join(), e.join()].join('|');
+            """));
+    }
+
+    [Fact]
     public void ThirtyThirdPropertyIsNotADuplicate()
     {
         // Adding the 33rd property sorts the descriptors; the collision check

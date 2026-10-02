@@ -81,3 +81,18 @@ benchCpu('CpuNullCheck', function (n) {
   for (var i = 0; i < n; i++) { if (o.next == null) c++; }
   return c;
 }, 2000000);
+benchCpu('CpuTypedRead', function (n) {
+  var a = new Int32Array(1024), s = 0;
+  for (var i = 0; i < n; i++) { s = (s + a[i & 1023]) | 0; }
+  return s;
+}, 2000000);
+benchCpu('CpuTypedWrite', function (n) {
+  var a = new Uint8Array(1024);
+  for (var i = 0; i < n; i++) { a[i & 1023] = i; }
+  return a[5];
+}, 2000000);
+benchCpu('CpuFloat64Array', function (n) {
+  var a = new Float64Array(1024);
+  for (var i = 0; i < n; i++) { var j = i & 1023; a[j] = a[j] * 0.5 + 1; }
+  return a[5];
+}, 2000000);

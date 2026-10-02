@@ -270,7 +270,7 @@ public sealed class StoreHandler : HeapObject
     public readonly KeyedAccessStoreMode StoreMode;
 
     /// <summary>
-    /// A kElement handler without an elements transition: the interpreter's
+    /// A kElement handler of a fast kind without an elements transition: the interpreter's
     /// SetKeyedProperty stores in-bounds non-hole elements through it inline
     /// (ElementAccess.TryStoreInBounds) while the handler is valid (array
     /// element handlers carry the prototype chain's validity cell, which the
@@ -294,7 +294,8 @@ public sealed class StoreHandler : HeapObject
         ElementsKind = elementsKind;
         ElementsTransitionMap = elementsTransitionMap;
         StoreMode = storeMode;
-        IsSimpleElementStore = kind == Kind.kElement && elementsTransitionMap is null;
+        IsSimpleElementStore = kind == Kind.kElement && elementsTransitionMap is null &&
+                               !ElementsKinds.IsTypedArrayOrRabGsabTypedArrayElementsKind(elementsKind);
     }
 
     static readonly StoreHandler s_slow = new(Kind.kSlow);
