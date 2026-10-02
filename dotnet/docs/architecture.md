@@ -140,11 +140,21 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   `JSObjectInObject256`) whose `[InlineArray]` segments are the slots, the
   smallest that holds the map's in-object count; a larger class derives from
   the smaller ones, so slot i is the same field in every object that has it
-  (`JSObject.InObjectSlot`, span indexing, no `unsafe`). Other JSObject
-  subclasses (arrays, functions, ...) keep their in-object fields at the
-  front of the PropertyArray. `FieldIndex` encodes V8's (in-object, index)
+  (`JSObject.InObjectSlot`, span indexing, no `unsafe`). Arguments objects
+  derive from the two-slot class. Other JSObject subclasses (arrays,
+  functions, ...) keep their in-object fields at the front of the
+  PropertyArray. `FieldIndex` encodes V8's (in-object, index)
   split plus `StorageIndex`, the physical location, which is what inline
   caches store with the map (`JSObject.FieldAt`).
+- The receiver header is V8's three words: `Map`, `_fields` (V8's
+  properties_or_hash: the PropertyArray, or in dictionary mode an array
+  whose last element is the dictionary) and `Elements`; the identity hash
+  and per-class flag bits share the word with `InstanceType`
+  (`HeapObject`). A plain object with two in-object fields is 80 bytes
+  (16 of CLR header, 8 + 3 x 8 of header words, 2 x 16 of slots). A new
+  object is one allocation; elements start as the shared empty FixedArray.
+  Reference stores that leave the reference half of a slot unchanged write
+  only the payload (`JSValue.StoreSlot`), skipping the GC write barrier.
 - Adding a property follows/creates a transition; deleting (except the last
   added) or too many properties normalises to dictionary mode
   (`NameDictionary`, which keeps enumeration order), with V8's thresholds

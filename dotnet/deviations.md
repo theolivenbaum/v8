@@ -547,8 +547,9 @@ Heap and object model
   `[InlineArray]` slot segments (1, 2, 3, 4, 8, 12, 16, 32, 64, 128, 256 slots), the
   smallest covering the map's in-object property count. After in-object slack
   tracking shrinks a map, objects allocated earlier keep their larger class
-  (V8 turns the tail into filler). The other JSObject subclasses (arrays,
-  functions, regexps, arguments objects, collections ...) keep the map's
+  (V8 turns the tail into filler). Arguments objects (at most two in-object
+  properties, no subclasses) derive from the two-slot class. The other
+  JSObject subclasses (arrays, functions, regexps, collections ...) keep the map's
   in-object fields at the start of the PropertyArray `JSValue[]`; the map's
   counts, `FieldIndex` and slack tracking are V8's for every object.
   `FieldIndex.StorageIndex` is the physical location the IC handlers cache.
@@ -558,7 +559,21 @@ Heap and object model
 - The identity hash lives in the header word (`HeapObject._hashField`, which
   is Name's raw hash field for names), not in `properties_or_hash`: a field
   of the root class fills the padding after InstanceType, where a JSReceiver
-  field would add 8 bytes to every object.
+  field would add 8 bytes to every object. The two spare bytes of that word
+  (`HeapObject._headerFlags`) hold JSString's internalized bit, and a
+  FixedArray's copy-on-write bit is its unused hash field, for the same reason.
+- `properties_or_hash` is one field, `JSReceiver._fields`, as in V8: the
+  PropertyArray in fast mode; in dictionary mode an array whose last element
+  is the property dictionary (after the in-object area of the classes without
+  slots). A dictionary-mode object therefore has one array more than in V8,
+  and every receiver one field less than with a separate dictionary field.
+- `JSArray.Length` is a property over a `double` field (`_length`): the
+  length is always a Number, and the double is 8 bytes smaller than a
+  JSValue and written without a GC write barrier.
+- Stores into fields, elements and context slots of a value whose reference
+  part is unchanged (a number over a number, the same object) write only the
+  payload (`JSValue.StoreSlot`): a CLR reference store pays a GC write barrier,
+  V8's a Smi store does not.
 - No Smi/HeapNumber distinction: numbers are unboxed. A non-Smi number does not
   fit `Representation.HeapObject` (`ObjectOps.FitsRepresentation`), where V8's
   HeapNumber does; storing one generalizes the field to Tagged instead.
