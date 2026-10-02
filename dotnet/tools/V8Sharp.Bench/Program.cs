@@ -360,6 +360,15 @@ public static partial class Program
             }
             // A build outside the tree finds dotnet/ (Octane, micro/) through this.
             psi.Environment["V8SHARP_BENCH_ROOT"] = Paths.DotnetRoot;
+            // <dir>/bench.env: KEY=VALUE lines set for runs of that build, for
+            // runtime knobs that only the environment sets (DOTNET_GCgen0size).
+            string envFile = Path.Combine(buildDir, "bench.env");
+            if (File.Exists(envFile))
+                foreach (string line in File.ReadAllLines(envFile))
+                {
+                    int eq = line.IndexOf('=');
+                    if (eq > 0 && !line.StartsWith('#')) psi.Environment[line[..eq].Trim()] = line[(eq + 1)..].Trim();
+                }
         }
         // Environment.ProcessPath is the apphost; when run as `dotnet V8Sharp.Bench.dll`
         // it is `dotnet` and the dll has to be passed along.
