@@ -2,6 +2,7 @@
 // factory-base.{h,cc}. There is no heap to allocate in (architecture.md
 // section 2): each New* constructs the C# object and initializes it the way
 // V8's factory initializes the fresh heap object.
+using System.Runtime.CompilerServices;
 using System.Globalization;
 using V8Sharp.Base.Numbers;
 using V8Sharp.Builtins;
@@ -694,6 +695,22 @@ public sealed partial class Factory(Isolate isolate)
             RawFeedbackCell = feedbackCell ?? FeedbackCell.ManyClosuresCell,
         };
         return function;
+    }
+
+    /// <summary>
+    /// The FastNewClosure builtin (builtins-constructor-gen.cc): a closure of
+    /// <paramref name="shared"/> in <paramref name="context"/> with the
+    /// creation site's feedback cell, allocated with the function map of the
+    /// native context and its fields written once.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSFunction FastNewClosure(SharedFunctionInfo shared, Context context, FeedbackCell feedbackCell)
+    {
+        Map map = Unsafe.As<Map>(context.NativeContext.Slots[shared.FunctionMapIndex]._obj!);
+        // The class constructor maps have in-object fields (V8 keeps them in
+        // the instance too): those take the general constructor.
+        if (map.GetInObjectProperties() != 0) return new JSFunction(map, shared, context) { RawFeedbackCell = feedbackCell };
+        return new JSFunction(map, shared, context, feedbackCell);
     }
 
     /// <summary>

@@ -94,6 +94,16 @@ public abstract partial class JSReceiver : HeapObject
         }
     }
 
+    /// <summary>
+    /// The allocation fast paths (FastNewObject, FastNewClosure): a map in
+    /// fast mode, so nothing but the map word needs initializing.
+    /// </summary>
+    private protected JSReceiver(Map map, bool fastMap) : base(map.InstanceType)
+    {
+        Debug.Assert(fastMap && !map.IsDictionaryMap);
+        Map = map;
+    }
+
     /// <summary>A field-for-field copy of <paramref name="source"/> (see JSObject.CloneShallow).</summary>
     protected JSReceiver(JSReceiver source) : base(source.InstanceType)
     {
@@ -193,6 +203,17 @@ public partial class JSObject : JSReceiver
     {
         Debug.Assert(inObjectSlots && map.HasInObjectSlots);
         Elements = map.GetInitialElements();
+    }
+
+    /// <summary>
+    /// FastNewObject / FastNewClosure: a map in fast mode with fast elements
+    /// and no in-object area outside slots, so the header is the map and the
+    /// empty elements (V8 writes the same words with no checks).
+    /// </summary>
+    private protected JSObject(Map map, FixedArray emptyElements) : base(map, fastMap: true)
+    {
+        Debug.Assert(map.HasFastElements && (map.HasInObjectSlots || map.GetInObjectProperties() == 0));
+        Elements = emptyElements;
     }
 
     /// <summary>A field-for-field copy of <paramref name="source"/> (see CloneShallow).</summary>

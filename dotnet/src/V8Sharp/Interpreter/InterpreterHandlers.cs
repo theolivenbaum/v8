@@ -558,12 +558,14 @@ public static partial class InterpreterExecution
     static JSValue CreateClosure<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        // FastNewClosure: an allocation, which cannot throw, so no SavePc.
         int S = Scale<TS>();
         var shared = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1)].UncheckedAs<SharedFunctionInfo>();
         int slot = Unsigned<TS>(ref ip, 1 + S);
-        FeedbackCell cell = JSFunctionFeedback.GetClosureFeedbackCellArray(st.Function).Get(slot);
-        return RuntimeClosures.NewClosure(isolate, shared, st.Context, cell);
+        // LoadClosureFeedbackArray: the feedback vector's, or the cell's own array.
+        ClosureFeedbackCellArray cells = st.FeedbackVector is { } fv ? fv.ClosureFeedbackCellArray
+            : JSFunctionFeedback.GetClosureFeedbackCellArray(st.Function);
+        return Factory.FastNewClosure(shared, st.Context, cells.Get(slot));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

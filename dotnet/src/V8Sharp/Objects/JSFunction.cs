@@ -592,8 +592,13 @@ public sealed class Tuple2(HeapObject? value1, JSValue value2) : HeapObject(Inst
 }
 
 /// <summary>V8's JSFunctionOrBoundFunctionOrWrappedFunction: the callable objects with name and length.</summary>
-public abstract class JSFunctionOrBoundFunctionOrWrappedFunction(Map map) : JSObject(map)
+public abstract class JSFunctionOrBoundFunctionOrWrappedFunction : JSObject
 {
+    protected JSFunctionOrBoundFunctionOrWrappedFunction(Map map) : base(map) { }
+
+    /// <summary>The allocation of FastNewClosure (see JSObject's fast constructor).</summary>
+    private protected JSFunctionOrBoundFunctionOrWrappedFunction(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
+
     public const int kLengthDescriptorIndex = 0;
     public const int kNameDescriptorIndex = 1;
 
@@ -756,14 +761,36 @@ public sealed partial class JSWrappedFunction(Map map, JSReceiver wrappedTargetF
 }
 
 /// <summary>V8's JSFunction: a closure (SharedFunctionInfo + Context + FeedbackCell).</summary>
-public sealed class JSFunction(Map map, SharedFunctionInfo shared, Context context) : JSFunctionOrBoundFunctionOrWrappedFunction(map)
+public sealed class JSFunction : JSFunctionOrBoundFunctionOrWrappedFunction
 {
     // Fast binding requires length and name accessors.
     public const int kMinDescriptorsForFastBindAndWrap = 2;
 
-    public SharedFunctionInfo Shared = shared;
-    public Context Context = context;
-    public FeedbackCell RawFeedbackCell = FeedbackCell.ManyClosuresCell;
+    public SharedFunctionInfo Shared;
+    public Context Context;
+    public FeedbackCell RawFeedbackCell;
+
+    public JSFunction(Map map, SharedFunctionInfo shared, Context context) : base(map)
+    {
+        Shared = shared;
+        Context = context;
+        RawFeedbackCell = FeedbackCell.ManyClosuresCell;
+    }
+
+    /// <summary>
+    /// FastNewClosure's allocation: <paramref name="map"/> is a function map
+    /// of the native context (fast properties, no in-object properties, fast
+    /// elements), so the object needs no more than its fields (V8's
+    /// JSFunction is a few words, all written once).
+    /// </summary>
+    internal JSFunction(Map map, SharedFunctionInfo shared, Context context, FeedbackCell feedbackCell)
+        : base(map, FixedArray.Empty)
+    {
+        Debug.Assert(!map.IsDictionaryMap && map.GetInObjectProperties() == 0 && map.HasFastElements);
+        Shared = shared;
+        Context = context;
+        RawFeedbackCell = feedbackCell;
+    }
 
     /// <summary>
     /// prototype_or_initial_map: a Map (initial map), a JSReceiver (instance
