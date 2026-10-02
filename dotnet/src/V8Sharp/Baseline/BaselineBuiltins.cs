@@ -20,7 +20,7 @@ using V8Sharp.Runtime;
 
 namespace V8Sharp.Baseline;
 
-public static class BaselineBuiltins
+public static partial class BaselineBuiltins
 {
     const MethodImplOptions Inline = MethodImplOptions.AggressiveInlining;
 
@@ -570,70 +570,6 @@ public static class BaselineBuiltins
         InterpreterArguments.NewRestParameter(isolate, st.Function, st.Fp, st.Argc);
 
     // ---- Calls ------------------------------------------------------------------------------------------------------
-
-    /// <summary>CallAnyReceiver / CallProperty: the receiver and arguments are the register list at <paramref name="first"/>.</summary>
-    public static JSValue CallProperty(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, int first, int count)
-    {
-        JSValue receiver = isolate.RegisterStack[first];
-        InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
-        return BaselineCalls.Call(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.NotNullOrUndefined);
-    }
-
-    public static JSValue CallAnyReceiver(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, int first, int count)
-    {
-        JSValue receiver = isolate.RegisterStack[first];
-        InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
-        return BaselineCalls.Call(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.Any);
-    }
-
-    public static JSValue CallProperty0(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, JSValue receiver)
-    {
-        InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
-        return BaselineCalls.Call(isolate, callee, receiver, 0, 0, ConvertReceiverMode.NotNullOrUndefined);
-    }
-
-    public static JSValue CallProperty1(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, JSValue receiver, int arg0)
-    {
-        InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
-        return BaselineCalls.Call(isolate, callee, receiver, arg0, 1, ConvertReceiverMode.NotNullOrUndefined);
-    }
-
-    public static JSValue CallProperty2(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, JSValue receiver, int arg0,
-        int arg1)
-    {
-        InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
-        if (arg1 == arg0 + 1) return BaselineCalls.Call(isolate, callee, receiver, arg0, 2, ConvertReceiverMode.NotNullOrUndefined);
-        JSValue[] stack = isolate.RegisterStack;
-        return InterpreterCalls.Call2(isolate, callee, receiver, stack[arg0], stack[arg1], arg0, false,
-            ConvertReceiverMode.NotNullOrUndefined);
-    }
-
-    public static JSValue CallUndefinedReceiver(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, int first, int count)
-    {
-        InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
-        return BaselineCalls.Call(isolate, callee, JSValue.Undefined, first, count, ConvertReceiverMode.NullOrUndefined);
-    }
-
-    public static JSValue CallUndefinedReceiver0(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee)
-    {
-        InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
-        return BaselineCalls.Call(isolate, callee, JSValue.Undefined, 0, 0, ConvertReceiverMode.NullOrUndefined);
-    }
-
-    public static JSValue CallUndefinedReceiver1(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, int arg0)
-    {
-        InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
-        return BaselineCalls.Call(isolate, callee, JSValue.Undefined, arg0, 1, ConvertReceiverMode.NullOrUndefined);
-    }
-
-    public static JSValue CallUndefinedReceiver2(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, int arg0, int arg1)
-    {
-        InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
-        if (arg1 == arg0 + 1) return BaselineCalls.Call(isolate, callee, JSValue.Undefined, arg0, 2, ConvertReceiverMode.NullOrUndefined);
-        JSValue[] stack = isolate.RegisterStack;
-        return InterpreterCalls.Call2(isolate, callee, JSValue.Undefined, stack[arg0], stack[arg1], arg0, false,
-            ConvertReceiverMode.NullOrUndefined);
-    }
 
     public static JSValue CallWithSpread(Isolate isolate, FeedbackVector? fv, int slot, JSValue callee, int first, int count)
     {

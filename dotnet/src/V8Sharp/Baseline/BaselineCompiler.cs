@@ -30,7 +30,7 @@ using V8Sharp.Interpreter;
 
 namespace V8Sharp.Baseline;
 
-public sealed class BaselineCompiler
+public sealed partial class BaselineCompiler
 {
     /// <summary>kAverageBytecodeToInstructionRatio (x64).</summary>
     public const int kAverageBytecodeToInstructionRatio = 7;
@@ -60,6 +60,8 @@ public sealed class BaselineCompiler
     LocalBuilder? _valueTemp;
 
     static readonly Dictionary<string, MethodInfo> s_builtins = LoadBuiltins();
+    static readonly Dictionary<string, MethodInfo> s_calls = typeof(BaselineCalls).GetMethods(BindingFlags.Public | BindingFlags.Static)
+        .ToDictionary(m => m.Name, StringComparer.Ordinal);
 
     public BaselineCompiler(Isolate isolate, SharedFunctionInfo sharedFunctionInfo, BytecodeArray bytecode)
     {
@@ -70,7 +72,7 @@ public sealed class BaselineCompiler
         name = "baseline:" + (name.Length == 0 ? "(anonymous)" : name);
         if (s_useDynamicMethod)
         {
-            _method = new DynamicMethod(name, typeof(JSValue), [typeof(Isolate), typeof(InterpreterState).MakeByRefType()],
+            _method = new DynamicMethod(name, typeof(JSValue), [typeof(BaselineCode), typeof(Isolate), typeof(InterpreterState).MakeByRefType()],
                 typeof(BaselineCompiler).Module, skipVisibility: true);
             _il = _method.GetILGenerator(Math.Max(64, bytecode.Length * 16));
         }
@@ -127,18 +129,23 @@ public sealed class BaselineCompiler
         _masm.Return();
     }
 
-    /// <summary>BaselineCompiler::Build: the finished method and its IL size.</summary>
-    public (BaselineCodeEntry Entry, int ILSize) Build()
+    /// <summary>
+    /// BaselineCompiler::Build: the finished method and its IL size. The entry
+    /// delegate is closed over the code object (the method's first parameter),
+    /// which makes invoking it a direct call (an open static delegate goes
+    /// through a shuffle thunk).
+    /// </summary>
+    public (BaselineCodeEntry Entry, int ILSize) Build(BaselineCode code)
     {
         BaselineCodeEntry entry;
         if (_method is not null)
         {
-            entry = (BaselineCodeEntry)_method.CreateDelegate(typeof(BaselineCodeEntry));
+            entry = (BaselineCodeEntry)_method.CreateDelegate(typeof(BaselineCodeEntry), code);
         }
         else
         {
             Type type = BaselineCodeSpace.CreateType(_type!);
-            entry = (BaselineCodeEntry)type.GetMethod(_methodBuilder!.Name)!.CreateDelegate(typeof(BaselineCodeEntry));
+            entry = (BaselineCodeEntry)type.GetMethod(_methodBuilder!.Name)!.CreateDelegate(typeof(BaselineCodeEntry), code);
         }
         return (entry, _il.ILOffset);
     }
@@ -197,31 +204,31 @@ public sealed class BaselineCompiler
     {
         ILGenerator il = _il;
         // fpRef = ref isolate.RegisterStack[st.Fp]; fp = st.Fp
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, s_registerStack);
         il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldfld, s_registerStack);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFp);
         il.Emit(OpCodes.Ldelema, typeof(JSValue));
         il.Emit(OpCodes.Stloc, _masm.FpRef);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFp);
         il.Emit(OpCodes.Stloc, _masm.Fp);
         // frame = ref isolate.InterpreterFrames[st.FrameIndex]
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Call, s_interpreterFrames);
         il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Call, s_interpreterFrames);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFrameIndex);
         il.Emit(OpCodes.Ldelema, typeof(InterpreterFrameRecord));
         il.Emit(OpCodes.Stloc, _masm.Frame);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFunction);
         il.Emit(OpCodes.Stloc, _masm.Function);
         // (The entry materialized the constant pool.)
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stBytecode);
         il.Emit(OpCodes.Ldfld, s_constantPoolValues);
         il.Emit(OpCodes.Stloc, _masm.Constants);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stBytecode);
         il.Emit(OpCodes.Callvirt, s_bytecodes);
         il.Emit(OpCodes.Stloc, _masm.Code);
@@ -230,16 +237,16 @@ public sealed class BaselineCompiler
         // accumulator, context and target offset come from the state.
         _reenter = il.DefineLabel();
         il.MarkLabel(_reenter);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stAccumulator);
         il.Emit(OpCodes.Stloc, _masm.Acc);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stContext);
         il.Emit(OpCodes.Stloc, _masm.Context);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFeedbackVector);
         il.Emit(OpCodes.Stloc, _masm.Fv);
-        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stPc);
         il.Emit(OpCodes.Stloc, _masm.Scratch);
 
@@ -285,6 +292,8 @@ public sealed class BaselineCompiler
     int EmbeddedFeedbackOffset(int i) => Cursor + _iterator.CurrentOperandOffset(i);
 
     void CallBuiltin(string name) => _masm.Call(s_builtins[name]);
+
+    void CallCalls(string name) => _masm.Call(s_calls[name]);
 
     JSValue[] ConstantPoolValues => _bytecode.ConstantPoolValues ?? InterpreterRuntime.MaterializeConstantPool(_isolate, _bytecode);
 
@@ -881,6 +890,20 @@ public sealed class BaselineCompiler
             case Bytecode.CallAnyReceiver:
             case Bytecode.CallProperty:
             case Bytecode.CallUndefinedReceiver:
+                Isolate();
+                Fv();
+                I(FeedbackSlot(3));
+                Reg(RegisterOperand(0));
+                RegIndex(RegisterOperand(1));
+                I(RegisterCount(2));
+                CallCalls(bytecode switch
+                {
+                    Bytecode.CallAnyReceiver => "CallAnyReceiver",
+                    Bytecode.CallProperty => "CallProperty",
+                    _ => "CallUndefinedReceiver",
+                });
+                SetAcc();
+                break;
             case Bytecode.CallWithSpread:
                 Isolate();
                 Fv();
@@ -888,13 +911,7 @@ public sealed class BaselineCompiler
                 Reg(RegisterOperand(0));
                 RegIndex(RegisterOperand(1));
                 I(RegisterCount(2));
-                CallBuiltin(bytecode switch
-                {
-                    Bytecode.CallAnyReceiver => "CallAnyReceiver",
-                    Bytecode.CallProperty => "CallProperty",
-                    Bytecode.CallUndefinedReceiver => "CallUndefinedReceiver",
-                    _ => "CallWithSpread",
-                });
+                CallBuiltin("CallWithSpread");
                 SetAcc();
                 break;
             case Bytecode.CallProperty0:
@@ -903,7 +920,7 @@ public sealed class BaselineCompiler
                 I(FeedbackSlot(2));
                 Reg(RegisterOperand(0));
                 Reg(RegisterOperand(1));
-                CallBuiltin("CallProperty0");
+                CallCalls("CallProperty0");
                 SetAcc();
                 break;
             case Bytecode.CallProperty1:
@@ -912,8 +929,8 @@ public sealed class BaselineCompiler
                 I(FeedbackSlot(3));
                 Reg(RegisterOperand(0));
                 Reg(RegisterOperand(1));
-                RegIndex(RegisterOperand(2));
-                CallBuiltin("CallProperty1");
+                Reg(RegisterOperand(2));
+                CallCalls("CallProperty1");
                 SetAcc();
                 break;
             case Bytecode.CallProperty2:
@@ -922,9 +939,9 @@ public sealed class BaselineCompiler
                 I(FeedbackSlot(4));
                 Reg(RegisterOperand(0));
                 Reg(RegisterOperand(1));
-                RegIndex(RegisterOperand(2));
-                RegIndex(RegisterOperand(3));
-                CallBuiltin("CallProperty2");
+                Reg(RegisterOperand(2));
+                Reg(RegisterOperand(3));
+                CallCalls("CallProperty2");
                 SetAcc();
                 break;
             case Bytecode.CallUndefinedReceiver0:
@@ -932,7 +949,7 @@ public sealed class BaselineCompiler
                 Fv();
                 I(FeedbackSlot(1));
                 Reg(RegisterOperand(0));
-                CallBuiltin("CallUndefinedReceiver0");
+                CallCalls("CallUndefinedReceiver0");
                 SetAcc();
                 break;
             case Bytecode.CallUndefinedReceiver1:
@@ -940,8 +957,8 @@ public sealed class BaselineCompiler
                 Fv();
                 I(FeedbackSlot(2));
                 Reg(RegisterOperand(0));
-                RegIndex(RegisterOperand(1));
-                CallBuiltin("CallUndefinedReceiver1");
+                Reg(RegisterOperand(1));
+                CallCalls("CallUndefinedReceiver1");
                 SetAcc();
                 break;
             case Bytecode.CallUndefinedReceiver2:
@@ -949,9 +966,9 @@ public sealed class BaselineCompiler
                 Fv();
                 I(FeedbackSlot(3));
                 Reg(RegisterOperand(0));
-                RegIndex(RegisterOperand(1));
-                RegIndex(RegisterOperand(2));
-                CallBuiltin("CallUndefinedReceiver2");
+                Reg(RegisterOperand(1));
+                Reg(RegisterOperand(2));
+                CallCalls("CallUndefinedReceiver2");
                 SetAcc();
                 break;
             case Bytecode.CallRuntime:

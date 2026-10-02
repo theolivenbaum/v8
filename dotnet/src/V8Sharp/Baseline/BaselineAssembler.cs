@@ -34,6 +34,7 @@ internal sealed class BaselineAssembler
     public readonly LocalBuilder Acc;         // JSValue
     public readonly LocalBuilder Context;     // Context
     public readonly LocalBuilder Fv;          // FeedbackVector
+    public readonly LocalBuilder FeedbackSlots; // JSValue[]: Fv.Slots
     public readonly LocalBuilder Constants;   // JSValue[]
     public readonly LocalBuilder Code;        // byte[] (the bytecodes, for embedded feedback)
     public readonly LocalBuilder Function;    // JSFunction
@@ -48,6 +49,7 @@ internal sealed class BaselineAssembler
         Acc = il.DeclareLocal(typeof(JSValue));
         Context = il.DeclareLocal(typeof(Context));
         Fv = il.DeclareLocal(typeof(FeedbackVector));
+        FeedbackSlots = il.DeclareLocal(typeof(JSValue[]));
         Constants = il.DeclareLocal(typeof(JSValue[]));
         Code = il.DeclareLocal(typeof(byte[]));
         Function = il.DeclareLocal(typeof(JSFunction));
@@ -59,8 +61,10 @@ internal sealed class BaselineAssembler
 
     // ---- Arguments --------------------------------------------------------------------------------
 
-    public void LoadIsolate() => _il.Emit(OpCodes.Ldarg_0);
-    public void LoadState() => _il.Emit(OpCodes.Ldarg_1);
+    // Argument 0 is the BaselineCode the entry delegate is closed over.
+    public void LoadCodeObject() => _il.Emit(OpCodes.Ldarg_0);
+    public void LoadIsolate() => _il.Emit(OpCodes.Ldarg_1);
+    public void LoadState() => _il.Emit(OpCodes.Ldarg_2);
 
     // ---- Locals ------------------------------------------------------------------------------------
 
@@ -149,6 +153,14 @@ internal sealed class BaselineAssembler
         _il.Emit(OpCodes.Ldloc, Code);
         _il.Emit(OpCodes.Ldc_I4, byteOffset);
         _il.Emit(OpCodes.Ldelema, typeof(byte));
+    }
+
+    /// <summary>Pushes the embedded feedback byte at <paramref name="byteOffset"/> of the bytecode array (as an int).</summary>
+    public void LoadEmbeddedFeedback(int byteOffset)
+    {
+        _il.Emit(OpCodes.Ldloc, Code);
+        _il.Emit(OpCodes.Ldc_I4, byteOffset);
+        _il.Emit(OpCodes.Ldelem_U1);
     }
 
     // ---- The bytecode offset --------------------------------------------------------------------------

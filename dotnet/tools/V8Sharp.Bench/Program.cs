@@ -54,7 +54,8 @@ public static partial class Program
     {
         [""] = "",                                      // as configured by default: Ignition + baseline IL
         ["jitless"] = "--jitless",                      // the interpreter only
-        ["sparkplug"] = "",                             // Ignition + baseline IL (the default)
+        ["sparkplug"] = "--sparkplug",                  // Ignition + baseline IL (tiering with V8's budgets)
+        ["no-sparkplug"] = "--no-sparkplug",            // the interpreter only, with compiled regexps
         ["always-sparkplug"] = "--always-sparkplug",    // baseline IL from the first call
     };
 
