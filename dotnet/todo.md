@@ -516,6 +516,119 @@ interpreter can probably reach 55-60% with a leaner frame protocol
 (register window without barriers, e.g. a struct-of-arrays with object
 and number halves); beyond that the IL tiers are the lever.
 
+Octane, interpreter only, after the fourth interpreter performance pass
+(2026-10-02; all 15 benchmarks, 17 scores; 4-core container shared by three
+agents, every run under the benchmark lock; mean of 3 interleaved runs of
+V8Sharp.Bench `octane:<name>`). "bin" is a `dotnet build` of this pass;
+"publish" is the parity configuration (tools/V8Sharp.Bench/README.md: a
+ReadyToRun composite, self-contained publish, TieredPGO off, call counting
+without delay). Wall scores are noisy, 5-25% per benchmark (Splay most), and
+V8 --jitless in ClearScript sometimes crashes (the mean is over the runs
+that finished):
+
+| benchmark | bin | publish | V8 --jitless | publish / jitless |
+|---|---|---|---|---|
+| Richards | 703 | 654 | 1344 | 49% |
+| DeltaBlue | 494 | 540 | 1446 | 37% |
+| Crypto | 561 | 570 | 1307 | 44% |
+| RayTrace | 1249 | 1187 | 3456 | 34% |
+| EarleyBoyer | 2377 | 2128 | 6021 | 35% |
+| RegExp | 1233 | 1189 | 2406 | 49% |
+| Splay | 2656 | 2536 | 2974 | 85% |
+| SplayLatency | 2386 | 2430 | 3138 | 77% |
+| NavierStokes | 1289 | 1636 | 1427 | 115% |
+| PdfJS | 1457 | 2326 | 7944 | 29% |
+| Mandreel | 445 | 408 | 1041 | 39% |
+| MandreelLatency | 1474 | 2179 | 6257 | 35% |
+| Gameboy | 2452 | 2523 | 7479 | 34% |
+| CodeLoad | 2300 | 5869 | 16289 | 36% |
+| Box2D | 1842 | 2058 | 3765 | 55% |
+| zlib | 723 | 652 | 2160 | 30% |
+| Typescript | 5853 | 5751 | 15588 | 37% |
+| geomean | 1382 | 1534 | 3445 | 44.5% (bin 40.1%) |
+
+By thread CPU time (`octane-cpu`, V8SHARP_BENCH_SCALE=10, one interleaved
+run; the latency scores are not meaningful in this mode and are left out),
+as a share of V8 --jitless, for be13ca51 (before this pass), this pass from
+bin, and the publish:
+
+| benchmark | before | bin | publish |
+|---|---|---|---|
+| Richards | 50% | 52% | 47% |
+| DeltaBlue | 43% | 41% | 40% |
+| Crypto | 42% | 45% | 45% |
+| RayTrace | 47% | 49% | 41% |
+| EarleyBoyer | 40% | 41% | 38% |
+| RegExp | 37% | 36% | 42% |
+| Splay | 40% | 47% | 44% |
+| NavierStokes | 84% | 79% | 97% |
+| PdfJS | 11% | 19% | 26% |
+| Mandreel | 21% | 42% | 41% |
+| Gameboy | 19% | 29% | 33% |
+| CodeLoad | 10% | 11% | 24% |
+| Box2D | 44% | 44% | 47% |
+| zlib | 20% | 33% | 32% |
+| Typescript | crashed | 27% | 33% |
+| geomean | 31.3% (14) | 36.5% | 39.7% |
+
+On the 14 benchmarks that ran before, the pass is +19% (bin) and +28%
+(publish) of thread CPU. The pass, one commit each (git log be13ca51..):
+the current bytecode as a `ref byte` and the accumulator's payload as a
+long, so it stays in callee-saved general registers (System V has no
+callee-saved XMM; +3.2% CPU on the eight classic benchmarks); element
+store handlers with a prototype validity cell on the inline path (an
+array element store took the slow handler, 11% of NavierStokes);
+polymorphic feedback on the inline GetNamedProperty path; ToBoolean by
+instance type; Smi and index tests by an int round trip;
+DescriptorArray::Append's collision check (Octane TypeScript threw
+"duplicate descriptor"); typed array element store handlers
+(StoreElementHandler returned the slow stub and
+MayHaveTypedArrayInPrototypeChain started at the receiver, so every typed
+array store missed: PdfJS 588 to 380 ms per run) and per-kind typed
+element access; the scanner copying a large source once instead of per
+lazy compile; bitwise bytecodes on Numbers that are not int32 (asm.js
+`x | 0`); the typed array length getter without a builtin frame (Gameboy);
+the publish configuration. Tooling: `octane-steady` (a warm-up pass before
+the measured one) and `micro/cpu.js` (CPU-time micro-benchmarks).
+
+Tried and dropped, measured: the Star lookahead of V8's dispatch
+(IsStarLookahead: -2.6%); bytecode quickening with feedback embedded in
+the bytecode (0%; with duplicated handlers the loop passes RyuJIT's
+local limit and slows down); threaded dispatch through function pointers
+(a prototype with tail calls runs at the switch's speed; it needs unsafe);
+a different BytecodeArray layout (-5%); the loop without
+AggressiveOptimization (-5.3%); caching the inline-call entry on the
+SharedFunctionInfo (-0.7%); the segments GC (`System.GC.Name=libclrgc.so`:
+write barriers half the cost, +10% on Richards/DeltaBlue/EarleyBoyer, -11%
+Splay, +2.6% geomean, a non-default GC); `System.GC.LOHThreshold` 2 MB
+(PdfJS gen-2 GCs 15 to 3 per process and -7.5% per run steady, mixed on
+the rest); ReadyToRun without composite and with TieredPGO (mixed: CodeLoad
+1.8x, PdfJS and Mandreel -10%).
+
+What blocks parity (44.5% of jitless by Octane's own score), measured:
+- The dispatch loop costs about 2x V8's bytecode handlers per bytecode.
+  `micro/cpu.js` (best of 5, CPU): V8 --jitless is 2.25x on the geomean of
+  18 constructs: empty loop 2.2x, int arithmetic 2.9x, property load 1.7x,
+  property store 2.1x, prototype method call 2.9x, call 2.1x, array read
+  2.3x, typed array read 2.7x, `new` 3.4x, object literal 3.0x, closure
+  2.9x. The loop sits at RyuJIT's local-tracking limit (512): handlers
+  spill to the stack, and code placement alone moves the micros by 20-40%
+  (adding a never-executed block before the loop changed CpuArrayRead
+  from 19 to 31 and CpuPropLoad from 27 to 39 with identical handler
+  code). zlib and Mandreel are dispatch-bound (63% of zlib is the loop).
+- Calls: about 250 instructions for a call and return (frame record,
+  register window, argument copies), 20% of Richards and DeltaBlue.
+- Allocation and GC: write barriers are 10-12% of Richards, DeltaBlue and
+  EarleyBoyer; a new object is two allocations (JSObject and its field
+  array) against V8's one bump allocation.
+- Parsing and compiling: CodeLoad and TypeScript; the parser's
+  ParserBase<...> is instantiated over reference types, so it runs as
+  shared generic code (runtime dictionary lookups).
+- The .NET JIT: 12000-15000 engine methods compiled per large benchmark;
+  the publish configuration removes most of it, the handlers only the
+  AggressiveOptimization loop calls are still compiled at tier 0 first.
+Beyond the interpreter, the IL tiers remain the lever.
+
 Performance with the baseline tier (Octane, 2026-09-28, 4-core container
 shared with other jobs, mean of 2 runs; V8Sharp.Bench):
 
