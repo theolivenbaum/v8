@@ -235,8 +235,8 @@ for now, to be revisited when the reason goes away.
   instead of machine code (architecture.md section 9.1). The assembly is not
   collectible (RyuJIT does not tier collectible code), so baseline code is
   never freed, where V8 collects Code objects; no bytecode offset table: the current
-  bytecode offset is stored in the frame record before each bytecode that can
-  throw or call (`BaselineAssembler.StoreBytecodeOffset`), so the frame walker
+  bytecode offset is stored in the frame's bytecode offset slot (fp - 2)
+  before each bytecode that can throw or call (`BaselineAssembler.StoreBytecodeOffset`), so the frame walker
   and handler lookup work as for interpreted frames.
 - Exception handlers and OSR entries: the code is entered at a bytecode offset
   through a dispatch at the method start (handlers, loop headers, 0), not at a
@@ -424,22 +424,29 @@ for now, to be revisited when the reason goes away.
   case 3) runs only once the isolate has installed baseline code
   (`Isolate.MayHaveBaselineCode`); V8 compiles the check into every JumpLoop
   of a non-jitless build and out of a jitless one.
-- The bytecode offset is stored in the frame record only by the handlers
-  that call out (`SavePc`, V8's SaveBytecodeOffset), not before every
-  bytecode.
+- The bytecode offset is stored in the frame's bytecode offset slot only by
+  the handlers that call out (`SavePc`, V8's SaveBytecodeOffset), not before
+  every bytecode. The offset (fp - 2) and the argument count (fp - 4) are
+  raw ints in their slots (no object half, the int in the payload), where
+  V8 stores Smis: a JSValue number would cost an int-to-double conversion
+  per store and read.
 - Frames: the register file, receiver, arguments and fixed slots live on the
   isolate's `RegisterStack` (a `JSValue[]`) in V8's layout, not on the machine
-  stack; each frame also has an `InterpreterFrameRecord` the stack walker
-  reads. The argument count slot (fp - 4) is not written by inline calls
-  (nothing reads it). The register stack is sized to `--stack-size` and it
-  and the frame records are allocated on the pinned object heap: on the
-  large object heap every gen-0 collection took time proportional to their
-  size. A popped inline frame's record keeps its Function and Bytecode (every
-  push sets both), so a call of the same function at the same depth skips
-  those reference stores; they stay reachable until the record is reused or
-  an explicit collection (`gc()`, `Isolate.CollectGarbage`) clears the
-  records above the live frames. Popping an inline frame writes nothing to
-  its record (every push sets all fields).
+  stack; each frame also has a small `InterpreterFrameRecord` (frame
+  pointer, a flags byte, the inline call's return offset and register
+  start; V8 chains frames through the caller fp and return address slots,
+  fp - 8 and fp - 7, which V8Sharp leaves unused) that the stack walker
+  indexes. The function, context, bytecode array, offset, argument count
+  and feedback vector are held once, in the fixed slots, as in V8. The
+  register stack is sized to `--stack-size` and it and the frame records
+  are allocated on the pinned object heap: on the large object heap every
+  gen-0 collection took time proportional to their size. A popped inline
+  frame's slots stay above the stack top (see the next item), so a call of
+  the same function at the same position skips the reference stores of its
+  fixed slots; they stay reachable until reused or an explicit collection
+  (`gc()`, `Isolate.CollectGarbage`) clears the stack above its top.
+  Popping an inline frame writes nothing to its record (every push sets
+  the fields it reads).
 - The register stack above its top is undefined except below
   `Isolate.RegisterStackDirtyEnd`: a returning inline frame leaves its
   parameters, fixed slots and registers there, and the next inline call at
