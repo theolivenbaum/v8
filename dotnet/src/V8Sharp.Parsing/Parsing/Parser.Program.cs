@@ -717,6 +717,18 @@ public sealed partial class Parser
     // Sets the literal on |info| if parsing succeeded.
     public void ParseProgram(IParsingScript script, ParseInfo info, IScopeInfo maybe_outer_scope_info)
     {
+        try
+        {
+            ParseProgramInternal(script, info, maybe_outer_scope_info);
+        }
+        finally
+        {
+            scanner_.ReleaseLiteralBuffers();
+        }
+    }
+
+    private void ParseProgramInternal(IParsingScript script, ParseInfo info, IScopeInfo maybe_outer_scope_info)
+    {
         // Initialize parser state.
         DeserializeScopeChain(info, maybe_outer_scope_info, Scope.DeserializationMode.kIncludingVariables, script);
 
@@ -993,6 +1005,18 @@ public sealed partial class Parser
 
     // Sets the literal on |info| if parsing succeeded.
     public void ParseFunction(ParseInfo info, IParsingSharedFunctionInfo shared_info)
+    {
+        try
+        {
+            ParseFunctionInternal(info, shared_info);
+        }
+        finally
+        {
+            scanner_.ReleaseLiteralBuffers();
+        }
+    }
+
+    private void ParseFunctionInternal(ParseInfo info, IParsingSharedFunctionInfo shared_info)
     {
         IScopeInfo maybe_outer_scope_info = null;
         if (shared_info.HasOuterScopeInfo())
