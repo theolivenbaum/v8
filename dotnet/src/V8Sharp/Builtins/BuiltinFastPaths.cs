@@ -9,7 +9,9 @@
 //   string.tq        StringFromCharCode with one Number argument (the single
 //                    character string cache).
 //   string-indexof.tq   StringPrototypeIndexOf with a String receiver and a
-//                    String search string, no position.
+//                    String search string, and a Number position or none.
+//   string-substring.tq, string-slice.tq, string-substr.tq  with a String
+//                    receiver and Number positions.
 //   number.tq        NumberPrototypeToString without a radix: NumberToString
 //                    (the number-string cache).
 //   typed_array.tq   TypedArrayPrototypeLength (the length getter) of an
@@ -143,7 +145,12 @@ public static class BuiltinFastPaths
                     return true;
             }
         }
-        else if (id == Builtin.StringPrototypeIndexOf && arg0._obj is JSString search && receiver.StringOrNull is JSString subject)
+        if (receiver._obj is { IsString: true } && arg0._obj == NumberTag.Instance &&
+            TryCallString2(isolate, id, Unsafe.As<JSString>(receiver._obj), arg0, JSValue.Undefined, out result))
+        {
+            return true;
+        }
+        if (id == Builtin.StringPrototypeIndexOf && arg0._obj is JSString search && receiver.StringOrNull is JSString subject)
         {
             // StringPrototypeIndexOf (string-indexof.tq) with a String receiver
             // and search string and no position: StringIndexOf from 0.
@@ -151,6 +158,66 @@ public static class BuiltinFastPaths
             return true;
         }
         if (id == Builtin.ArrayPrototypePush) return BuiltinsArray.TryFastPush(isolate, function, receiver, arg0, out result);
+        result = default;
+        return false;
+    }
+
+    /// <summary>
+    /// The fast paths of builtins called with two arguments and a receiver:
+    /// those of <see cref="TryCall2(JSValue, JSValue, JSValue, out JSValue)"/>,
+    /// then the String.prototype methods taking positions.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryCall2(Isolate isolate, JSValue callee, JSValue receiver, JSValue arg0, JSValue arg1, out JSValue result)
+    {
+        if (TryCall2(callee, arg0, arg1, out result)) return true;
+        if (receiver._obj is { IsString: true } && callee._obj is JSFunction function && function.Shared.BuiltinId != Builtin.NoBuiltinId)
+        {
+            return TryCallString2(isolate, function.Shared.BuiltinId, Unsafe.As<JSString>(receiver._obj), arg0, arg1, out result);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// String.prototype.substring/slice/substr (string-substring.tq,
+    /// string-slice.tq, string-substr.tq) with Number positions (or an
+    /// undefined end), and indexOf with a String search string and a Number
+    /// position: the clamping of these cannot call JavaScript or throw.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool TryCallString2(Isolate isolate, Builtin id, JSString s, JSValue arg0, JSValue arg1, out JSValue result)
+    {
+        bool numbers = arg0._obj == NumberTag.Instance && (arg1._obj == NumberTag.Instance || arg1.IsUndefined);
+        int length = s.Length;
+        switch (id)
+        {
+            case Builtin.StringPrototypeSubstring when numbers:
+            {
+                int start = BuiltinsString.ClampToIndexRange(isolate, arg0, length);
+                int end = arg1.IsUndefined ? length : BuiltinsString.ClampToIndexRange(isolate, arg1, length);
+                if (end < start) (start, end) = (end, start);
+                result = BuiltinsString.SubString(isolate, s, start, end);
+                return true;
+            }
+            case Builtin.StringPrototypeSlice when numbers:
+            {
+                int start = BuiltinsString.ConvertAndClampRelativeIndex(isolate, arg0, length);
+                int end = arg1.IsUndefined ? length : BuiltinsString.ConvertAndClampRelativeIndex(isolate, arg1, length);
+                result = end <= start ? ReadOnlyRoots.empty_string : BuiltinsString.SubString(isolate, s, start, end);
+                return true;
+            }
+            case Builtin.StringPrototypeSubstr when numbers:
+            {
+                int start = BuiltinsString.ConvertAndClampRelativeIndex(isolate, arg0, length);
+                int lengthLimit = length - start;
+                int resultLength = arg1.IsUndefined ? lengthLimit : BuiltinsString.ClampToIndexRange(isolate, arg1, lengthLimit);
+                result = resultLength == 0 ? ReadOnlyRoots.empty_string : BuiltinsString.SubString(isolate, s, start, start + resultLength);
+                return true;
+            }
+            case Builtin.StringPrototypeIndexOf when arg0._obj is JSString search && arg1._obj == NumberTag.Instance:
+                result = JSValue.FromInt(BuiltinsString.StringIndexOf(s, search, BuiltinsString.ClampToIndexRange(isolate, arg1, length)));
+                return true;
+        }
         result = default;
         return false;
     }

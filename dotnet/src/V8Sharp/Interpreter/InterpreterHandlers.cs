@@ -831,7 +831,7 @@ public static partial class InterpreterExecution
             }
         }
         // Math.max(a, b), Math.pow(a, b) ...: the builtins' CSA fast paths.
-        if (BuiltinFastPaths.TryCall2(callee, Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1),
+        if (BuiltinFastPaths.TryCall2(isolate, callee, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1),
                 out JSValue fastResult))
         {
             st.Accumulator = fastResult;
