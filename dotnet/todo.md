@@ -532,6 +532,74 @@ Crypto, RegExp). RayTrace, Splay and EarleyBoyer are dominated by allocation
 and GC (object = JSObject + JSValue[] fields) and by runtime paths
 (instanceof's @@hasInstance lookup), which the tier does not change.
 
+Performance with the baseline tier after the baseline performance pass
+(2026-10-02; the interpreter had meanwhile had three performance passes, so
+the 2026-09-28 ratios above no longer hold). Changes: the interpreter's fast
+paths emitted as IL and chosen from the feedback, registers in IL locals,
+lean baseline-to-baseline calls (also through call/apply), compact code for
+huge functions, concurrent compilation fully optimized by RyuJIT off the main
+thread. 4-core container shared with other agents' test runs (load 8-15).
+
+Thread CPU of the benchmark thread (`octane-cpu`, V8SHARP_BENCH_SCALE=50,
+fixed work, median of 3 interleaved runs; background compilation is not
+counted here, the `.process` column of the raw results counts it):
+
+| benchmark | interpreter | sparkplug (tiering) | always-sparkplug | sparkplug / interpreter |
+|---|---|---|---|---|
+| Richards | 563 | 812 | 732 | 1.44 |
+| DeltaBlue | 487 | 618 | 548 | 1.27 |
+| Crypto | 74.8 | 97.5 | 101 | 1.30 |
+| RayTrace | 263 | 351 | 299 | 1.33 |
+| EarleyBoyer | 118 | 155 | 140 | 1.32 |
+| RegExp | 263 | 257 | 257 | 0.98 |
+| Splay | 1196 | 1101 | 1155 | 0.92 |
+| NavierStokes | 296 | 532 | 440 | 1.80 |
+| PdfJS | 228 | 195 | 162 | 0.85 |
+| Mandreel | 27.7 | 29.2 | 26.7 | 1.05 |
+| Gameboy | 152 | 131 | 106 | 0.86 |
+| CodeLoad | 560 | 499 | 195 | 0.89 |
+| Box2D | 421 | 353 | 232 | 0.84 |
+| zlib | 11.4 | 11.9 | 11.8 | 1.05 |
+| geomean | 265 | 272 | 236 | 1.03 |
+
+Octane's own wall-clock scores (V8Sharp.Bench `octane`, median of 2
+interleaved runs; V8 is the oracle, V8 14.7 through ClearScript; Typescript
+fails in V8Sharp with "duplicate descriptor" in every mode):
+
+| benchmark | interpreter | sparkplug (tiering) | always-sparkplug | V8 --jitless | V8 sparkplug |
+|---|---|---|---|---|---|
+| Richards | 638 | 918 | 1108 | 1370 | 1887 |
+| DeltaBlue | 702 | 1004 | 885 | 1527 | 2008 |
+| Crypto | 610 | 723 | 870 | 1364 | 1936 |
+| RayTrace | 1462 | 1738 | 1614 | 3597 | 4487 |
+| EarleyBoyer | 2592 | 3357 | 3132 | 5866 | 7788 |
+| RegExp | 1442 | 1606 | 1516 | 1988 | 4278 |
+| Splay | 2849 | 1750 | 2267 | 1768 | 1860 |
+| NavierStokes | 1238 | 2242 | 1834 | 1598 | 1795 |
+| PdfJS | 858 | 552 | 740 | 7382 | 8944 |
+| Mandreel | 226 | 206 | 215 | 1150 | 1454 |
+| Gameboy | 1288 | 954 | 1138 | 8026 | 9052 |
+| CodeLoad | 2438 | 1880 | 532 | 17599 | 15647 |
+| Box2D | 1860 | 1694 | 1118 | 3792 | 4635 |
+| zlib | 521 | 546 | 544 | 2269 | 65746 |
+
+The tier is 1.3-1.8x the interpreter on the long-running benchmarks
+(Richards, DeltaBlue, Crypto, RayTrace, EarleyBoyer, NavierStokes) and
+slower on the short ones (PdfJS, Gameboy, CodeLoad, Box2D): their Octane
+runs last about two seconds, and compiling the 170-290 functions they make
+hot costs 2.5-3 s of RyuJIT time on the background thread. On an idle
+machine PdfJS's first round already beats the interpreter (1311 vs 956,
+d8sharp); with the cores busy the compile thread competes with the main
+thread and with RyuJIT's own tier-1 thread. The Splay wall-clock figure is
+one outlier run (721; the other was 2779). Hence Sparkplug stays off by
+default (deviations.md).
+
+The interpreter micro-benchmarks (`micro:all`, calls per second, 2 runs):
+the tier is 1.77x the interpreter (geomean 463 vs 262; 3-3.7x on the
+arithmetic and empty loops, 2.2-2.6x on property loads and stores and array
+indexing, 1.15-1.8x on calls, 1.0-1.15x on ArrayPush and ArrayIndexOf,
+which are builtin-bound).
+
 - [x] Temporal (`--harmony-temporal`, shipped and on by default in this
       revision). The binding layer is ported from
       `src/objects/js-temporal-objects.{h,cc,tq}` and
@@ -605,15 +673,20 @@ merged but off by default until then; the optimizing tier has not started.
       exception handlers and loop headers (OSR from Ignition at JumpLoop);
       batch compilation, --sparkplug (V8's default on; off in V8Sharp for now), --always-sparkplug,
       --sparkplug-filter, %CompileBaseline, %ActiveTierIsSparkplug,
-      %BaselineOsr, %GetOptimizationStatus baseline bits; Smi fast paths for
-      arithmetic, a baseline-to-baseline call path (BaselineCalls). Tests:
-      tests/V8Sharp.Tests/Baseline (interpreter vs --always-sparkplug).
+      %BaselineOsr, %GetOptimizationStatus baseline bits; the interpreter's
+      fast paths emitted as IL (number arithmetic and comparisons fused with
+      the conditional jumps, monomorphic named/keyed loads and stores, global
+      loads, context slots), chosen per bytecode from the feedback at compile
+      time; registers in IL locals; lean baseline-to-baseline calls
+      (BaselineCalls, also through Function.prototype.call/apply); compact
+      code for functions beyond RyuJIT's optimization limits; concurrent
+      compilation on a background thread (--concurrent-sparkplug, on as in
+      V8). Tests: tests/V8Sharp.Tests/Baseline (interpreter vs
+      --always-sparkplug, and the same feedback in both tiers).
       Open: see "Baseline: open items" below.
       Temporarily OFF by default (--sparkplug=false): enable with --sparkplug
-      or --always-sparkplug. With it on (tiering, V8's defaults) mjsunit had 3
-      new failures against mjsunit.v8sharp.txt (harmony/global, which fails
-      interpreted too, and weakrefs/cleanup-from-different-realm,
-      cleanup-proxy-from-different-realm, not investigated).
+      or --always-sparkplug. Off because of the compile cost on short runs
+      (deviations.md); see the Octane table above.
 - Baseline: open items
   - Bytecode flushing and baseline code flushing (mjsunit/baseline/flush-*)
     are not implemented (no bytecode aging).
@@ -621,9 +694,18 @@ merged but off by default until then; the optimizing tier has not started.
     sources do not share baseline code (mjsunit/baseline/cross-realm).
   - d8.test.verifySourcePositions (verify-bytecode-offsets) is not in the
     test host.
-  - Concurrent Sparkplug (background compile) is not ported.
+  - Compile cost: RyuJIT takes about 3-6 us per IL byte (about 10 us per
+    bytecode byte, 23 IL bytes per bytecode byte with the inline fast
+    paths); PdfJS and Box2D spend 2.5-3 s of background CPU compiling 170-290
+    functions, which on a loaded machine slows their short Octane runs below
+    the interpreter. Compact code (no inline paths) halves the IL but saves
+    only 40% of the RyuJIT time and loses the speed-up; RyuJIT's tier 0 for
+    the first version is slower than the interpreter. Waiting for more
+    ticks before compiling (an experiment: 128 and 1000 invocations' worth)
+    hardly reduced what is compiled in those benchmarks.
   - Performance: calls still pay the interpreter frame's setup (register
-    file clear, frame record, write barriers); a leaner frame protocol
+    file clear, frame record, write barriers: about 20% of DeltaBlue in
+    BaselineCalls.Enter and the write barrier); a leaner frame protocol
     shared with the interpreter would help both tiers.
 - [ ] Optimizing compiler: SSA graph from bytecode + feedback, speculative
       representations, inlining, deoptimizer (Maglev analogue)

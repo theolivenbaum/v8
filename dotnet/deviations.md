@@ -202,8 +202,13 @@ for now, to be revisited when the reason goes away.
 
 - Temporary: `--sparkplug` is off by default (V8's x64 default is on), so
   V8Sharp runs the interpreter only unless `--sparkplug` or
-  `--always-sparkplug` is passed, while interpreter correctness and
-  performance come first. Turn it back on in FlagList.Generated.cs.
+  `--always-sparkplug` is passed. Baseline code is faster than the
+  interpreter once compiled (1.2-1.8x on the long-running Octane
+  benchmarks), but compiling costs far more than V8's Sparkplug: RyuJIT
+  takes about 3-6 us per byte of IL, about 10 us per byte of bytecode
+  (2.5-3 s of background CPU for PdfJS or Box2D), so short programs on a
+  machine without idle cores run slower than in the interpreter. Turn it
+  back on in FlagList.Generated.cs when the compile cost is down.
 - Code generation: IL in a static method of a dynamic assembly per function
   instead of machine code (architecture.md section 9.1). The assembly is not
   collectible (RyuJIT does not tier collectible code), so baseline code is
