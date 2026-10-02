@@ -123,11 +123,15 @@ public sealed class BaselineCode
     internal void GenerateConcurrently(string methodName, FeedbackVector? vector) => Generate(methodName, prepare: true, vector);
 
     /// <summary>V8SHARP_BASELINE_TIERED=1: concurrently compiled code starts at RyuJIT's tier 0 too (for comparison).</summary>
+    static string Ms(long from, long to) =>
+        System.Diagnostics.Stopwatch.GetElapsedTime(from, to).TotalMilliseconds.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+
     static readonly bool s_tieredConcurrentCode = Environment.GetEnvironmentVariable("V8SHARP_BASELINE_TIERED") == "1";
 
     BaselineCodeEntry Generate(string methodName, bool prepare, FeedbackVector? vector)
     {
         bool optimizeFully = prepare && !s_tieredConcurrentCode;
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         var compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, methodName: methodName, optimizeFully: optimizeFully,
             feedback: vector);
         compiler.GenerateCode();
@@ -139,12 +143,16 @@ public sealed class BaselineCode
                 optimizeFully: optimizeFully, feedback: vector);
             compiler.GenerateCode();
         }
+        long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+        (BaselineCodeEntry entry, int ilSize) = compiler.Build(this);
+        long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (prepare && compiler.CompiledMethod is { } method) RuntimeHelpers.PrepareMethod(method.MethodHandle);
         if (_isolate.Flags.trace_baseline)
         {
-            Console.WriteLine("[baseline code for " + methodName + ": bytecode=" + Bytecode.Length + " " + compiler.Statistics + "]");
+            long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+            Console.WriteLine("[baseline code for " + methodName + ": bytecode=" + Bytecode.Length + " " + compiler.Statistics +
+                              " emit=" + Ms(t0, t1) + " build=" + Ms(t1, t2) + " jit=" + Ms(t2, t3) + "]");
         }
-        (BaselineCodeEntry entry, int ilSize) = compiler.Build(this);
-        if (prepare && compiler.CompiledMethod is { } method) RuntimeHelpers.PrepareMethod(method.MethodHandle);
         _ilSize = ilSize;
         return _entry = entry;
     }
