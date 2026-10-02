@@ -56,6 +56,8 @@ public static partial class Program
         ["jitless"] = "--jitless",                      // the interpreter only
         ["sparkplug"] = "--sparkplug",                  // Ignition + baseline IL (tiering with V8's budgets)
         ["no-sparkplug"] = "--no-sparkplug",            // the interpreter only, with compiled regexps
+        ["sync-sparkplug"] = "--sparkplug --no-concurrent-sparkplug",      // baseline compiled on the main thread
+        ["concurrent-sparkplug"] = "--sparkplug --concurrent-sparkplug",   // baseline compiled on a background thread
         ["always-sparkplug"] = "--always-sparkplug",    // baseline IL from the first call
     };
 

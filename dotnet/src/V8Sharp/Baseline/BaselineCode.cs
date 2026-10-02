@@ -103,20 +103,39 @@ public sealed class BaselineCode
     {
         // The code reads the materialized constant pool.
         if (Bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(_isolate, Bytecode);
-        var compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode);
+        return Generate(BaselineCompiler.MethodName(SharedFunctionInfo), prepare: false);
+    }
+
+    /// <summary>
+    /// The concurrent compiler's half (BaselineCompilerTask::Compile, on the
+    /// background thread): generates the method and has RyuJIT compile it, so
+    /// the first call runs compiled code. The constant pool was materialized
+    /// and the name computed on the main thread.
+    /// </summary>
+    internal void GenerateConcurrently(string methodName) => Generate(methodName, prepare: true);
+
+    /// <summary>V8SHARP_BASELINE_TIERED=1: concurrently compiled code starts at RyuJIT's tier 0 too (for comparison).</summary>
+    static readonly bool s_tieredConcurrentCode = Environment.GetEnvironmentVariable("V8SHARP_BASELINE_TIERED") == "1";
+
+    BaselineCodeEntry Generate(string methodName, bool prepare)
+    {
+        bool optimizeFully = prepare && !s_tieredConcurrentCode;
+        var compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, methodName: methodName, optimizeFully: optimizeFully);
         compiler.GenerateCode();
         if (compiler.ExceedsOptimizationLimits)
         {
             // RyuJIT would not optimize the method (BaselineILEmitter): emit the
             // compact form, whose bytecodes call out of line.
-            compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, compact: true);
+            compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, compact: true, methodName: methodName,
+                optimizeFully: optimizeFully);
             compiler.GenerateCode();
         }
         if (_isolate.Flags.trace_baseline)
         {
-            Console.WriteLine("[baseline code for " + SharedFunctionInfo.Name() + ": bytecode=" + Bytecode.Length + " " + compiler.Statistics + "]");
+            Console.WriteLine("[baseline code for " + methodName + ": bytecode=" + Bytecode.Length + " " + compiler.Statistics + "]");
         }
         (BaselineCodeEntry entry, int ilSize) = compiler.Build(this);
+        if (prepare && compiler.CompiledMethod is { } method) RuntimeHelpers.PrepareMethod(method.MethodHandle);
         _ilSize = ilSize;
         return _entry = entry;
     }

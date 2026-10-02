@@ -70,14 +70,21 @@ public sealed partial class BaselineCompiler
     static readonly Dictionary<string, MethodInfo> s_calls = typeof(BaselineCalls).GetMethods(BindingFlags.Public | BindingFlags.Static)
         .ToDictionary(m => m.Name, StringComparer.Ordinal);
 
-    public BaselineCompiler(Isolate isolate, SharedFunctionInfo sharedFunctionInfo, BytecodeArray bytecode, bool compact = false)
+    /// <summary>The name of a function's baseline method (computed on the main thread: it reads the heap).</summary>
+    public static string MethodName(SharedFunctionInfo shared)
+    {
+        string name = shared.Name().ToString();
+        return "baseline:" + (name.Length == 0 ? "(anonymous)" : name);
+    }
+
+    public BaselineCompiler(Isolate isolate, SharedFunctionInfo sharedFunctionInfo, BytecodeArray bytecode, bool compact = false,
+        string? methodName = null, bool optimizeFully = false)
     {
         _isolate = isolate;
         _compact = compact;
         _shared = sharedFunctionInfo;
         _bytecode = bytecode;
-        string name = sharedFunctionInfo.Name().ToString();
-        name = "baseline:" + (name.Length == 0 ? "(anonymous)" : name);
+        string name = methodName ?? MethodName(sharedFunctionInfo);
         if (s_useDynamicMethod)
         {
             _method = new DynamicMethod(name, typeof(JSValue), [typeof(BaselineCode), typeof(Isolate), typeof(InterpreterState).MakeByRefType()],
@@ -87,6 +94,14 @@ public sealed partial class BaselineCompiler
         else
         {
             (_type, _methodBuilder) = BaselineCodeSpace.For(isolate).DefineMethod(name);
+            // Code compiled on the concurrent compiler's thread is jitted there
+            // with full optimization right away (AggressiveOptimization skips
+            // RyuJIT's tier 0): the main thread never runs it unoptimized.
+            if (optimizeFully)
+            {
+                _methodBuilder.SetImplementationFlags(MethodImplAttributes.IL | MethodImplAttributes.Managed |
+                                                      MethodImplAttributes.AggressiveOptimization);
+            }
             _il = new BaselineILEmitter(_methodBuilder.GetILGenerator(Math.Max(64, bytecode.Length * 16)));
         }
         _masm = new BaselineAssembler(_il);
@@ -174,10 +189,14 @@ public sealed partial class BaselineCompiler
         else
         {
             Type type = BaselineCodeSpace.CreateType(_type!);
-            entry = (BaselineCodeEntry)type.GetMethod(_methodBuilder!.Name)!.CreateDelegate(typeof(BaselineCodeEntry), code);
+            CompiledMethod = type.GetMethod(_methodBuilder!.Name)!;
+            entry = (BaselineCodeEntry)CompiledMethod.CreateDelegate(typeof(BaselineCodeEntry), code);
         }
         return (entry, _il.ILOffset);
     }
+
+    /// <summary>The finished method (after Build; null for a DynamicMethod).</summary>
+    public MethodInfo? CompiledMethod { get; private set; }
 
     Label EnsureLabel(int offset)
     {

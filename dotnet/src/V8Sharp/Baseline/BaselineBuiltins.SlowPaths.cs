@@ -16,7 +16,8 @@ namespace V8Sharp.Baseline;
 
 public static partial class BaselineBuiltins
 {
-    const MethodImplOptions Outline = MethodImplOptions.NoInlining;
+    // Full optimization on first use (no RyuJIT tier 0), as BaselineCalls.
+    const MethodImplOptions Outline = MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization;
 
     // ---- Arithmetic --------------------------------------------------------------------------------
 

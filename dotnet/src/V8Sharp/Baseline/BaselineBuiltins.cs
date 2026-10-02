@@ -22,7 +22,9 @@ namespace V8Sharp.Baseline;
 
 public static partial class BaselineBuiltins
 {
-    const MethodImplOptions Inline = MethodImplOptions.AggressiveInlining;
+    // Inlined into the code that calls them; when they are called (compact
+    // code), full optimization on first use, as BaselineCalls.
+    const MethodImplOptions Inline = MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization;
 
     // ---- Values -------------------------------------------------------------------------------
 

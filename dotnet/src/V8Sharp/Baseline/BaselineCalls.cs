@@ -38,13 +38,19 @@ public static class BaselineCalls
 {
     const MethodImplOptions Inline = MethodImplOptions.AggressiveInlining;
 
+    // The out-of-line call paths are compiled with full optimization on first
+    // use (no RyuJIT tier 0), like the interpreter's dispatch loop: baseline
+    // code calls them from its first run, and V8's Call builtins it stands in
+    // for are optimized code.
+    const MethodImplOptions Outline = MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization;
+
     // ---- The call bytecodes ----------------------------------------------------------------------
     //
     // NoInlining: the frame setup belongs out of line, as V8's calls into the
     // Call builtins; inlined into a baseline method it would bloat every call
     // site and make RyuJIT spill the caller's values around it.
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     public static JSValue CallProperty0(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, JSValue receiver)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
@@ -55,7 +61,7 @@ public static class BaselineCalls
         return CallSlow0(isolate, callee, receiver, ConvertReceiverMode.NotNullOrUndefined);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     public static JSValue CallProperty1(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, JSValue receiver, JSValue arg0)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
@@ -66,7 +72,7 @@ public static class BaselineCalls
         return CallSlow1(isolate, callee, receiver, arg0, ConvertReceiverMode.NotNullOrUndefined);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     public static JSValue CallProperty2(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, JSValue receiver, JSValue arg0,
         JSValue arg1)
     {
@@ -78,7 +84,7 @@ public static class BaselineCalls
         return CallSlow2(isolate, callee, receiver, arg0, arg1, ConvertReceiverMode.NotNullOrUndefined);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     public static JSValue CallUndefinedReceiver0(Isolate isolate, FeedbackVector fv, int slot, JSValue callee)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
@@ -89,7 +95,7 @@ public static class BaselineCalls
         return CallSlow0(isolate, callee, JSValue.Undefined, ConvertReceiverMode.NullOrUndefined);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     public static JSValue CallUndefinedReceiver1(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, JSValue arg0)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
@@ -100,7 +106,7 @@ public static class BaselineCalls
         return CallSlow1(isolate, callee, JSValue.Undefined, arg0, ConvertReceiverMode.NullOrUndefined);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     public static JSValue CallUndefinedReceiver2(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, JSValue arg0,
         JSValue arg1)
     {
@@ -113,7 +119,7 @@ public static class BaselineCalls
     }
 
     /// <summary>CallProperty / CallAnyReceiver: the receiver and the arguments are the register list at <paramref name="first"/>.</summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     public static JSValue CallProperty(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, int first, int count)
     {
         JSValue receiver = isolate.RegisterStack[first];
@@ -125,7 +131,7 @@ public static class BaselineCalls
         return CallSlowRegisters(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.NotNullOrUndefined);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     public static JSValue CallAnyReceiver(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, int first, int count)
     {
         JSValue receiver = isolate.RegisterStack[first];
@@ -137,7 +143,7 @@ public static class BaselineCalls
         return CallSlowRegisters(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.Any);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     public static JSValue CallUndefinedReceiver(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, int first, int count)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
@@ -184,7 +190,7 @@ public static class BaselineCalls
 
     // ---- The slow paths ----------------------------------------------------------------------------
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     static JSValue CallSlow0(Isolate isolate, JSValue callee, JSValue receiver, ConvertReceiverMode mode)
     {
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
@@ -195,7 +201,7 @@ public static class BaselineCalls
         return CallValues(isolate, callee, receiver, 0, default, default, mode);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     static JSValue CallSlow1(Isolate isolate, JSValue callee, JSValue receiver, JSValue arg0, ConvertReceiverMode mode)
     {
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
@@ -207,7 +213,7 @@ public static class BaselineCalls
         return CallValues(isolate, callee, receiver, 1, arg0, default, mode);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     static JSValue CallSlow2(Isolate isolate, JSValue callee, JSValue receiver, JSValue arg0, JSValue arg1, ConvertReceiverMode mode)
     {
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
@@ -219,7 +225,7 @@ public static class BaselineCalls
     }
 
     /// <summary>A call with the arguments in registers to a callee without baseline code.</summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     static JSValue CallSlowRegisters(Isolate isolate, JSValue callee, JSValue receiver, int argsStart, int argc, ConvertReceiverMode mode)
     {
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
@@ -290,7 +296,7 @@ public static class BaselineCalls
     /// Construct from baseline code: InterpreterCalls.Construct (Construct_Baseline,
     /// JSConstructStubGeneric) for a constructor with baseline code.
     /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     public static JSValue Construct(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, int argsStart,
         int argc)
     {
@@ -332,7 +338,7 @@ public static class BaselineCalls
         return InterpreterCalls.Construct(isolate, fv, slot, constructor, newTarget, argsStart, argc);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    [MethodImpl(Outline)]
     static JSValue AllocateReceiver(Isolate isolate, JSFunction function, JSReceiver newTarget)
     {
         Context? saved = isolate.Context;
@@ -367,6 +373,7 @@ public static class BaselineCalls
     /// <paramref name="argc"/> registers at <paramref name="argsStart"/>, or
     /// <paramref name="arg0"/> / <paramref name="arg1"/> when argsStart is negative.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     static JSValue Enter(Isolate isolate, JSFunction function, BaselineCode code, FeedbackVector vector, JSValue receiver,
         int argsStart, int argc, JSValue arg0, JSValue arg1, JSValue newTarget, bool isConstruct)
     {
@@ -414,6 +421,7 @@ public static class BaselineCalls
     /// builds it) and the interpreter's dispatch loop (InterpreterExecution.Run),
     /// without EnterFrame's try/finally.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     static JSValue EnterInterpreted(Isolate isolate, JSFunction function, BytecodeArray bytecode, JSValue receiver, int argsStart,
         int argc, JSValue arg0, JSValue arg1)
     {

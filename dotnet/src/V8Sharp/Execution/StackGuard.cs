@@ -87,6 +87,10 @@ public sealed class StackGuard(Isolate isolate)
         {
             return _isolate.TerminateExecution();
         }
+        if ((flags & (int)InterruptFlag.INSTALL_BASELINE_CODE) != 0)
+        {
+            _isolate.BaselineBatchCompiler.InstallBatch();
+        }
         if ((flags & (int)InterruptFlag.API_INTERRUPT) != 0)
         {
             InvokeApiInterruptCallbacks();
