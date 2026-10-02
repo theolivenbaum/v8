@@ -70,11 +70,13 @@ public static partial class InterpreterExecution
     /// when the slot already holds the same object or tag: registers often keep
     /// numbers (the tag never changes) or the same object across iterations.
     /// </summary>
+    // The payload is stored first: after the write barrier call nothing needs
+    // the slot's address, so the JIT does not spill it around the call.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static void StoreRegister(ref JSValue slot, JSValue value)
     {
-        if (!ReferenceEquals(slot._obj, value._obj)) Unsafe.AsRef(in slot._obj) = value._obj;
         Unsafe.AsRef(in slot._bits) = value._bits;
+        if (!ReferenceEquals(slot._obj, value._obj)) Unsafe.AsRef(in slot._obj) = value._obj;
     }
 
     /// <summary>ToBoolean on a value passed by value (the loop's accumulator must not have its address taken).</summary>

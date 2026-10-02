@@ -78,6 +78,9 @@ public static partial class InterpreterExecution
 
             // The offset is not stored in the frame record here: the handlers
             // that call out store it (SavePc), as V8's SaveBytecodeOffset.
+#if BYTECODE_STATS
+            BytecodeStats.Count(ip);
+#endif
             switch ((Bytecode)ip)
             {
                 // ---- Loading the accumulator -----------------------------------------
