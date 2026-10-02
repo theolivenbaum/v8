@@ -114,6 +114,11 @@ dotnet run -c Release --project tools/V8Sharp.TestRunner -- test262 --engine ora
   `--allow-natives-syntax`, `--print-bytecode --print-bytecode-filter=f`.
   Flags are process-global; run tests needing different flag sets in
   different processes.
+- **Shared machine: serialize benchmarks.** When several agents share a host,
+  wrap every benchmark/timing run in `flock -x /home/user/locks/bench.lock <cmd>`
+  and every full conformance run in `flock -s /home/user/locks/bench.lock <cmd>`
+  (builds and unit tests need no lock). Benchmarks then run alone; numbers
+  taken under load are not evidence for a decision.
 - Running something long (a conformance sweep), use a timeout and write the
   results under `dotnet/artifacts/` (git-ignored).
 
