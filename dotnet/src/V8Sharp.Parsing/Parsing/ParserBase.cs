@@ -946,12 +946,30 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
     protected void CheckStackOverflow()
     {
         // Any further calls to Next or peek will return the illegal token.
-        // The runtime check guards the .NET thread's own stack as well.
-        if (GetCurrentStackPosition() < stack_limit_ || !RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        nint position = GetCurrentStackPosition();
+        if (position < stack_limit_)
         {
             set_stack_overflow();
         }
+        else if (position < runtime_checked_stack_position_)
+        {
+            // The runtime check guards the .NET thread's own stack as well. It
+            // is a call into the runtime, so it is made only when the parser is
+            // deeper than where it last succeeded: a success leaves at least
+            // 64 KB of stack, so positions up to 32 KB below are safe as well.
+            if (RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            {
+                runtime_checked_stack_position_ = position - kRuntimeCheckedStackSlack;
+            }
+            else
+            {
+                set_stack_overflow();
+            }
+        }
     }
+
+    private const int kRuntimeCheckedStackSlack = 32 * 1024;
+    private nint runtime_checked_stack_position_ = nint.MaxValue;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     protected Token peek() => scanner().peek();
