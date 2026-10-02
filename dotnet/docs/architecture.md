@@ -50,9 +50,16 @@ object. V8Sharp's equivalent is a 16-byte struct:
 public readonly struct JSValue
 {
     internal readonly HeapObject? _obj;   // null => undefined
-    internal readonly double _num;        // payload when _obj is NumberTag
+    internal readonly long _bits;         // the double payload's bits when _obj is NumberTag
+    internal double _num => BitConverter.Int64BitsToDouble(_bits);
 }
 ```
+
+The payload is stored as a `long` so that the value is two integer words
+for the JIT: the System V x64 ABI has no callee-saved XMM registers, so a
+double that lives across calls (the dispatch loop's accumulator) would sit in
+a stack slot, while a long gets a callee-saved general register (the
+accumulator is then two registers, as V8's is one).
 
 - `_obj == null` is **undefined**, so `default(JSValue)` and a fresh
   `new JSValue[n]` are all-undefined, which is what V8's register file and

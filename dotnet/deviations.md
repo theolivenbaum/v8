@@ -253,10 +253,16 @@ for now, to be revisited when the reason goes away.
   and field-adding transitions, fast element loads and stores, global
   PropertyCell loads); the others are NoInlining methods in
   InterpreterHandlers.cs, and the rare bytecodes sit in `LoopCold<TS>`, so
-  that RyuJIT keeps the accumulator, offset, bytecode and frame pointer in
-  registers (it stops promoting structs and inlining in a method with too
-  many locals). The loop is AggressiveOptimization (it would otherwise run
-  as OSR code). Wide/ExtraWide run one bytecode in the scaled loop, except
+  that RyuJIT keeps the accumulator, the current bytecode and the frame
+  pointer in registers (it stops promoting structs and inlining in a method
+  with too many locals). The current bytecode is a `ref byte` into the
+  bytecode array rather than V8's (array, offset) pair, so the loop needs
+  one register for it, and the accumulator's number payload is a long
+  (JSValue._bits), so the accumulator lives in two callee-saved general
+  registers: on System V x64 a double local would sit in a stack slot. The
+  offset is computed from the reference where a handler needs it (SavePc,
+  the return offset of a call). The loop is AggressiveOptimization (it
+  would otherwise run as OSR code). Wide/ExtraWide run one bytecode in the scaled loop, except
   LdaSmi, which the single-scale loop decodes itself.
 - JumpLoop's OSR-to-baseline check (InterpreterAssembler::OnStackReplacement,
   case 3) runs only once the isolate has installed baseline code

@@ -10,27 +10,42 @@ namespace V8Sharp.Objects;
 public readonly struct JSValue : IEquatable<JSValue>
 {
     internal readonly HeapObject? _obj;
-    internal readonly double _num;
+    /// <summary>
+    /// The number payload as its bit pattern. A long rather than a double
+    /// field: the System V x64 ABI has no callee-saved XMM registers, so the
+    /// JIT keeps a double that lives across calls (the interpreter's
+    /// accumulator) in memory, while a long gets a callee-saved general
+    /// register. It also makes the value two integer words for the calling
+    /// convention (passed and returned in general registers).
+    /// </summary>
+    internal readonly long _bits;
+
+    /// <summary>The number payload (meaningful when <see cref="IsNumber"/>).</summary>
+    internal double _num
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => BitConverter.Int64BitsToDouble(_bits);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     JSValue(HeapObject? obj, double num)
     {
         _obj = obj;
-        _num = num;
+        _bits = BitConverter.DoubleToInt64Bits(num);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public JSValue(HeapObject obj)
     {
         _obj = obj;
-        _num = 0;
+        _bits = 0;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public JSValue(double number)
     {
         _obj = NumberTag.Instance;
-        _num = number;
+        _bits = BitConverter.DoubleToInt64Bits(number);
     }
 
     public static JSValue Undefined => default;
