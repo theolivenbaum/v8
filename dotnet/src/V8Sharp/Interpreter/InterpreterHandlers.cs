@@ -518,11 +518,21 @@ public static partial class InterpreterExecution
 
     /// <summary>JumpLoop's budget interrupt (InterpreterTiering.OnBudgetInterrupt with the stack check).</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void JumpLoopInterrupt(Isolate isolate, ref InterpreterState st, ref JSValue fp, int pc)
+    static bool JumpLoopInterrupt(Isolate isolate, ref InterpreterState st, ref JSValue fp, int pc, bool osr)
     {
         SavePc(isolate, ref st, pc);
         st.FeedbackVector = InterpreterTiering.OnBudgetInterrupt(isolate, st.Function, withStackCheck: true);
         Unsafe.Add(ref fp, InterpreterRuntime.kFeedbackVectorOffset) = st.FeedbackVector is null ? default(JSValue) : st.FeedbackVector;
+        // OnStackReplacement (OSR into Maglev code): checked at the budget
+        // interrupt rather than on every back edge (deviations.md, Maglev).
+        // Only from unprefixed JumpLoops: a Wide JumpLoop runs in a nested scaled dispatch.
+        if (osr && isolate.UseOptimizer && st.FeedbackVector is { } vector &&
+            Maglev.MaglevExecution.TryGetOsrCode(isolate, st.Function, vector, st.Bytecode, pc) is { } osrCode)
+        {
+            st.OsrCode = osrCode;
+            return true;
+        }
+        return false;
     }
 
     /// <summary>

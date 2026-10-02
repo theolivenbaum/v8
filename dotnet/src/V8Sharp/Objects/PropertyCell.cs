@@ -26,9 +26,19 @@ public sealed class PropertyCell : HeapObject
         Value = newValue;
     }
 
+    /// <summary>PropertyCell::UpdatePropertyDetailsExceptCellType.</summary>
     public void UpdatePropertyDetailsExceptCellType(PropertyDetails details)
     {
-        PropertyDetails = details.SetCellType(PropertyDetails.CellType);
+        PropertyDetails oldDetails = PropertyDetails;
+        PropertyDetails = details.SetCellType(oldDetails.CellType);
+        // Deopt when making a writable property read-only. The reverse direction
+        // is uninteresting because Turbofan does not currently rely on read-only
+        // unless the property is also configurable, in which case it will stay
+        // read-only forever.
+        if (!oldDetails.IsReadOnly && details.IsReadOnly && Isolate.Current is { } isolate)
+        {
+            DependentCode.DeoptimizeDependencyGroups(isolate, this, DependentCode.DependencyGroups.PropertyCellChanged);
+        }
     }
 
     public static PropertyCellType InitialType(Isolate isolate, in JSValue value) =>

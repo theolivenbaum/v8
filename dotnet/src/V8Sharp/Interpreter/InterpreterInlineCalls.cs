@@ -31,7 +31,9 @@ internal static class InterpreterInlineCalls
             // A function with baseline code runs it (through InterpreterCalls.Call
             // and InterpreterExecution.EnterFrame), not inline in the interpreter.
             if (shared.FunctionData is BytecodeArray && !shared.HasBuiltinId && !shared.IsClassConstructor &&
-                !Globals.IsResumableFunction(shared.Kind) && shared.BaselineCode is null)
+                !Globals.IsResumableFunction(shared.Kind) && shared.BaselineCode is null &&
+                // A closure with Maglev code runs it (through InterpreterExecution.EnterFrame).
+                (!shared.MayHaveMaglevCode || f.RawFeedbackCell.Value is not FeedbackVector { MaglevCode: not null }))
             {
                 function = f;
                 return true;
@@ -145,7 +147,8 @@ internal static class InterpreterInlineCalls
         }
         SharedFunctionInfo shared = function.Shared;
         if (shared.FunctionData is not BytecodeArray || shared.HasBuiltinId || Globals.IsDerivedConstructor(shared.Kind) ||
-            Globals.IsResumableFunction(shared.Kind) || shared.BaselineCode is not null)
+            Globals.IsResumableFunction(shared.Kind) || shared.BaselineCode is not null ||
+            shared.MayHaveMaglevCode && function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: not null })
         {
             return false;
         }
@@ -253,6 +256,7 @@ internal static class InterpreterInlineCalls
         frame.Kind = InterpreterFrameKind.Interpreted;
         frame.IsConstructor = isConstruct;
         frame.IsBaseline = false;
+        frame.IsMaglev = false;
         frame.InlineCall = true;
         frame.RegisterStart = registerStart;
         // The caller resumes after the call bytecode.

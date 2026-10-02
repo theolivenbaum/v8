@@ -165,8 +165,9 @@ public static class BaselineCalls
     [MethodImpl(Inline)]
     static bool TryGetBaselineCallee(JSValue callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector)
     {
+        // (A closure with Maglev code runs it: the slow path enters through InterpreterExecution.EnterFrame.)
         if (callee._obj is JSFunction f && f.Shared.BaselineCode is { CallableDirectly: true } c &&
-            f.RawFeedbackCell.Value is FeedbackVector v)
+            f.RawFeedbackCell.Value is FeedbackVector { MaglevCode: null } v)
         {
             function = f;
             code = c;
@@ -399,7 +400,7 @@ public static class BaselineCalls
         int argc)
     {
         if (constructor._obj is JSFunction function && function.Shared.BaselineCode is { } code &&
-            function.RawFeedbackCell.Value is FeedbackVector vector && function.Map.IsConstructor &&
+            function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: null } vector && function.Map.IsConstructor &&
             newTarget._obj is JSReceiver newTargetReceiver)
         {
             InterpreterCalls.CollectConstructFeedback(isolate, fv, slot, constructor, newTarget);
@@ -646,6 +647,7 @@ public static class BaselineCalls
         frame.Kind = InterpreterFrameKind.Interpreted;
         frame.IsConstructor = isConstruct;
         frame.IsBaseline = isBaseline;
+        frame.IsMaglev = false;
         frame.InlineCall = false;
         frame.ReturnPc = 0;
         frame.RegisterStart = 0;

@@ -244,6 +244,13 @@ public sealed class FeedbackVector : HeapObject
     public int InvocationCount;
     public byte InvocationCountBeforeStable;
     public byte OsrState;
+    /// <summary>
+    /// The Maglev code of the closures sharing this vector (V8's
+    /// maybe_optimized_code slot; invalidated code is removed).
+    /// </summary>
+    public Maglev.MaglevCode? MaglevCode;
+    /// <summary>The OSR code cache by JumpLoop offset (V8's OSR code cache, per feedback vector).</summary>
+    public Dictionary<int, Maglev.MaglevCode>? MaglevOsrCode;
     public ushort Flags;
 
     FeedbackVector(SharedFunctionInfo shared, FeedbackMetadata metadata, ClosureFeedbackCellArray closureFeedbackCellArray,

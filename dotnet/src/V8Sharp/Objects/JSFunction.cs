@@ -247,6 +247,12 @@ public sealed class SharedFunctionInfo : HeapObject
     /// </summary>
     public Baseline.BaselineCode? BaselineCode;
 
+    /// <summary>
+    /// Some closure of this function got Maglev code (on its feedback
+    /// vector): calls must go through the entry that checks for it.
+    /// </summary>
+    public bool MayHaveMaglevCode;
+
     /// <summary>SharedFunctionInfo::HasBaselineCode.</summary>
     public bool HasBaselineCode => BaselineCode is not null;
 

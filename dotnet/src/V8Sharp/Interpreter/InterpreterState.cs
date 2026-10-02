@@ -65,6 +65,12 @@ public ref struct InterpreterState
     /// </summary>
     public bool OsrToBaseline;
     /// <summary>
+    /// Set by JumpLoop when OSR code is available for the loop: the frame
+    /// leaves the dispatch loop and continues in the Maglev code (OsrCode) at Pc.
+    /// </summary>
+    public bool OsrToMaglev;
+    public Maglev.MaglevCode? OsrCode;
+    /// <summary>
     /// The frame record index of the frame this loop was entered for; frames
     /// above it up to <see cref="FrameIndex"/> are inline calls (the fields
     /// above describe the innermost one).

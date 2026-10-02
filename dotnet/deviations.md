@@ -283,7 +283,7 @@ for now, to be revisited when the reason goes away.
   `--always-sparkplug`) and stay interpreted unless compiled explicitly with
   `%CompileBaseline` (`BaselineSupport.TiersUpToBaseline`); V8 tiers up any
   size.
-- No optimizing tier yet: `Isolate.UseOptimizer` is false, so
+- Without `--maglev` (V8Sharp's default) `Isolate.UseOptimizer` is false, so
   `TieringManager` behaves as in a V8 built without Turbofan and Maglev
   (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the
   baseline bits). The interrupt budget after tier-up is
@@ -298,6 +298,91 @@ for now, to be revisited when the reason goes away.
   of the baseline methods.
 - `%CompileBaseline` on a non-user function, or when Sparkplug is disabled,
   throws an InvalidOperationException (V8: CHECK failure).
+
+## Optimizing compiler (Maglev) and deoptimizer
+
+- Temporary: `--maglev` is off by default (V8's x64 default is on) until the
+  tier is conformance-clean under forced optimization and a net win
+  (`todo.md`). `Isolate.UseOptimizer` is `--maglev && !--jitless`.
+- Code generation: IL in the baseline code space instead of machine code
+  (architecture.md section 9.2); values live in IL locals rather than
+  registers and stack slots, so there is no register allocator (RyuJIT
+  allocates) and no safepoint table. The code is never freed (the assembly
+  is not collectible); invalidated code is only unreferenced.
+- Frames: the optimized frame is the interpreter frame the call built, and
+  inlined functions push real interpreter frames (V8 has one optimized frame
+  and materializes the inlined ones at deopt and for stack walks). A deopt
+  writes the translation's values into these frames instead of building new
+  ones. Deopt exits copy the values into a per-isolate scratch buffer.
+- Concurrent compilation (`--concurrent-recompilation`, on as in V8): the
+  tiering manager's requests build the graph on the main thread (V8 builds it
+  on a worker, with the heap broker's snapshot of the heap); the IL
+  generation and a fully optimized RyuJIT compile (`AggressiveOptimization`,
+  `RuntimeHelpers.PrepareMethod`) run on the process-wide background compile
+  thread the baseline tier uses, and the code is installed at the next
+  INSTALL_MAGLEV_CODE interrupt. The dependencies are registered when the
+  graph is built: an invalidation before the install marks the code and the
+  install drops it (V8 validates them at commit). `%OptimizeFunctionOnNextCall`,
+  `%OptimizeMaglevOnNextCall` and OSR compile synchronously (RyuJIT tier 0
+  first).
+- OSR: the check for OSR code runs at the JumpLoop budget interrupt (V8
+  checks the OSR urgency on every back edge); OSR code takes the
+  interpreter frame's registers as its initial values at the loop header,
+  and runs in the same frame. No OSR from a Wide/ExtraWide JumpLoop.
+- Bytecode liveness is computed by an iterative fixed point over all
+  bytecodes (V8 does one backward pass plus a loop fix-up pass); the result
+  is the same.
+- Prototype chain checks of property accesses use the IC handler's validity
+  cell (CheckValidityCell) and the stable-map dependency, not V8's
+  per-holder map checks from the broker's PropertyAccessInfo.
+- Generic nodes call the baseline tier's builtins (`BaselineBuiltins`), which
+  collect feedback like the interpreter does; V8's generic Maglev nodes call
+  builtins that mostly do not. Calls with consecutive argument registers call
+  `MaglevCalls.Call` and do not collect feedback, as V8's.
+- Protectors are bools (Protectors.cs), not PropertyCells: code depending on
+  one registers on a stand-in Cell per protector, invalidated through
+  `Protectors.OnInvalidate`.
+- `MaglevCompiler.kMaxDeoptCount` (8) eager deopts stop the tiering manager
+  from optimizing a function (V8 counts deopts with `--max-deopt-count` per
+  feedback vector only for Turbofan and lets Maglev re-optimize). Explicit
+  requests (`%OptimizeFunctionOnNextCall`) still compile, as in V8.
+- The tiering manager does not optimize functions whose graph exceeds
+  `MaglevCompiler.kMaxTieringGraphNodes` (500 nodes, `V8SHARP_MAGLEV_MAX_NODES`
+  overrides it): RyuJIT's cost grows with the IL (big graphs exceed its
+  MinOpts limits and are jitted without optimization), and big functions are
+  mostly straight-line code that runs a few times (Octane's RegExp runBlocks).
+  V8 optimizes them. `%OptimizeFunctionOnNextCall` still compiles such
+  functions. Measured with fixed work: RegExp and PdfJS gain, the rest is
+  within noise.
+- Typed array stores: V8Sharp's keyed store IC gives typed arrays a slow
+  handler (and goes megamorphic), so the element store is built from the
+  feedback maps alone, and megamorphic keyed stores call
+  `KeyedStoreICMegamorphic`, which has the typed array fast path of V8's
+  KeyedStoreIC_Megamorphic builtin.
+- OSR code is invalidated when an exit outside its loop is taken a second
+  time (V8 only invalidates it for exits inside the loop): a function whose
+  own compile failed would otherwise re-enter the OSR code and deoptimize at
+  the same exit on every call.
+- Deopt exits are shared by the checks of one frame state; the failed
+  check's reason is passed to the Deoptimizer at run time (V8 has one exit
+  per check, with the reason in the deopt data).
+- Exception handlers: the code body is one .NET try region; a throwing
+  node inside a JS try block stores its index in a local, and the region's
+  filtered catch clause runs that node's trampoline (the catch block's
+  exception phis from the node's frame) and re-enters the region, whose
+  first instruction dispatches to the catch block. V8 returns to a handler
+  address. Catch blocks are always built: V8 lazy-deopts instead when the
+  handler was never used, but the interpreter does not record handler use.
+  Calls inside try blocks and functions with handlers are not inlined (V8
+  inlines them and drops the inlined frames on a throw).
+- Select diamonds of one node: charCodeAt's out-of-bounds NaN
+  (`BuiltinStringPrototypeCharCodeAtOrNaN`) and the keyed name check against
+  the name's primitive (`CheckValueEqualsString` with the primitive) are one
+  node each where V8 builds a branch and a phi.
+- No escape analysis (except the arguments object forwarded to
+  Function.prototype.apply), loop peeling, LICM, or typed array/DataView/string
+  builder reductions yet; generators and async functions are not optimized
+  (the compile bails out).
 
 ## Interpreter execution, ICs, runtime, compiler and modules
 
