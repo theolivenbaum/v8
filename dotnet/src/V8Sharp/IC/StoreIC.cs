@@ -108,10 +108,20 @@ public sealed class StoreIC : IC
         Map transition = handler.TransitionMap!;
         if (transition.IsDeprecated || !handler.IsValid) return false;
         if (!FitsField(handler, value)) return false;
+        if (handler.Representation.IsDouble) value = CanonicalizeDouble(value);
         int index = handler.FieldIndex;
-        int arrayIndex = index - JSObject.kPropertyArrayStorageBase;
-        if (arrayIndex >= obj._fields.Length) obj.EnsurePropertyArrayLength(arrayIndex + transition.UnusedPropertyFields() + 1);
-        obj.FieldAt(index) = handler.Representation.IsDouble ? CanonicalizeDouble(value) : value;
+        if (index < JSObject.kPropertyArrayStorageBase)
+        {
+            // An in-object field (the constructor's this.x = ... stores):
+            // the map says the slot exists.
+            obj.InObjectSlot(index) = value;
+        }
+        else
+        {
+            int arrayIndex = index - JSObject.kPropertyArrayStorageBase;
+            if (arrayIndex >= obj._fields.Length) obj.EnsurePropertyArrayLength(arrayIndex + transition.UnusedPropertyFields() + 1);
+            obj._fields[arrayIndex] = value;
+        }
         obj.Map = transition;
         return true;
     }
