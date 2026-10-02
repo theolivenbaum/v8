@@ -366,8 +366,21 @@ checks, map checks with known-map tracking, field loads/stores from IC
 handlers, element accesses on fast elements, global property cells, known
 call targets, builtins such as Math.*), and inlining small functions. The
 phi representation selector untags phis to Int32/Float64. Unsupported
-bytecodes (generators, try/catch handlers, ...) abort the compilation and
+bytecodes (generators, async functions, ...) abort the compilation and
 disable optimization of the function, as V8's bailouts do.
+
+**Exceptions.** As V8's graph builder, a node that can throw inside a try
+block gets an `ExceptionHandlerInfo`: the catch block's merge state merges
+the frame at the node (`MergeThrow`), and values that differ between the
+throwing nodes become exception phis whose inputs are those values, in throw
+order. In the IL the whole body is one .NET try region; a throwing node
+stores its index in a local before it runs (and -1 after), the region's
+filtered catch clause runs that node's trampoline (the exception phis from
+the node's values, the exception into the accumulator phi, the pending
+message) and leaves to the start of the region, whose first instruction
+dispatches to the catch block. The catch block then runs in the same
+method with the same locals. Functions with handlers, and calls inside try
+blocks, are not inlined.
 
 **Code.** The graph becomes one static method `JSValue Code(MaglevCode,
 Isolate, ref InterpreterState)` in the dynamic assembly baseline code uses
@@ -405,7 +418,10 @@ when the code was invalidated meanwhile: the IL tests
 `MaglevCode.MarkedForDeoptimization` after every call) continue after the
 call with its result. An eager deopt invalidates the code (except OSR early
 exits, and OSR code deopting outside its loop); after `kMaxDeoptCount`
-invalidations the function is not optimized again.
+invalidations the tiering manager does not optimize the function again. A
+deopt of a check made while reducing a builtin call disallows speculation
+on the call's feedback (out of bounds first only disallows bounds-check
+speculation), as V8's feedback_to_update.
 
 **Dependencies.** Code depends on stable maps (prototype chains, known
 maps), property cells (global constants), initial maps (FastNewObject) and

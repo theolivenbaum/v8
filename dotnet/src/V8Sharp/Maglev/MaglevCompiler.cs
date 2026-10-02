@@ -26,7 +26,7 @@ public static class MaglevCompiler
         {
             AppDomain.CurrentDomain.ProcessExit += static (_, _) => Console.Error.WriteLine(
                 $"[jit: {System.Runtime.JitInfo.GetCompiledMethodCount()} methods, {System.Runtime.JitInfo.GetCompiledILBytes()} IL bytes, " +
-                $"{System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds:F0} ms; maglev: {s_compiles} compiles, {s_ilBytes} IL bytes, {s_codegenMs:F0} ms graph+IL]");
+                $"{System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds:F0} ms; maglev: {s_compiles} compiles, {s_ilBytes} IL bytes, {s_codegenMs:F0} ms graph+IL, {MaglevCodeGenerator.CreateTypeMs:F0} ms type creation]");
         }
     }
 
@@ -89,7 +89,7 @@ public static class MaglevCompiler
     /// high JIT cost and runs slower than the interpreter. Explicit requests
     /// (%OptimizeFunctionOnNextCall) compile them anyway.
     /// </summary>
-    internal static readonly int kMaxTieringGraphNodes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_NODES"), out int n) ? n : 1200;
+    internal static readonly int kMaxTieringGraphNodes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_NODES"), out int n) ? n : 500;
 
     public static MaglevCode? Compile(Isolate isolate, JSFunction function, int osrOffset = -1, bool byTieringManager = false)
     {

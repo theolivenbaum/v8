@@ -145,7 +145,29 @@ internal sealed class MaglevCodeGenerator
     static readonly MethodInfo s_deoptimize = typeof(V8Sharp.Deoptimizer.Deoptimizer).GetMethod(nameof(V8Sharp.Deoptimizer.Deoptimizer.Deoptimize))!;
     static readonly MethodInfo s_doubleToInt64Bits = typeof(BitConverter).GetMethod(nameof(BitConverter.DoubleToInt64Bits), [typeof(double)])!;
 
-    static MethodInfo B(string name) => typeof(MaglevBuiltins).GetMethod(name) ?? throw new InvalidOperationException("no MaglevBuiltins." + name);
+    /// <summary>Time spent creating the code's type and delegate (V8SHARP_JIT_STATS).</summary>
+    internal static double CreateTypeMs;
+    // Diagnostics: V8SHARP_IL_HISTOGRAM=1 prints the IL bytes per node kind at exit.
+    static readonly Dictionary<string, (int Count, int Bytes)>? s_ilHistogram = InitHistogram();
+
+    static Dictionary<string, (int, int)>? InitHistogram()
+    {
+        if (Environment.GetEnvironmentVariable("V8SHARP_IL_HISTOGRAM") != "1") return null;
+        var h = new Dictionary<string, (int, int)>();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            var list = new List<(string, int, int)>();
+            foreach (var e in h) list.Add((e.Key, e.Value.Item1, e.Value.Item2));
+            list.Sort(static (a, b) => b.Item3.CompareTo(a.Item3));
+            for (int i = 0; i < list.Count && i < 30; i++) Console.Error.WriteLine($"IL {list[i].Item3,8} {list[i].Item2,7} {list[i].Item1}");
+        };
+        return h;
+    }
+
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, MethodInfo> s_builtins = new(StringComparer.Ordinal);
+
+    static MethodInfo B(string name) => s_builtins.GetOrAdd(name, static n =>
+        typeof(MaglevBuiltins).GetMethod(n) ?? throw new InvalidOperationException("no MaglevBuiltins." + n));
 
     // ---- Driver ----------------------------------------------------------------------------------------------
 
@@ -178,6 +200,7 @@ internal sealed class MaglevCodeGenerator
         _code.DeoptPoints = _deoptPoints.ToArray();
         _code.SpeculationFeedback = _speculationFeedback.ToArray();
         _code.MaxScratchSize = _maxScratch;
+        long createStart = System.Diagnostics.Stopwatch.GetTimestamp();
         Type type = BaselineCodeSpace.CreateType(_type);
         foreach ((FieldBuilder field, object? value) in _staticConstants)
         {
@@ -185,6 +208,7 @@ internal sealed class MaglevCodeGenerator
         }
         MethodInfo method = type.GetMethod(_method.Name)!;
         var entry = (MaglevCodeEntry)method.CreateDelegate(typeof(MaglevCodeEntry), _code);
+        CreateTypeMs += System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalMilliseconds;
         return (entry, _il.ILOffset);
     }
 
@@ -581,7 +605,13 @@ internal sealed class MaglevCodeGenerator
                 _il.Emit(OpCodes.Stloc, _throwSite!);
                 continue;
             }
+            int ilBefore = _il.ILOffset;
             EmitNode(node);
+            if (s_ilHistogram is not null)
+            {
+                string key = node.Opcode == Opcode.CallBuiltin ? "CallBuiltin:" + ((CallBuiltinInfo)node.Obj0!).Method.Name : node.Opcode == Opcode.CheckMaps ? "CheckMaps:" + ((Map[])node.Obj0!).Length + (Array.TrueForAll((Map[])node.Obj0!, static m => m.IsStable) ? ":stable" : ":unstable") + (NodeTypes.Is(node.Inputs[0].Type, NodeType.kJSReceiver) ? ":recv" : "") : node.Opcode.ToString();
+                lock (s_ilHistogram) { s_ilHistogram.TryGetValue(key, out (int, int) e); s_ilHistogram[key] = (e.Item1 + 1, e.Item2 + _il.ILOffset - ilBefore); }
+            }
         }
         EmitControl(block, block.Control!);
     }

@@ -643,7 +643,9 @@ progress, also off by default.
         elision, builtin fast paths for calls; try/catch/finally (catch
         blocks with exception phis); string/number element keys
         (CheckedObjectToIndex), out-of-bounds loads, polymorphic element
-        loads/stores, holey/growing stores guarded by prototype maps; call
+        loads/stores, elements kind transitions, holey/growing stores
+        guarded by prototype maps, typed array loads/stores (number kinds),
+        KeyedStoreIC_Megamorphic's typed array fast path; call
         speculation modes updated by deopts (out of bounds, disallow);
         everything else through the baseline builtins (generic nodes).
       - Phi representation selector (untagged Int32/Float64 phis).
@@ -661,8 +663,8 @@ progress, also off by default.
       Tests: tests/V8Sharp.Tests/Maglev (interpreter vs forced optimization).
 - Maglev: open items
   - Not optimized (the compile bails out): generators and async functions,
-    debug bytecodes; no inlining in or of try blocks; elements kind
-    transitions in element stores are generic; typed arrays, DataView,
+    debug bytecodes; no inlining in or of try blocks; BigInt/Float16 and
+    resizable-buffer typed arrays, DataView,
     Map/Set/iterators, string builders, array destructuring and for-of
     reductions are generic.
   - Missing reductions that mjsunit/maglev asserts (deopt policy and
@@ -675,6 +677,15 @@ progress, also off by default.
     and RyuJIT compiles big methods without optimization (MinOpts) and only
     tiers them up late, so the tiering manager does not optimize graphs over
     1200 nodes. No escape analysis, LICM, loop peeling or CSE of loads.
+  - Conformance under forced optimization (`--maglev
+    --invocation-count-for-maglev=4 --optimize-on-next-call-optimizes-to-maglev`,
+    2026-10-02): test262 0 newly failing against the expectations; mjsunit
+    103 failures vs 60 in the plain run, 39 of them only with optimization:
+    11 need `--mock-arraybuffer-allocator`, most others are optimization
+    status asserts of Turbofan/turbolev behaviour (truncation analysis,
+    undefined doubles, deopt-free generic paths) or need IC changes (store
+    handlers for typed arrays, LoadIC feedback for undefined receivers,
+    deprecated-map migration in the IC); generators are not optimized.
   - The tier stays off by default until it is conformance-clean under
     forced optimization and a net win on Octane.
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays

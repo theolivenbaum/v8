@@ -285,10 +285,18 @@ for now, to be revisited when the reason goes away.
   feedback vector only for Turbofan and lets Maglev re-optimize). Explicit
   requests (`%OptimizeFunctionOnNextCall`) still compile, as in V8.
 - The tiering manager does not optimize functions whose graph exceeds
-  `MaglevCompiler.kMaxTieringGraphNodes` (1200 nodes): their IL is over
-  RyuJIT's MinOpts limits, so it would be jitted without optimization, at a
-  high JIT cost, and run slower than the interpreter. V8 optimizes them.
-  `%OptimizeFunctionOnNextCall` still compiles such functions.
+  `MaglevCompiler.kMaxTieringGraphNodes` (500 nodes, `V8SHARP_MAGLEV_MAX_NODES`
+  overrides it): RyuJIT's cost grows with the IL (big graphs exceed its
+  MinOpts limits and are jitted without optimization), and big functions are
+  mostly straight-line code that runs a few times (Octane's RegExp runBlocks).
+  V8 optimizes them. `%OptimizeFunctionOnNextCall` still compiles such
+  functions. Measured with fixed work: RegExp and PdfJS gain, the rest is
+  within noise.
+- Typed array stores: V8Sharp's keyed store IC gives typed arrays a slow
+  handler (and goes megamorphic), so the element store is built from the
+  feedback maps alone, and megamorphic keyed stores call
+  `KeyedStoreICMegamorphic`, which has the typed array fast path of V8's
+  KeyedStoreIC_Megamorphic builtin.
 - Deopt exits are shared by the checks of one frame state; the failed
   check's reason is passed to the Deoptimizer at run time (V8 has one exit
   per check, with the reason in the deopt data).
