@@ -316,7 +316,10 @@ public sealed class AstStringConstants
 
 public sealed class AstValueFactory
 {
-    // All strings are copied here.
+    // All strings are copied here. V8 starts this table from a copy of the
+    // constants' table; here the (isolate-wide, read-only) constants' table is
+    // probed first, so a compile does not copy it.
+    private readonly AstStringTable _constantsTable;
     private readonly AstStringTable _stringTable;
 
     // Strings created by this factory, in creation order (V8: strings_ list).
@@ -331,7 +334,8 @@ public sealed class AstValueFactory
     public AstValueFactory(AstStringConstants string_constants)
     {
         _stringConstants = string_constants;
-        _stringTable = new AstStringTable(string_constants.string_table_);
+        _constantsTable = string_constants.string_table_;
+        _stringTable = new AstStringTable(64);
         _emptyConsString = new AstConsString();
     }
 
@@ -352,7 +356,7 @@ public sealed class AstValueFactory
             }
         }
         int hash = AstStringTable.Hash(literal);
-        AstRawString? existing = _stringTable.Lookup(literal, hash);
+        AstRawString? existing = _constantsTable.Lookup(literal, hash) ?? _stringTable.Lookup(literal, hash);
         if (existing != null) return existing;
         var result = new AstRawString(literal.ToString(), isOneByte, hash);
         _stringTable.Add(result);
@@ -475,20 +479,13 @@ public sealed class AstValueFactory
 
 // The AstValueFactory's string table (V8: a base::CustomMatcherHashMap keyed
 // by the string's hash and contents). Open addressing with linear probing over
-// a power-of-two array of the strings, which carry their hash; the factory
-// starts from a copy of the constants' table, as V8's does.
+// a power-of-two array of the strings, which carry their hash.
 internal sealed class AstStringTable
 {
     private AstRawString?[] _slots;
     private int _count;
 
-    public AstStringTable() => _slots = new AstRawString?[256];
-
-    public AstStringTable(AstStringTable other)
-    {
-        _slots = (AstRawString?[])other._slots.Clone();
-        _count = other._count;
-    }
+    public AstStringTable(int capacity = 256) => _slots = new AstRawString?[capacity];
 
     // FNV-1a over the code units: cheap for the short identifiers the
     // scanner produces. Only used for hash tables, never for output order.
