@@ -276,48 +276,80 @@ internal static class InterpreterInlineCalls
     public static bool TryPushConstructFrame(Isolate isolate, ref InterpreterState st, int slot, JSValue constructor,
         JSValue newTarget, int argsStart, int argc, int returnPc)
     {
-        if (constructor._obj is not JSFunction function || !function.Map.IsConstructor ||
-            newTarget._obj is not JSReceiver newTargetReceiver)
+        if (constructor._obj is not JSFunction function) return false;
+        // The construct mode, cached on the SharedFunctionInfo like the call
+        // mode (V8 decides by the constructor's code: JSConstructStubGeneric
+        // with the interpreter entry trampoline).
+        int mode = function.Shared.InterpreterConstructMode;
+        if (mode != kCallModeInline)
+        {
+            if (mode == 0) mode = ComputeInlineConstructMode(function.Shared);
+            if (mode != kCallModeInline && (mode != kCallModeCheckClosure || CheckClosure(function) == 0)) return false;
+        }
+        HeapObject? newTargetObject = newTarget._obj;
+        if (!function.Map.IsConstructor || newTargetObject is null || newTargetObject.InstanceType < InstanceTypeChecks.FirstJSReceiver)
         {
             return false;
         }
-        SharedFunctionInfo shared = function.Shared;
-        if (shared.FunctionData is not BytecodeArray || shared.HasBuiltinId || Globals.IsDerivedConstructor(shared.Kind) ||
-            Globals.IsResumableFunction(shared.Kind) || shared.BaselineCode is not null ||
-            shared.MayHaveMaglevCode && function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: not null })
-        {
-            return false;
-        }
-        InterpreterCalls.CollectConstructFeedback(isolate, st.FeedbackVector, slot, constructor, newTarget);
 
-        JSValue implicitReceiver;
-        if (ReferenceEquals(newTargetReceiver, function) && function.PrototypeOrInitialMap is Map initialMap &&
-            !initialMap.IsDictionaryMap)
+        // CollectConstructFeedback: the call count and the monomorphic hit
+        // inline, everything else in the runtime function.
+        if (st.FeedbackVector is { } fv)
         {
-            // FastNewObject: new.target is the constructor and its initial map
-            // exists, so the allocation needs nothing from the context.
-            implicitReceiver = isolate.Factory.NewJSObjectFromMap(initialMap);
-        }
-        else
-        {
-            // Allocate the new receiver object in the constructor's context.
-            Context? saved = isolate.Context;
-            isolate.Context = function.Context;
-            try
+            JSValue[] slots = fv.Slots;
+            if (ReferenceEquals(slots[slot]._obj, newTargetObject))
             {
-                implicitReceiver = JSObject.New(isolate, function, newTargetReceiver, null);
+                ref JSValue count = ref slots[slot + 1];
+                Unsafe.AsRef(in count._bits) = BitConverter.DoubleToInt64Bits(count._num + InterpreterCalls.kCallCountIncrement);
             }
-            finally
+            else
             {
-                isolate.Context = saved;
+                InterpreterCalls.CollectConstructFeedback(isolate, fv, slot, constructor, newTarget);
             }
         }
+
+        // JSConstructStubGeneric: FastNewObject when new.target is the
+        // constructor and its initial map exists (the allocation needs nothing
+        // from the context), the runtime otherwise.
+        JSObject implicitReceiver = ReferenceEquals(newTargetObject, function) && function.PrototypeOrInitialMap is Map initialMap &&
+            !initialMap.IsDictionaryMap
+            ? isolate.Factory.NewJSObjectFromMap(initialMap)
+            : NewImplicitReceiver(isolate, function, Unsafe.As<JSReceiver>(newTargetObject));
 
         // The construct stub's frame (see InterpreterCalls.ConstructInterpreted).
         int stubStart = isolate.AllocateRegisters(InterpreterCalls.kConstructStubFrameSlots);
         EnterInlineCore(isolate, ref st, function, implicitReceiver, new Baseline.BaselineCalls.RegisterArguments(argsStart, argc),
             returnPc, stubStart, true, newTarget);
         return true;
+    }
+
+    /// <summary>The implicit receiver of a construct call allocated in the constructor's context (JSObject::New).</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSObject NewImplicitReceiver(Isolate isolate, JSFunction function, JSReceiver newTarget)
+    {
+        Context? saved = isolate.Context;
+        isolate.Context = function.Context;
+        try
+        {
+            return JSObject.New(isolate, function, newTarget, null);
+        }
+        finally
+        {
+            isolate.Context = saved;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int ComputeInlineConstructMode(SharedFunctionInfo shared)
+    {
+        byte mode = kCallModeNotInline;
+        if (shared.FunctionData is BytecodeArray && !shared.HasBuiltinId && !Globals.IsDerivedConstructor(shared.Kind) &&
+            !Globals.IsResumableFunction(shared.Kind) && shared.BaselineCode is null)
+        {
+            mode = shared.MayHaveMaglevCode ? kCallModeCheckClosure : kCallModeInline;
+        }
+        shared.InterpreterConstructMode = mode;
+        return mode;
     }
 
     /// <summary>

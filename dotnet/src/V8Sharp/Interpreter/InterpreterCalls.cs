@@ -19,7 +19,7 @@ namespace V8Sharp.Interpreter;
 public static class InterpreterCalls
 {
     /// <summary>CallCountField is shifted by the speculation mode and feedback content bits.</summary>
-    const int kCallCountIncrement = 1 << FeedbackNexus.kCallCountShift;
+    internal const int kCallCountIncrement = 1 << FeedbackNexus.kCallCountShift;
 
     // ---- Feedback -------------------------------------------------------------------
 

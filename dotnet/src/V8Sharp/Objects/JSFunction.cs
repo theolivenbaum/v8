@@ -233,7 +233,7 @@ public sealed class SharedFunctionInfo : HeapObject
     public Builtin BuiltinId
     {
         get => _builtinId;
-        set { _builtinId = value; InterpreterCallMode = 0; }
+        set { _builtinId = value; InterpreterCallMode = 0; InterpreterConstructMode = 0; }
     }
     Builtin _builtinId = Builtin.NoBuiltinId;
 
@@ -249,6 +249,14 @@ public sealed class SharedFunctionInfo : HeapObject
     public byte InterpreterCallMode;
 
     /// <summary>
+    /// How the dispatch loop's Construct enters this function, cached like
+    /// <see cref="InterpreterCallMode"/> from the same fields: 0 not computed,
+    /// else an InterpreterInlineCalls.kCallMode* value (kCallModeInline for an
+    /// ordinary, non-derived constructor with bytecode).
+    /// </summary>
+    public byte InterpreterConstructMode;
+
+    /// <summary>
     /// V8's function_data: the BytecodeArray once compiled (the interpreter's
     /// type), an <see cref="Objects.UncompiledData"/> before, or null for builtins.
     /// TODO(merge): type as V8Sharp.Interpreter.BytecodeArray once the interpreter lands.
@@ -256,7 +264,7 @@ public sealed class SharedFunctionInfo : HeapObject
     public object? FunctionData
     {
         get => _functionData;
-        set { _functionData = value; InterpreterCallMode = 0; }
+        set { _functionData = value; InterpreterCallMode = 0; InterpreterConstructMode = 0; }
     }
     object? _functionData;
 
@@ -269,7 +277,7 @@ public sealed class SharedFunctionInfo : HeapObject
     public Baseline.BaselineCode? BaselineCode
     {
         get => _baselineCode;
-        set { _baselineCode = value; InterpreterCallMode = 0; }
+        set { _baselineCode = value; InterpreterCallMode = 0; InterpreterConstructMode = 0; }
     }
     Baseline.BaselineCode? _baselineCode;
 
@@ -280,7 +288,7 @@ public sealed class SharedFunctionInfo : HeapObject
     public bool MayHaveMaglevCode
     {
         get => _mayHaveMaglevCode;
-        set { _mayHaveMaglevCode = value; InterpreterCallMode = 0; }
+        set { _mayHaveMaglevCode = value; InterpreterCallMode = 0; InterpreterConstructMode = 0; }
     }
     bool _mayHaveMaglevCode;
 
@@ -418,24 +426,24 @@ public sealed class SharedFunctionInfo : HeapObject
 
     // --- flags ---------------------------------------------------------------
 
-    // Kind, LanguageMode and Native reset InterpreterCallMode like the function data.
+    // Kind, LanguageMode and Native reset InterpreterCallMode (and InterpreterConstructMode) like the function data.
     public FunctionKind Kind
     {
         get => _kind;
-        set { _kind = value; InterpreterCallMode = 0; }
+        set { _kind = value; InterpreterCallMode = 0; InterpreterConstructMode = 0; }
     }
     FunctionKind _kind;
     public LanguageMode LanguageMode
     {
         get => _languageMode;
-        set { _languageMode = value; InterpreterCallMode = 0; }
+        set { _languageMode = value; InterpreterCallMode = 0; InterpreterConstructMode = 0; }
     }
     LanguageMode _languageMode;
     public FunctionSyntaxKind SyntaxKind;
     public bool Native
     {
         get => _native;
-        set { _native = value; InterpreterCallMode = 0; }
+        set { _native = value; InterpreterCallMode = 0; InterpreterConstructMode = 0; }
     }
     bool _native;
     public bool IsToplevel;
