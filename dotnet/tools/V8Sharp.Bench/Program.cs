@@ -91,6 +91,7 @@ public static partial class Program
                      d8sharp[:mode]@<dir> runs the d8sharp shell built or published in <dir> as its own process
             suites:  octane (all), octane:<name>, octane-cpu (all) | octane-cpu:<name> (fixed work, scored
                      by thread CPU time; V8SHARP_BENCH_SCALE divides the iterations, default 50),
+                     octane-steady (all) | octane-steady:<name> (octane-cpu after one unmeasured pass),
                      perf:<js-perf-test dir>, micro:<name> | micro:all
             Octane is fetched by tools/V8Sharp.Bench/fetch-octane.sh into dotnet/artifacts/octane.
             """);
@@ -151,7 +152,8 @@ public static partial class Program
     /// <summary>Returns (working directory, files to load, driver source) for a suite.</summary>
     static (string WorkDir, string[] Files, string? Driver) Workload(string suite)
     {
-        bool fixedWork = suite.StartsWith("octane-cpu:", StringComparison.Ordinal);
+        bool steady = suite.StartsWith("octane-steady:", StringComparison.Ordinal);
+        bool fixedWork = steady || suite.StartsWith("octane-cpu:", StringComparison.Ordinal);
         if (suite.StartsWith("octane:", StringComparison.Ordinal) || fixedWork)
         {
             string name = suite[(suite.IndexOf(':') + 1)..];
@@ -188,6 +190,15 @@ public static partial class Program
                           Math.max(bs[b].minIterations, Math.ceil(bs[b].deterministicIterations / scale));
                     }
                   }
+                  if (__benchSteady) {
+                    // octane-steady: one unmeasured pass first, so the measured
+                    // one runs warm (tier-1 code, filled caches and feedback).
+                    BenchmarkSuite.RunSuites({
+                      NotifyResult: function (name, result) { },
+                      NotifyError: function (name, error) { print(name + '(Error): ' + error); },
+                      NotifyScore: function (score) { }
+                    });
+                  }
                   var last = cpuTimeMs();
                   BenchmarkSuite.RunSuites({
                     NotifyResult: function (name, result) {
@@ -202,7 +213,10 @@ public static partial class Program
                 """;
             string scale = Environment.GetEnvironmentVariable("V8SHARP_BENCH_SCALE") ?? "50";
             return (dir, files.Select(f => Path.Combine(dir, f)).ToArray(),
-                fixedWork ? "var __benchScale = " + int.Parse(scale, CultureInfo.InvariantCulture) + ";\n" + fixedDriver : driver);
+                fixedWork
+                    ? "var __benchScale = " + int.Parse(scale, CultureInfo.InvariantCulture) + ", __benchSteady = " +
+                      (steady ? "true" : "false") + ";\n" + fixedDriver
+                    : driver);
         }
         if (suite.StartsWith("micro:", StringComparison.Ordinal))
         {
@@ -228,7 +242,7 @@ public static partial class Program
     static int Compare(string[] args)
     {
         var suites = (Arg(args, "--suites") ?? "octane").Split(',', StringSplitOptions.RemoveEmptyEntries)
-            .SelectMany(s => s is "octane" or "octane-cpu" ? OctaneBenchmarks.Select(b => s + ":" + b) : [s]).ToList();
+            .SelectMany(s => s is "octane" or "octane-cpu" or "octane-steady" ? OctaneBenchmarks.Select(b => s + ":" + b) : [s]).ToList();
         var engines = (Arg(args, "--engines") ?? "v8:jit,v8:jitless,v8sharp").Split(',', StringSplitOptions.RemoveEmptyEntries);
         int runs = int.Parse(Arg(args, "--runs") ?? "1", CultureInfo.InvariantCulture);
         int timeout = int.Parse(Arg(args, "--timeout") ?? "600", CultureInfo.InvariantCulture);
@@ -294,8 +308,8 @@ public static partial class Program
             if (buildDir is null) throw new ArgumentException("d8sharp needs @<dir> (a d8sharp build or publish)");
             string mode = childEngine == "d8sharp" ? "" : childEngine[8..];
             if (!V8SharpModes.TryGetValue(mode, out var flags)) throw new ArgumentException("unknown v8sharp mode " + mode);
-            if (suite.StartsWith("octane-cpu:", StringComparison.Ordinal))
-                throw new ArgumentException("octane-cpu needs the in-process hosts (cpuTimeMs)");
+            if (suite.StartsWith("octane-cpu:", StringComparison.Ordinal) || suite.StartsWith("octane-steady:", StringComparison.Ordinal))
+                throw new ArgumentException("octane-cpu and octane-steady need the in-process hosts (cpuTimeMs)");
             string shell = Path.Combine(buildDir, OperatingSystem.IsWindows() ? "d8sharp.exe" : "d8sharp");
             var (workDir, files, driver) = Workload(suite);
             psi.FileName = File.Exists(shell) ? shell : "dotnet";
