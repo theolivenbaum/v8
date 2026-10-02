@@ -538,67 +538,70 @@ the 2026-09-28 ratios above no longer hold). Changes: the interpreter's fast
 paths emitted as IL and chosen from the feedback, registers in IL locals,
 lean baseline-to-baseline calls (also through call/apply), compact code for
 huge functions, concurrent compilation fully optimized by RyuJIT off the main
-thread. 4-core container shared with other agents' test runs (load 8-15).
+thread. 4-core container; every benchmark ran under the machine-wide
+exclusive lock (/home/user/locks/bench.lock), so no other benchmark ran at
+the same time (builds and unit tests of other agents could).
 
 Thread CPU of the benchmark thread (`octane-cpu`, V8SHARP_BENCH_SCALE=50,
-fixed work, median of 3 interleaved runs; background compilation is not
-counted here, the `.process` column of the raw results counts it):
+fixed work, median of 3 interleaved runs, zlib 2; background compilation is
+not counted here, the `.process` figures in artifacts count it):
 
 | benchmark | interpreter | sparkplug (tiering) | always-sparkplug | sparkplug / interpreter |
 |---|---|---|---|---|
-| Richards | 563 | 812 | 732 | 1.44 |
-| DeltaBlue | 487 | 618 | 548 | 1.27 |
-| Crypto | 74.8 | 97.5 | 101 | 1.30 |
-| RayTrace | 263 | 351 | 299 | 1.33 |
-| EarleyBoyer | 118 | 155 | 140 | 1.32 |
-| RegExp | 263 | 257 | 257 | 0.98 |
-| Splay | 1196 | 1101 | 1155 | 0.92 |
-| NavierStokes | 296 | 532 | 440 | 1.80 |
-| PdfJS | 228 | 195 | 162 | 0.85 |
-| Mandreel | 27.7 | 29.2 | 26.7 | 1.05 |
-| Gameboy | 152 | 131 | 106 | 0.86 |
-| CodeLoad | 560 | 499 | 195 | 0.89 |
-| Box2D | 421 | 353 | 232 | 0.84 |
-| zlib | 11.4 | 11.9 | 11.8 | 1.05 |
-| geomean | 265 | 272 | 236 | 1.03 |
+| Richards | 542 | 766 | 693 | 1.41 |
+| DeltaBlue | 408 | 524 | 497 | 1.28 |
+| Crypto | 68.1 | 89.9 | 99.2 | 1.32 |
+| RayTrace | 264 | 340 | 292 | 1.29 |
+| EarleyBoyer | 122 | 157 | 140 | 1.29 |
+| RegExp | 246 | 282 | 247 | 1.15 |
+| Splay | 1145 | 1132 | 1120 | 0.99 |
+| NavierStokes | 288 | 482 | 422 | 1.67 |
+| PdfJS | 237 | 215 | 176 | 0.91 |
+| Mandreel | 27.6 | 28.1 | 26.3 | 1.02 |
+| Gameboy | 139 | 137 | 104 | 0.98 |
+| CodeLoad | 530 | 472 | 172 | 0.89 |
+| Box2D | 413 | 338 | 227 | 0.82 |
+| zlib | 10.5 | 11.2 | 10.8 | 1.07 |
+| geomean | 190 | 214 | 178 | 1.13 |
 
 Octane's own wall-clock scores (V8Sharp.Bench `octane`, median of 2
-interleaved runs; V8 is the oracle, V8 14.7 through ClearScript; Typescript
-fails in V8Sharp with "duplicate descriptor" in every mode):
+interleaved runs; V8 is the oracle, V8 14.7 through ClearScript, mean of 2;
+Typescript fails in V8Sharp with "duplicate descriptor" in every mode, and
+zlib takes 5 minutes per run in V8Sharp, so it is only in the table above):
 
 | benchmark | interpreter | sparkplug (tiering) | always-sparkplug | V8 --jitless | V8 sparkplug |
 |---|---|---|---|---|---|
-| Richards | 638 | 918 | 1108 | 1370 | 1887 |
-| DeltaBlue | 702 | 1004 | 885 | 1527 | 2008 |
-| Crypto | 610 | 723 | 870 | 1364 | 1936 |
-| RayTrace | 1462 | 1738 | 1614 | 3597 | 4487 |
-| EarleyBoyer | 2592 | 3357 | 3132 | 5866 | 7788 |
-| RegExp | 1442 | 1606 | 1516 | 1988 | 4278 |
-| Splay | 2849 | 1750 | 2267 | 1768 | 1860 |
-| NavierStokes | 1238 | 2242 | 1834 | 1598 | 1795 |
-| PdfJS | 858 | 552 | 740 | 7382 | 8944 |
-| Mandreel | 226 | 206 | 215 | 1150 | 1454 |
-| Gameboy | 1288 | 954 | 1138 | 8026 | 9052 |
-| CodeLoad | 2438 | 1880 | 532 | 17599 | 15647 |
-| Box2D | 1860 | 1694 | 1118 | 3792 | 4635 |
-| zlib | 521 | 546 | 544 | 2269 | 65746 |
+| Richards | 686 | 940 | 984 | 1375 | 1794 |
+| DeltaBlue | 710 | 939 | 889 | 1344 | 1696 |
+| Crypto | 586 | 463 | 684 | 1258 | 1852 |
+| RayTrace | 1488 | 2094 | 1862 | 3340 | 4302 |
+| EarleyBoyer | 2282 | 2756 | 2858 | 5761 | 8518 |
+| RegExp | 1415 | 1418 | 1466 | 2438 | 4490 |
+| Splay | 2728 | 2802 | 2707 | 2101 | 3015 |
+| NavierStokes | 1460 | 2968 | 2351 | 1683 | 1956 |
+| PdfJS | 1078 | 965 | 991 | 7867 | 10597 |
+| Mandreel | 225 | 258 | 242 | 1144 | 1535 |
+| Gameboy | 1666 | 1668 | 1166 | 7577 | 9792 |
+| CodeLoad | 2206 | 2388 | 526 | 16362 | 17784 |
+| Box2D | 1810 | 1730 | 1076 | 4146 | 4868 |
 
-The tier is 1.3-1.8x the interpreter on the long-running benchmarks
-(Richards, DeltaBlue, Crypto, RayTrace, EarleyBoyer, NavierStokes) and
-slower on the short ones (PdfJS, Gameboy, CodeLoad, Box2D): their Octane
-runs last about two seconds, and compiling the 170-290 functions they make
-hot costs 2.5-3 s of RyuJIT time on the background thread. On an idle
-machine PdfJS's first round already beats the interpreter (1311 vs 956,
-d8sharp); with the cores busy the compile thread competes with the main
-thread and with RyuJIT's own tier-1 thread. The Splay wall-clock figure is
-one outlier run (721; the other was 2779). Hence Sparkplug stays off by
-default (deviations.md).
+Sparkplug / interpreter: 1.14x geomean on wall-clock, 1.13x on thread CPU.
+The tier is 1.3-2x the interpreter on the long-running benchmarks
+(Richards, DeltaBlue, RayTrace, EarleyBoyer, NavierStokes) and slower on
+the short ones that make many functions hot (PdfJS, Box2D, and CodeLoad by
+thread CPU): their Octane runs last about two seconds, and compiling the
+170-290 functions they make hot costs 2.5-3 s of RyuJIT time on the
+background thread, while the code that runs meanwhile is still the
+interpreter's. Crypto's wall-clock score is bimodal in every build tried
+(sparkplug runs of 373-933; the thread-CPU figure is stable at 1.3x). V8's
+own Sparkplug is 1.1-1.9x its interpreter on the same runs. Sparkplug
+stays off by default (deviations.md).
 
-The interpreter micro-benchmarks (`micro:all`, calls per second, 2 runs):
-the tier is 1.77x the interpreter (geomean 463 vs 262; 3-3.7x on the
-arithmetic and empty loops, 2.2-2.6x on property loads and stores and array
-indexing, 1.15-1.8x on calls, 1.0-1.15x on ArrayPush and ArrayIndexOf,
-which are builtin-bound).
+The interpreter micro-benchmarks (`micro:all`, calls per second, 2 runs,
+under the lock): the tier is 1.75x the interpreter (geomean 476 vs 272;
+1.6-4.5x on the arithmetic and empty loops, 1.65-2.6x on array indexing and
+property access, 1.2-1.9x on calls and closures, 1.05-1.1x on object and
+class construction, 1.0x on ArrayIndexOf, which is builtin-bound).
 
 - [x] Temporal (`--harmony-temporal`, shipped and on by default in this
       revision). The binding layer is ported from
