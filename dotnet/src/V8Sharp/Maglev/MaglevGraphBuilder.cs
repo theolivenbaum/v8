@@ -1020,6 +1020,22 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>
+    /// The Float64 operand of an arithmetic operation. A hole loaded from
+    /// holey double elements as undefined (HoleyFloat64ToTagged) is its NaN
+    /// here, without a check: ToNumber(undefined) is NaN, and arithmetic
+    /// gives NaN for any NaN input (V8: HoleyFloat64ToMaybeNanFloat64).
+    /// Comparisons and stores still see undefined.
+    /// </summary>
+    ValueNode GetFloat64ForArithmetic(ValueNode value, NodeType allowed)
+    {
+        if (value.Opcode == Opcode.HoleyFloat64ToTagged && value.Inputs[0].Representation == ValueRepresentation.kHoleyFloat64)
+        {
+            return value.Inputs[0];
+        }
+        return GetFloat64(value, allowed);
+    }
+
+    /// <summary>
     /// GetInt32ElementIndex: the int32 index of a key: Smis and int32s as they
     /// are, other values through CheckedObjectToIndex (integral numbers and
     /// array index strings; others deoptimize).

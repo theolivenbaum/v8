@@ -1013,7 +1013,8 @@ public sealed partial class MaglevGraphBuilder
                     SetAccumulator(BuildInt32BinaryOperation(op, GetInt32(left), GetInt32(right)));
                     return;
                 }
-                SetAccumulator(BuildFloat64BinaryOperation(op, GetFloat64(left, assumed), GetFloat64(right, assumed)));
+                SetAccumulator(BuildFloat64BinaryOperation(op, GetFloat64ForArithmetic(left, assumed),
+                    GetFloat64ForArithmetic(right, assumed)));
                 return;
             }
             case BinaryOperationHint.kString:
@@ -1063,7 +1064,7 @@ public sealed partial class MaglevGraphBuilder
                     SetAccumulator(BuildInt32BinaryOperation(op, GetInt32(left), GetInt32Constant(constant)));
                     return;
                 }
-                SetAccumulator(BuildFloat64BinaryOperation(op, GetFloat64(left, assumed), GetFloat64Constant(constant)));
+                SetAccumulator(BuildFloat64BinaryOperation(op, GetFloat64ForArithmetic(left, assumed), GetFloat64Constant(constant)));
                 return;
             }
         }
@@ -1123,7 +1124,7 @@ public sealed partial class MaglevGraphBuilder
                     }, op == Operation.Negate ? DeoptimizeReason.kMinusZero : DeoptimizeReason.kOverflow));
                     return;
                 }
-                ValueNode f = GetFloat64(value, assumed);
+                ValueNode f = GetFloat64ForArithmetic(value, assumed);
                 ValueNode result = op switch
                 {
                     Operation.Increment => Float64Binary(Opcode.Float64Add, f, GetFloat64Constant(1)),
@@ -1455,12 +1456,15 @@ public sealed partial class MaglevGraphBuilder
     {
         ValueNode value = GetAccumulator();
         if (value.Representation != ValueRepresentation.kTagged || CheckType(value, NodeType.kNumber)) return;
-        BinaryOperationHint hint = BinaryHint(0);
+        // BuildToNumberOrToNumeric: the feedback is in the slot (not embedded,
+        // unlike the unary operations'); without feedback the conversion is a
+        // generic call, not a deopt.
+        JSValue feedback = new FeedbackNexus(Isolate, _unit.Feedback, FeedbackSlot(0)).GetFeedback();
+        BinaryOperationHint hint = feedback.IsNumber
+            ? FeedbackTypeHints.BinaryOperationHintFromFeedback((int)feedback.Number)
+            : BinaryOperationHint.kNone;
         switch (hint)
         {
-            case BinaryOperationHint.kNone:
-                EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForUnaryOperation);
-                return;
             case BinaryOperationHint.kSignedSmall:
             case BinaryOperationHint.kSignedSmallInputs:
             case BinaryOperationHint.kAdditiveSafeInteger:

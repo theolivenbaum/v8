@@ -260,6 +260,22 @@ public static class MaglevBuiltins
         Unsafe.As<FixedDoubleArray>(elements._obj!)._data[index] = value;
     }
 
+    /// <summary>The slow path of CheckMapsWithMigration: migrates a deprecated map, then checks the maps again.</summary>
+    public static bool MigrateAndCheckMaps(Isolate isolate, JSValue value, Map[] maps)
+    {
+        if (value._obj is not JSObject o || !o.Map.IsDeprecated) return false;
+        if (!JSObject.TryMigrateInstance(isolate, o)) return false;
+        return Array.IndexOf(maps, o.Map) >= 0;
+    }
+
+    /// <summary>TransitionElementsKind to <paramref name="target"/>; false (deopt) if the object ends up with another map.</summary>
+    public static bool TransitionElementsKind(Isolate isolate, JSValue obj, Map target)
+    {
+        var o = Unsafe.As<JSObject>(obj._obj!);
+        JSObject.TransitionElementsKind(isolate, o, target.ElementsKind);
+        return ReferenceEquals(o.Map, target);
+    }
+
     /// <summary>CheckValueEqualsString (and the keyed name's primitive, the hole if none).</summary>
     public static bool ValueEqualsString(JSValue value, JSString expected, JSValue primitive)
     {

@@ -1309,6 +1309,13 @@ internal sealed class MaglevCodeGenerator
                 });
                 DeoptIfFalse(node);
                 return;
+            case Opcode.TransitionElementsKind:
+                _il.Emit(OpCodes.Ldarg_1);
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                LoadConstantObject(node.Obj0, typeof(Map));
+                Call(nameof(MaglevBuiltins.TransitionElementsKind));
+                DeoptIfFalse(node);
+                return;
             case Opcode.CheckValueEqualsString:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 LoadConstantObject(node.Obj0, typeof(JSString));
@@ -1735,22 +1742,38 @@ internal sealed class MaglevCodeGenerator
     {
         var maps = (Map[])node.Obj0!;
         Label exit = EagerExit(node.EagerDeoptInfo!);
+        // CheckMapsWithMigration: when a map is a migration target, an object
+        // with a deprecated map is migrated and checked again.
+        bool migrate = false;
+        foreach (Map map in maps) migrate |= map.IsMigrationTarget;
+        Label fail = migrate ? _il.DefineLabel() : exit;
+        Label ok = _il.DefineLabel();
         EmitLoadMapOrBranch(node.Inputs[0], exit);
         if (maps.Length == 1)
         {
             LoadConstantObject(maps[0], typeof(Map));
-            _il.Emit(OpCodes.Bne_Un, exit);
-            return;
-        }
-        _il.Emit(OpCodes.Stloc, _tmpMap);
-        Label ok = _il.DefineLabel();
-        foreach (Map map in maps)
-        {
-            _il.Emit(OpCodes.Ldloc, _tmpMap);
-            LoadConstantObject(map, typeof(Map));
             _il.Emit(OpCodes.Beq, ok);
         }
-        _il.Emit(OpCodes.Br, exit);
+        else
+        {
+            _il.Emit(OpCodes.Stloc, _tmpMap);
+            foreach (Map map in maps)
+            {
+                _il.Emit(OpCodes.Ldloc, _tmpMap);
+                LoadConstantObject(map, typeof(Map));
+                _il.Emit(OpCodes.Beq, ok);
+            }
+        }
+        _il.Emit(OpCodes.Br, fail);
+        if (migrate)
+        {
+            _il.MarkLabel(fail);
+            _il.Emit(OpCodes.Ldarg_1);
+            Load(node.Inputs[0], ValueRepresentation.kTagged);
+            LoadConstantObject(maps, typeof(Map[]));
+            Call(nameof(MaglevBuiltins.MigrateAndCheckMaps));
+            _il.Emit(OpCodes.Brfalse, exit);
+        }
         _il.MarkLabel(ok);
     }
 

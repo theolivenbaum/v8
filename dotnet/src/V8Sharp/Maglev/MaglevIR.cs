@@ -249,6 +249,8 @@ public enum Opcode : ushort
     CheckedObjectToIndex,
     /// <summary>CheckValueEqualsString: the value is a string equal to Obj0 (or Value0, a primitive with that name).</summary>
     CheckValueEqualsString,
+    /// <summary>TransitionElementsKind: the object (of the source map) transitions to Obj0, the target map.</summary>
+    TransitionElementsKind,
     LoadPropertyCellValue,
     StorePropertyCellValue,
     /// <summary>V8Sharp: EnsureWritableFastElements + MaybeGrowFastElements for an append store.</summary>

@@ -657,8 +657,11 @@ public sealed partial class MaglevGraphBuilder
     ValueNode BuildElementLoad(ValueNode elements, ValueNode index, ElementsKind kind, bool anyHoley, Map[] maps,
         List<(Map Map, JSValue Handler)> feedback)
     {
-        // Holes are undefined when the prototype chain has no elements and the IC handled holes.
-        bool convertHole = anyHoley && CanTreatHoleAsUndefined(maps) && LoadModeHandlesHoles(feedback);
+        // Holes are undefined when the prototype chain has no elements and the
+        // IC handled holes (double elements: whatever the IC saw, as V8's
+        // BuildLoadHoleyFixedDoubleArrayElement).
+        bool convertHole = anyHoley && CanTreatHoleAsUndefined(maps) &&
+            (ElementsKinds.IsDoubleElementsKind(kind) || LoadModeHandlesHoles(feedback));
         if (ElementsKinds.IsDoubleElementsKind(kind))
         {
             if (anyHoley)
@@ -809,11 +812,12 @@ public sealed partial class MaglevGraphBuilder
         bool grouped = CollectElementAccess(feedback, load: false, out ElementsKind kind, out bool isJSArray, out bool _);
         if (!grouped)
         {
-            // TryBuildPolymorphicElementAccess: one store per map.
-            if (feedback.Count < 2) return false;
+            // TryBuildPolymorphicElementAccess: one store per map (a map with
+            // an elements kind transition first transitions the object).
+            if (feedback.Count < 2 && !IsElementsTransitionStore(feedback[0], out _)) return false;
             foreach ((Map Map, JSValue Handler) entry in feedback)
             {
-                if (!CollectElementAccess([entry], load: false, out _, out _, out _)) return false;
+                if (!CollectElementAccess([entry], load: false, out _, out _, out _) && !IsElementsTransitionStore(entry, out _)) return false;
             }
         }
         KeyedAccessStoreMode mode = KeyedAccessStoreMode.kInBounds;
@@ -825,10 +829,15 @@ public sealed partial class MaglevGraphBuilder
         }
         var maps = new Map[feedback.Count];
         for (int i = 0; i < maps.Length; i++) maps[i] = feedback[i].Map;
+        var checkedMaps = new List<Map>(maps);
+        foreach ((Map Map, JSValue Handler) entry in feedback)
+        {
+            if (IsElementsTransitionStore(entry, out Map? target)) checkedMaps.Add(target!);
+        }
         // For holey stores or growing stores, the prototype chain must have no
         // element setters, guarded by dependencies on the stable prototype maps.
         List<Map>? prototypeMaps = null;
-        foreach (Map map in maps)
+        foreach (Map map in checkedMaps)
         {
             if ((ElementsKinds.IsHoleyOrDictionaryElementsKind(map.ElementsKind) || mode != KeyedAccessStoreMode.kInBounds) &&
                 !PrototypesElementsDoNotHaveAccessorsOrThrow(map, ref prototypeMaps))
@@ -846,6 +855,25 @@ public sealed partial class MaglevGraphBuilder
             var cases = new List<(Map[] Maps, Func<ValueNode?> Build)>(feedback.Count);
             foreach ((Map Map, JSValue Handler) entry in feedback)
             {
+                if (IsElementsTransitionStore(entry, out Map? target))
+                {
+                    // BuildTransitionElementsKindOrCheckMap: the source map transitions to the target.
+                    Map to = target!;
+                    cases.Add(([entry.Map], () =>
+                    {
+                        AddNewNode(new Node(Opcode.TransitionElementsKind)
+                        {
+                            Inputs = [obj],
+                            Obj0 = to,
+                            Properties = OpProperties.kEagerDeopt | OpProperties.kCanAllocate | OpProperties.kCanWrite |
+                                         OpProperties.kNotIdempotent,
+                        }, DeoptimizeReason.kWrongMap);
+                        RecordKnownMaps(obj, [to]);
+                        BuildElementStore(obj, polymorphicIndex, value, to.ElementsKind, to.InstanceType == InstanceType.JSArrayType, mode);
+                        return null;
+                    }));
+                    continue;
+                }
                 CollectElementAccess([entry], load: false, out ElementsKind entryKind, out bool entryIsJSArray, out bool _);
                 cases.Add(([entry.Map], () =>
                 {
@@ -858,6 +886,30 @@ public sealed partial class MaglevGraphBuilder
         }
         BuildCheckMaps(obj, maps);
         BuildElementStore(obj, GetInt32ElementIndex(key), value, kind, isJSArray, mode);
+        return true;
+    }
+
+    /// <summary>
+    /// A store handler that transitions the elements kind of a fast map to a
+    /// more general fast kind (StoreHandler::StoreElementTransition).
+    /// </summary>
+    static bool IsElementsTransitionStore((Map Map, JSValue Handler) entry, out Map? target)
+    {
+        target = null;
+        if (entry.Handler.HeapObjectOrNull is not StoreHandler
+            {
+                HandlerKind: StoreHandler.Kind.kElement, ElementsTransitionMap: { } to,
+            } handler)
+        {
+            return false;
+        }
+        Map from = entry.Map;
+        if (!ElementsKinds.IsFastElementsKind(from.ElementsKind) || !ElementsKinds.IsFastElementsKind(to.ElementsKind) ||
+            from.InstanceType != to.InstanceType || handler.StoreMode == KeyedAccessStoreMode.kIgnoreTypedArrayOOB)
+        {
+            return false;
+        }
+        target = to;
         return true;
     }
 

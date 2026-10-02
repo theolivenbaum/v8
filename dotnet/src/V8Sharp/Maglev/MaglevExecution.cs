@@ -92,15 +92,25 @@ namespace V8Sharp.Maglev
                     ClearMaglevFlags(isolate, ref state);
                     result = InterpreterExecution.Run(isolate, ref state);
                 }
+                LeaveOsr(isolate, ref state, frameIndex, baseIndex, inlineCall);
                 return result;
             }
-            finally
+            catch
             {
-                frames = isolate.InterpreterFrames;
-                frames[frameIndex].IsMaglev = false;
-                frames[frameIndex].InlineCall = inlineCall;
-                state.BaseFrameIndex = baseIndex;
+                // Not a finally: the exception filters of the outer interpreter
+                // loops (which look for handlers in the state's frames) run
+                // before finally blocks, so the state is restored here first.
+                LeaveOsr(isolate, ref state, frameIndex, baseIndex, inlineCall);
+                throw;
             }
+        }
+
+        static void LeaveOsr(Isolate isolate, ref InterpreterState state, int frameIndex, int baseIndex, bool inlineCall)
+        {
+            InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
+            frames[frameIndex].IsMaglev = false;
+            frames[frameIndex].InlineCall = inlineCall;
+            state.BaseFrameIndex = baseIndex;
         }
 
         /// <summary>
