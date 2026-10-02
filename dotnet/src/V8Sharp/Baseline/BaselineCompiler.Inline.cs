@@ -129,8 +129,24 @@ public sealed partial class BaselineCompiler
 
     void RegObj(Register r)
     {
+        if (IsCached(r))
+        {
+            LocalObj(_registerLocals![r.Index]);
+            return;
+        }
         RegRef(r);
         Emit(OpCodes.Ldfld, s_obj);
+    }
+
+    void RegNum(Register r)
+    {
+        if (IsCached(r))
+        {
+            LocalNum(_registerLocals![r.Index]);
+            return;
+        }
+        RegRef(r);
+        Emit(OpCodes.Ldfld, s_num);
     }
 
     /// <summary>acc = the number in <paramref name="value"/> (a double local).</summary>
@@ -189,6 +205,12 @@ public sealed partial class BaselineCompiler
     /// </summary>
     void StoreToRegister(Register target, LocalBuilder value)
     {
+        if (IsCached(target))
+        {
+            Emit(OpCodes.Ldloc, value);
+            Emit(OpCodes.Stloc, _registerLocals![target.Index]);
+            return;
+        }
         Label skip = _il.DefineLabel();
         RegRef(target);
         Emit(OpCodes.Ldfld, s_obj);
@@ -207,6 +229,12 @@ public sealed partial class BaselineCompiler
 
     void EmitMov(Register from, Register to)
     {
+        if (IsCached(to))
+        {
+            Reg(from);
+            Emit(OpCodes.Stloc, _registerLocals![to.Index]);
+            return;
+        }
         Reg(from);
         Emit(OpCodes.Stloc, TVal);
         StoreToRegister(to, TVal);
@@ -1157,8 +1185,7 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Ldfld, s_shIsSimpleElementStore);
         Emit(OpCodes.Brfalse, slow);
         Emit(OpCodes.Ldloc, TObj);
-        RegRef(key);
-        Emit(OpCodes.Ldfld, s_num);
+        RegNum(key);
         Acc();
         CallBuiltin("TryStoreElementInBounds");
         Emit(OpCodes.Brtrue, done);
@@ -1209,6 +1236,8 @@ public sealed partial class BaselineCompiler
             Emit(OpCodes.Br, continueAt);
         }
         _il.MarkLabel(interrupt);
+        // The runtime may look at the frame (tiering, OSR): it gets the registers.
+        if (backEdge && _registerLocals is not null) SpillRegisters(0, _registerLocals.Length);
         Isolate();
         Fn();
         CallBuiltin(backEdge ? "BudgetInterruptOnJumpLoop" : "BudgetInterruptOnReturn");

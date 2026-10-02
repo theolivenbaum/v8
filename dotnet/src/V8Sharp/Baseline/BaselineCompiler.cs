@@ -147,6 +147,7 @@ public sealed partial class BaselineCompiler
         for (; !_iterator.Done(); _iterator.Advance()) PreVisitSingleBytecode();
         _iterator.Reset();
 
+        SetUpRegisterCache();
         Prologue();
         for (; !_iterator.Done(); _iterator.Advance()) VisitSingleBytecode();
 
@@ -282,9 +283,16 @@ public sealed partial class BaselineCompiler
         il.Emit(OpCodes.Ldfld, s_stPc);
         il.Emit(OpCodes.Stloc, _masm.Scratch);
 
+        var entryStubs = new List<(int Offset, Label Stub)>();
         foreach (int offset in _entryOffsets)
         {
             Label target = EnsureLabel(offset);
+            if (_registerLocals is not null)
+            {
+                // Cached registers are loaded from the frame on entry.
+                target = il.DefineLabel();
+                entryStubs.Add((offset, target));
+            }
             il.Emit(OpCodes.Ldloc, _masm.Scratch);
             if (offset == 0)
             {
@@ -300,6 +308,24 @@ public sealed partial class BaselineCompiler
         il.Emit(OpCodes.Ldloc, _masm.Scratch);
         CallBuiltin("Illegal");
         _masm.Return();
+
+        foreach ((int offset, Label stub) in entryStubs)
+        {
+            il.MarkLabel(stub);
+            if (offset == 0)
+            {
+                // A new frame: the register file is undefined (as the locals
+                // start out), except new.target, which the caller stored.
+                Register incoming = _bytecode.IncomingNewTargetOrGeneratorRegister;
+                if (incoming.IsValid && IsCached(incoming)) ReloadRegisters(incoming.Index, 1);
+            }
+            else
+            {
+                // OSR from the interpreter at a loop header.
+                ReloadRegisters(0, _registerLocals!.Length);
+            }
+            il.Emit(OpCodes.Br, _labels[offset]);
+        }
     }
 
     // ---- Operand helpers (BaselineCompiler::RegisterOperand, Constant, Uint ...) --------------------------
@@ -388,7 +414,19 @@ public sealed partial class BaselineCompiler
     void Fv() => _masm.LoadFeedbackVector();
     void Fn() => _masm.LoadFunction();
     void I(int value) => _masm.LoadInt(value);
-    void Reg(Register r) => _masm.LoadRegister(r);
+    /// <summary>Pushes the value of register <paramref name="r"/> (its IL local when the register is cached).</summary>
+    void Reg(Register r)
+    {
+        if (IsCached(r)) Emit(OpCodes.Ldloc, _registerLocals![r.Index]);
+        else _masm.LoadRegister(r);
+    }
+
+    /// <summary>
+    /// Pushes the address of register <paramref name="r"/>'s frame slot. For a
+    /// cached register this is the frame copy: a bytecode whose builtin writes
+    /// a register through it has the register reloaded afterwards
+    /// (VisitSingleBytecode).
+    /// </summary>
     void RegRef(Register r) => _masm.LoadRegisterAddress(r);
     void RegIndex(Register r) => _masm.LoadRegisterStackIndex(r);
     void Const(int index) => _masm.LoadConstant(index);
@@ -481,6 +519,7 @@ public sealed partial class BaselineCompiler
 
         Bytecode bytecode = _iterator.CurrentBytecode();
         if (NeedsBytecodeOffset(bytecode)) _masm.StoreBytecodeOffset(Cursor);
+        if (_registerLocals is not null) SpillRegisterListOperands(bytecode);
 
         switch (bytecode)
         {
@@ -1325,11 +1364,10 @@ public sealed partial class BaselineCompiler
                 break;
             case Bytecode.JumpIfForInDoneConstant:
             case Bytecode.JumpIfForInDone:
-                // index == cache length.
-                RegRef(RegisterOperand(1));
-                RegRef(RegisterOperand(2));
-                CallBuiltin("IsIdentical");
-                _masm.JumpIfTrue(_labels[JumpTargetOffset()]);
+                // index == cache length (both numbers: ForInPrepare / ForInStep).
+                RegNum(RegisterOperand(1));
+                RegNum(RegisterOperand(2));
+                Emit(OpCodes.Beq, _labels[JumpTargetOffset()]);
                 break;
             case Bytecode.SwitchOnSmiNoFeedback:
                 VisitSwitchOnSmiNoFeedback();
@@ -1372,8 +1410,20 @@ public sealed partial class BaselineCompiler
                 break;
             }
             case Bytecode.ForInStep:
-                RegRef(RegisterOperand(0));
-                CallBuiltin("ForInStep");
+                if (IsCached(RegisterOperand(0)))
+                {
+                    // The index is a number: only the payload changes.
+                    Emit(OpCodes.Ldloca, _registerLocals![RegisterOperand(0).Index]);
+                    RegNum(RegisterOperand(0));
+                    Emit(OpCodes.Ldc_R8, 1.0);
+                    Emit(OpCodes.Add);
+                    Emit(OpCodes.Stfld, s_num);
+                }
+                else
+                {
+                    RegRef(RegisterOperand(0));
+                    CallBuiltin("ForInStep");
+                }
                 break;
             case Bytecode.ForOfNext:
                 Isolate();
@@ -1500,6 +1550,7 @@ public sealed partial class BaselineCompiler
                 CallBuiltin("Illegal");
                 break;
         }
+        if (_registerLocals is not null) ReloadRegisterOutputOperands(bytecode);
     }
 
     /// <summary>A binary operation with the register operand as lhs and embedded feedback (operand 1).</summary>
