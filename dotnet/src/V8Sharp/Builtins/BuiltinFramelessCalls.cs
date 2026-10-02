@@ -117,6 +117,30 @@ public static partial class BuiltinRegistry
     }
 
     /// <summary>
+    /// True when a [[Construct]] of <paramref name="function"/> needs no frame
+    /// record: `new Array()` and `new Array(n)` for a small Smi n with the
+    /// Array function as new.target, from its own realm. V8 handles these in
+    /// ArrayConstructorImpl's CSA dispatch (ArrayNoArgumentConstructor,
+    /// ArraySingleArgumentConstructor) without calling out; they run no
+    /// JavaScript and cannot throw.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool CanConstructWithoutFrame(Isolate isolate, JSFunction function, JSValue newTarget, ReadOnlySpan<JSValue> args)
+    {
+        if (function.Shared.BuiltinId != Builtin.ArrayConstructor || !ReferenceEquals(newTarget._obj, function)) return false;
+        if (args.Length == 1)
+        {
+            JSValue length = args[0];
+            if (!length.IsSmi || (uint)(int)length._num >= (uint)JSArray.kInitialMaxFastElementArray) return false;
+        }
+        else if (args.Length != 0)
+        {
+            return false;
+        }
+        return ReferenceEquals(function.Context.NativeContext, isolate.Context?.NativeContext);
+    }
+
+    /// <summary>
     /// undefined, null, booleans, numbers and strings: ToNumber, ToString and
     /// ToIntegerOrInfinity of these run no JavaScript and cannot throw
     /// (symbols and BigInts can throw).

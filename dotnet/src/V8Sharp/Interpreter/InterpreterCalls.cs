@@ -450,6 +450,11 @@ public static class InterpreterCalls
                 {
                     isolate.ArrayConstructorAllocationSite = site;
                 }
+                // new Array() / new Array(n): the CSA dispatch, without a frame.
+                if (BuiltinRegistry.CanConstructWithoutFrame(isolate, function, newTarget, args))
+                {
+                    return BuiltinRegistry.Invoke(isolate, Builtin.ArrayConstructor, function, newTarget, JSValue.TheHole, args);
+                }
                 // JSBuiltinsConstructStub: the builtin creates its own receiver.
                 return CallBuiltin(isolate, function, JSValue.TheHole, args, newTarget);
             }
