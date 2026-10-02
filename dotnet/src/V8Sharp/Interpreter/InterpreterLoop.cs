@@ -446,18 +446,28 @@ public static partial class InterpreterExecution
                 case Bytecode.TestEqual:
                 {
                     JSValue lhs = RegAt(ref fpSlot, Signed<TS>(ref ip, 1));
-                    acc = lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance
-                        ? InterpreterOps.EqualNumbers(lhs._num, acc._num, ref Unsafe.Add(ref ip, 1 + S))
-                        : TestEqual<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    if (lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance &&
+                        NumberCompareFeedbackCovered(Unsafe.Add(ref ip, 1 + S), lhs._num, acc._num))
+                    {
+                        acc = lhs._num == acc._num ? JSValue.True : JSValue.False;
+                        ip = ref Unsafe.Add(ref ip, 2 + S);
+                        continue;
+                    }
+                    acc = TestEqual<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
                     continue;
                 }
                 case Bytecode.TestEqualStrict:
                 {
                     JSValue lhs = RegAt(ref fpSlot, Signed<TS>(ref ip, 1));
-                    acc = lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance
-                        ? InterpreterOps.EqualNumbers(lhs._num, acc._num, ref Unsafe.Add(ref ip, 1 + S))
-                        : TestEqualStrict<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    if (lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance &&
+                        NumberCompareFeedbackCovered(Unsafe.Add(ref ip, 1 + S), lhs._num, acc._num))
+                    {
+                        acc = lhs._num == acc._num ? JSValue.True : JSValue.False;
+                        ip = ref Unsafe.Add(ref ip, 2 + S);
+                        continue;
+                    }
+                    acc = TestEqualStrict<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
                     continue;
                 }
@@ -472,17 +482,18 @@ public static partial class InterpreterExecution
                     // TestGreaterThanOrEqual are consecutive, bit 0 swaps the
                     // operands (>, >=) and bit 1 includes equality (<=, >=).
                     JSValue lhs = RegAt(ref fpSlot, Signed<TS>(ref ip, 1));
-                    if (lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance)
+                    if (lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance &&
+                        NumberCompareFeedbackCovered(Unsafe.Add(ref ip, 1 + S), lhs._num, acc._num))
                     {
                         int k = ip - (int)Bytecode.TestLessThan;
                         double l = lhs._num, r = acc._num;
                         double a = (k & 1) == 0 ? l : r, b = (k & 1) == 0 ? r : l;
                         bool result = (k & 2) == 0 ? a < b : a <= b;
-                        InterpreterOps.UpdateCompareFeedbackForNumbers(ref Unsafe.Add(ref ip, 1 + S), l, r);
                         acc = result ? JSValue.True : JSValue.False;
                     }
                     else
                     {
+                        // Also numbers whose feedback changes (Relational updates it).
                         acc = Relational<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     }
                     ip = ref Unsafe.Add(ref ip, 2 + S);
@@ -697,15 +708,37 @@ public static partial class InterpreterExecution
 
                 // ---- Unary operators ------------------------------------------------------------------------------
                 case Bytecode.Inc:
-                    acc = acc._obj == NumberTag.Instance
-                        ? InterpreterOps.IncrementNumber(acc._num, ref Unsafe.Add(ref ip, 1))
-                        : UnaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    if (acc._obj == NumberTag.Instance)
+                    {
+                        byte feedback = Unsafe.Add(ref ip, 1);
+                        if (InterpreterOps.IsNumberFeedbackSaturated(feedback) ||
+                            InterpreterOps.BinaryFeedbackIncludesSmi(feedback) && InterpreterOps.TryGetSmi(acc._num, out int i) &&
+                            i != JSValue.SmiMaxValue)
+                        {
+                            acc = JSValue.FromNumber(acc._num + 1);
+                            ip = ref Unsafe.Add(ref ip, 2);
+                            continue;
+                        }
+                    }
+                    // Also numbers whose feedback changes (UnaryOp updates it).
+                    acc = UnaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2);
                     continue;
                 case Bytecode.Dec:
-                    acc = acc._obj == NumberTag.Instance
-                        ? InterpreterOps.DecrementNumber(acc._num, ref Unsafe.Add(ref ip, 1))
-                        : UnaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    if (acc._obj == NumberTag.Instance)
+                    {
+                        byte feedback = Unsafe.Add(ref ip, 1);
+                        if (InterpreterOps.IsNumberFeedbackSaturated(feedback) ||
+                            InterpreterOps.BinaryFeedbackIncludesSmi(feedback) && InterpreterOps.TryGetSmi(acc._num, out int i) &&
+                            i != JSValue.SmiMinValue)
+                        {
+                            acc = JSValue.FromNumber(acc._num - 1);
+                            ip = ref Unsafe.Add(ref ip, 2);
+                            continue;
+                        }
+                    }
+                    // Also numbers whose feedback changes (UnaryOp updates it).
+                    acc = UnaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2);
                     continue;
                 case Bytecode.Negate:
@@ -730,23 +763,37 @@ public static partial class InterpreterExecution
                 case Bytecode.AddSmi:
                     if (acc._obj == NumberTag.Instance)
                     {
-                        acc = InterpreterOps.AddNumbers(st.Isolate, acc._num, Signed<TS>(ref ip, 1), ref Unsafe.Add(ref ip, 1 + S));
+                        byte feedback = Unsafe.Add(ref ip, 1 + S);
+                        int imm = Signed<TS>(ref ip, 1);
+                        if (InterpreterOps.IsNumberFeedbackSaturated(feedback) ||
+                            InterpreterOps.BinaryFeedbackIncludesSmi(feedback) && InterpreterOps.TryGetSmi(acc._num, out int l) &&
+                            InterpreterOps.IsSmiRange(l + imm))
+                        {
+                            acc = JSValue.FromNumber(acc._num + imm);
+                            ip = ref Unsafe.Add(ref ip, 2 + S);
+                            continue;
+                        }
                     }
-                    else
-                    {
-                        acc = BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
-                    }
+                    // Also numbers whose feedback changes (BinarySmiOp updates it).
+                    acc = BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
                     continue;
                 case Bytecode.SubSmi:
                     if (acc._obj == NumberTag.Instance)
                     {
-                        acc = InterpreterOps.SubtractNumbers(acc._num, Signed<TS>(ref ip, 1), ref Unsafe.Add(ref ip, 1 + S));
+                        byte feedback = Unsafe.Add(ref ip, 1 + S);
+                        int imm = Signed<TS>(ref ip, 1);
+                        if (InterpreterOps.IsNumberFeedbackSaturated(feedback) ||
+                            InterpreterOps.BinaryFeedbackIncludesSmi(feedback) && InterpreterOps.TryGetSmi(acc._num, out int l) &&
+                            InterpreterOps.IsSmiRange(l - imm))
+                        {
+                            acc = JSValue.FromNumber(acc._num - imm);
+                            ip = ref Unsafe.Add(ref ip, 2 + S);
+                            continue;
+                        }
                     }
-                    else
-                    {
-                        acc = BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
-                    }
+                    // Also numbers whose feedback changes (BinarySmiOp updates it).
+                    acc = BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
                     continue;
                 case Bytecode.MulSmi:
@@ -776,12 +823,17 @@ public static partial class InterpreterExecution
                     JSValue lhs = RegAt(ref fpSlot, Signed<TS>(ref ip, 1));
                     if (lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance)
                     {
-                        acc = InterpreterOps.AddNumbers(st.Isolate, lhs._num, acc._num, ref Unsafe.Add(ref ip, 1 + S));
+                        byte feedback = Unsafe.Add(ref ip, 1 + S);
+                        if (InterpreterOps.IsNumberFeedbackSaturated(feedback) ||
+                            InterpreterOps.BinaryFeedbackIncludesSmi(feedback) && InterpreterOps.TryGetSmi(lhs._num, out int l) && InterpreterOps.TryGetSmi(acc._num, out int r) && InterpreterOps.IsSmiRange(l + r))
+                        {
+                            acc = JSValue.FromNumber(lhs._num + acc._num);
+                            ip = ref Unsafe.Add(ref ip, 2 + S);
+                            continue;
+                        }
                     }
-                    else
-                    {
-                        acc = AddSlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
-                    }
+                    // Also numbers whose feedback changes (AddSlow updates it).
+                    acc = AddSlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
                     continue;
                 }
@@ -790,12 +842,17 @@ public static partial class InterpreterExecution
                     JSValue lhs = RegAt(ref fpSlot, Signed<TS>(ref ip, 1));
                     if (lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance)
                     {
-                        acc = InterpreterOps.SubtractNumbers(lhs._num, acc._num, ref Unsafe.Add(ref ip, 1 + S));
+                        byte feedback = Unsafe.Add(ref ip, 1 + S);
+                        if (InterpreterOps.IsNumberFeedbackSaturated(feedback) ||
+                            InterpreterOps.BinaryFeedbackIncludesSmi(feedback) && InterpreterOps.TryGetSmi(lhs._num, out int l) && InterpreterOps.TryGetSmi(acc._num, out int r) && InterpreterOps.IsSmiRange(l - r))
+                        {
+                            acc = JSValue.FromNumber(lhs._num - acc._num);
+                            ip = ref Unsafe.Add(ref ip, 2 + S);
+                            continue;
+                        }
                     }
-                    else
-                    {
-                        acc = BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
-                    }
+                    // Also numbers whose feedback changes (BinaryOp updates it).
+                    acc = BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
                     continue;
                 }
@@ -804,12 +861,17 @@ public static partial class InterpreterExecution
                     JSValue lhs = RegAt(ref fpSlot, Signed<TS>(ref ip, 1));
                     if (lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance)
                     {
-                        acc = InterpreterOps.MultiplyNumbers(lhs._num, acc._num, ref Unsafe.Add(ref ip, 1 + S));
+                        byte feedback = Unsafe.Add(ref ip, 1 + S);
+                        if (InterpreterOps.IsNumberFeedbackSaturated(feedback) ||
+                            InterpreterOps.BinaryFeedbackIncludesSmi(feedback) && InterpreterOps.IsSmiDouble(lhs._num) && InterpreterOps.IsSmiDouble(acc._num) && InterpreterOps.IsSmiDouble(lhs._num * acc._num))
+                        {
+                            acc = JSValue.FromNumber(lhs._num * acc._num);
+                            ip = ref Unsafe.Add(ref ip, 2 + S);
+                            continue;
+                        }
                     }
-                    else
-                    {
-                        acc = BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
-                    }
+                    // Also numbers whose feedback changes (BinaryOp updates it).
+                    acc = BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
                     continue;
                 }

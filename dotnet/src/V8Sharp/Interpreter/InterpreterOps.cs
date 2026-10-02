@@ -33,7 +33,7 @@ public static class InterpreterOps
 
     /// <summary>Whether an int (the exact result of an operation on Smis) is in the Smi range.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    static bool IsSmiRange(int i) => (uint)(i - JSValue.SmiMinValue) <= (uint)(JSValue.SmiMaxValue - JSValue.SmiMinValue);
+    internal static bool IsSmiRange(int i) => (uint)(i - JSValue.SmiMinValue) <= (uint)(JSValue.SmiMaxValue - JSValue.SmiMinValue);
 
     // ---- Embedded feedback ------------------------------------------------------------
 
@@ -96,6 +96,29 @@ public static class InterpreterOps
 
     static BOF.TypeIndex BinaryIndex(BOF.Type type) => BOF.CalculateTypeIndex((uint)type);
 
+    // ---- Feedback the dispatch loop's inline number paths leave unchanged -------------
+    //
+    // The loop computes a number operation inline only when the embedded
+    // feedback already covers it, so nothing is written and nothing is called
+    // (a call would keep the operands live across it, and the JIT would spill
+    // them on the fast path too); otherwise the handler's slow path updates it.
+
+    /// <summary>Binary feedback that kSignedSmall does not widen: SignedSmall .. NumberOrOddball, Any.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool BinaryFeedbackIncludesSmi(byte feedback) =>
+        (uint)(feedback - (byte)BOF.TypeIndex.SignedSmall) <= (byte)BOF.TypeIndex.NumberOrOddball - (byte)BOF.TypeIndex.SignedSmall ||
+        feedback == (byte)BOF.TypeIndex.Any;
+
+    /// <summary>Compare feedback that kNumber does not widen: Number, NumberOrBoolean, NumberOrOddball, Any.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool CompareFeedbackIncludesNumber(byte feedback) =>
+        (uint)(feedback - (byte)COF.TypeIndex.Number) <= 2 || feedback == (byte)COF.TypeIndex.Any;
+
+    /// <summary>Compare feedback that kSignedSmall does not widen.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool CompareFeedbackIncludesSmi(byte feedback) =>
+        (uint)(feedback - (byte)COF.TypeIndex.SignedSmall) <= 3 || feedback == (byte)COF.TypeIndex.Any;
+
     // ---- Number fast paths -------------------------------------------------------------
 
     /// <summary>
@@ -104,7 +127,7 @@ public static class InterpreterOps
     /// types, as the result of UpdateBinaryFeedback would be the same byte.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    static bool IsNumberFeedbackSaturated(byte feedback) =>
+    internal static bool IsNumberFeedbackSaturated(byte feedback) =>
         (uint)(feedback - (byte)BOF.TypeIndex.Number) <= 1 || feedback == (byte)BOF.TypeIndex.Any;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

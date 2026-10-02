@@ -79,6 +79,15 @@ public static partial class InterpreterExecution
         if (!ReferenceEquals(slot._obj, value._obj)) Unsafe.AsRef(in slot._obj) = value._obj;
     }
 
+    /// <summary>
+    /// Whether a comparison of two numbers leaves its embedded feedback as it
+    /// is (the loop then compares inline; the handler updates it otherwise).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool NumberCompareFeedbackCovered(byte feedback, double l, double r) =>
+        InterpreterOps.CompareFeedbackIncludesNumber(feedback) ||
+        InterpreterOps.CompareFeedbackIncludesSmi(feedback) && InterpreterOps.IsSmiDouble(l) && InterpreterOps.IsSmiDouble(r);
+
     /// <summary>ToBoolean on a value passed by value (the loop's accumulator must not have its address taken).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static bool ToBoolean(JSValue value)
@@ -317,7 +326,13 @@ public static partial class InterpreterExecution
     {
         SavePc(isolate, ref st, ref ip);
         int S = Scale<TS>();
-        return InterpreterOps.AddSlow(isolate, Reg<TS>(ref fp, ref ip, 1), acc, ref Unsafe.Add(ref ip, 1 + S));
+        JSValue lhs = Reg<TS>(ref fp, ref ip, 1);
+        // Two numbers whose feedback changes (the loop adds the others inline).
+        if (lhs._obj == NumberTag.Instance && acc._obj == NumberTag.Instance)
+        {
+            return InterpreterOps.AddNumbers(isolate, lhs._num, acc._num, ref Unsafe.Add(ref ip, 1 + S));
+        }
+        return InterpreterOps.AddSlow(isolate, lhs, acc, ref Unsafe.Add(ref ip, 1 + S));
     }
 
     /// <summary>The binary operators with a register operand (Sub and Mul when an operand is not a number).</summary>
