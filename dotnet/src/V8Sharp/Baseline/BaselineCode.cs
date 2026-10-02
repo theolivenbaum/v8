@@ -49,6 +49,7 @@ public sealed class BaselineCode
         // functions convert the receiver).
         CallableDirectly = !shared.IsClassConstructor;
         ConvertsReceiver = !shared.Native && shared.LanguageMode == LanguageMode.Sloppy;
+        CheckStackOnEveryCall = bytecode.Length > kLargeFrameBytecodeLength;
     }
 
     public SharedFunctionInfo SharedFunctionInfo { get; }
@@ -86,6 +87,14 @@ public sealed class BaselineCode
 
     /// <summary>A sloppy, non-native function: a primitive receiver is converted (CallFunction).</summary>
     public readonly bool ConvertsReceiver;
+
+    /// <summary>
+    /// A large function, whose .NET frame may be large too: a call into it checks
+    /// the .NET stack every time (BaselineCalls checks every fourth level otherwise).
+    /// </summary>
+    public readonly bool CheckStackOnEveryCall;
+
+    const int kLargeFrameBytecodeLength = 1024;
 
     public static CodeKind Kind => CodeKind.BASELINE;
 

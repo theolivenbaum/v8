@@ -8,6 +8,9 @@ namespace V8Sharp.Baseline;
 
 public static class BaselineSupport
 {
+    /// <summary>The largest bytecode array the baseline compiler compiles (a V8Sharp limit; see CanCompileWithBaseline).</summary>
+    public const int kMaxBytecodeLength = 128 * 1024;
+
     /// <summary>CanCompileWithBaseline.</summary>
     public static bool CanCompileWithBaseline(Isolate isolate, SharedFunctionInfo shared)
     {
@@ -19,7 +22,14 @@ public static class BaselineSupport
         if (isolate.Flags.sparkplug_needs_short_builtins) return false;
 
         // Check if we actually have bytecode.
-        if (shared.FunctionData is not BytecodeArray) return false;
+        if (shared.FunctionData is not BytecodeArray bytecode) return false;
+
+        // Deviation: V8 compiles functions of any size with Sparkplug. A
+        // function this large would be one IL method that RyuJIT compiles with
+        // minimal optimization only, slowly, into a .NET frame large enough to
+        // overflow the stack within a few levels of recursion: it stays in the
+        // interpreter.
+        if (bytecode.Length > kMaxBytecodeLength) return false;
 
         // (No debugger: no break points and no instrumented bytecode.)
 

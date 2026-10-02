@@ -77,6 +77,15 @@ public static class BaselineExecution
         if ((cell.InterruptBudget -= weight) < 0) BytecodeBudgetInterrupt(isolate, function);
     }
 
+    /// <summary>The runtime call of baseline JumpLoop when the budget ran out or an interrupt is pending.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void BudgetInterruptOnJumpLoop(Isolate isolate, JSFunction function) =>
+        BytecodeBudgetInterruptWithStackCheck(isolate, function);
+
+    /// <summary>The runtime call of baseline Return when the budget ran out.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void BudgetInterruptOnReturn(Isolate isolate, JSFunction function) => BytecodeBudgetInterrupt(isolate, function);
+
     /// <summary>Runtime_BytecodeBudgetInterruptWithStackCheck_Sparkplug.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void BytecodeBudgetInterruptWithStackCheck(Isolate isolate, JSFunction function) =>

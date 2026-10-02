@@ -39,7 +39,12 @@ public static class BaselineCalls
     const MethodImplOptions Inline = MethodImplOptions.AggressiveInlining;
 
     // ---- The call bytecodes ----------------------------------------------------------------------
+    //
+    // NoInlining: the frame setup belongs out of line, as V8's calls into the
+    // Call builtins; inlined into a baseline method it would bloat every call
+    // site and make RyuJIT spill the caller's values around it.
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue CallProperty0(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, JSValue receiver)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
@@ -50,6 +55,7 @@ public static class BaselineCalls
         return CallSlow0(isolate, callee, receiver, ConvertReceiverMode.NotNullOrUndefined);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue CallProperty1(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, JSValue receiver, JSValue arg0)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
@@ -60,6 +66,7 @@ public static class BaselineCalls
         return CallSlow1(isolate, callee, receiver, arg0, ConvertReceiverMode.NotNullOrUndefined);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue CallProperty2(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, JSValue receiver, JSValue arg0,
         JSValue arg1)
     {
@@ -71,6 +78,7 @@ public static class BaselineCalls
         return CallSlow2(isolate, callee, receiver, arg0, arg1, ConvertReceiverMode.NotNullOrUndefined);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue CallUndefinedReceiver0(Isolate isolate, FeedbackVector fv, int slot, JSValue callee)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
@@ -81,6 +89,7 @@ public static class BaselineCalls
         return CallSlow0(isolate, callee, JSValue.Undefined, ConvertReceiverMode.NullOrUndefined);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue CallUndefinedReceiver1(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, JSValue arg0)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
@@ -91,6 +100,7 @@ public static class BaselineCalls
         return CallSlow1(isolate, callee, JSValue.Undefined, arg0, ConvertReceiverMode.NullOrUndefined);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue CallUndefinedReceiver2(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, JSValue arg0,
         JSValue arg1)
     {
@@ -103,6 +113,7 @@ public static class BaselineCalls
     }
 
     /// <summary>CallProperty / CallAnyReceiver: the receiver and the arguments are the register list at <paramref name="first"/>.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue CallProperty(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, int first, int count)
     {
         JSValue receiver = isolate.RegisterStack[first];
@@ -114,6 +125,7 @@ public static class BaselineCalls
         return InterpreterCalls.Call(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.NotNullOrUndefined);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue CallAnyReceiver(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, int first, int count)
     {
         JSValue receiver = isolate.RegisterStack[first];
@@ -125,6 +137,7 @@ public static class BaselineCalls
         return InterpreterCalls.Call(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.Any);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue CallUndefinedReceiver(Isolate isolate, FeedbackVector fv, int slot, JSValue callee, int first, int count)
     {
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
@@ -222,6 +235,7 @@ public static class BaselineCalls
     /// Construct from baseline code: InterpreterCalls.Construct (Construct_Baseline,
     /// JSConstructStubGeneric) for a constructor with baseline code.
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue Construct(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, int argsStart,
         int argc)
     {
@@ -307,9 +321,12 @@ public static class BaselineCalls
         int depth = isolate.InterpreterFrameDepth;
         // The native stack check of the prologue (V8's StackOverflow on entry).
         // Each level costs two .NET frames (this one and the callee's code);
-        // checking every fourth level stays well inside the 64 KB the check
-        // guarantees.
-        if ((depth & 3) == 0 && !RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
+        // checking every fourth level stays well inside the 128 KB the check
+        // guarantees, except for large functions, which check on every call.
+        if (((depth & 3) == 0 || code.CheckStackOnEveryCall) && !RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            isolate.StackOverflow();
+        }
 
         int formal = code.FormalParameterCount;
         int paramSlots = argc > formal ? argc : formal;

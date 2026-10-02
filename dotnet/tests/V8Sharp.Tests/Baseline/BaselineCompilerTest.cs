@@ -325,4 +325,94 @@ public class BaselineCompilerTest
             [%ActiveTierIsSparkplug(yesPlease), %ActiveTierIsSparkplug(no)].join();
             """));
     }
+
+    /// <summary>
+    /// Runs <paramref name="source"/> (which evaluates to an array of functions)
+    /// and describes the feedback the functions collected: the bytecode with its
+    /// embedded feedback bytes, and each feedback vector slot (numbers by value,
+    /// heap objects by type), so that two isolates can be compared.
+    /// </summary>
+    static string RunAndDescribeFeedback(string flags, string source)
+    {
+        var flagList = new FlagList();
+        flagList.SetFlagsFromString("--allow-natives-syntax --no-lazy-feedback-allocation " + flags);
+        Isolate isolate = Isolate.New(flagList);
+        using (isolate.Enter())
+        {
+            JSValue value = Compiler.CompileAndRun(isolate, source);
+            var sb = new System.Text.StringBuilder();
+            var functions = (FixedArray)value.As<JSArray>().Elements;
+            for (int i = 0; i < functions.Length; i++)
+            {
+                if (functions[i].HeapObjectOrNull is not JSFunction function) continue;
+                sb.Append(function.Shared.Name()).Append(": ");
+                sb.Append(Convert.ToHexString(((V8Sharp.Interpreter.BytecodeArray)function.Shared.FunctionData!).Bytecodes)).Append(' ');
+                if (function.RawFeedbackCell.Value is FeedbackVector vector)
+                {
+                    foreach (JSValue slot in vector.Slots)
+                    {
+                        sb.Append(slot.IsNumber ? slot.Number.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                            : slot.HeapObjectOrNull is { } o ? o.GetType().Name : "undefined").Append(',');
+                    }
+                }
+                sb.AppendLine();
+            }
+            return sb.ToString();
+        }
+    }
+
+    [Fact]
+    public void SameFeedbackInBothTiers()
+    {
+        // The inline fast paths of baseline code skip the feedback update only
+        // when it would not change anything: the embedded feedback bytes and
+        // the feedback vector must end up as the interpreter leaves them.
+        const string source = """
+            function arith(a, b) {
+              var r = a + b; r = r - a; r = r * 2; r = r | 0; r = r & 0xff; r = r ^ a; r = r << 1; r = r >> 1; r = r >>> 0;
+              r = a + 1; r = b - 3; r = a * 4; r = a | 2; r++; r--;
+              return (a < b) + (a > b) + (a <= b) + (a >= b) + (a == b) + (a === b);
+            }
+            function P(x) { this.x = x; this.y = x; }
+            function props(o, k) { o.x = o.y; return o.x + o[k] + (o.length | 0); }
+            function glob() { return Math.floor(gv) + gv; }
+            var gv = 1;
+            function calls(f, o) { return f(1) + o.m(2) + f(1, 2, 3); }
+            var vals = [0, 1, -1, 1073741823, 1073741824, -0, 0.5, NaN, Infinity, '1', 'a', null, undefined, true, {}];
+            for (var i = 0; i < vals.length; i++) {
+              for (var j = 0; j < vals.length; j++) {
+                arith(vals[i], vals[j]);
+                if (i == 3) { for (var k = 0; k < 20; k++) arith(k, k + 1); }
+              }
+              props(new P(vals[i]), 'x'); props([1, 2, 3], i % 4); props({x: 1, y: 2}, 'y');
+              gv = vals[i]; glob();
+              calls(function (a) { return a; }, {m: function (b) { return b; }});
+            }
+            // Feedback that stays SignedSmall until one operation leaves the
+            // Smi range (or produces -0, or gets a double operand).
+            function add(a, b) { return a + b; }
+            function sub(a, b) { return a - b; }
+            function mul(a, b) { return a * b; }
+            function addSmi(a) { return a + 5; }
+            function inc(a) { return ++a; }
+            function band(a, b) { return a & b; }
+            function shr(a, b) { return a >>> b; }
+            function lt(a, b) { return a < b; }
+            function eq(a, b) { return a === b; }
+            var ops = [add, sub, mul, addSmi, inc, band, shr, lt, eq];
+            var probes = [[1073741823, 1], [-1073741824, 1], [0, -1], [-0, 0], [65536, 65536], [1073741820, 0], [0.5, 1], [-1, 0]];
+            var clones = [];
+            for (var p = 0; p < probes.length; p++) {
+              for (var o = 0; o < ops.length; o++) {
+                var g = eval('(' + ops[o] + ')');
+                for (var k = 0; k < 10; k++) g(k, k + 1);
+                g(probes[p][0], probes[p][1]);
+                g(3, 4);
+                clones.push(g);
+              }
+            }
+            [arith, props, glob, calls, P].concat(clones);
+            """;
+        Assert.Equal(RunAndDescribeFeedback("--no-sparkplug", source), RunAndDescribeFeedback("--always-sparkplug", source));
+    }
 }
