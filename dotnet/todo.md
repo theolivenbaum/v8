@@ -627,8 +627,8 @@ What blocks parity (44.5% of jitless by Octane's own score), measured:
   EarleyBoyer; a new object is two allocations (JSObject and its field
   array) against V8's one bump allocation.
 - Parsing and compiling: CodeLoad and TypeScript (see the front-end pass
-  below: compiles are now 37-57% of V8 --jitless on the large sources,
-  CodeLoad 47%; what is left is the scanner and preparser per token, GC of
+  below: compiles are now 38-60% of V8 --jitless on the large sources,
+  CodeLoad 48%; what is left is the scanner and preparser per token, GC of
   the AST and of the large eval'd source strings, and StringTable lookups
   when constants are internalized).
 - The .NET JIT: 12000-15000 engine methods compiled per large benchmark;
@@ -645,16 +645,19 @@ evaluates Closure / jQuery as CodeLoad does) and octane-cpu, V8Sharp before
 
 | benchmark | before | after | V8 --jitless | before / after of jitless |
 |---|---|---|---|---|
-| CompileTypeScript | 25.4 | 30.5 | 82.3 | 31% / 37% |
-| CompilePdfJS | 13.8 | 12.0 | 45.9 | 30% / 26% |
-| CompileClosure | 2174 | 3343 | 5914 | 37% / 57% |
-| CompileJQuery | 149 | 186 | 369 | 40% / 50% |
-| RunClosure | 1415 | 1686 | 4195 | 34% / 40% |
-| RunJQuery | 64.8 | 99.2 | 104.6 | 62% / 95% |
-| CodeLoad (octane-cpu) | 1523 | 2099 | 4465 | 34% / 47% |
-| Typescript (octane-cpu) | 222 | 225 | 648 | 34% / 35% |
-| PdfJS (octane-cpu) | 499 | 524 | 2005 | 25% / 26% |
-| Box2D (octane-cpu) | 578 | 533 | 989 | noise (490-680 per run) |
+| CompileTypeScript | 24.4 | 40.2 | 73.6 | 33% / 55% |
+| CompilePdfJS | 14.5 | 16.0 | 42.0 | 35% / 38% |
+| CompileClosure | 2222 | 3368 | 5659 | 39% / 60% |
+| CompileJQuery | 153 | 221 | 376 | 41% / 59% |
+| RunClosure | 1673 | 2506 | 3901 | 43% / 64% |
+| RunJQuery | 63.3 | 100.4 | 92.2 | 69% / 109% |
+| CodeLoad (octane-cpu) | 1504 | 2110 | 4421 | 34% / 48% |
+| Typescript (octane-cpu) | 218 | 225 | 679 | 32% / 33% |
+| PdfJS (octane-cpu) | 541 | 515 | 1840 | 29% / 28% (noise) |
+| Box2D (octane-cpu) | 492 | 499 | 951 | 52% / 52% |
+
+Octane TypeScript, PdfJS and Box2D hardly move: their time is in running
+the code, not compiling it (TypeScript compiles its input in JS).
 
 Changes, one commit each (git log 858a5ebc..): ParserBase<Parser> and
 ParserBase<PreParser> generated as non-generic classes from the generic
@@ -673,11 +676,11 @@ again: CodeLoad-like loop 21.4 to 18.5 ms per run); the runtime stack
 check only when deeper; ExpressionScope casts without type checks; the
 scanner's literal buffers pooled per thread (lazy compiles of small
 functions: 56.5 to 41.0 MB per 2000); CompilationCacheEval (20000 evals of
-one source: 3644 to 1080 ms; aged by full GCs).
+one source: 3644 to 1080 ms; aged by full GCs; sources over 16K characters
+are not cached, since keeping large scripts alive across gen-2 collections
+cost 25-30% on large distinct evals).
 
-Open: CompilePdfJS is 12% slower after the pass and the cause is not
-found (the harness compile of pdfjs.js, without eval, is faster; ageing
-the eval cache did not change it). Next levers: the scanner and preparser
+Open: Next levers: the scanner and preparser
 per token (40% of a TypeScript compile, a third of it the scanner),
 StringTable lookups when internalizing (the AstRawString's hash is not
 reused), RegisterInfo and the other per-function allocations of the
