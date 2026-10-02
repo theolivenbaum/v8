@@ -28,6 +28,13 @@
 // Types::SourceRange and SourceRangeScope are the real SourceRange for both
 // (the PreParser never records the ranges it computes). impl()->X calls are
 // abstract methods overridden by Parser and PreParser (ParserBase.Impl.cs).
+//
+// The generic class is a template: it is compiled (so it is checked) but
+// never instantiated. ParserBase.Specialize.targets writes the two
+// instantiations V8 has, ParserBaseOfParser and ParserBaseOfPreParser, as
+// non-generic classes before compilation, so the JIT sees concrete types and
+// binds impl() and factory() calls directly (a generic class instantiated
+// over reference types runs as shared code with runtime lookups).
 
 #nullable disable
 

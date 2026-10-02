@@ -1,0 +1,141 @@
+<Project>
+
+  <!--
+    ParserBase<Impl> is a C++ template in V8 (CRTP): Parser and PreParser each
+    get their own copy of the recursive-descent code, with every impl()->X,
+    factory()->X and Types:: operation resolved statically and inlined. A C#
+    generic class instantiated over the Parser's types (all reference types)
+    runs as shared code instead: calls through the type parameters are
+    interface and virtual calls, and the nested types (ExpressionScope,
+    FunctionState, ...) need runtime dictionary lookups for every cast and
+    allocation.
+
+    So the generic ParserBase<TImpl, ...> (ParserBase*.cs, ExpressionScope.cs)
+    is the template, compiled as written so that it is checked but never
+    instantiated, and this target writes the two instantiations V8 has as
+    non-generic classes before compilation: ParserBaseOfParser and
+    ParserBaseOfPreParser, with the type parameters replaced by Parser's and
+    PreParser's types. Parser and PreParser derive from them; impl() returns
+    the sealed class, so the JIT binds the calls directly. #line directives map
+    the generated code back to the template (diagnostics, stack traces and the
+    debugger show the template's lines).
+  -->
+
+  <ItemGroup>
+    <ParserBaseTemplate Include="Parsing/ParserBase.cs;Parsing/ParserBase.Impl.cs;Parsing/ParserBase.Expressions.cs;Parsing/ParserBase.Operators.cs;Parsing/ParserBase.Statements.cs;Parsing/ParserBase.Functions.cs;Parsing/ExpressionScope.cs" />
+  </ItemGroup>
+
+  <UsingTask TaskName="SpecializeParserBase" TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Templates ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <OutputDirectory ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.Collections.Generic" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Text" />
+      <Using Namespace="System.Text.RegularExpressions" />
+      <Using Namespace="Microsoft.Build.Framework" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        // ParserTypes<Impl>: the template's type parameters and each
+        // instantiation's arguments (Parser.cs, PreParser.cs).
+        string[] parameters =
+        {
+          "TImpl", "TExpression", "TIdentifier", "TStatement", "TBlock", "TFunctionLiteral",
+          "TObjectLiteralProperty", "TClassLiteralProperty", "TExpressionList", "TObjectPropertyList",
+          "TStatementList", "TClassPropertyList", "TClassStaticElementList", "TFormalParameters", "TFactory",
+          "TFuncNameInferrer",
+        };
+        var instances = new Dictionary<string, string[]>
+        {
+          ["Parser"] = new[]
+          {
+            "Parser", "Expression", "AstRawString", "Statement", "Block", "FunctionLiteral",
+            "ObjectLiteralProperty", "ClassLiteralProperty", "ScopedPtrList<Expression>",
+            "ScopedPtrList<ObjectLiteralProperty>", "ScopedPtrList<Statement>", "List<ClassLiteralProperty>",
+            "List<ClassLiteralStaticElement>", "ParserFormalParameters", "AstNodeFactory", "FuncNameInferrer",
+          },
+          ["PreParser"] = new[]
+          {
+            "PreParser", "PreParserExpression", "PreParserIdentifier", "PreParserStatement",
+            "PreParserStatement", "PreParserExpression", "PreParserExpression", "PreParserExpression",
+            "PreParserExpressionList", "PreParserExpressionList", "PreParserScopedStatementList",
+            "PreParserPropertyList", "PreParserPropertyList", "PreParserFormalParameters",
+            "PreParserFactory", "PreParserFuncNameInferrer",
+          },
+        };
+
+        var header = new Regex(@"public abstract partial class ParserBase<[^>]*>[^{]*\{[^\n]*\n");
+        var genericRef = new Regex(@"ParserBase<TImpl,[^>]*>");
+        var usingLine = new Regex(@"^using [^\n]*;\r?$", RegexOptions.Multiline);
+        var ctor = new Regex(@"\bParserBase\(");
+
+        var usings = new SortedSet<string>(StringComparer.Ordinal);
+        var bodies = new List<(string Path, int Line, string Body)>();
+        foreach (ITaskItem template in Templates)
+        {
+          string path = template.GetMetadata("FullPath");
+          string text = File.ReadAllText(path);
+          foreach (Match u in usingLine.Matches(text)) usings.Add(u.Value.TrimEnd('\r'));
+          Match m = header.Match(text);
+          if (!m.Success)
+          {
+            Log.LogError("{0}: no ParserBase<...> class declaration", path);
+            return false;
+          }
+          int start = m.Index + m.Length;
+          int end = text.LastIndexOf('}');
+          int line = 1;
+          for (int i = 0; i < start; i++) if (text[i] == '\n') line++;
+          bodies.Add((path, line, text.Substring(start, end - start)));
+        }
+
+        Directory.CreateDirectory(OutputDirectory);
+        foreach (var instance in instances)
+        {
+          string className = "ParserBaseOf" + instance.Key;
+          var sb = new StringBuilder();
+          sb.Append("// <auto-generated/>\n");
+          sb.Append("// ParserBase<" + instance.Key + ">: generated from the ParserBase template by\n");
+          sb.Append("// ParserBase.Specialize.targets. Edit the template, not this file.\n\n");
+          sb.Append("#nullable disable\n\n");
+          foreach (string u in usings) sb.Append(u).Append('\n');
+          sb.Append("\nnamespace V8Sharp.Parsing;\n\n");
+          sb.Append("public abstract class ").Append(className).Append("\n{\n");
+          foreach (var b in bodies)
+          {
+            // References to ParserBase<TImpl, ...> become the class; a reference
+            // that spans lines keeps its line breaks, so #line stays exact.
+            string body = genericRef.Replace(b.Body,
+              r => className + new string('\n', r.Value.Split('\n').Length - 1));
+            body = ctor.Replace(body, className + "(");
+            for (int i = 0; i < parameters.Length; i++)
+            {
+              body = Regex.Replace(body, @"\b" + parameters[i] + @"\b", instance.Value[i]);
+            }
+            sb.Append("#line ").Append(b.Line).Append(" \"").Append(b.Path).Append("\"\n");
+            sb.Append(body);
+            sb.Append("#line default\n");
+          }
+          sb.Append("}\n");
+          File.WriteAllText(Path.Combine(OutputDirectory, className + ".g.cs"), sb.ToString());
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="SpecializeParserBase" BeforeTargets="CoreCompile"
+          Inputs="@(ParserBaseTemplate);$(MSBuildThisFileFullPath)"
+          Outputs="$(IntermediateOutputPath)ParserBase/ParserBaseOfParser.g.cs;$(IntermediateOutputPath)ParserBase/ParserBaseOfPreParser.g.cs">
+    <SpecializeParserBase Templates="@(ParserBaseTemplate)" OutputDirectory="$(IntermediateOutputPath)ParserBase/" />
+  </Target>
+
+  <Target Name="AddSpecializedParserBase" BeforeTargets="CoreCompile" AfterTargets="SpecializeParserBase">
+    <ItemGroup>
+      <Compile Include="$(IntermediateOutputPath)ParserBase/ParserBaseOfParser.g.cs;$(IntermediateOutputPath)ParserBase/ParserBaseOfPreParser.g.cs" />
+    </ItemGroup>
+  </Target>
+
+</Project>

@@ -92,12 +92,16 @@ for now, to be revisited when the reason goes away.
   `PreparseData` class for V8's zone and heap forms (release byte format);
   flags passed per parse (`ParsingFlags`) instead of global.
 - Parsing: AstPrinter/ScopePrinter are always compiled (DEBUG-only in V8).
-- Parsing: the character streams read a `char[]`, not the source string on
-  the heap (V8's OnHeapStream). A source of 4096 characters or more is copied
-  once and the copy kept beside the string (a ConditionalWeakTable in
-  `ScannerStream`), so each lazy compile of one of its functions does not copy
-  the script again (it did: a large-object allocation per lazy compile, 10% of
-  Octane CodeLoad).
+- Parsing: ParserBase<Impl> (a C++ template) is a generic C# class used as a
+  template: ParserBase.Specialize.targets generates ParserBaseOfParser and
+  ParserBaseOfPreParser from it at build time, the non-generic equivalents
+  of V8's two instantiations (#line maps them back to the template).
+- Parsing: the expression scopes, AccumulationScope, Target, FunctionState
+  and PreParserExpressionList (C++ stack objects in V8) are objects recycled
+  through per-parser (per-thread for the expression lists) free lists.
+- Parsing: VariableMap keeps up to 8 entries in an insertion-ordered array
+  searched by identity, allocated on first use, plus a hash index beyond 8
+  (V8: a ZoneHashMap of 8 entries).
 - Parsing: stack_limit_ is a budget of 4 x --stack-size bytes of .NET stack
   from where each parser starts (V8: the isolate's C stack limit). The .NET
   parser frames are about four times V8's, so the RangeError comes at about

@@ -25,10 +25,7 @@ using static V8Sharp.Common.Globals;
 
 namespace V8Sharp.Parsing;
 
-public sealed class PreParser : ParserBase<PreParser, PreParserExpression, PreParserIdentifier, PreParserStatement,
-    PreParserStatement, PreParserExpression, PreParserExpression, PreParserExpression, PreParserExpressionList,
-    PreParserExpressionList, PreParserScopedStatementList, PreParserPropertyList, PreParserPropertyList,
-    PreParserFormalParameters, PreParserFactory, PreParserFuncNameInferrer>
+public sealed class PreParser : ParserBaseOfPreParser
 {
     public enum PreParseResult
     {
