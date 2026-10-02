@@ -197,6 +197,10 @@ public static class BaselineCalls
         {
             return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), -1, 0, default, default);
         }
+        if (IsFunctionPrototypeCall(callee) && TryEnterTarget(isolate, receiver, default, -1, 0, default, default, out JSValue called))
+        {
+            return called;
+        }
         if (BuiltinFastPaths.TryCall0(isolate, callee, receiver, out JSValue result)) return result;
         return CallValues(isolate, callee, receiver, 0, default, default, mode);
     }
@@ -207,6 +211,11 @@ public static class BaselineCalls
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
         {
             return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), -1, 1, arg0, default);
+        }
+        // f.call(thisArg).
+        if (IsFunctionPrototypeCall(callee) && TryEnterTarget(isolate, receiver, arg0, -1, 0, default, default, out JSValue called))
+        {
+            return called;
         }
         // a.push(x), Math.floor(x), s.charCodeAt(i) ...: the builtins' CSA fast paths.
         if (BuiltinFastPaths.TryCall1(isolate, callee, receiver, arg0, out JSValue result)) return result;
@@ -219,6 +228,17 @@ public static class BaselineCalls
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
         {
             return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), -1, 2, arg0, arg1);
+        }
+        if (callee._obj is JSFunction { Shared.BuiltinId: var builtin })
+        {
+            // f.call(thisArg, x).
+            if (builtin == Builtin.FunctionPrototypeCall &&
+                TryEnterTarget(isolate, receiver, arg0, -1, 1, arg1, default, out JSValue called))
+            {
+                return called;
+            }
+            // f.apply(thisArg, arguments) and f.apply(thisArg, array).
+            if (builtin == Builtin.FunctionPrototypeApply && TryApply(isolate, receiver, arg0, arg1, out called)) return called;
         }
         if (BuiltinFastPaths.TryCall2(callee, arg0, arg1, out JSValue result)) return result;
         return CallValues(isolate, callee, receiver, 2, arg0, arg1, mode);
@@ -233,7 +253,85 @@ public static class BaselineCalls
             return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), argsStart, argc, default,
                 default);
         }
+        // f.call(thisArg, x, y ...).
+        if (argc > 0 && IsFunctionPrototypeCall(callee) &&
+            TryEnterTarget(isolate, receiver, isolate.RegisterStack[argsStart], argsStart + 1, argc - 1, default, default, out JSValue called))
+        {
+            return called;
+        }
         return InterpreterCalls.Call(isolate, callee, receiver, argsStart, argc, mode);
+    }
+
+    // ---- Function.prototype.call and apply -------------------------------------------------------------
+    //
+    // V8's Function.prototype.call and apply are ASM builtins without a frame of
+    // their own (Generate_FunctionPrototypeCall/Apply): the target is called as
+    // if directly, which is what these do for a target that runs baseline or
+    // interpreted code (InterpreterInlineCalls.TryPushFunctionCallFrame and
+    // TryPushApplyFrame do the same for the interpreter).
+
+    [MethodImpl(Inline)]
+    static bool IsFunctionPrototypeCall(JSValue callee) =>
+        callee._obj is JSFunction function && function.Shared.BuiltinId == Builtin.FunctionPrototypeCall;
+
+    /// <summary>Calls <paramref name="target"/> with <paramref name="thisArg"/> when it runs baseline or interpreted code.</summary>
+    static bool TryEnterTarget(Isolate isolate, JSValue target, JSValue thisArg, int argsStart, int argc, JSValue arg0, JSValue arg1,
+        out JSValue result)
+    {
+        if (TryGetBaselineCallee(target, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
+        {
+            result = Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, thisArg), argsStart, argc, arg0, arg1,
+                default, false);
+            return true;
+        }
+        if (TryGetInterpretedCallee(target, out function, out BytecodeArray bytecode))
+        {
+            result = EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, thisArg), argsStart, argc, arg0, arg1);
+            return true;
+        }
+        result = default;
+        return false;
+    }
+
+    /// <summary>
+    /// target.apply(thisArg, argumentsList) for an unmodified arguments object
+    /// or a fast array (CallWithArrayLike's fast paths): the elements go into a
+    /// window on the register stack, as V8 pushes them on the machine stack.
+    /// </summary>
+    static bool TryApply(Isolate isolate, JSValue target, JSValue thisArg, JSValue argumentsList, out JSValue result)
+    {
+        result = default;
+        bool baseline = TryGetBaselineCallee(target, out _, out _, out _);
+        if (!baseline && !TryGetInterpretedCallee(target, out _, out _)) return false;
+        FixedArrayBase? elements = null;
+        int length = 0;
+        if (!argumentsList.IsNullOrUndefined && !BuiltinsFunction.TryGetFastElements(isolate, argumentsList, out elements, out length))
+        {
+            return false;
+        }
+        int window = isolate.RegisterStackTop;
+        if (window + length + 64 > isolate.RegisterStackLimit) return false;
+        JSValue[] stack = isolate.RegisterStack;
+        if (elements is FixedArray fixedArray)
+        {
+            JSValue[] data = fixedArray.Data;
+            for (int i = 0; i < length; i++)
+            {
+                // Holes (holey arrays with intact protectors) read as undefined.
+                JSValue value = data[i];
+                stack[window + i] = ReferenceEquals(value._obj, Oddball.TheHole) ? default : value;
+            }
+        }
+        else if (elements is FixedDoubleArray doubles)
+        {
+            for (int i = 0; i < length; i++) stack[window + i] = doubles.IsTheHole(i) ? default : JSValue.FromNumber(doubles.GetScalar(i));
+        }
+        isolate.RegisterStackTop = window + length;
+        bool entered = TryEnterTarget(isolate, target, thisArg, window, length, default, default, out result);
+        // The window's values stay above the top, in the dirty range.
+        if (window + length > isolate.RegisterStackDirtyEnd) isolate.RegisterStackDirtyEnd = window + length;
+        isolate.RegisterStackTop = window;
+        return entered;
     }
 
     /// <summary>
