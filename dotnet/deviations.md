@@ -224,10 +224,52 @@ for now, to be revisited when the reason goes away.
   JumpLoop's pc; V8Sharp does the check after the back edge and enters at the
   loop header (the same bytecode runs next). The max_arguments stack check
   before OSR is not needed (arguments are not pushed on a machine stack).
-- `--concurrent-sparkplug` is off (V8's x64 default is on): the batch is
-  compiled on the main thread. IL generation is cheap, and RyuJIT compiles
-  each method lazily on its first call (tier 0) and optimizes hot ones on a
-  background thread (tier 1).
+- `--concurrent-sparkplug` (on, as in V8 on x64): one process-wide
+  background thread (`BaselineCompileThread`) compiles every isolate's
+  batches, where V8 posts jobs to the platform's worker pool. The task
+  generates the IL and has RyuJIT compile it fully optimized
+  (`AggressiveOptimization`, `RuntimeHelpers.PrepareMethod`) off the main
+  thread; the main thread only materializes the constant pool and the name
+  before, and installs the code at the next INSTALL_BASELINE_CODE interrupt.
+  The batch queue holds the closures (weakly), not their SharedFunctionInfos.
+  Without concurrency (`--no-concurrent-sparkplug`, `--always-sparkplug`,
+  `%CompileBaseline`) the IL is generated on the main thread and RyuJIT
+  compiles the method at its first call, at tier 0 first. The builtins and
+  call paths baseline code calls are `AggressiveOptimization` in both modes:
+  at tier 0 they ran slower than the interpreter's own (optimized) loop.
+- Calls: a call from baseline code to a function with baseline code (and no
+  exception handlers) enters it directly, C# call to C# call, through
+  `BaselineCalls.Enter` with the arguments in registers or locals
+  (`ICallArguments`), pushing the frame record and the register window
+  itself. V8 calls through the Call builtins and the callee's prologue
+  builtin. The baseline frame's teardown is not in a `finally`: a throw
+  unwinds C# frames to the catching frame, which restores the frame stack
+  (as the interpreter's handler lookup does). `Function.prototype.call` and
+  `apply` with a JSFunction target enter the target without a builtin
+  frame (V8 has a builtin frame for them; it is not observable in stack
+  traces, which skip it). The JS stack limit is checked every fourth call
+  depth (every call for functions with more than 1024 bytes of bytecode),
+  not at every entry; the .NET stack is large enough for the slack.
+- Registers: in functions without exception handlers or generator
+  resumption, up to 64 interpreter registers live in IL locals; the frame
+  copy is written only where something reads it (register lists passed to
+  calls and runtime functions, the interrupt budget's runtime call on a back
+  edge) and reloaded where a builtin writes it (header of
+  BaselineCompiler.Registers.cs). V8's Sparkplug keeps every register in the
+  frame.
+- Inline fast paths: V8's Sparkplug code calls the same builtins as Ignition
+  for every bytecode; V8Sharp emits the hot paths (Smi and number
+  arithmetic, comparisons fused with the following conditional jump,
+  ToBoolean, monomorphic named and keyed loads and stores, global loads from
+  a PropertyCell, context slots) directly as IL, with the out-of-line
+  builtin as the slow path, and chooses per bytecode from the feedback at
+  compile time which paths to emit (header of BaselineCompiler.Feedback.cs).
+  The emitted code records the same feedback as the interpreter.
+- Compact code and size limit: a function whose inline code would exceed
+  RyuJIT's optimization limits (it would compile it with MinOpts) is
+  compiled again with calls to the builtins only. Functions with more than
+  5000 bytes of bytecode stay interpreted (`Baseline.kMaxBytecodeLength`);
+  V8 compiles any size.
 - No optimizing tier yet: `Isolate.UseOptimizer` is false, so
   `TieringManager` behaves as in a V8 built without Turbofan and Maglev
   (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the
@@ -235,12 +277,12 @@ for now, to be revisited when the reason goes away.
   `invocation_count_for_turbofan` x bytecode length, as V8 computes it; the
   ticks only raise it.
 - `BaselineBuiltins`: V8's baseline code calls the same builtins as Ignition's
-  handlers; V8Sharp's builtins are small C# methods that repeat the glue of
-  the interpreter's dispatch-loop cases (register windows, feedback
-  collection) around the shared helpers, so the dispatch loop needs no
-  refactoring. The Smi fast paths of the arithmetic builtins skip the
-  feedback update only when the embedded feedback is already SignedSmall
-  (the update would be a no-op).
+  handlers; V8Sharp's builtins are C# methods in Baseline/ that repeat the
+  glue of the interpreter's dispatch-loop cases (register windows, feedback
+  collection) around the shared helpers, so the interpreter needs no
+  refactoring. The slow paths of the inline code
+  (BaselineBuiltins.SlowPaths.cs) are `NoInlining`, so RyuJIT keeps them out
+  of the baseline methods.
 - `%CompileBaseline` on a non-user function, or when Sparkplug is disabled,
   throws an InvalidOperationException (V8: CHECK failure).
 
