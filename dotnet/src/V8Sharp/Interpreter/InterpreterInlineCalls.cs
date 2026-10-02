@@ -266,7 +266,7 @@ internal static class InterpreterInlineCalls
     /// (JSConstructStubGeneric) and enters the constructor like
     /// <see cref="EnterInline"/>. False, with nothing done, for other constructors.
     /// </summary>
-    public static bool TryPushConstructFrame(Isolate isolate, ref InterpreterState st, int slot, JSValue constructor,
+    public static bool TryPushConstructFrame(Isolate isolate, ref InterpreterState st, FeedbackVector? feedbackVector, int slot, JSValue constructor,
         JSValue newTarget, int argsStart, int argc, int returnPc)
     {
         if (constructor._obj is not JSFunction function) return false;
@@ -287,7 +287,7 @@ internal static class InterpreterInlineCalls
 
         // CollectConstructFeedback: the call count and the monomorphic hit
         // inline, everything else in the runtime function.
-        if (st.FeedbackVector is { } fv)
+        if (feedbackVector is { } fv)
         {
             JSValue[] slots = fv.Slots;
             if (ReferenceEquals(slots[slot]._obj, newTargetObject))

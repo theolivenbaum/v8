@@ -959,7 +959,7 @@ public static partial class InterpreterExecution
         int count = Unsigned<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
         if (typeof(TS) == typeof(SingleScale) &&
-            InterpreterInlineCalls.TryPushConstructFrame(isolate, ref st, slot, constructor, acc, st.Fp + first, count, PcOf(ref fp, ref ip) + 1 + 4 * S))
+            InterpreterInlineCalls.TryPushConstructFrame(isolate, ref st, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, constructor, acc, st.Fp + first, count, PcOf(ref fp, ref ip) + 1 + 4 * S))
         {
             return true;
         }
