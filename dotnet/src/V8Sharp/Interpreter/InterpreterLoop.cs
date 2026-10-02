@@ -391,9 +391,11 @@ public static partial class InterpreterExecution
 
                 // ---- Property stores ------------------------------------------------------------------------
                 case Bytecode.SetNamedProperty:
+                case Bytecode.DefineNamedOwnProperty:
                 {
-                    // The monomorphic hits of StoreIC.StoreNamed: a store to an own
-                    // field, or a transition that adds one.
+                    // The monomorphic hits of StoreIC.StoreNamed and
+                    // StoreIC.DefineNamedOwn: a store to an own field, or a
+                    // transition that adds one (the same handlers).
                     HeapObject? o = RegAt(ref fpSlot, Signed<TS>(ref ip, 1))._obj;
                     FeedbackVector? fv = st.FeedbackVector;
                     if (fv is not null && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
@@ -408,14 +410,11 @@ public static partial class InterpreterExecution
                             continue;
                         }
                     }
-                    SetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    if ((Bytecode)ip == Bytecode.SetNamedProperty) SetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    else DefineNamedOwnProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
                 }
-                case Bytecode.DefineNamedOwnProperty:
-                    DefineNamedOwnProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
-                    ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                    continue;
                 case Bytecode.SetKeyedProperty:
                 {
                     // KeyedStoreIC.Store's monomorphic in-bounds element store.
