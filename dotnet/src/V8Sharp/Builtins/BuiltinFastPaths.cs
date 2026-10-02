@@ -8,6 +8,8 @@
 //                    receiver and a Smi position (ToInteger_Inline's fast case).
 //   number.tq        NumberPrototypeToString without a radix: NumberToString
 //                    (the number-string cache).
+//   typed_array.tq   TypedArrayPrototypeLength (the length getter) of an
+//                    attached fixed-length typed array.
 //   array-push/pop/shift (builtins-array-gen.cc): BuiltinsArray.TryFastPush,
 //                    TryFastPop, TryFastShift.
 // Each returns false, having done nothing, when its fast case does not apply;
@@ -47,6 +49,15 @@ public static class BuiltinFastPaths
                 if (receiver._obj == NumberTag.Instance)
                 {
                     result = isolate.Factory.NumberToString(receiver);
+                    return true;
+                }
+                break;
+            case Builtin.TypedArrayPrototypeLength:
+                // The getter (typed_array.tq) on an attached fixed-length array:
+                // JSTypedArray::length.
+                if (receiver._obj is JSTypedArray typedArray && TypedArrayElementsOps.TryGetFixedLength(typedArray, out ulong length))
+                {
+                    result = JSValue.FromNumber(length);
                     return true;
                 }
                 break;
