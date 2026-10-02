@@ -262,6 +262,29 @@ public static class MaglevBuiltins
 
     // ---- Typed arrays ---------------------------------------------------------------------------------------
 
+    /// <summary>
+    /// KeyedStoreIC_Megamorphic: the fast path of a Number stored at an
+    /// in-bounds integer index of an attached, fixed-length typed array (the
+    /// builtin's typed array case); everything else through the keyed store IC.
+    /// </summary>
+    public static void KeyedStoreICMegamorphic(Isolate isolate, FeedbackVector? fv, int slot, JSValue obj, JSValue key, JSValue value)
+    {
+        if (obj._obj is JSTypedArray a && key.IsNumber && value.IsNumber && !a.IsVariableLength && !a.IsBigIntArray)
+        {
+            JSArrayBuffer buffer = a.Buffer;
+            double k = key.Number;
+            uint index = (uint)k;
+            if (index == k && index < a.RawLength && !buffer.WasDetached && !buffer.IsImmutable)
+            {
+                int size = a.ElementSize;
+                TypedArrayElementsOps.StoreDoubleToBytes(a.Kind,
+                    buffer.BackingStoreBuffer.AsSpan((int)(a.ByteOffset + (ulong)index * (ulong)size), size), value.Number);
+                return;
+            }
+        }
+        IC.KeyedStoreIC.Store(isolate, fv, slot, obj, key, value);
+    }
+
     /// <summary>LoadTypedArrayLength: the length, 0 when detached (or out of bounds of a resizable buffer).</summary>
     public static int TypedArrayLength(JSValue obj)
     {

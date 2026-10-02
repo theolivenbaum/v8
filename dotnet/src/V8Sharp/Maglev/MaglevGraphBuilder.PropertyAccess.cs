@@ -917,6 +917,13 @@ public sealed partial class MaglevGraphBuilder
             return;
         }
         if (nexus.GetName() is null && MapsAndHandlers(slot) is { } feedback && TryBuildElementStore(obj, key, value, feedback)) return;
+        if (nexus.IcState() == InlineCacheState.MEGAMORPHIC)
+        {
+            // BuildCallBuiltin<KeyedStoreIC_Megamorphic>.
+            CallMaglev("KeyedStoreICMegamorphic", [obj, key, value],
+                [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)], OpProperties.kGenericCall);
+            return;
+        }
         CallBaseline("SetKeyedProperty", [obj, key, value],
             [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)]);
     }
