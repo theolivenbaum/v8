@@ -786,7 +786,16 @@ public sealed class KeyedLoadIC : IC
         {
             JSValue feedback = vector.Slots[slot];
             // A named key that matches the keyed IC's name: the handlers are named-load handlers.
-            if (key.HeapObjectOrNull is Name name)
+            Name? name = key.HeapObjectOrNull as Name;
+            if (name is JSString { IsInternalized: false } keyString)
+            {
+                // KeyedLoadIC_Megamorphic's TryInternalizeString: a key built at
+                // run time (a substring, a concatenation) probes with its
+                // internalized copy if there is one; with none, no object has
+                // a property of that name and the miss handles it.
+                name = isolate.StringTable.TryLookupExisting(keyString);
+            }
+            if (name is not null)
             {
                 if (ReferenceEquals(feedback._obj, name) && ICMaps.MapOf(isolate, obj) is Map map &&
                     vector.Slots[slot + 1]._obj is FixedArray namedFeedback &&
