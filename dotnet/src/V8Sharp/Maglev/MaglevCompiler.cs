@@ -16,6 +16,13 @@ namespace V8Sharp.Maglev;
 
 public static class MaglevCompiler
 {
+    /// <summary>SharedFunctionInfo::DebugNameCStr: the name, else the inferred name.</summary>
+    internal static string DebugName(SharedFunctionInfo shared)
+    {
+        string name = shared.Name().ToString();
+        return name.Length != 0 ? name : shared.InferredName().ToString();
+    }
+
     /// <summary>The deopts after which a function is not optimized again (V8Sharp's guard against deopt loops).</summary>
     public const int kMaxDeoptCount = 8;
 
@@ -59,7 +66,8 @@ public static class MaglevCompiler
         if (OptimizationDisabled(shared)) return null;
         if (function.RawFeedbackCell.Value is not FeedbackVector) return null;
         if (shared.FunctionData is not BytecodeArray bytecode) return null;
-        if (bytecode.Length > isolate.Flags.max_optimized_bytecode_size) return Fail(isolate, shared, "function too big");
+        // MaglevCompilationJob::PrepareJobImpl.
+        if (bytecode.Length > isolate.Flags.max_maglev_optimized_bytecode_size) return Fail(isolate, shared, "Function is too big to be optimized");
         if (MaglevGraphBuilder.UnsupportedReason(shared, bytecode) is { } unsupported) return Fail(isolate, shared, unsupported);
         if (!shared.IsUserJavaScript()) return Fail(isolate, shared, "not user JavaScript");
 
@@ -73,7 +81,7 @@ public static class MaglevCompiler
             if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph);
             ComputeUseCounts(info.Graph);
             if (isolate.Flags.print_maglev_graph) MaglevGraphPrinter.Print(info, Console.Out);
-            CheckCodeGenerationLimits(info.Graph);
+            long graphBuilt = System.Diagnostics.Stopwatch.GetTimestamp();
 
             var code = new MaglevCode(function, info.Toplevel.Feedback, osrOffset)
             {
@@ -81,6 +89,11 @@ public static class MaglevCompiler
             };
             var generator = new MaglevCodeGenerator(info, code);
             (MaglevCodeEntry entry, int ilSize) = generator.Generate();
+            if (isolate.Flags.trace_opt_verbose)
+            {
+                Console.WriteLine($"[maglev phases: graph {System.Diagnostics.Stopwatch.GetElapsedTime(start, graphBuilt).TotalMilliseconds:F3} ms, " +
+                                  $"codegen {System.Diagnostics.Stopwatch.GetElapsedTime(graphBuilt).TotalMilliseconds:F3} ms]");
+            }
             code.Entry = entry;
             code.ILSize = ilSize;
             code.NodeCount = info.Graph.NodeCount;
@@ -94,7 +107,7 @@ public static class MaglevCompiler
             if (isolate.Flags.trace_opt)
             {
                 double ms = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
-                Console.WriteLine($"[compiling method {shared.Name()} (target MAGLEV){(osrOffset >= 0 ? " OSR" : "")}, " +
+                Console.WriteLine($"[compiling method {MaglevCompiler.DebugName(shared)} (target MAGLEV){(osrOffset >= 0 ? " OSR" : "")}, " +
                                   $"{info.Graph.NodeCount} nodes, {ilSize} bytes IL, {ms:F3} ms]");
             }
             return code;
@@ -108,7 +121,7 @@ public static class MaglevCompiler
     static MaglevCode? Fail(Isolate isolate, SharedFunctionInfo shared, string reason)
     {
         DisableOptimization(shared, reason);
-        if (isolate.Flags.trace_opt) Console.WriteLine($"[aborted optimizing {shared.Name()} (target MAGLEV) because: {reason}]");
+        if (isolate.Flags.trace_opt) Console.WriteLine($"[aborted optimizing {MaglevCompiler.DebugName(shared)} (target MAGLEV) because: {reason}]");
         return null;
     }
 
@@ -235,23 +248,6 @@ public static class MaglevCompiler
     static bool IsPure(Node node) =>
         (node.Properties & (OpProperties.kEagerDeopt | OpProperties.kCanWrite | OpProperties.kCall | OpProperties.kNotIdempotent |
                             OpProperties.kCanThrow | OpProperties.kLazyDeopt)) == 0;
-
-    /// <summary>
-    /// RyuJIT compiles methods over its MinOpts thresholds without
-    /// optimization (2000 basic blocks or locals, 60000 bytes of IL): such
-    /// graphs are not compiled.
-    /// </summary>
-    static void CheckCodeGenerationLimits(Graph graph)
-    {
-        int nodes = 0, blocks = 0;
-        foreach (BasicBlock block in graph.Blocks)
-        {
-            if (block.IsDead) continue;
-            blocks++;
-            nodes += block.Nodes.Count + block.Phis.Count;
-        }
-        if (nodes > 1800 || blocks > 600) throw new MaglevBailoutException($"graph too big ({nodes} nodes, {blocks} blocks)");
-    }
 
     // ---- Installing and invalidating code --------------------------------------------------------------
 

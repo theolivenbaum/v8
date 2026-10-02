@@ -207,6 +207,27 @@ public class MaglevCompilerTest
           return s;
         })()
         """,
+        // Double and holey element loads (holes are undefined), Math.clz32 of holes.
+        """
+        (function() {
+          function copy(x, x0) { for (var j = 1; j <= 2; j++) { var r = j * 3; for (var i = 0; i < 2; i++) { x[r] = x0[r]; ++r; } } }
+          var x = new Array(9).fill(1.5), x0 = new Array(9).fill(2.5), out = [];
+          for (var k = 0; k < 20; k++) { x.fill(1.5); copy(x, x0); out.push(x.join()); }
+          function h(a, i) { return Math.clz32(a[i]) + ':' + a[i]; }
+          var holey = [-4.2, , 4.2, 42], tagged = [{}, , 'x'];
+          for (var k = 0; k < 20; k++) out.push(h(holey, k & 3), h(tagged, k % 3));
+          return out.join('|');
+        })()
+        """,
+        // Nested loops entered by OSR in the inner loop (the outer back edge exits).
+        """
+        (function() {
+          function nest(n) { var s = 0; for (var k = 0; k < n; k++) { for (var j = 0; j < 2000; j++) s = (s + j * k) | 0; s ^= k; } return s; }
+          var r = [];
+          for (var q = 0; q < 6; q++) r.push(nest(5 + q));
+          return r.join();
+        })()
+        """,
     };
 
     [Theory]
@@ -335,6 +356,28 @@ public class MaglevCompilerTest
             s.split('\n').slice(1, 3).map(l => l.trim().split(' ')[1]).join();
             """);
         Assert.Equal("inner,outer", result);
+    }
+
+    [Fact]
+    public void FreezingTheGlobalObjectDeoptimizesGlobalStores()
+    {
+        // PropertyCell::UpdatePropertyDetailsExceptCellType: a cell becoming
+        // read-only deoptimizes the code that stores to it.
+        Assert.Equal("0,true,0", Run("--maglev", """
+            glo = 0;
+            function write_glo(x) { glo = x }
+            %PrepareFunctionForOptimization(write_glo);
+            write_glo({});
+            write_glo(1);
+            %OptimizeFunctionOnNextCall(write_glo);
+            write_glo(0);
+            var r = [glo];
+            Object.freeze(this);
+            r.push((%GetOptimizationStatus(write_glo) & 8) == 0);
+            write_glo(1);
+            r.push(glo);
+            r.join();
+            """));
     }
 
     [Fact]

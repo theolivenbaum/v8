@@ -373,15 +373,14 @@ public sealed class BytecodeAnalysis
         }
 
         var scratch = new BytecodeLivenessState(registerCount);
+        var it = new BytecodeArrayRandomIterator(_bytecode);
         bool changed = true;
         while (changed)
         {
             changed = false;
-            var it = new BytecodeArrayIterator(_bytecode);
-            // Walk backwards: collect the iterator positions once.
             for (int i = n - 1; i >= 0; i--)
             {
-                it.SetOffset(_offsets[i]);
+                it.GoToIndex(i);
                 Bytecode bytecode = it.CurrentBytecode();
                 BytecodeLivenessState outState = _out[i]!;
                 scratch.CopyFrom(outState);

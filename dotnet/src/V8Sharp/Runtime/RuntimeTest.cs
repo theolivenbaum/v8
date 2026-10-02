@@ -129,16 +129,12 @@ public static partial class RuntimeTest
         return JSValue.Undefined;
     }
 
-    /// <summary>%IsBeingInterpreted: whether the topmost JavaScript frame is interpreted (or baseline).</summary>
-    public static JSValue IsBeingInterpreted(Isolate isolate)
-    {
-        InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
-        for (int i = isolate.InterpreterFrameDepth - 1; i >= 0; i--)
-        {
-            if (frames[i].Kind == InterpreterFrameKind.Interpreted) return JSValue.FromBoolean(!frames[i].IsMaglev);
-        }
-        return JSValue.True;
-    }
+    /// <summary>
+    /// Runtime_IsBeingInterpreted: always true (Turbofan lowers the call to
+    /// false, so it never reaches the runtime from optimized code; Maglev does
+    /// not lower it).
+    /// </summary>
+    public static JSValue IsBeingInterpreted(Isolate isolate) => JSValue.True;
 
     /// <summary>%HasFastProperties.</summary>
     public static JSValue HasFastProperties(Isolate isolate, JSValue obj) =>

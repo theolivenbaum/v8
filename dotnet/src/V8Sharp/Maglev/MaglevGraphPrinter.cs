@@ -10,7 +10,7 @@ internal static class MaglevGraphPrinter
     public static void Print(MaglevCompilationInfo info, TextWriter output)
     {
         var sb = new StringBuilder();
-        sb.Append("Graph of ").Append(info.Function.Shared.Name());
+        sb.Append("Graph of ").Append(MaglevCompiler.DebugName(info.Function.Shared));
         if (info.IsOsr) sb.Append(" (OSR at ").Append(info.OsrOffset).Append(')');
         sb.AppendLine();
         sb.AppendLine("  constants:");

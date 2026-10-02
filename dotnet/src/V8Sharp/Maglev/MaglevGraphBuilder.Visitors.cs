@@ -486,6 +486,14 @@ public sealed partial class MaglevGraphBuilder
             case Bytecode.CreateArrayLiteral:
             case Bytecode.CreateObjectLiteral:
             {
+                // JSHeapBroker::ReadFeedbackForArrayOrObjectLiteral: no AllocationSite yet.
+                if (_unit.Feedback.Slots[FeedbackSlot(1)].HeapObjectOrNull is not AllocationSite)
+                {
+                    EmitUnconditionalDeopt(bytecode == Bytecode.CreateArrayLiteral
+                        ? DeoptimizeReason.kInsufficientTypeFeedbackForArrayLiteral
+                        : DeoptimizeReason.kInsufficientTypeFeedbackForObjectLiteral);
+                    break;
+                }
                 ValueNode result = CallBaseline(bytecode == Bytecode.CreateArrayLiteral ? "CreateArrayLiteral" : "CreateObjectLiteral", [],
                     [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(1)), BuiltinArg.C(Constant(ConstantPoolIndex(0))),
                      BuiltinArg.I(Flag8(2))])!;
@@ -850,6 +858,12 @@ public sealed partial class MaglevGraphBuilder
     void VisitLdaGlobal(bool insideTypeof)
     {
         int slot = FeedbackSlot(1);
+        // BuildLoadGlobal / BuildStoreGlobal: JSHeapBroker::ReadFeedbackForGlobalAccess.
+        if (new FeedbackNexus(Isolate, _unit.Feedback, slot).IcState() == InlineCacheState.UNINITIALIZED)
+        {
+            EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForGenericGlobalAccess);
+            return;
+        }
         JSValue feedback = _unit.Feedback.Slots[slot];
         if (feedback.HeapObjectOrNull is PropertyCell cell && cell.PropertyDetails.Kind == PropertyKind.Data)
         {
@@ -889,6 +903,12 @@ public sealed partial class MaglevGraphBuilder
     void VisitStaGlobal()
     {
         int slot = FeedbackSlot(1);
+        // BuildLoadGlobal / BuildStoreGlobal: JSHeapBroker::ReadFeedbackForGlobalAccess.
+        if (new FeedbackNexus(Isolate, _unit.Feedback, slot).IcState() == InlineCacheState.UNINITIALIZED)
+        {
+            EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForGenericGlobalAccess);
+            return;
+        }
         JSValue feedback = _unit.Feedback.Slots[slot];
         ValueNode value = GetAccumulator();
         if (feedback.HeapObjectOrNull is PropertyCell cell && cell.PropertyDetails.Kind == PropertyKind.Data &&
@@ -1576,8 +1596,16 @@ public sealed partial class MaglevGraphBuilder
     void VisitJumpLoop()
     {
         int header = JumpTargetOffset();
+        if (_info.IsOsr && !_unit.IsInline && header < _analysis.OsrEntryPoint)
+        {
+            // The back edge of a loop around the OSR'd one (VisitSingleBytecode):
+            // loops must be entered through their header, which this code does
+            // not have, so it exits to the interpreter.
+            EmitUnconditionalDeopt(DeoptimizeReason.kOSREarlyExit);
+            return;
+        }
         MergePointInterpreterFrameState? state = _mergeStates[header];
-        if (state is null || !state.IsLoop) throw new MaglevBailoutException("loop without header");
+        if (state is null || !state.IsLoop) throw new MaglevBailoutException($"loop without header (JumpLoop at {_it.CurrentOffset()} to {header}, state {(state is null ? "none" : "not a loop")})");
         // HandleNoHeapWritesInterrupt (V8's loop interrupt check; there is no Turbofan to count budget for).
         AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kCanThrow | OpProperties.kNotIdempotent });
         // JumpLoop clobbers the accumulator.

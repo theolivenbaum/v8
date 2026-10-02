@@ -109,15 +109,31 @@ public static class Deoptimizer
             if (f.Bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, f.Bytecode);
         }
 
-        if (point.Kind == DeoptimizeKind.kEager)
+        if (point.Kind == DeoptimizeKind.kEager && !IsDeoptimizationWithoutCodeInvalidation(point.Reason) &&
+            !code.MarkedForDeoptimization)
         {
-            // An eager deopt invalidates the code (V8: Deoptimizer::DeoptimizeFunction
-            // via the kEagerDeopt lazy reason); the function is re-optimized later
-            // with the feedback the interpreter collects meanwhile.
-            MaglevCompiler.InvalidateCode(isolate, code, LazyDeoptimizeReason.kEagerDeopt);
+            // Deoptimizer::Deoptimizer: an eager deopt invalidates the code when it
+            // is the function's active code; OSR code only when the exit is inside
+            // the OSR'd loop. The function is re-optimized later with the
+            // feedback the interpreter collects meanwhile.
+            bool invalidate = code.OsrOffset < 0
+                ? ReferenceEquals(code.FeedbackVector.MaglevCode, code)
+                : DeoptExitIsInsideOsrLoop(code, translation[0].BytecodeOffset);
+            if (invalidate) MaglevCompiler.InvalidateCode(isolate, code, LazyDeoptimizeReason.kEagerDeopt);
         }
         isolate.MaglevDeoptPending = true;
     }
+
+    /// <summary>
+    /// IsDeoptimizationWithoutCodeInvalidation: exits that do not mean an
+    /// assumption of the code failed.
+    /// </summary>
+    static bool IsDeoptimizationWithoutCodeInvalidation(DeoptimizeReason reason) =>
+        reason is DeoptimizeReason.kPrepareForOnStackReplacement or DeoptimizeReason.kOSREarlyExit;
+
+    /// <summary>DeoptExitIsInsideOsrLoop: the loop from the OSR entry's header to its JumpLoop.</summary>
+    static bool DeoptExitIsInsideOsrLoop(MaglevCode code, int deoptExitOffset) =>
+        deoptExitOffset >= code.OsrEntryPoint && deoptExitOffset <= code.OsrOffset;
 
     /// <summary>The bytecode offset after any prefix (what a frame record holds).</summary>
     static int CursorOf(BytecodeArray bytecode, int offset)
@@ -131,7 +147,7 @@ public static class Deoptimizer
         DeoptFrameData top = point.Frames[^1];
         string kind = point.Kind == DeoptimizeKind.kEager ? "deopt-eager" : "deopt-lazy";
         string reason = point.Kind == DeoptimizeKind.kEager ? DeoptimizeReasons.ToString(point.Reason) : "(code invalidated)";
-        Console.WriteLine($"[bailout (kind: {kind}, reason: {reason}): begin. deoptimizing {code.SharedFunctionInfo.Name()}, " +
-                          $"bytecode offset {top.BytecodeOffset} in {top.Function.Shared.Name()}, frames {point.Frames.Length}]");
+        Console.WriteLine($"[bailout (kind: {kind}, reason: {reason}): begin. deoptimizing {MaglevCompiler.DebugName(code.SharedFunctionInfo)}, " +
+                          $"bytecode offset {top.BytecodeOffset} in {MaglevCompiler.DebugName(top.Function.Shared)}, frames {point.Frames.Length}]");
     }
 }

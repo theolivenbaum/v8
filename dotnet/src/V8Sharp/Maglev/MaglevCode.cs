@@ -90,5 +90,5 @@ public sealed class MaglevCode
     public int NodeCount { get; internal set; }
     public int InlinedFunctionCount { get; internal set; }
 
-    public override string ToString() => $"<MaglevCode {SharedFunctionInfo.Name()}{(OsrOffset >= 0 ? " OSR@" + OsrOffset : "")}>";
+    public override string ToString() => $"<MaglevCode {MaglevCompiler.DebugName(SharedFunctionInfo)}{(OsrOffset >= 0 ? " OSR@" + OsrOffset : "")}>";
 }

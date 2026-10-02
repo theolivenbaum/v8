@@ -519,7 +519,7 @@ public static partial class InterpreterExecution
                     FeedbackCell cell = st.Function.RawFeedbackCell;
                     if ((cell.InterruptBudget -= relative) < 0 || st.Isolate.StackGuard.HasPendingInterrupts)
                     {
-                        if (JumpLoopInterrupt(st.Isolate, ref st, ref fpSlot, pc) && typeof(TS) == typeof(SingleScale))
+                        if (JumpLoopInterrupt(st.Isolate, ref st, ref fpSlot, pc, osr: typeof(TS) == typeof(SingleScale)))
                         {
                             // OSR to Maglev code at the loop header (Run continues there).
                             st.Pc = pc - relative;

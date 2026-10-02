@@ -578,16 +578,20 @@ public sealed partial class MaglevGraphBuilder
         ValueNode index = GetInt32(key);
         ValueNode elements = BuildLoadElements(obj);
         BuildBoundsCheck(obj, elements, index, isJSArray);
+        // BuildElementLoadOnJSArrayOrJSObject: holes are undefined when the
+        // prototype chain has no elements and the IC handled holes.
+        bool convertHole = anyHoley && CanTreatHoleAsUndefined(maps) && LoadModeHandlesHoles(feedback);
         if (ElementsKinds.IsDoubleElementsKind(kind))
         {
             if (anyHoley)
             {
+                // BuildLoadHoleyFixedDoubleArrayElement.
                 ValueNode holey = AddNewNode(new ValueNode(Opcode.LoadHoleyFixedDoubleArrayElement, ValueRepresentation.kHoleyFloat64)
                 {
                     Inputs = [elements, index],
                     Properties = OpProperties.kCanRead,
                 });
-                return GetFloat64(holey);
+                return convertHole ? holey : GetFloat64(holey);
             }
             return AddNewNode(new ValueNode(Opcode.LoadFixedDoubleArrayElement, ValueRepresentation.kFloat64)
             {
@@ -604,10 +608,44 @@ public sealed partial class MaglevGraphBuilder
         });
         if (anyHoley)
         {
+            if (convertHole)
+            {
+                return AddNewNode(new ValueNode(Opcode.ConvertHoleToUndefined, ValueRepresentation.kTagged) { Inputs = [value] });
+            }
             AddCheck(Opcode.CheckNotHole, value, DeoptimizeReason.kHole);
             if (ElementsKinds.IsSmiElementsKind(kind)) EnsureType(value, NodeType.kSmi);
         }
         return value;
+    }
+
+    /// <summary>
+    /// MaglevGraphBuilder::CanTreatHoleAsUndefined: every map's prototype is the
+    /// initial Array.prototype or Object.prototype, and the NoElements
+    /// protector holds (the code depends on it).
+    /// </summary>
+    bool CanTreatHoleAsUndefined(Map[] maps)
+    {
+        NativeContext nativeContext = Isolate.NativeContext;
+        foreach (Map map in maps)
+        {
+            HeapObject? prototype = map.Prototype;
+            if (!ReferenceEquals(prototype, nativeContext.InitialArrayPrototype) &&
+                !ReferenceEquals(prototype, nativeContext.InitialObjectPrototype))
+            {
+                return false;
+            }
+        }
+        return _info.DependOnProtector(Protectors.IsNoElementsIntact(Isolate), "NoElements");
+    }
+
+    /// <summary>LoadModeHandlesHoles over the element handlers.</summary>
+    static bool LoadModeHandlesHoles(List<(Map Map, JSValue Handler)> feedback)
+    {
+        foreach ((Map _, JSValue handler) in feedback)
+        {
+            if (handler.HeapObjectOrNull is not LoadHandler { AllowHandlingHole: true }) return false;
+        }
+        return true;
     }
 
     ValueNode BuildLoadElements(ValueNode obj) =>

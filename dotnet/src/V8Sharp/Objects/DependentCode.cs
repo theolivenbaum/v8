@@ -90,6 +90,31 @@ public static class DependentCode
         }
     }
 
+    // ---- Protectors ---------------------------------------------------------------------------------
+
+    // V8 keeps each protector in a PropertyCell, and optimized code depends on
+    // it with kPropertyCellChangedGroup (CompilationDependencies::
+    // DependOnProtector). V8Sharp's protectors are bools (Protectors.cs), so
+    // the dependency is registered on a stand-in Cell per isolate and
+    // protector, invalidated through Protectors.OnInvalidate.
+    static readonly ConditionalWeakTable<Isolate, Dictionary<string, Cell>> s_protectorCells = new();
+
+    static DependentCode() => Protectors.OnInvalidate += static (isolate, name) =>
+    {
+        if (s_protectorCells.TryGetValue(isolate, out Dictionary<string, Cell>? cells) && cells.TryGetValue(name, out Cell? cell))
+        {
+            DeoptimizeDependencyGroups(isolate, cell, DependencyGroups.PropertyCellChanged);
+        }
+    };
+
+    /// <summary>The object code depending on the protector <paramref name="name"/> registers on.</summary>
+    public static HeapObject ProtectorCell(Isolate isolate, string name)
+    {
+        Dictionary<string, Cell> cells = s_protectorCells.GetValue(isolate, static _ => new Dictionary<string, Cell>());
+        if (!cells.TryGetValue(name, out Cell? cell)) cells[name] = cell = new Cell(JSValue.Undefined);
+        return cell;
+    }
+
     static LazyDeoptimizeReason ReasonFor(DependencyGroups groups)
     {
         if ((groups & DependencyGroups.PropertyCellChanged) != 0) return LazyDeoptimizeReason.kPropertyCellChange;

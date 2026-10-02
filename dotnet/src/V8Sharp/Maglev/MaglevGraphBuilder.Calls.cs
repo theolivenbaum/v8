@@ -400,7 +400,7 @@ public sealed partial class MaglevGraphBuilder
         string? reason = ShouldInlineCall(target, nexus, isConstruct);
         if (reason is not null)
         {
-            if (_info.IsTracing) Console.WriteLine($"[maglev] not inlining {target.Shared.Name()}: {reason}");
+            if (_info.IsTracing) Console.WriteLine($"[maglev] not inlining {MaglevCompiler.DebugName(target.Shared)}: {reason}");
             return null;
         }
         SharedFunctionInfo shared = target.Shared;
@@ -493,7 +493,7 @@ public sealed partial class MaglevGraphBuilder
             Obj0 = unit,
             Properties = OpProperties.kNotIdempotent,
         });
-        if (_info.IsTracing) Console.WriteLine($"[maglev] inlined {shared.Name()} into {_unit}");
+        if (_info.IsTracing) Console.WriteLine($"[maglev] inlined {MaglevCompiler.DebugName(shared)} into {_unit}");
         return result;
     }
 

@@ -203,7 +203,7 @@ public sealed class MaglevCompilationUnit
     internal LocalBuilder? FrameRecordLocal;
     internal LocalBuilder? RegisterStartLocal;
 
-    public override string ToString() => SharedFunctionInfo.Name().ToString();
+    public override string ToString() => MaglevCompiler.DebugName(SharedFunctionInfo).ToString();
 }
 
 /// <summary>A dependency of the code (CompilationDependency): invalidating it deoptimizes the code.</summary>
@@ -238,6 +238,17 @@ public sealed class MaglevCompilationInfo
     public int MaxInliningDepth;
 
     public bool IsTracing => Isolate.Flags.trace_maglev_graph_building;
+
+    /// <summary>
+    /// CompilationDependencies::DependOnProtector: false when the protector is
+    /// already invalid; otherwise the code is invalidated with it.
+    /// </summary>
+    public bool DependOnProtector(bool intact, string name)
+    {
+        if (!intact) return false;
+        AddDependency(Objects.DependentCode.ProtectorCell(Isolate, name), Objects.DependentCode.DependencyGroups.PropertyCellChanged);
+        return true;
+    }
 
     public void AddDependency(HeapObject obj, Objects.DependentCode.DependencyGroups groups) =>
         Dependencies.Add(new CompilationDependency(obj, groups));

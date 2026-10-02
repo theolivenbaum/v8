@@ -95,9 +95,13 @@ public static class MaglevBuiltins
     [MethodImpl(Inline)]
     public static JSValue Float64ToTagged(double value) => JSValue.FromNumber(value);
 
-    /// <summary>HoleyFloat64ToTagged: the hole NaN is the hole.</summary>
+    /// <summary>HoleyFloat64ToTagged: the hole NaN is undefined.</summary>
     [MethodImpl(Inline)]
-    public static JSValue HoleyFloat64ToTagged(double value) => IsHoleNaN(value) ? JSValue.TheHole : JSValue.FromNumber(value);
+    public static JSValue HoleyFloat64ToTagged(double value) => IsHoleNaN(value) ? JSValue.Undefined : JSValue.FromNumber(value);
+
+    /// <summary>ConvertHoleToUndefined.</summary>
+    [MethodImpl(Inline)]
+    public static JSValue ConvertHoleToUndefined(JSValue value) => value.IsTheHole ? JSValue.Undefined : value;
 
     [MethodImpl(Inline)]
     public static int TruncateFloat64ToInt32(double value) => Conversions.DoubleToInt32(value);

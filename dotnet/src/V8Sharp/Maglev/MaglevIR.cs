@@ -200,6 +200,7 @@ public enum Opcode : ushort
     Uint32ToNumber,
     Float64ToTagged,
     HoleyFloat64ToTagged,
+    ConvertHoleToUndefined,
     ChangeInt32ToFloat64,
     ChangeUint32ToFloat64,
     CheckedFloat64ToInt32,

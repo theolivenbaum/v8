@@ -557,7 +557,8 @@ public sealed class GlobalDictionary : HashTableBase
     public JSValue ValueAt(InternalIndex entry) => CellAt(entry).Value;
     public void ValueAtPut(InternalIndex entry, JSValue value) => CellAt(entry).Value = value;
     public PropertyDetails DetailsAt(InternalIndex entry) => CellAt(entry).PropertyDetails;
-    public void DetailsAtPut(InternalIndex entry, PropertyDetails value) => CellAt(entry).PropertyDetails = value;
+    /// <summary>GlobalDictionaryShape::DetailsAtPut.</summary>
+    public void DetailsAtPut(InternalIndex entry, PropertyDetails value) => CellAt(entry).UpdatePropertyDetailsExceptCellType(value);
 
     public void SetEntry(InternalIndex entry, PropertyCell cell, PropertyDetails details)
     {

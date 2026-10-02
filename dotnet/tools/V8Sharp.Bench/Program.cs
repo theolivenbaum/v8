@@ -56,6 +56,7 @@ public static partial class Program
         ["jitless"] = "--jitless",                      // the interpreter only
         ["sparkplug"] = "",                             // Ignition + baseline IL (the default)
         ["always-sparkplug"] = "--always-sparkplug",    // baseline IL from the first call
+        ["maglev"] = "--maglev",                        // + the optimizing tier (Maglev, IL)
     };
 
     public static int Main(string[] args)
@@ -86,7 +87,7 @@ public static partial class Program
               V8Sharp.Bench run --engine <engine> --suite <suite>
               V8Sharp.Bench list
             engines: v8:jit, v8:jitless, v8:sparkplug, v8:maglev, v8sharp, v8sharp:jitless, v8sharp:sparkplug,
-                     v8sharp:always-sparkplug (V8SHARP_BENCH_FLAGS adds V8 flags to v8sharp runs);
+                     v8sharp:always-sparkplug, v8sharp:maglev (V8SHARP_BENCH_FLAGS adds V8 flags to v8sharp runs);
                      <engine>@<dir> runs it with the V8Sharp.Bench build in <dir> (another revision, a publish);
                      d8sharp[:mode]@<dir> runs the d8sharp shell built or published in <dir> as its own process
             suites:  octane (all), octane:<name>, octane-cpu (all) | octane-cpu:<name> (fixed work, scored

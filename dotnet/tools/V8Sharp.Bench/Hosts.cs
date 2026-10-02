@@ -160,7 +160,7 @@ sealed class V8SharpHost : IBenchHost
         }, 256 * 1024 * 1024);
         thread.Start();
         thread.Join();
-        if (failure is not null) throw failure;
+        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     public void LoadFile(string path) => RunOnLargeStack(File.ReadAllText(path), Path.GetFileName(path));

@@ -68,7 +68,7 @@ internal sealed class MaglevCodeGenerator
         _info = info;
         _graph = info.Graph;
         _code = code;
-        string name = "maglev:" + info.Function.Shared.Name() + (info.IsOsr ? "@osr" + info.OsrOffset : "");
+        string name = "maglev:" + MaglevCompiler.DebugName(info.Function.Shared) + (info.IsOsr ? "@osr" + info.OsrOffset : "");
         (_type, _method) = BaselineCodeSpace.For(info.Isolate).DefineMethod(name, typeof(JSValue),
             [typeof(MaglevCode), typeof(Isolate), typeof(InterpreterState).MakeByRefType()]);
         if (s_aggressiveOptimization) _method.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
@@ -1112,6 +1112,11 @@ internal sealed class MaglevCodeGenerator
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 Call(nameof(MaglevBuiltins.LoadFixedArrayElement));
+                Store(v!);
+                return;
+            case Opcode.ConvertHoleToUndefined:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Call(nameof(MaglevBuiltins.ConvertHoleToUndefined));
                 Store(v!);
                 return;
             case Opcode.LoadFixedDoubleArrayElement:

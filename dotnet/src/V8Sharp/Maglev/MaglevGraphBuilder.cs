@@ -327,6 +327,7 @@ public sealed partial class MaglevGraphBuilder
                 // Dead code: no predecessor reached this bytecode.
                 continue;
             }
+            if (_info.IsTracing) Console.WriteLine($"[maglev] {_unit} @{offset} {_it.CurrentBytecode()}");
             VisitSingleBytecode();
         }
     }
@@ -927,8 +928,9 @@ public sealed partial class MaglevGraphBuilder
                 }
                 NodeInfo info = _frame.Known.GetOrCreateInfoFor(value);
                 if (info.TruncatedInt32Alternative is { } alt) return alt;
-                ValueNode f64 = value.Representation == ValueRepresentation.kHoleyFloat64 ? GetFloat64(value) :
-                    value.Representation == ValueRepresentation.kUint32 ? GetFloat64(value) : value;
+                // TruncateHoleyFloat64ToInt32: the hole is a NaN, which truncates to 0
+                // like ToNumber(undefined), so no hole check.
+                ValueNode f64 = value.Representation == ValueRepresentation.kUint32 ? GetFloat64(value) : value;
                 return info.TruncatedInt32Alternative = AddConversion(Opcode.TruncateFloat64ToInt32, ValueRepresentation.kInt32, f64,
                     NodeType.kNumber);
             }
