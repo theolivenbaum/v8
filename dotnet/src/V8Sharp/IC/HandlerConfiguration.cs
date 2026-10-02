@@ -270,9 +270,11 @@ public sealed class StoreHandler : HeapObject
     public readonly KeyedAccessStoreMode StoreMode;
 
     /// <summary>
-    /// A kElement handler without an elements transition or a prototype chain
-    /// validity cell: the interpreter's SetKeyedProperty stores in-bounds
-    /// non-hole elements through it inline (ElementAccess.TryStoreInBounds).
+    /// A kElement handler without an elements transition: the interpreter's
+    /// SetKeyedProperty stores in-bounds non-hole elements through it inline
+    /// (ElementAccess.TryStoreInBounds) while the handler is valid (array
+    /// element handlers carry the prototype chain's validity cell, which the
+    /// inline path checks as V8's HandleStoreICHandlerCase does).
     /// </summary>
     public readonly bool IsSimpleElementStore;
 
@@ -292,7 +294,7 @@ public sealed class StoreHandler : HeapObject
         ElementsKind = elementsKind;
         ElementsTransitionMap = elementsTransitionMap;
         StoreMode = storeMode;
-        IsSimpleElementStore = kind == Kind.kElement && elementsTransitionMap is null && validityCell is null;
+        IsSimpleElementStore = kind == Kind.kElement && elementsTransitionMap is null;
     }
 
     static readonly StoreHandler s_slow = new(Kind.kSlow);

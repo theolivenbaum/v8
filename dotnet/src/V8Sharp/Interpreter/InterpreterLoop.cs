@@ -422,7 +422,7 @@ public static partial class InterpreterExecution
                         JSValue[] slots = fv.Slots;
                         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
                         if (ReferenceEquals(slots[slot]._obj, Unsafe.As<JSReceiver>(o).Map) && slots[slot + 1]._obj is StoreHandler handler &&
-                            handler.IsSimpleElementStore && ElementAccess.TryStoreInBounds(Unsafe.As<JSObject>(o), key._num, acc))
+                            handler.IsSimpleElementStore && handler.IsValid && ElementAccess.TryStoreInBounds(Unsafe.As<JSObject>(o), key._num, acc))
                         {
                             ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                             continue;
