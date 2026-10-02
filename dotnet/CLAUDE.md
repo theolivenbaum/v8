@@ -119,6 +119,10 @@ dotnet run -c Release --project tools/V8Sharp.TestRunner -- test262 --engine ora
   and every full conformance run in `flock -s /home/user/locks/bench.lock <cmd>`
   (builds and unit tests need no lock). Benchmarks then run alone; numbers
   taken under load are not evidence for a decision.
+- **Benchmarking rules** (warm-up, the parity build, V8 and V8Sharp in one
+  session, the VM fingerprint) are in the `v8sharp-benchmark` skill
+  (`.claude/skills/v8sharp-benchmark/SKILL.md`); use
+  `tools/V8Sharp.Bench/bench-session.sh` for every measurement.
 - Running something long (a conformance sweep), use a timeout and write the
   results under `dotnet/artifacts/` (git-ignored).
 
