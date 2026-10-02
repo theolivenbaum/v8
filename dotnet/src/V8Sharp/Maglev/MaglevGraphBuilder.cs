@@ -353,6 +353,8 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>ProcessMergePoint: the bytecode at <paramref name="offset"/> starts a block with merged predecessors.</summary>
     void ProcessMergePoint(int offset)
     {
+        // Merges aren't simple fallthroughs (ResetBuilderCachedState).
+        _latestCheckpointedFrame = null;
         // Straight-line code falls into the merge point.
         if (_currentBlock is not null)
         {
@@ -617,6 +619,9 @@ public sealed partial class MaglevGraphBuilder
         if ((node.Properties & (OpProperties.kCanWrite | OpProperties.kCall)) != 0)
         {
             _frame.Known.ClearUnstableMaps();
+            // MarkPossibleSideEffect -> ResetBuilderCachedState: later checks
+            // cannot resume before this node.
+            _latestCheckpointedFrame = null;
         }
         return node;
     }
@@ -632,11 +637,16 @@ public sealed partial class MaglevGraphBuilder
 
     ValueNode ClosureNode => _unit.Closure!;
 
-    /// <summary>Records the frame at the start of a bytecode (the eager deopt checkpoint).</summary>
+    /// <summary>
+    /// Records the frame at the start of a bytecode. The eager deopt
+    /// checkpoint (GetLatestCheckpointedFrame) is kept across bytecodes until
+    /// a side effect or a merge, as V8 does: a deopt then resumes at an
+    /// earlier bytecode and re-executes the side-effect-free ones since, and
+    /// the checks share one frame state (and one deopt exit).
+    /// </summary>
     void Checkpoint()
     {
         Array.Copy(_frame.Values, _frameAtBytecodeStart, _frameAtBytecodeStart.Length);
-        _latestCheckpointedFrame = null;
     }
 
     /// <summary>GetLatestCheckpointedFrame: the frame at the start of the current bytecode.</summary>
@@ -732,7 +742,17 @@ public sealed partial class MaglevGraphBuilder
     ValueNode LoadRegister(int operandIndex) => _frame.Get(_it.GetRegisterOperand(operandIndex));
     ValueNode GetAccumulator() => _frame.Accumulator;
     void SetAccumulator(ValueNode value) => _frame.Accumulator = value;
-    void StoreRegister(Register r, ValueNode value) => _frame.Set(r, value);
+    void StoreRegister(Register r, ValueNode value)
+    {
+        _frame.Set(r, value);
+        if (r.IsParameter && !r.IsFunctionClosure && !r.IsCurrentContext && !_unit.IsInline)
+        {
+            // A parameter assignment also goes to the frame: function.arguments
+            // reads the frame's parameters (V8 reads them from the optimized
+            // frame through the deopt translation).
+            AddNewNode(new Node(Opcode.StoreRegister) { Inputs = [GetTaggedValue(value)], Int0 = r.Index });
+        }
+    }
 
     NodeType GetType(ValueNode node) => _frame.Known.GetType(node);
     bool CheckType(ValueNode node, NodeType type) => NodeTypes.Is(GetType(node), type);

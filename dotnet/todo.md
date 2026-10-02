@@ -593,7 +593,8 @@ Still failing (mjsunit clusters, v8sharp engine):
 Order (decided 2026-09-28): the interpreter is finished first — correctness
 (test262/mjsunit) and interpreter performance (target: within 2x of V8
 --jitless) — before any further work on the IL tiers. The baseline tier is
-merged but off by default until then; the optimizing tier has not started.
+merged but off by default until then; the optimizing tier (Maglev) is in
+progress, also off by default.
 
 - [x] TieringManager: interrupt budget, OnInterruptTick, feedback allocation
       and the Sparkplug tier-up, InterruptBudgetFor with V8's flag defaults,
@@ -625,8 +626,52 @@ merged but off by default until then; the optimizing tier has not started.
   - Performance: calls still pay the interpreter frame's setup (register
     file clear, frame record, write barriers); a leaner frame protocol
     shared with the interpreter would help both tiers.
-- [ ] Optimizing compiler: SSA graph from bytecode + feedback, speculative
-      representations, inlining, deoptimizer (Maglev analogue)
+- [~] Optimizing compiler (Maglev analogue), src/V8Sharp/Maglev/ and
+      Deoptimizer/ (architecture.md 9.2). OFF by default (`--maglev`):
+      - Graph builder from bytecode + feedback: abstract frame, merge
+        points and loop phis, liveness (BytecodeAnalysis), Int32/Float64
+        speculation with overflow/-0 checks and kSignedSmall Smi
+        assumptions, compares and fused branches, map checks with known
+        map tracking, mono/polymorphic named loads/stores from IC handlers
+        (fields, constants from prototypes, transitions, array/string
+        length), fast element loads/stores (holes as undefined under the
+        NoElements protector, growing stores), global property cells,
+        context slots, known-target calls, small-function inlining with
+        lazily pushed inlined frames, `new` of known constructors
+        (FastNewObject + inlined constructor), Math.*, charCodeAt,
+        f.apply(thisArg, arguments) forwarding with arguments-object
+        elision, builtin fast paths for calls; everything else through the
+        baseline builtins (generic nodes).
+      - Phi representation selector (untagged Int32/Float64 phis).
+      - IL code generator: values in IL locals, deopt exits shared per frame
+        state, lazy deopt checks after calls, OSR entry.
+      - Deoptimizer: eager and lazy deopts, inlined frames, materialized
+        arguments objects; OSR early exits; kMaxDeoptCount.
+      - Dependencies: stable maps, property cells (incl. read-only on
+        freeze), initial maps, protectors (DependentCode).
+      - Tiering: invocation count/interrupt budget, OSR at JumpLoop budget
+        interrupts; natives %OptimizeFunctionOnNextCall,
+        %OptimizeMaglevOnNextCall, %OptimizeOsr, %PrepareFunctionForOptimization,
+        %NeverOptimizeFunction, %DeoptimizeFunction, %DeoptimizeNow,
+        %ActiveTierIsMaglev, %GetOptimizationStatus bits.
+      Tests: tests/V8Sharp.Tests/Maglev (interpreter vs forced optimization).
+- Maglev: open items
+  - Not optimized (the compile bails out): try/catch handlers, generators and
+    async functions, `with`, debug bytecodes; typed arrays, DataView,
+    Map/Set/iterators, string builders, array destructuring and for-of
+    reductions are generic.
+  - Missing reductions that mjsunit/maglev asserts (deopt policy and
+    optimization status): ReceiverOrNullOrUndefined compare feedback,
+    Array.prototype.push/pop as graph nodes, Math.min/max on mixed feedback,
+    typed array length, collection iterators, string compare feedback,
+    no stack-slot limit (regress-536945254).
+  - Performance: calls not inlined cost ~60 ns (frame record, register
+    window, write barriers); deopt exits are most of the IL of big functions,
+    and RyuJIT compiles big methods without optimization (MinOpts) and only
+    tiers them up late, so the tiering manager does not optimize graphs over
+    1200 nodes. No escape analysis, LICM, loop peeling or CSE of loads.
+  - The tier stays off by default until it is conformance-clean under
+    forced optimization and a net win on Octane.
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays
 - [ ] Benchmarks: test/js-perf-test, JetStream-like, against the oracle
 

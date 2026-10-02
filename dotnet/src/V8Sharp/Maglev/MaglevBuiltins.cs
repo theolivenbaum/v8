@@ -99,6 +99,27 @@ public static class MaglevBuiltins
     [MethodImpl(Inline)]
     public static JSValue HoleyFloat64ToTagged(double value) => IsHoleNaN(value) ? JSValue.Undefined : JSValue.FromNumber(value);
 
+    /// <summary>
+    /// Float64Min: NaN if either is NaN, and -0 below +0 (JS Math.min; the
+    /// JIT's Math.Min intrinsic can return +0 for (-0, +0)).
+    /// </summary>
+    public static double Float64Min(double a, double b)
+    {
+        if (a < b) return a;
+        if (b < a) return b;
+        if (a == b) return BitConverter.DoubleToInt64Bits(a) < 0 ? a : b;
+        return double.NaN;
+    }
+
+    /// <summary>Float64Max: NaN if either is NaN, and +0 above -0.</summary>
+    public static double Float64Max(double a, double b)
+    {
+        if (a > b) return a;
+        if (b > a) return b;
+        if (a == b) return BitConverter.DoubleToInt64Bits(a) < 0 ? b : a;
+        return double.NaN;
+    }
+
     // ---- Deopt exits: the values of a frame state into the scratch buffer --------------------------------
 
     public static void Spill1(JSValue[] s, int i, JSValue a) => s[i] = a;

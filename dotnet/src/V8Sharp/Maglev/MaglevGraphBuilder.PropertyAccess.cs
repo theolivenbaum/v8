@@ -591,7 +591,9 @@ public sealed partial class MaglevGraphBuilder
                     Inputs = [elements, index],
                     Properties = OpProperties.kCanRead,
                 });
-                return convertHole ? holey : GetFloat64(holey);
+                // The hole is undefined: as a tagged value (an untagged HoleyFloat64
+                // would be taken for a number by the reductions of its uses).
+                return convertHole ? GetTaggedValue(holey) : GetFloat64(holey);
             }
             return AddNewNode(new ValueNode(Opcode.LoadFixedDoubleArrayElement, ValueRepresentation.kFloat64)
             {

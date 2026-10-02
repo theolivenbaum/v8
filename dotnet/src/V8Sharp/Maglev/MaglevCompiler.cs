@@ -60,7 +60,16 @@ public static class MaglevCompiler
     /// JumpLoop at <paramref name="osrOffset"/>, or -1). Returns null when the
     /// function cannot be compiled (the reason is recorded; not retried).
     /// </summary>
-    public static MaglevCode? Compile(Isolate isolate, JSFunction function, int osrOffset = -1)
+    /// <summary>
+    /// The largest graph the tiering manager optimizes (V8Sharp deviation): the
+    /// IL of bigger graphs exceeds RyuJIT's MinOpts limits (60 KB of IL, 8000
+    /// local references), so their code is compiled without optimization at a
+    /// high JIT cost and runs slower than the interpreter. Explicit requests
+    /// (%OptimizeFunctionOnNextCall) compile them anyway.
+    /// </summary>
+    internal const int kMaxTieringGraphNodes = 1200;
+
+    public static MaglevCode? Compile(Isolate isolate, JSFunction function, int osrOffset = -1, bool byTieringManager = false)
     {
         SharedFunctionInfo shared = function.Shared;
         if (OptimizationDisabled(shared)) return null;
@@ -83,6 +92,10 @@ public static class MaglevCompiler
             ElideArgumentsObjects(info.Graph);
             if (isolate.Flags.print_maglev_graph) MaglevGraphPrinter.Print(info, Console.Out);
             long graphBuilt = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (byTieringManager && info.Graph.NodeCount > kMaxTieringGraphNodes)
+            {
+                return Fail(isolate, shared, $"graph too big for the IL backend ({info.Graph.NodeCount} nodes)");
+            }
 
             var code = new MaglevCode(function, info.Toplevel.Feedback, osrOffset)
             {

@@ -283,7 +283,16 @@ for now, to be revisited when the reason goes away.
 - `MaglevCompiler.kMaxDeoptCount` (8) eager deopts disable optimization of a
   function (V8 counts deopts with `--max-deopt-count` per feedback vector
   only for Turbofan and lets Maglev re-optimize).
-- No escape analysis, loop peeling, LICM, or typed array/DataView/string
+- The tiering manager does not optimize functions whose graph exceeds
+  `MaglevCompiler.kMaxTieringGraphNodes` (1200 nodes): their IL is over
+  RyuJIT's MinOpts limits, so it would be jitted without optimization, at a
+  high JIT cost, and run slower than the interpreter. V8 optimizes them.
+  `%OptimizeFunctionOnNextCall` still compiles such functions.
+- Deopt exits are shared by the checks of one frame state; the failed
+  check's reason is passed to the Deoptimizer at run time (V8 has one exit
+  per check, with the reason in the deopt data).
+- No escape analysis (except the arguments object forwarded to
+  Function.prototype.apply), loop peeling, LICM, or typed array/DataView/string
   builder reductions yet; try/catch, generators and async functions are not
   optimized (the compile bails out).
 

@@ -123,7 +123,7 @@ namespace V8Sharp.Maglev
             if (vector.OsrUrgency <= loopDepth) return null;
             if (MaglevCompiler.OptimizationDisabled(function.Shared)) return null;
             if (isolate.Flags.trace_osr) Console.WriteLine($"[OSR - compiling {MaglevCompiler.DebugName(function.Shared)} at JumpLoop {jumpLoopOffset}]");
-            MaglevCode? code = MaglevCompiler.Compile(isolate, function, jumpLoopOffset);
+            MaglevCode? code = MaglevCompiler.Compile(isolate, function, jumpLoopOffset, byTieringManager: true);
             if (code is null) return null;
             MaglevCompiler.InstallCode(isolate, code);
             return code;

@@ -262,7 +262,7 @@ public sealed class TieringManager(Isolate isolate)
 
         OptimizationDecision d = ShouldOptimize(vector, currentCodeKind);
         if (!d.ShouldOptimize || d.CodeKind != CodeKind.MAGLEV) return;
-        if (Compiler.CompileMaglev(isolate, function) && isolate.Flags.maglev_osr)
+        if (Compiler.CompileMaglev(isolate, function, byTieringManager: true) && isolate.Flags.maglev_osr)
         {
             // This tick came from the running function's own frame: if it is in
             // a loop, the next JumpLoop interrupt OSRs.

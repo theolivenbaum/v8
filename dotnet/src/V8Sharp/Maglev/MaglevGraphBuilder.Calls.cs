@@ -181,6 +181,25 @@ public sealed partial class MaglevGraphBuilder
         return null;
     }
 
+    /// <summary>
+    /// Whether the function assigns a parameter: its elided arguments object
+    /// would be materialized from the frame's parameters, which the code then
+    /// has overwritten (StoreRegister).
+    /// </summary>
+    static bool WritesParameters(BytecodeArray bytecode)
+    {
+        for (var it = new BytecodeArrayIterator(bytecode); !it.Done(); it.Advance())
+        {
+            Bytecode bc = it.CurrentBytecode();
+            int count = Bytecodes.NumberOfOperands(bc);
+            for (int i = 0; i < count; i++)
+            {
+                if (Bytecodes.IsRegisterOutputOperandType(Bytecodes.GetOperandType(bc, i)) && it.GetRegisterOperand(i).IsParameter) return true;
+            }
+        }
+        return false;
+    }
+
     static bool HasContextAllocatedParameters(ScopeInfo scopeInfo)
     {
         for (int i = 0; i < scopeInfo.ContextLocalCount; i++)
@@ -525,6 +544,7 @@ public sealed partial class MaglevGraphBuilder
             isConstruct ? newTarget : null);
         inner._frame.Known = _frame.Known.Clone();
         inner.BuildInlined(callBlock);
+        _latestCheckpointedFrame = null;
 
         // The continuation: the returns of the callee join here.
         List<(BasicBlock Block, ValueNode Value, KnownNodeAspects Known)> returns = inner._inlinedReturns;

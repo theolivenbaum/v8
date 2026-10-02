@@ -565,7 +565,7 @@ public sealed partial class MaglevGraphBuilder
                     [BuiltinArg.Isolate, BuiltinArg.State, BuiltinArg.In(0)], ParameterStores())!;
                 // Elidable when no parameter is context-allocated (no aliasing):
                 // the object then holds the frame's arguments.
-                if (!_info.IsOsr && !HasContextAllocatedParameters(_unit.SharedFunctionInfo.ScopeInfo))
+                if (!_info.IsOsr && !HasContextAllocatedParameters(_unit.SharedFunctionInfo.ScopeInfo) && !WritesParameters(_unit.Bytecode))
                 {
                     ((CallBuiltinInfo)arguments.Obj0!).ArgumentsKind = ArgumentsObjectKind.Mapped;
                 }
@@ -577,7 +577,7 @@ public sealed partial class MaglevGraphBuilder
             {
                 RequireOutermostFrame();
                 ValueNode arguments = CallBaseline("CreateUnmappedArguments", [], [BuiltinArg.Isolate, BuiltinArg.State], ParameterStores())!;
-                if (!_info.IsOsr) ((CallBuiltinInfo)arguments.Obj0!).ArgumentsKind = ArgumentsObjectKind.Unmapped;
+                if (!_info.IsOsr && !WritesParameters(_unit.Bytecode)) ((CallBuiltinInfo)arguments.Obj0!).ArgumentsKind = ArgumentsObjectKind.Unmapped;
                 arguments.Type = NodeType.kOtherJSReceiver;
                 SetAccumulator(arguments);
                 break;
@@ -1379,6 +1379,9 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>A reference comparison of two values (TaggedEqual), folded for constants.</summary>
+    static bool IsUntaggedNumber(ValueNode value) =>
+        value.Representation is ValueRepresentation.kInt32 or ValueRepresentation.kUint32 or ValueRepresentation.kFloat64;
+
     ValueNode BuildTaggedEqual(ValueNode left, ValueNode right)
     {
         if (left.IsConstant && right.IsConstant)
@@ -1395,8 +1398,9 @@ public sealed partial class MaglevGraphBuilder
         {
             return GetBooleanConstant(false);
         }
-        if (left.Representation != ValueRepresentation.kTagged && right.Opcode == Opcode.RootConstant) return GetBooleanConstant(false);
-        if (right.Representation != ValueRepresentation.kTagged && left.Opcode == Opcode.RootConstant) return GetBooleanConstant(false);
+        // An untagged number is no root constant (a HoleyFloat64 can be undefined).
+        if (IsUntaggedNumber(left) && right.Opcode == Opcode.RootConstant) return GetBooleanConstant(false);
+        if (IsUntaggedNumber(right) && left.Opcode == Opcode.RootConstant) return GetBooleanConstant(false);
         return AddNewNode(new ValueNode(Opcode.TaggedEqual, ValueRepresentation.kTagged)
         {
             Inputs = [GetTaggedValue(left), GetTaggedValue(right)],

@@ -54,6 +54,7 @@ internal sealed class MaglevCodeGenerator
     readonly LocalBuilder _tmpInt;
     readonly LocalBuilder _tmpMap;
     readonly LocalBuilder _tmpValue;
+    readonly LocalBuilder _tmpObject;
 
     readonly List<(FieldBuilder Field, object? Value)> _staticConstants = [];
     readonly Dictionary<(object, Type), FieldBuilder> _constantFields = new();
@@ -88,6 +89,7 @@ internal sealed class MaglevCodeGenerator
         _tmpInt = _il.DeclareLocal(typeof(int));
         _tmpMap = _il.DeclareLocal(typeof(Map));
         _tmpValue = _il.DeclareLocal(typeof(JSValue));
+        _tmpObject = _il.DeclareLocal(typeof(HeapObject));
     }
 
     /// <summary>
@@ -109,6 +111,11 @@ internal sealed class MaglevCodeGenerator
     static readonly FieldInfo s_theHole = typeof(JSValue).GetField(nameof(JSValue.TheHole))!;
     static readonly FieldInfo s_oddballTheHole = typeof(Oddball).GetField(nameof(Oddball.TheHole))!;
     static readonly FieldInfo s_registerStack = typeof(Isolate).GetField(nameof(Isolate.RegisterStack))!;
+    static readonly FieldInfo s_jsObjectFields = typeof(JSObject).GetField("_fields", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    static readonly FieldInfo s_inObjectSlots0 =
+        typeof(JSObjectInObject1).GetField("_slots0", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    static readonly FieldInfo s_receiverMap = typeof(JSReceiver).GetField(nameof(JSReceiver.Map))!;
+    static readonly FieldInfo s_instanceType = typeof(HeapObject).GetField(nameof(HeapObject.InstanceType))!;
     static readonly FieldInfo s_stateFunction = typeof(InterpreterState).GetField(nameof(InterpreterState.Function))!;
     static readonly FieldInfo s_stateContext = typeof(InterpreterState).GetField(nameof(InterpreterState.Context))!;
     static readonly MethodInfo s_jsValueFromObject = typeof(JSValue).GetMethod(nameof(JSValue.FromObject), [typeof(HeapObject)])!;
@@ -143,7 +150,7 @@ internal sealed class MaglevCodeGenerator
         if (_info.Isolate.Flags.trace_opt_verbose)
         {
             Console.WriteLine($"[maglev code: {bodySize} bytes IL body, {_il.ILOffset - bodySize} bytes in {_pendingExits.Count} deopt exits " +
-                              $"({_eagerStubs.Count} eager checks, {_spilledValues} values)]");
+                              $"({_frameExits.Count} eager, {_pendingExits.Count - _frameExits.Count} lazy; {_eagerStubs.Count} eager checks, {_spilledValues} values)]");
         }
 
         _code.DeoptPoints = _deoptPoints.ToArray();
@@ -169,8 +176,20 @@ internal sealed class MaglevCodeGenerator
     }
 
     /// <summary>An IL local for every value node that needs one (used, not a constant).</summary>
+    /// <summary>Locals an IL method can have (ldloc's 16-bit index, with room for the code generator's own).</summary>
+    const int kMaxLocals = 65000;
+
     void AllocateLocals()
     {
+        int count = 0;
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Phi phi in block.Phis) if (phi.UseCount > 0) count++;
+            foreach (Node node in block.Nodes) if (node is ValueNode { IsConstant: false, UseCount: > 0 }) count++;
+        }
+        // (V8's limit is the frame size, kMaxStackSlots.)
+        if (count > kMaxLocals) throw new MaglevBailoutException($"too many values for IL locals ({count})");
         foreach (BasicBlock block in _graph.Blocks)
         {
             if (block.IsDead) continue;
@@ -826,6 +845,11 @@ internal sealed class MaglevCodeGenerator
                 _il.Emit(OpCodes.Ldobj, typeof(JSValue));
                 Store(v!);
                 return;
+            case Opcode.StoreRegister:
+                LoadFrameSlotAddress(node.Unit, node.Int0);
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                _il.Emit(OpCodes.Stobj, typeof(JSValue));
+                return;
             case Opcode.LoadRegister:
                 LoadFrameSlotAddress(node.Unit, node.Int0);
                 _il.Emit(OpCodes.Ldobj, typeof(JSValue));
@@ -971,8 +995,7 @@ internal sealed class MaglevCodeGenerator
             case Opcode.Float64Max:
                 Load(node.Inputs[0], ValueRepresentation.kFloat64);
                 Load(node.Inputs[1], ValueRepresentation.kFloat64);
-                _il.Emit(OpCodes.Call, typeof(Math).GetMethod(node.Opcode == Opcode.Float64Min ? nameof(Math.Min) : nameof(Math.Max),
-                    [typeof(double), typeof(double)])!);
+                Call(node.Opcode == Opcode.Float64Min ? nameof(MaglevBuiltins.Float64Min) : nameof(MaglevBuiltins.Float64Max));
                 Store(v!);
                 return;
             case Opcode.Float64Ieee754Unary:
@@ -1178,18 +1201,37 @@ internal sealed class MaglevCodeGenerator
 
             // ---- Loads and stores ----------------------------------------------------------------------
             case Opcode.LoadMap:
-                Load(node.Inputs[0], ValueRepresentation.kTagged);
-                Call(nameof(MaglevBuiltins.MapOf));
-                _il.Emit(OpCodes.Call, typeof(JSValue).GetMethod(nameof(JSValue.FromObject))!);
+            {
+                Label notReceiver = _il.DefineLabel(), done = _il.DefineLabel();
+                EmitLoadMapOrBranch(node.Inputs[0], notReceiver);
+                _il.Emit(OpCodes.Br, done);
+                _il.MarkLabel(notReceiver);
+                _il.Emit(OpCodes.Ldnull);
+                _il.MarkLabel(done);
+                _il.Emit(OpCodes.Call, s_jsValueFromObject);
                 Store(v!);
                 return;
+            }
             case Opcode.LoadTaggedField:
-                Load(node.Inputs[0], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Ldc_I4, node.Int0);
-                Call(nameof(MaglevBuiltins.LoadField));
+                if (TryLoadFieldAddress(node.Inputs[0], node.Int0))
+                {
+                    _il.Emit(OpCodes.Ldobj, typeof(JSValue));
+                }
+                else
+                {
+                    Load(node.Inputs[0], ValueRepresentation.kTagged);
+                    _il.Emit(OpCodes.Ldc_I4, node.Int0);
+                    Call(nameof(MaglevBuiltins.LoadField));
+                }
                 Store(v!);
                 return;
             case Opcode.StoreTaggedField:
+                if (node.Int1 == 0 && TryLoadFieldAddress(node.Inputs[0], node.Int0))
+                {
+                    Load(node.Inputs[1], ValueRepresentation.kTagged);
+                    _il.Emit(OpCodes.Stobj, typeof(JSValue));
+                    return;
+                }
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 _il.Emit(OpCodes.Ldc_I4, node.Int0);
                 Load(node.Inputs[1], ValueRepresentation.kTagged);
@@ -1468,12 +1510,66 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldloc, _tmpInt);
     }
 
+    /// <summary>
+    /// Pushes the address of the field at <paramref name="storageIndex"/> of the
+    /// map-checked JSObject <paramref name="obj"/> (JSObject.FieldAt inlined:
+    /// a big method exceeds RyuJIT's inlining budget, so the helper would be a
+    /// call). False when the layout needs the helper.
+    /// </summary>
+    bool TryLoadFieldAddress(ValueNode obj, int storageIndex)
+    {
+        if (storageIndex >= JSObject.kPropertyArrayStorageBase)
+        {
+            Load(obj, ValueRepresentation.kTagged);
+            _il.Emit(OpCodes.Ldfld, s_obj);
+            _il.Emit(OpCodes.Ldfld, s_jsObjectFields);
+            _il.Emit(OpCodes.Ldc_I4, storageIndex - JSObject.kPropertyArrayStorageBase);
+            _il.Emit(OpCodes.Ldelema, typeof(JSValue));
+            return true;
+        }
+        if (!InObjectLayout.IsContiguous) return false;
+        // The in-object slots are one run from JSObjectInObject1._slots0.
+        Load(obj, ValueRepresentation.kTagged);
+        _il.Emit(OpCodes.Ldfld, s_obj);
+        _il.Emit(OpCodes.Ldflda, s_inObjectSlots0);
+        if (storageIndex != 0)
+        {
+            _il.Emit(OpCodes.Ldc_I4, storageIndex * Unsafe.SizeOf<JSValue>());
+            _il.Emit(OpCodes.Add);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Pushes the map of the tagged value <paramref name="value"/>, branching to
+    /// <paramref name="notReceiver"/> when it is not a JSReceiver
+    /// (MaglevBuiltins.MapOf inlined).
+    /// </summary>
+    void EmitLoadMapOrBranch(ValueNode value, Label notReceiver)
+    {
+        Load(value, ValueRepresentation.kTagged);
+        _il.Emit(OpCodes.Ldfld, s_obj);
+        if (NodeTypes.Is(value.Type, NodeType.kJSReceiver))
+        {
+            _il.Emit(OpCodes.Ldfld, s_receiverMap);
+            return;
+        }
+        _il.Emit(OpCodes.Stloc, _tmpObject);
+        _il.Emit(OpCodes.Ldloc, _tmpObject);
+        _il.Emit(OpCodes.Brfalse, notReceiver);
+        _il.Emit(OpCodes.Ldloc, _tmpObject);
+        _il.Emit(OpCodes.Ldfld, s_instanceType);
+        _il.Emit(OpCodes.Ldc_I4, (int)InstanceTypeChecks.FirstJSReceiver);
+        _il.Emit(OpCodes.Blt_Un, notReceiver);
+        _il.Emit(OpCodes.Ldloc, _tmpObject);
+        _il.Emit(OpCodes.Ldfld, s_receiverMap);
+    }
+
     void EmitCheckMaps(Node node)
     {
         var maps = (Map[])node.Obj0!;
         Label exit = EagerExit(node.EagerDeoptInfo!);
-        Load(node.Inputs[0], ValueRepresentation.kTagged);
-        Call(nameof(MaglevBuiltins.MapOf));
+        EmitLoadMapOrBranch(node.Inputs[0], exit);
         if (maps.Length == 1)
         {
             LoadConstantObject(maps[0], typeof(Map));
