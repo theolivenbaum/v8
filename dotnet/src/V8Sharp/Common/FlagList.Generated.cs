@@ -221,7 +221,7 @@ public sealed partial class FlagList
     public bool sparkplug = false;  // build default; V8: ENABLE_SPARKPLUG_BY_DEFAULT (true on x64). Temporarily off in V8Sharp: the baseline IL tier runs only with --sparkplug / --always-sparkplug (deviations.md)
     public bool always_sparkplug = false;
     public bool baseline_batch_compilation = true;
-    public bool concurrent_sparkplug = false;
+    public bool concurrent_sparkplug = true;  // V8: ENABLE_SPARKPLUG_BY_DEFAULT (true on x64); implied off by --predictable, --single-threaded, --jitless
     public uint concurrent_sparkplug_max_threads = unchecked((uint)(1));
     public bool concurrent_sparkplug_high_priority_threads = false;
     public string? sparkplug_filter = "*";
