@@ -30,6 +30,17 @@ public sealed class CompilerHeap(Isolate isolate, Script script) : IBytecodeGene
         SharedFunctionInfo? existing = script.FindSharedFunctionInfo(literal.function_literal_id());
         if (existing is not null)
         {
+            // If the function has been uncompiled (bytecode flushed) it will have lost
+            // any preparsed data. If we produced preparsed data during this compile for
+            // this function, replace the uncompiled data with one that includes it.
+            if (literal.produced_preparse_data() is { } produced &&
+                existing.FunctionData is UncompiledData { PreparseData: null } existingUncompiledData)
+            {
+                // Use existing uncompiled data's inferred name as it may be more
+                // accurate than the literal we preparsed.
+                existing.FunctionData = new UncompiledData(existingUncompiledData.InferredName,
+                    existingUncompiledData.StartPosition, existingUncompiledData.EndPosition, produced.Serialize());
+            }
             literal.set_shared_function_info(existing);
             return existing;
         }
@@ -87,7 +98,10 @@ public sealed class CompilerHeap(Isolate isolate, Script script) : IBytecodeGene
         JSString inferredName = lit.raw_inferred_name() is { } rawInferredName
             ? InternalizedName(isolate, rawInferredName)
             : isolate.Factory.InternalizeString("");
-        shared.FunctionData = new UncompiledData(inferredName, lit.start_position(), lit.end_position());
+        // CreateAndSetUncompiledData: with the preparse data of a skipped
+        // function, so its lazy compile can skip its inner functions too.
+        shared.FunctionData = new UncompiledData(inferredName, lit.start_position(), lit.end_position(),
+            lit.produced_preparse_data()?.Serialize());
     }
 
     public object GetNativeFunctionSharedFunctionInfo(NativeFunctionLiteral literal) =>

@@ -387,6 +387,11 @@ namespace V8Sharp.Codegen
                 DetailsOf(isolate, script));
             ParseInfo parseInfo = NewParseInfo(isolate, flags);
 
+            if (shared.FunctionData is UncompiledData { PreparseData: PreparseData preparseData })
+            {
+                parseInfo.set_consumed_preparse_data(ConsumedPreparseData.For(preparseData));
+            }
+
             // Parse and update ParseInfo with the results.
             if (!ParsingEntry.ParseAny(parseInfo, new ParsingSharedFunctionInfo(shared)))
             {
