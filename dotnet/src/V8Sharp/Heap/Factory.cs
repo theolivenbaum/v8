@@ -420,7 +420,9 @@ public sealed partial class Factory(Isolate isolate)
         }
         else
         {
-            clone.SetProperties(source.PropertyDictionary.ShallowCopy());
+            // A fresh dictionary layout: the clone shares the source's array.
+            int inobject = source.Map.HasInObjectSlots ? 0 : source._fields.Length - 1;
+            clone.InitializeDictionaryStorage(source.PropertyDictionary.ShallowCopy(), inobject);
         }
         return clone;
     }

@@ -20,15 +20,53 @@ public abstract partial class JSReceiver : HeapObject
     public Map Map;
 
     /// <summary>
-    /// V8's PropertyArray: the out-of-object fast-mode fields. Ordinary objects
-    /// keep their in-object fields in object slots (JSObjects.InObject.cs);
-    /// other JSObject subclasses keep them at the start of this array
-    /// (architecture.md section 5). Indexed through FieldIndex.StorageIndex.
+    /// V8's properties_or_hash. In fast mode, the PropertyArray: the
+    /// out-of-object fields. Ordinary objects keep their in-object fields in
+    /// object slots (JSObjects.InObject.cs); other JSObject subclasses keep them
+    /// at the start of this array (architecture.md section 5). Indexed through
+    /// FieldIndex.StorageIndex. In dictionary mode, the property dictionary is
+    /// the last element (after the in-object area of the classes without
+    /// slots), as V8 keeps the PropertyArray or the dictionary in one field: a
+    /// separate dictionary field would add 8 bytes to every receiver.
     /// </summary>
     internal JSValue[] _fields = EmptyFields;
 
     /// <summary>The property dictionary in dictionary mode (NameDictionary, or GlobalDictionary for globals).</summary>
-    internal HashTableBase? _dictionary;
+    internal HashTableBase? _dictionary
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get
+        {
+            JSValue[] f = _fields;
+            return f.Length == 0 ? null : f[^1]._obj as HashTableBase;
+        }
+        set
+        {
+            // A dictionary-mode receiver replaces the dictionary it has (it grew
+            // or shrank); anything else is (re)initialized to the dictionary
+            // layout, keeping the in-object area of the classes without slots.
+            if (value is null) return;
+            JSValue[] f = _fields;
+            if (f.Length != 0 && f[^1]._obj is HashTableBase)
+            {
+                f[^1] = value;
+                return;
+            }
+            InitializeDictionaryStorage(value, 0);
+        }
+    }
+
+    /// <summary>
+    /// Sets the dictionary layout of <see cref="_fields"/>: <paramref name="inobject"/>
+    /// in-object field values (Smi zero, as V8 clears freed in-object space) and the dictionary.
+    /// </summary>
+    internal void InitializeDictionaryStorage(HashTableBase dictionary, int inobject)
+    {
+        var f = new JSValue[inobject + 1];
+        if (inobject > 0) f.AsSpan(0, inobject).Fill(JSValue.Zero);
+        f[inobject] = dictionary;
+        _fields = f;
+    }
 
     /// <summary>
     /// The identity hash, or kNoHashSentinel (V8 keeps it in properties_or_hash;
@@ -50,9 +88,9 @@ public abstract partial class JSReceiver : HeapObject
         Map = map;
         if (map.IsDictionaryMap)
         {
-            _dictionary = map.InstanceType == InstanceType.JSGlobalObjectType
+            InitializeDictionaryStorage(map.InstanceType == InstanceType.JSGlobalObjectType
                 ? GlobalDictionary.New(0)
-                : NameDictionary.New(NameDictionary.kInitialCapacity);
+                : NameDictionary.New(NameDictionary.kInitialCapacity), 0);
         }
     }
 
@@ -61,7 +99,6 @@ public abstract partial class JSReceiver : HeapObject
     {
         Map = source.Map;
         _fields = source._fields;
-        _dictionary = source._dictionary;
         _identityHash = source._identityHash;
         _headerFlags = source._headerFlags;
     }
@@ -195,7 +232,7 @@ public partial class JSObject : JSReceiver
         {
             obj._fields = !map.IsDictionaryMap && inobject > 0 ? new JSValue[inobject] : EmptyFields;
         }
-        obj._dictionary = map.IsDictionaryMap ? NameDictionary.New(NameDictionary.kInitialCapacity) : null;
+        if (map.IsDictionaryMap) obj.InitializeDictionaryStorage(NameDictionary.New(NameDictionary.kInitialCapacity), 0);
         obj.Elements = map.GetInitialElements();
     }
 

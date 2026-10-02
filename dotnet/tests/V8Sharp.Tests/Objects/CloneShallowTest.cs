@@ -9,7 +9,7 @@ public class CloneShallowTest : TestWithContext
 {
     static readonly string[] s_copiedFields =
     [
-        "HeapObject.InstanceType", "HeapObject._hashField", "HeapObject._headerFlags", "JSReceiver.Map", "JSReceiver._fields", "JSReceiver._dictionary",
+        "HeapObject.InstanceType", "HeapObject._hashField", "HeapObject._headerFlags", "JSReceiver.Map", "JSReceiver._fields",
         "JSObject.Elements", "JSArray._length", "JSArray.AllocationMementoSite",
     ];
 
