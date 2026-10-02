@@ -63,6 +63,12 @@ public static class InterpreterCalls
     {
         ref JSValue feedback = ref fv.Slots[slot];
         HeapObject? feedbackObject = feedback.HeapObjectOrNull;
+        // The feedback cell of the target (the closures of one creation site):
+        // the last check of ic-callable.tq's sequence taken first, since the
+        // checks before it cannot match a FeedbackCell (it is never the
+        // megamorphic or uninitialized symbol, a cleared reference or a
+        // recorded receiver, and the many-closures cell is never recorded).
+        if (target._obj is JSFunction cellTarget && ReferenceEquals(cellTarget.RawFeedbackCell, feedbackObject)) return;
         if (ReferenceEquals(feedbackObject, ReadOnlyRoots.megamorphic_symbol)) return;
         bool uninitialized = ReferenceEquals(feedbackObject, ReadOnlyRoots.uninitialized_symbol);
         if (uninitialized || FeedbackVector.IsCleared(feedback))
