@@ -77,6 +77,17 @@ public class BaselineCompilerTest
           return s + ':' + a.join() + ':' + os.map(o => o.z).join();
         })()
         """,
+        // Monomorphic element loads (the inline fast path) of holes, doubles and out-of-bounds indices.
+        """
+        (function() {
+          function get(a, i) { return a[i]; }
+          var r = [];
+          for (var a of [[,,,,0.5], [1.5, 2.5], [,1, 2], [1, 2, 3]]) {
+            for (var k = 0; k < 3; k++) for (var i = -1; i < 6; i++) r.push(get(a, i), get(a, i + 0.5));
+          }
+          return r.join();
+        })()
+        """,
         // Closures, contexts, block scopes, TDZ.
         """
         (function() {

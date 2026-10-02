@@ -96,6 +96,7 @@ public sealed partial class BaselineCompiler
 
     void Emit(OpCode op) => _il.Emit(op);
     void Emit(OpCode op, int value) => _il.Emit(op, value);
+    void Emit(OpCode op, long value) => _il.Emit(op, value);
     void Emit(OpCode op, double value) => _il.Emit(op, value);
     void Emit(OpCode op, Label label) => _il.Emit(op, label);
     void Emit(OpCode op, FieldInfo field) => _il.Emit(op, field);
