@@ -5,6 +5,7 @@
 // HandleLoadICSmiHandlerCase, HandleLoadICProtoHandler, LoadIC_BytecodeHandler,
 // the megamorphic stub cache probe).
 using System.Runtime.CompilerServices;
+using V8Sharp.Builtins;
 using V8Sharp.Interpreter;
 using V8Sharp.Runtime;
 
@@ -219,6 +220,9 @@ public sealed class LoadIC : IC
                 result = JSValue.Undefined;
                 return true;
             case LoadHandler.Kind.kAccessorFromPrototype:
+                // A getter builtin with a frameless fast case (typed array length):
+                // its result without the call.
+                if (BuiltinFastPaths.TryCall0(isolate, handler.Data, receiver, out result)) return true;
                 result = ObjectOps.GetPropertyWithDefinedGetter(isolate, receiver, handler.Data.As<JSReceiver>());
                 return true;
             case LoadHandler.Kind.kAccessorPair:

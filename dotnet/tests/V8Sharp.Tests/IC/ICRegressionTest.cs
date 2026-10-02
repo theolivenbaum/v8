@@ -177,6 +177,39 @@ public class ICRegressionTest : TestWithContext
     }
 
     [Fact]
+    public void TypedArrayLengthGetterThroughLoadIC()
+    {
+        // The accessor handler takes TypedArrayPrototypeLength's fast case:
+        // offsets, resizable buffers, detached arrays, a non-typed-array
+        // receiver (throws in the builtin) and an own length that shadows it.
+        // Expected values from the oracle.
+        Assert.Equal("10,3,4,0,12,0,TypeError,99", RunString("""
+            function len(a) { return a.length; }
+            var a = new Uint8Array(10), b = new Float64Array(new ArrayBuffer(64), 8, 3);
+            var r = [];
+            for (var i = 0; i < 20; i++) { len(a); len(b); }
+            r.push(len(a), len(b));
+            var buf = new ArrayBuffer(8, { maxByteLength: 16 });
+            var t = new Uint8Array(buf, 4);
+            for (var i = 0; i < 20; i++) len(t);
+            r.push(len(t));
+            buf.resize(2);
+            r.push(len(t));
+            buf.resize(16);
+            r.push(len(t));
+            var d = new ArrayBuffer(8), u = new Int16Array(d);
+            for (var i = 0; i < 20; i++) len(u);
+            d.transfer();
+            r.push(len(u));
+            var p = Object.create(Uint8Array.prototype);
+            try { r.push(len(p)); } catch (e) { r.push(e.constructor.name); }
+            Object.defineProperty(a, 'length', { value: 99 });
+            r.push(len(a));
+            r.join();
+            """));
+    }
+
+    [Fact]
     public void ThirtyThirdPropertyIsNotADuplicate()
     {
         // Adding the 33rd property sorts the descriptors; the collision check
