@@ -263,6 +263,26 @@ public class MaglevCompilerTest
           return out.join();
         })()
         """,
+        // Typed array loads and stores of every number kind (truncation,
+        // clamping, out of bounds), f.apply(this, arguments) with megamorphic
+        // feedback.
+        """
+        (function() {
+          var kinds = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array];
+          var out = [];
+          for (var k = 0; k < kinds.length; k++) {
+            var C = kinds[k];
+            var f = new Function('a', 'v', 'for (var i = -1; i <= a.length; i++) a[i] = v + i * 1.5; var s = 0; ' +
+              'for (var i = 0; i < a.length + 2; i++) { var x = a[i]; s += x === undefined ? 1000 : x; } return s;');
+            for (var r = 0; r < 25; r++) out.push(f(new C(7), r * 300 - 4000), f(new C(3), 0.5 - r));
+          }
+          function Class() { return function() { this.init.apply(this, arguments); }; }
+          var cs = [];
+          for (var i = 0; i < 6; i++) { var c = Class(); c.prototype.init = new Function('a', 'b', 'this.v = a * ' + i + ' + (b | 0);'); cs.push(c); }
+          for (var r = 0; r < 40; r++) out.push(new cs[r % 6](r, r & 1).v);
+          return out.join();
+        })()
+        """,
     };
 
     [Theory]

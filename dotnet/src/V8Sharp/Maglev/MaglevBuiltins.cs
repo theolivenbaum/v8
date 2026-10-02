@@ -260,6 +260,46 @@ public static class MaglevBuiltins
         Unsafe.As<FixedDoubleArray>(elements._obj!)._data[index] = value;
     }
 
+    // ---- Typed arrays ---------------------------------------------------------------------------------------
+
+    /// <summary>LoadTypedArrayLength: the length, 0 when detached (or out of bounds of a resizable buffer).</summary>
+    public static int TypedArrayLength(JSValue obj)
+    {
+        var a = Unsafe.As<JSTypedArray>(obj._obj!);
+        ulong length = a.Buffer.WasDetached ? 0 : a.IsVariableLength ? a.GetLength() : a.RawLength;
+        return length > int.MaxValue ? int.MaxValue : (int)length;
+    }
+
+    public static bool TypedArrayIndexInBounds(JSValue obj, int index) => (uint)index < (uint)TypedArrayLength(obj);
+
+    [MethodImpl(Inline)]
+    static ref byte TypedElement(JSValue obj, int index, int size)
+    {
+        var a = Unsafe.As<JSTypedArray>(obj._obj!);
+        return ref a.Buffer.BackingStoreBuffer[(int)a.ByteOffset + index * size];
+    }
+
+    public static int LoadInt8Element(JSValue obj, int index) => (sbyte)TypedElement(obj, index, 1);
+    public static int LoadUint8Element(JSValue obj, int index) => TypedElement(obj, index, 1);
+    public static int LoadInt16Element(JSValue obj, int index) => Unsafe.ReadUnaligned<short>(ref TypedElement(obj, index, 2));
+    public static int LoadUint16Element(JSValue obj, int index) => Unsafe.ReadUnaligned<ushort>(ref TypedElement(obj, index, 2));
+    /// <summary>Int32 and Uint32 elements (a Uint32 value is the int32 of the same bits).</summary>
+    public static int LoadInt32Element(JSValue obj, int index) => Unsafe.ReadUnaligned<int>(ref TypedElement(obj, index, 4));
+    public static double LoadFloat32Element(JSValue obj, int index) => Unsafe.ReadUnaligned<float>(ref TypedElement(obj, index, 4));
+    public static double LoadFloat64Element(JSValue obj, int index) => Unsafe.ReadUnaligned<double>(ref TypedElement(obj, index, 8));
+
+    public static void StoreInt8Element(JSValue obj, int index, int value) => TypedElement(obj, index, 1) = (byte)value;
+    public static void StoreInt16Element(JSValue obj, int index, int value) =>
+        Unsafe.WriteUnaligned(ref TypedElement(obj, index, 2), (short)value);
+    public static void StoreInt32Element(JSValue obj, int index, int value) => Unsafe.WriteUnaligned(ref TypedElement(obj, index, 4), value);
+    public static void StoreFloat32Element(JSValue obj, int index, double value) =>
+        Unsafe.WriteUnaligned(ref TypedElement(obj, index, 4), (float)value);
+    public static void StoreFloat64Element(JSValue obj, int index, double value) => Unsafe.WriteUnaligned(ref TypedElement(obj, index, 8), value);
+    public static void StoreUint8ClampedInt32(JSValue obj, int index, int value) =>
+        TypedElement(obj, index, 1) = (byte)(value < 0 ? 0 : value > 255 ? 255 : value);
+    public static void StoreUint8ClampedFloat64(JSValue obj, int index, double value) =>
+        TypedElement(obj, index, 1) = TypedArrayScalars.ClampDouble(value);
+
     /// <summary>The slow path of CheckMapsWithMigration: migrates a deprecated map, then checks the maps again.</summary>
     public static bool MigrateAndCheckMaps(Isolate isolate, JSValue value, Map[] maps)
     {

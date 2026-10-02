@@ -161,6 +161,15 @@ public sealed partial class MaglevGraphBuilder
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForCall);
             return;
         }
+        else if (callee.Opcode == Opcode.Constant && ReferenceEquals(callee.Value0.HeapObjectOrNull, Isolate.NativeContext.FunctionPrototypeApply) &&
+                 TryReduceFunctionPrototypeApply(receiver, args) is { } applyCall)
+        {
+            // ReduceCallForConstant: the callee is Function.prototype.apply
+            // (a constant from the prototype chain), whatever function the
+            // megamorphic feedback saw it applied to.
+            SetAccumulator(applyCall);
+            return;
+        }
         if (argsFirst.IsValid || args.Length == 0)
         {
             // V8's generic Call node: the Call builtin, without feedback collection.
@@ -195,6 +204,34 @@ public sealed partial class MaglevGraphBuilder
             args[1].Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None } && ReferenceEquals(args[1].Unit, _unit))
         {
             ValueNode result = CallMaglev2("CallForwardArguments", [targetNode, args[0], args[1]],
+                [BuiltinArg.Isolate, BuiltinArg.State, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)], []);
+            ((CallBuiltinInfo)result.Obj0!).ForwardsArguments = true;
+            return result;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// TryReduceFunctionPrototypeApply for an unknown applied function
+    /// <paramref name="function"/>: f.apply(), f.apply(thisArg),
+    /// f.apply(thisArg, null/undefined) and f.apply(thisArg, arguments).
+    /// </summary>
+    ValueNode? TryReduceFunctionPrototypeApply(ValueNode function, ValueNode[] args)
+    {
+        if (function.Representation != ValueRepresentation.kTagged) return null;
+        if (args.Length == 0)
+        {
+            ValueNode undefined = GetRootConstant(RootIndex.kUndefinedValue);
+            return BuildCall(function, undefined, [], Register.InvalidValue(), ConvertReceiverMode.NullOrUndefined);
+        }
+        if (args.Length == 1 || args[1].Opcode == Opcode.RootConstant && args[1].ConstantValue().IsNullOrUndefined)
+        {
+            return BuildCall(function, GetTaggedValue(args[0]), [], Register.InvalidValue(), ConvertReceiverMode.Any);
+        }
+        if (args.Length == 2 && !_unit.IsInline && args[1].Opcode == Opcode.CallBuiltin &&
+            args[1].Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None } && ReferenceEquals(args[1].Unit, _unit))
+        {
+            ValueNode result = CallMaglev2("CallForwardArguments", [function, GetTaggedValue(args[0]), args[1]],
                 [BuiltinArg.Isolate, BuiltinArg.State, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)], []);
             ((CallBuiltinInfo)result.Obj0!).ForwardsArguments = true;
             return result;

@@ -251,6 +251,12 @@ public enum Opcode : ushort
     CheckValueEqualsString,
     /// <summary>TransitionElementsKind: the object (of the source map) transitions to Obj0, the target map.</summary>
     TransitionElementsKind,
+    /// <summary>LoadTypedArrayLength: the length of a typed array (0 when detached).</summary>
+    LoadTypedArrayLength,
+    /// <summary>LoadTypedArrayElement (LoadSignedIntTypedArrayElement ...): Int0 is the elements kind.</summary>
+    LoadTypedArrayElement,
+    /// <summary>StoreTypedArrayElement (StoreIntTypedArrayElement ...): Int0 is the elements kind; Int1 ignores out of bounds.</summary>
+    StoreTypedArrayElement,
     LoadPropertyCellValue,
     StorePropertyCellValue,
     /// <summary>V8Sharp: EnsureWritableFastElements + MaybeGrowFastElements for an append store.</summary>

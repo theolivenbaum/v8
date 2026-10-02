@@ -16,6 +16,20 @@ namespace V8Sharp.Maglev;
 
 public static class MaglevCompiler
 {
+    // Diagnostics: V8SHARP_JIT_STATS=1 prints the RyuJIT totals and the Maglev compiles at exit.
+    static int s_compiles;
+    static long s_ilBytes;
+    static double s_codegenMs;
+    static MaglevCompiler()
+    {
+        if (Environment.GetEnvironmentVariable("V8SHARP_JIT_STATS") == "1")
+        {
+            AppDomain.CurrentDomain.ProcessExit += static (_, _) => Console.Error.WriteLine(
+                $"[jit: {System.Runtime.JitInfo.GetCompiledMethodCount()} methods, {System.Runtime.JitInfo.GetCompiledILBytes()} IL bytes, " +
+                $"{System.Runtime.JitInfo.GetCompilationTime().TotalMilliseconds:F0} ms; maglev: {s_compiles} compiles, {s_ilBytes} IL bytes, {s_codegenMs:F0} ms graph+IL]");
+        }
+    }
+
     /// <summary>SharedFunctionInfo::DebugNameCStr: the name, else the inferred name.</summary>
     internal static string DebugName(SharedFunctionInfo shared)
     {
@@ -75,7 +89,7 @@ public static class MaglevCompiler
     /// high JIT cost and runs slower than the interpreter. Explicit requests
     /// (%OptimizeFunctionOnNextCall) compile them anyway.
     /// </summary>
-    internal const int kMaxTieringGraphNodes = 1200;
+    internal static readonly int kMaxTieringGraphNodes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_NODES"), out int n) ? n : 1200;
 
     public static MaglevCode? Compile(Isolate isolate, JSFunction function, int osrOffset = -1, bool byTieringManager = false)
     {
@@ -118,6 +132,9 @@ public static class MaglevCompiler
             }
             code.Entry = entry;
             code.ILSize = ilSize;
+            s_compiles++;
+            s_ilBytes += ilSize;
+            s_codegenMs += System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             code.NodeCount = info.Graph.NodeCount;
             code.Dependencies = info.Dependencies.ToArray();
             EnsureScratch(isolate, code.MaxScratchSize);

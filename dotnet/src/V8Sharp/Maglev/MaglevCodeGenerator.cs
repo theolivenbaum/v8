@@ -93,7 +93,6 @@ internal sealed class MaglevCodeGenerator
         string name = "maglev:" + MaglevCompiler.DebugName(info.Function.Shared) + (info.IsOsr ? "@osr" + info.OsrOffset : "");
         (_type, _method) = BaselineCodeSpace.For(info.Isolate).DefineMethod(name, typeof(JSValue),
             [typeof(MaglevCode), typeof(Isolate), typeof(InterpreterState).MakeByRefType()]);
-        if (s_aggressiveOptimization) _method.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
         _il = _method.GetILGenerator(4096);
         _fpRef = _il.DeclareLocal(typeof(JSValue).MakeByRefType());
         _fp = _il.DeclareLocal(typeof(int));
@@ -112,7 +111,7 @@ internal sealed class MaglevCodeGenerator
     /// once (MethodImplAttributes.AggressiveOptimization) instead of through
     /// RyuJIT's tier 0.
     /// </summary>
-    static readonly bool s_aggressiveOptimization = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_AGGRESSIVE") == "1";
+    static readonly int s_aggressiveMaxIL = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_AGGRESSIVE_MAX_IL"), out int n) ? n : 0;
 
     // ---- Reflection handles ------------------------------------------------------------------------------
 
@@ -175,6 +174,7 @@ internal sealed class MaglevCodeGenerator
                               $"({_frameExits.Count} eager, {_pendingExits.Count - _frameExits.Count} lazy; {_eagerStubs.Count} eager checks, {_spilledValues} values)]");
         }
 
+        if (_il.ILOffset <= s_aggressiveMaxIL) _method.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
         _code.DeoptPoints = _deoptPoints.ToArray();
         _code.SpeculationFeedback = _speculationFeedback.ToArray();
         _code.MaxScratchSize = _maxScratch;
@@ -1309,6 +1309,46 @@ internal sealed class MaglevCodeGenerator
                 });
                 DeoptIfFalse(node);
                 return;
+            case Opcode.LoadTypedArrayLength:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Call(nameof(MaglevBuiltins.TypedArrayLength));
+                Store(v!);
+                return;
+            case Opcode.LoadTypedArrayElement:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Load(node.Inputs[1], ValueRepresentation.kInt32);
+                Call(TypedLoadHelper((ElementsKind)node.Int0));
+                Store(v!);
+                return;
+            case Opcode.StoreTypedArrayElement:
+            {
+                var kind = (ElementsKind)node.Int0;
+                Label skip = _il.DefineLabel();
+                if (node.Int1 != 0)
+                {
+                    Load(node.Inputs[0], ValueRepresentation.kTagged);
+                    Load(node.Inputs[1], ValueRepresentation.kInt32);
+                    Call(nameof(MaglevBuiltins.TypedArrayIndexInBounds));
+                    _il.Emit(OpCodes.Brfalse, skip);
+                }
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Load(node.Inputs[1], ValueRepresentation.kInt32);
+                ValueNode stored = node.Inputs[2];
+                bool isFloat = stored.Representation is ValueRepresentation.kFloat64 or ValueRepresentation.kHoleyFloat64 ||
+                               stored.IsConstant && !stored.TryGetInt32Constant(out _);
+                if (kind is ElementsKind.FLOAT32_ELEMENTS or ElementsKind.FLOAT64_ELEMENTS ||
+                    kind == ElementsKind.UINT8_CLAMPED_ELEMENTS && isFloat)
+                {
+                    Load(stored, ValueRepresentation.kFloat64);
+                }
+                else
+                {
+                    Load(stored, ValueRepresentation.kInt32);
+                }
+                Call(TypedStoreHelper(kind, isFloat));
+                _il.MarkLabel(skip);
+                return;
+            }
             case Opcode.TransitionElementsKind:
                 _il.Emit(OpCodes.Ldarg_1);
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
@@ -1776,6 +1816,29 @@ internal sealed class MaglevCodeGenerator
         }
         _il.MarkLabel(ok);
     }
+
+    static string TypedLoadHelper(ElementsKind kind) => kind switch
+    {
+        ElementsKind.INT8_ELEMENTS => nameof(MaglevBuiltins.LoadInt8Element),
+        ElementsKind.UINT8_ELEMENTS or ElementsKind.UINT8_CLAMPED_ELEMENTS => nameof(MaglevBuiltins.LoadUint8Element),
+        ElementsKind.INT16_ELEMENTS => nameof(MaglevBuiltins.LoadInt16Element),
+        ElementsKind.UINT16_ELEMENTS => nameof(MaglevBuiltins.LoadUint16Element),
+        ElementsKind.INT32_ELEMENTS or ElementsKind.UINT32_ELEMENTS => nameof(MaglevBuiltins.LoadInt32Element),
+        ElementsKind.FLOAT32_ELEMENTS => nameof(MaglevBuiltins.LoadFloat32Element),
+        ElementsKind.FLOAT64_ELEMENTS => nameof(MaglevBuiltins.LoadFloat64Element),
+        _ => throw new InvalidOperationException("typed array kind " + kind),
+    };
+
+    static string TypedStoreHelper(ElementsKind kind, bool floatValue) => kind switch
+    {
+        ElementsKind.INT8_ELEMENTS or ElementsKind.UINT8_ELEMENTS => nameof(MaglevBuiltins.StoreInt8Element),
+        ElementsKind.UINT8_CLAMPED_ELEMENTS => floatValue ? nameof(MaglevBuiltins.StoreUint8ClampedFloat64) : nameof(MaglevBuiltins.StoreUint8ClampedInt32),
+        ElementsKind.INT16_ELEMENTS or ElementsKind.UINT16_ELEMENTS => nameof(MaglevBuiltins.StoreInt16Element),
+        ElementsKind.INT32_ELEMENTS or ElementsKind.UINT32_ELEMENTS => nameof(MaglevBuiltins.StoreInt32Element),
+        ElementsKind.FLOAT32_ELEMENTS => nameof(MaglevBuiltins.StoreFloat32Element),
+        ElementsKind.FLOAT64_ELEMENTS => nameof(MaglevBuiltins.StoreFloat64Element),
+        _ => throw new InvalidOperationException("typed array kind " + kind),
+    };
 
     /// <summary>EnterInlinedFrame: push the frame, then write the receiver and the arguments.</summary>
     void EmitEnterInlinedFrame(Node node)

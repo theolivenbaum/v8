@@ -576,6 +576,10 @@ public sealed partial class MaglevGraphBuilder
     ValueNode? TryBuildElementLoad(ValueNode obj, ValueNode key, List<(Map Map, JSValue Handler)> feedback)
     {
         if (obj.Representation != ValueRepresentation.kTagged) return null;
+        if (CollectTypedArrayAccess(feedback, load: true, out ElementsKind typedKind, out bool typedHandlesOOB))
+        {
+            return BuildTypedArrayElementLoad(obj, key, feedback, typedKind, typedHandlesOOB);
+        }
         if (!CollectElementAccess(feedback, load: true, out ElementsKind kind, out bool isJSArray, out bool anyHoley))
         {
             return TryBuildPolymorphicElementLoad(obj, key, feedback);
@@ -641,6 +645,136 @@ public sealed partial class MaglevGraphBuilder
             }));
         }
         return BuildPolymorphicAccess(obj, cases, hasResult: true);
+    }
+
+    // ---- Typed arrays (TryBuildElementAccessOnTypedArray) ----------------------------------------------
+
+    /// <summary>
+    /// Element accesses on typed arrays of one (non-BigInt, non-Float16,
+    /// fixed-length buffer) kind. V8 builds them from the feedback maps; a
+    /// V8Sharp store IC leaves typed arrays a slow handler, so for stores
+    /// only the maps count. <paramref name="handlesOOB"/>: loads of the IC
+    /// allowed out of bounds indices (undefined), stores ignore them.
+    /// </summary>
+    static bool CollectTypedArrayAccess(List<(Map Map, JSValue Handler)> feedback, bool load, out ElementsKind kind, out bool handlesOOB)
+    {
+        kind = default;
+        handlesOOB = true;
+        bool first = true;
+        foreach ((Map map, JSValue handler) in feedback)
+        {
+            ElementsKind k = map.ElementsKind;
+            if (map.InstanceType != InstanceType.JSTypedArrayType || !ElementsKinds.IsTypedArrayElementsKind(k) ||
+                ElementsKinds.IsBigIntTypedArrayElementsKind(k) || k == ElementsKind.FLOAT16_ELEMENTS)
+            {
+                return false;
+            }
+            if (load)
+            {
+                if (handler.HeapObjectOrNull is not LoadHandler { HandlerKind: LoadHandler.Kind.kElement } lh || lh.ElementsKind != k) return false;
+                handlesOOB &= lh.AllowOutOfBounds;
+            }
+            else
+            {
+                handlesOOB &= handler.HeapObjectOrNull is StoreHandler { StoreMode: KeyedAccessStoreMode.kIgnoreTypedArrayOOB };
+            }
+            if (!first && k != kind) return false;
+            kind = k;
+            first = false;
+        }
+        return !first;
+    }
+
+    static ValueRepresentation TypedArrayElementRepresentation(ElementsKind kind) => kind switch
+    {
+        ElementsKind.FLOAT32_ELEMENTS or ElementsKind.FLOAT64_ELEMENTS => ValueRepresentation.kFloat64,
+        ElementsKind.UINT32_ELEMENTS => ValueRepresentation.kUint32,
+        _ => ValueRepresentation.kInt32,
+    };
+
+    ValueNode BuildLoadTypedArrayLength(ValueNode obj) =>
+        AddNewNode(new ValueNode(Opcode.LoadTypedArrayLength, ValueRepresentation.kInt32)
+        {
+            Inputs = [obj],
+            Type = NodeType.kSmi,
+            Properties = OpProperties.kCanRead,
+        });
+
+    ValueNode BuildTypedArrayElementLoad(ValueNode obj, ValueNode key, List<(Map Map, JSValue Handler)> feedback, ElementsKind kind,
+        bool handlesOOB)
+    {
+        var maps = new Map[feedback.Count];
+        for (int i = 0; i < maps.Length; i++) maps[i] = feedback[i].Map;
+        BuildCheckMaps(obj, maps);
+        ValueNode index = GetInt32ElementIndex(key);
+        ValueNode length = BuildLoadTypedArrayLength(obj);
+        ValueNode BuildLoad() => AddNewNode(new ValueNode(Opcode.LoadTypedArrayElement, TypedArrayElementRepresentation(kind))
+        {
+            Inputs = [obj, index],
+            Int0 = (int)kind,
+            Type = NodeType.kNumber,
+            Properties = OpProperties.kCanRead,
+        });
+        if (handlesOOB && _info.DependOnProtector(Protectors.IsNoElementsIntact(Isolate), "NoElements"))
+        {
+            // GetUint32ElementIndex, then a Select of the bounds check.
+            AddNewNode(new Node(Opcode.CheckInt32Condition)
+            {
+                Inputs = [GetInt32Constant(-1), index],
+                Int0 = (int)CompareOperation.kLessThan,
+                Properties = OpProperties.kEagerDeopt,
+            }, DeoptimizeReason.kNotUint32);
+            var branch = new ControlNode(Opcode.BranchIfInt32Compare)
+            {
+                Inputs = [index, length],
+                Operation = CompareOperation.kLessThan,
+                Unsigned = true,
+            };
+            return Select(branch, BuildLoad, () => GetRootConstant(RootIndex.kUndefinedValue));
+        }
+        AddNewNode(new Node(Opcode.CheckInt32Condition)
+        {
+            Inputs = [index, length],
+            Int0 = (int)CompareOperation.kLessThan,
+            Int1 = 1,
+            Properties = OpProperties.kEagerDeopt,
+        }, DeoptimizeReason.kOutOfBounds);
+        return BuildLoad();
+    }
+
+    void BuildTypedArrayElementStore(ValueNode obj, ValueNode key, ValueNode value, List<(Map Map, JSValue Handler)> feedback,
+        ElementsKind kind, bool ignoreOOB)
+    {
+        var maps = new Map[feedback.Count];
+        for (int i = 0; i < maps.Length; i++) maps[i] = feedback[i].Map;
+        BuildCheckMaps(obj, maps);
+        ValueNode index = GetInt32ElementIndex(key);
+        // The value as the kind's number type (ToNumber of an oddball is fine: typed arrays store it).
+        ValueNode stored = kind switch
+        {
+            ElementsKind.FLOAT32_ELEMENTS or ElementsKind.FLOAT64_ELEMENTS => GetFloat64(value, NodeType.kNumberOrOddball),
+            ElementsKind.UINT8_CLAMPED_ELEMENTS => value.IsInt32 ? value : GetFloat64(value, NodeType.kNumberOrOddball),
+            _ => GetTruncatedInt32ForToNumber(value, NodeType.kNumberOrOddball),
+        };
+        if (!ignoreOOB)
+        {
+            ValueNode length = BuildLoadTypedArrayLength(obj);
+            AddNewNode(new Node(Opcode.CheckInt32Condition)
+            {
+                Inputs = [index, length],
+                Int0 = (int)CompareOperation.kLessThan,
+                Int1 = 1,
+                Properties = OpProperties.kEagerDeopt,
+            }, DeoptimizeReason.kOutOfBounds);
+        }
+        AddNewNode(new Node(Opcode.StoreTypedArrayElement)
+        {
+            Inputs = [obj, index, stored],
+            Int0 = (int)kind,
+            // Out of bounds (and detached) stores are ignored (kIgnoreTypedArrayOOB).
+            Int1 = ignoreOOB ? 1 : 0,
+            Properties = OpProperties.kCanWrite | OpProperties.kNotIdempotent,
+        });
     }
 
     /// <summary>LoadModeHandlesOOB over the element handlers.</summary>
@@ -809,6 +943,11 @@ public sealed partial class MaglevGraphBuilder
     bool TryBuildElementStore(ValueNode obj, ValueNode key, ValueNode value, List<(Map Map, JSValue Handler)> feedback)
     {
         if (obj.Representation != ValueRepresentation.kTagged) return false;
+        if (CollectTypedArrayAccess(feedback, load: false, out ElementsKind typedKind, out bool ignoreOOB))
+        {
+            BuildTypedArrayElementStore(obj, key, value, feedback, typedKind, ignoreOOB);
+            return true;
+        }
         bool grouped = CollectElementAccess(feedback, load: false, out ElementsKind kind, out bool isJSArray, out bool _);
         if (!grouped)
         {
