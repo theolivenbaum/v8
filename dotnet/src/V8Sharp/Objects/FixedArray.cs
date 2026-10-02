@@ -16,8 +16,17 @@ public abstract class FixedArrayBase(InstanceType instanceType) : HeapObject(ins
     /// <summary>
     /// True for copy-on-write arrays (V8's fixed_cow_array_map): shared
     /// boilerplate elements that must be copied before the first write.
+    /// Kept in the header word's hash field, which backing stores do not
+    /// otherwise use (a bool field of its own would add 8 bytes to every
+    /// FixedArray: the CLR does not place a derived class's fields in the
+    /// base class's padding).
     /// </summary>
-    public bool IsCowArray { get; internal set; }
+    public bool IsCowArray
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _hashField != 0;
+        internal set => _hashField = value ? 1u : 0u;
+    }
 }
 
 /// <summary>A fixed-length array of values (V8's FixedArray).</summary>
