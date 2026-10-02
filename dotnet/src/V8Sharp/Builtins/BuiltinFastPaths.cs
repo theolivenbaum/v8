@@ -2,10 +2,14 @@
 // call handlers before the generic call path, as V8's builtins take them on
 // entry:
 //   math.tq          MathAbs/Ceil/Floor/Round/Trunc/Sqrt: typeswitch on Smi and
-//                    HeapNumber; MathMax/MathMin/MathPow/MathAtan2 with Number
-//                    arguments.
+//                    HeapNumber; MathMax/MathMin/MathPow/MathAtan2/MathImul with
+//                    Number arguments.
 //   builtins-string.tq  StringPrototypeCharCodeAt/CharAt/CodePointAt: a String
 //                    receiver and a Smi position (ToInteger_Inline's fast case).
+//   string.tq        StringFromCharCode with one Number argument (the single
+//                    character string cache).
+//   string-indexof.tq   StringPrototypeIndexOf with a String receiver and a
+//                    String search string, no position.
 //   number.tq        NumberPrototypeToString without a radix: NumberToString
 //                    (the number-string cache).
 //   typed_array.tq   TypedArrayPrototypeLength (the length getter) of an
@@ -131,7 +135,20 @@ public static class BuiltinFastPaths
                         return true;
                     }
                     break;
+                case Builtin.StringFromCharCode:
+                    // StringFromCharCode's single argument case (string.tq):
+                    // TruncateTaggedToWord32 of a Number, then the single
+                    // character string cache.
+                    result = isolate.Factory.LookupSingleCharacterStringFromCode((char)V8Sharp.Base.Numbers.Conversions.DoubleToInt32(x));
+                    return true;
             }
+        }
+        else if (id == Builtin.StringPrototypeIndexOf && arg0._obj is JSString search && receiver.StringOrNull is JSString subject)
+        {
+            // StringPrototypeIndexOf (string-indexof.tq) with a String receiver
+            // and search string and no position: StringIndexOf from 0.
+            result = JSValue.FromInt(BuiltinsString.StringIndexOf(subject, search, 0));
+            return true;
         }
         if (id == Builtin.ArrayPrototypePush) return BuiltinsArray.TryFastPush(isolate, function, receiver, arg0, out result);
         result = default;
@@ -167,6 +184,9 @@ public static class BuiltinFastPaths
                 return true;
             case Builtin.MathAtan2:
                 result = JSValue.FromNumber(V8Sharp.Base.Ieee754.atan2(x, y));
+                return true;
+            case Builtin.MathImul:
+                result = JSValue.FromInt(unchecked(V8Sharp.Base.Numbers.Conversions.DoubleToInt32(x) * V8Sharp.Base.Numbers.Conversions.DoubleToInt32(y)));
                 return true;
         }
         result = default;
