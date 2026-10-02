@@ -84,6 +84,11 @@ public static class DependentCode
             }
         }
         if (invalidated is null) return;
+        if (isolate.Flags.trace_deopt_verbose)
+        {
+            Console.WriteLine($"[dependent code of {obj.GetType().Name} {(obj is Map m ? "map " + m.InstanceType + " stable=" + m.IsStable + " deprecated=" + m.IsDeprecated : "")} " +
+                              $"invalidated: {groups}]");
+        }
         foreach (MaglevCode code in invalidated)
         {
             MaglevCompiler.InvalidateCode(isolate, code, ReasonFor(groups));

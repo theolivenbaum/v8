@@ -104,7 +104,19 @@ public sealed partial class MaglevGraphBuilder
         var nexus = new FeedbackNexus(Isolate, _unit.Feedback, slot);
         JSValue feedback = nexus.GetFeedback();
         bool speculate = nexus.GetSpeculationMode() == SpeculationMode.kAllowSpeculation;
-        if (speculate && feedback.HeapObjectOrNull is JSFunction target && !FeedbackVector.IsCleared(feedback))
+        if (speculate && feedback.HeapObjectOrNull is JSFunction applied && !FeedbackVector.IsCleared(feedback) &&
+            nexus.GetCallFeedbackContent() == CallFeedbackContent.kReceiver)
+        {
+            // BuildCallWithFeedback: the feedback names the receiver of
+            // Function.prototype.apply (the function applied).
+            BuildCheckValue(callee, Isolate.NativeContext.FunctionPrototypeApply, DeoptimizeReason.kWrongCallTarget);
+            if (TryReduceFunctionPrototypeApplyCallWithReceiver(applied, receiver, args, nexus) is { } applyResult)
+            {
+                SetAccumulator(applyResult);
+                return;
+            }
+        }
+        else if (speculate && feedback.HeapObjectOrNull is JSFunction target && !FeedbackVector.IsCleared(feedback))
         {
             BuildCheckValue(callee, target, DeoptimizeReason.kWrongCallTarget);
             if (TryReduceBuiltin(target, receiver, args) is { } reduced)
@@ -135,6 +147,47 @@ public sealed partial class MaglevGraphBuilder
             return;
         }
         SetAccumulator(BuildGenericCall(bytecode, callee, receiver, args, slot));
+    }
+
+    /// <summary>
+    /// TryReduceFunctionPrototypeApplyCallWithReceiver: f.apply(thisArg) and
+    /// f.apply(thisArg, null/undefined) are calls of f; f.apply(thisArg,
+    /// arguments) forwards the frame's arguments (CallForwardVarargs).
+    /// </summary>
+    ValueNode? TryReduceFunctionPrototypeApplyCallWithReceiver(JSFunction target, ValueNode function, ValueNode[] args,
+        FeedbackNexus nexus)
+    {
+        BuildCheckValue(function, target, DeoptimizeReason.kWrongCallTarget);
+        ValueNode targetNode = GetConstant(target);
+        if (args.Length == 0)
+        {
+            ValueNode undefined = GetRootConstant(RootIndex.kUndefinedValue);
+            return TryBuildInlinedCall(target, targetNode, undefined, [], ConvertReceiverMode.NullOrUndefined, nexus, isConstruct: false, null) ??
+                   BuildCall(targetNode, undefined, [], Register.InvalidValue(), ConvertReceiverMode.NullOrUndefined);
+        }
+        if (args.Length == 1 || args[1].Opcode == Opcode.RootConstant && args[1].ConstantValue().IsNullOrUndefined)
+        {
+            return TryBuildInlinedCall(target, targetNode, args[0], [], ConvertReceiverMode.Any, nexus, isConstruct: false, null) ??
+                   BuildCall(targetNode, args[0], [], Register.InvalidValue(), ConvertReceiverMode.Any);
+        }
+        if (args.Length == 2 && !_unit.IsInline && args[1].Opcode == Opcode.CallBuiltin &&
+            args[1].Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None } && ReferenceEquals(args[1].Unit, _unit))
+        {
+            ValueNode result = CallMaglev2("CallForwardArguments", [targetNode, args[0], args[1]],
+                [BuiltinArg.Isolate, BuiltinArg.State, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)], []);
+            ((CallBuiltinInfo)result.Obj0!).ForwardsArguments = true;
+            return result;
+        }
+        return null;
+    }
+
+    static bool HasContextAllocatedParameters(ScopeInfo scopeInfo)
+    {
+        for (int i = 0; i < scopeInfo.ContextLocalCount; i++)
+        {
+            if (scopeInfo.ContextLocalIsParameter(i)) return true;
+        }
+        return false;
     }
 
     ValueNode[] RegisterValues(Register first, int count)

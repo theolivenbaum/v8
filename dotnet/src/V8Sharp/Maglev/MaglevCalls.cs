@@ -82,7 +82,9 @@ public static class MaglevCalls
         int argsStart, int argc, JSValue newTarget, bool isConstruct)
     {
         // The native stack check of the prologue.
-        if (!RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
+        // (Checked every 8 frames: the check reads the thread's stack limit, and
+        // 8 frames of these calls stay well within the reserve it guarantees.)
+        if ((isolate.InterpreterFrameDepth & 7) == 0 && !RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
 
         var bytecode = (BytecodeArray)function.Shared.FunctionData!;
         JSValue[] stack = isolate.RegisterStack;
@@ -105,15 +107,15 @@ public static class MaglevCalls
 
         Context context = function.Context;
         Context? savedContext = isolate.Context;
-        isolate.Context = context;
-        Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset) = context;
-        Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset) = function;
+        if (!ReferenceEquals(savedContext, context)) isolate.Context = context;
+        // The context, closure and feedback vector slots are not written: the
+        // code reads them from the state, and the Deoptimizer writes them when
+        // the frame continues in the interpreter (each is a GC write barrier).
         Unsafe.Add(ref fpRef, InterpreterRuntime.kArgcOffset) = JSValue.FromInt(argc);
-        Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset) = vector;
-        // The registers are undefined, as the interpreter's trampoline leaves them:
-        // a deopt writes the live ones, and the frame walker (arguments,
-        // generators) may read the others.
-        MemoryMarshal.CreateSpan(ref fpRef, registerCount).Clear();
+        // The registers are undefined, as the interpreter's trampoline leaves
+        // them: a deopt writes the live ones, the frame walker may read the
+        // others. Only the values a popped frame left (dirty) need clearing.
+        if (isolate.RegisterStackDirtyEnd > fp) MemoryMarshal.CreateSpan(ref fpRef, registerCount).Clear();
         if (isConstruct)
         {
             Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
@@ -122,8 +124,10 @@ public static class MaglevCalls
 
         int depth = isolate.InterpreterFrameDepth;
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
-        frame.Function = function;
-        frame.Bytecode = bytecode;
+        // The record of a popped frame keeps Function and Bytecode (as
+        // InterpreterInlineCalls does): a call at the same depth skips the stores.
+        if (!ReferenceEquals(frame.Function, function)) frame.Function = function;
+        if (!ReferenceEquals(frame.Bytecode, bytecode)) frame.Bytecode = bytecode;
         frame.Fp = fp;
         frame.Pc = 0;
         frame.Argc = argc;
@@ -160,9 +164,14 @@ public static class MaglevCalls
         }
         finally
         {
-            isolate.PopFramesTo(depth);
-            isolate.ReleaseRegistersAndDirty(start);
-            isolate.Context = savedContext;
+            // Pop the frame (and any inner ones an exception left), leaving its
+            // values above the stack top dirty, as InterpreterInlineCalls.PopFrame.
+            if (isolate.InterpreterFrameDepth > depth + 1) isolate.PopFramesTo(depth + 1);
+            isolate.InterpreterFrameDepth = depth;
+            int top = isolate.RegisterStackTop;
+            if (top > isolate.RegisterStackDirtyEnd) isolate.RegisterStackDirtyEnd = top;
+            isolate.RegisterStackTop = start;
+            if (!ReferenceEquals(isolate.Context, savedContext)) isolate.Context = savedContext;
         }
     }
 }

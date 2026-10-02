@@ -32,9 +32,11 @@ public static class Deoptimizer
     /// <paramref name="state"/> describes. The values are in the isolate's
     /// deopt scratch buffer.
     /// </summary>
-    public static void Deoptimize(Isolate isolate, ref InterpreterState state, MaglevCode code, int index)
+    public static void Deoptimize(Isolate isolate, ref InterpreterState state, MaglevCode code, int index, int reason)
     {
         DeoptPoint point = code.DeoptPoints[index];
+        // The exit of a frame state is shared by its checks: the reason is the failed check's.
+        point.Reason = (DeoptimizeReason)reason;
         point.Count++;
         JSValue[] scratch = isolate.MaglevDeoptScratch;
         JSValue[] stack = isolate.RegisterStack;
@@ -59,6 +61,26 @@ public static class Deoptimizer
             JSValue accumulator = JSValue.Undefined;
             Context? context = null;
             Register[] registers = f.Registers;
+            if (f.Materialize is { } materialize)
+            {
+                // Materialize the elided arguments objects (translated-state.cc's
+                // captured objects) from the frame's arguments, which the code never
+                // writes, before the registers are written.
+                JSValue materialized = default;
+                for (int k = 0; k < registers.Length; k++)
+                {
+                    if (materialize[k] == ArgumentsObjectKind.None) continue;
+                    // One object, whichever registers hold it.
+                    if (materialized._obj is null)
+                    {
+                        var frameContext = stack[fp + InterpreterRuntime.kContextOffset].As<Context>();
+                        materialized = materialize[k] == ArgumentsObjectKind.Mapped
+                            ? InterpreterArguments.NewSloppyArguments(isolate, f.Function, frameContext, fp, record.Argc)
+                            : InterpreterArguments.NewStrictArguments(isolate, f.Function, fp, record.Argc);
+                    }
+                    scratch[f.ScratchStart + k] = materialized;
+                }
+            }
             for (int k = 0; k < registers.Length; k++)
             {
                 JSValue value = scratch[f.ScratchStart + k];
@@ -78,6 +100,9 @@ public static class Deoptimizer
                 }
             }
             context ??= stack[fp + InterpreterRuntime.kContextOffset].As<Context>();
+            // MaglevCalls.EnterFrame leaves these slots unwritten.
+            stack[fp + InterpreterRuntime.kClosureOffset] = f.Function;
+            stack[fp + InterpreterRuntime.kFeedbackVectorOffset] = f.FeedbackVector is null ? JSValue.Undefined : f.FeedbackVector;
             record.IsBaseline = false;
             if (i > 0) record.InlineCall = true;
             if (!top)

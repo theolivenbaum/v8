@@ -37,6 +37,8 @@ public sealed class DeoptFrameData
     public int NextOffset;
     /// <summary>The registers restored from the scratch buffer (Register.Index; the context and accumulator by their special registers).</summary>
     public Register[] Registers = [];
+    /// <summary>Values the Deoptimizer creates (elided arguments objects), by register position; null if none.</summary>
+    public ArgumentsObjectKind[]? Materialize;
     /// <summary>The scratch buffer index of the first value.</summary>
     public int ScratchStart;
 }

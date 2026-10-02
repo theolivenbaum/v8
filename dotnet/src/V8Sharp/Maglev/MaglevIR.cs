@@ -574,4 +574,22 @@ public sealed class CallBuiltinInfo(MethodInfo method, BuiltinArg[] args, string
     public (Interpreter.Register Register, ValueNode Value)[] RegisterStores = [];
     /// <summary>Registers to read back after the call into the frame state (outputs written through RegisterRef).</summary>
     public Interpreter.Register[] RegisterOutputs = [];
+    /// <summary>
+    /// CreateMappedArguments / CreateUnmappedArguments whose object can be
+    /// elided (V8 escape-analyses the arguments object): its only uses are
+    /// CallForwardArguments calls and deopt frames, which materialize it.
+    /// </summary>
+    public ArgumentsObjectKind ArgumentsKind;
+    /// <summary>The object is not created: the forwarding calls read the frame, a deopt materializes it.</summary>
+    public bool Elided;
+    /// <summary>CallForwardArguments: the arguments object input.</summary>
+    public bool ForwardsArguments;
+}
+
+/// <summary>The kind of an elidable arguments object.</summary>
+public enum ArgumentsObjectKind : byte
+{
+    None,
+    Mapped,
+    Unmapped,
 }

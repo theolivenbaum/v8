@@ -59,6 +59,12 @@ internal sealed class MaglevCodeGenerator
     readonly Dictionary<(object, Type), FieldBuilder> _constantFields = new();
     readonly List<DeoptPoint> _deoptPoints = [];
     readonly Dictionary<(DeoptFrame, DeoptimizeReason), Label> _eagerExits = new();
+    // One deopt exit per frame state: the checks of a checkpoint branch to a
+    // stub that sets the reason and jumps to it.
+    readonly Dictionary<DeoptFrame, Label> _frameExits = new(ReferenceEqualityComparer.Instance);
+    readonly List<(Label Stub, Label Exit, DeoptimizeReason Reason)> _eagerStubs = [];
+    LocalBuilder? _deoptReason;
+    int _spilledValues;
     readonly List<(Label Label, DeoptInfo Info, DeoptimizeKind Kind, DeoptimizeReason Reason, ValueNode? Result)> _pendingExits = [];
     readonly List<(Label Label, BasicBlock From, BasicBlock To)> _edgeStubs = [];
     int _maxScratch;
@@ -103,6 +109,9 @@ internal sealed class MaglevCodeGenerator
     static readonly FieldInfo s_theHole = typeof(JSValue).GetField(nameof(JSValue.TheHole))!;
     static readonly FieldInfo s_oddballTheHole = typeof(Oddball).GetField(nameof(Oddball.TheHole))!;
     static readonly FieldInfo s_registerStack = typeof(Isolate).GetField(nameof(Isolate.RegisterStack))!;
+    static readonly FieldInfo s_stateFunction = typeof(InterpreterState).GetField(nameof(InterpreterState.Function))!;
+    static readonly FieldInfo s_stateContext = typeof(InterpreterState).GetField(nameof(InterpreterState.Context))!;
+    static readonly MethodInfo s_jsValueFromObject = typeof(JSValue).GetMethod(nameof(JSValue.FromObject), [typeof(HeapObject)])!;
     static readonly FieldInfo s_interpreterFrameDepth = typeof(Isolate).GetField(nameof(Isolate.InterpreterFrameDepth))!;
     static readonly MethodInfo s_interpreterFrames = typeof(Isolate).GetProperty(nameof(Isolate.InterpreterFrames))!.GetMethod!;
     static readonly FieldInfo s_stFp = typeof(InterpreterState).GetField(nameof(InterpreterState.Fp))!;
@@ -129,7 +138,13 @@ internal sealed class MaglevCodeGenerator
             EmitBlock(block);
         }
         EmitEdgeStubs();
+        int bodySize = _il.ILOffset;
         EmitDeoptExits();
+        if (_info.Isolate.Flags.trace_opt_verbose)
+        {
+            Console.WriteLine($"[maglev code: {bodySize} bytes IL body, {_il.ILOffset - bodySize} bytes in {_pendingExits.Count} deopt exits " +
+                              $"({_eagerStubs.Count} eager checks, {_spilledValues} values)]");
+        }
 
         _code.DeoptPoints = _deoptPoints.ToArray();
         _code.MaxScratchSize = _maxScratch;
@@ -418,6 +433,7 @@ internal sealed class MaglevCodeGenerator
         foreach (Node node in block.Nodes)
         {
             if (IsDeadNode(node)) continue;
+            if (IsElidedArguments(node)) continue;
             if (node.Unit is { IsInline: true } unit && NeedsFrame(node)) EmitEnsureInlinedFrames(unit);
             EmitNode(node);
         }
@@ -434,6 +450,8 @@ internal sealed class MaglevCodeGenerator
             Opcode.HandleNoHeapWritesInterrupt ||
         node.Opcode != Opcode.EnterInlinedFrame &&
         (node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0;
+
+    static bool IsElidedArguments(NodeBase node) => node.Obj0 is CallBuiltinInfo { Elided: true };
 
     static bool IsDeadNode(Node node) =>
         node is ValueNode { UseCount: 0 } &&
@@ -632,11 +650,17 @@ internal sealed class MaglevCodeGenerator
     /// <summary>The label of the eager deopt exit for <paramref name="info"/> (shared by identical frames and reasons).</summary>
     Label EagerExit(EagerDeoptInfo info)
     {
-        if (_eagerExits.TryGetValue((info.TopFrame, info.Reason), out Label label)) return label;
-        label = _il.DefineLabel();
-        _eagerExits[(info.TopFrame, info.Reason)] = label;
-        _pendingExits.Add((label, info, DeoptimizeKind.kEager, info.Reason, null));
-        return label;
+        if (_eagerExits.TryGetValue((info.TopFrame, info.Reason), out Label stub)) return stub;
+        if (!_frameExits.TryGetValue(info.TopFrame, out Label exit))
+        {
+            exit = _il.DefineLabel();
+            _frameExits[info.TopFrame] = exit;
+            _pendingExits.Add((exit, info, DeoptimizeKind.kEager, info.Reason, null));
+        }
+        stub = _il.DefineLabel();
+        _eagerExits[(info.TopFrame, info.Reason)] = stub;
+        _eagerStubs.Add((stub, exit, info.Reason));
+        return stub;
     }
 
     /// <summary>After a call: deoptimize lazily if the code was invalidated meanwhile.</summary>
@@ -652,9 +676,18 @@ internal sealed class MaglevCodeGenerator
 
     void EmitDeoptExits()
     {
+        _deoptReason ??= _il.DeclareLocal(typeof(int));
+        foreach ((Label stub, Label exit, DeoptimizeReason reason) in _eagerStubs)
+        {
+            _il.MarkLabel(stub);
+            _il.Emit(OpCodes.Ldc_I4, (int)reason);
+            _il.Emit(OpCodes.Stloc, _deoptReason);
+            _il.Emit(OpCodes.Br, exit);
+        }
         foreach ((Label label, DeoptInfo info, DeoptimizeKind kind, DeoptimizeReason reason, ValueNode? result) in _pendingExits)
         {
             _il.MarkLabel(label);
+            var spill = new List<ValueNode?>();
             var point = new DeoptPoint { Kind = kind, Reason = reason };
             // Frames outermost first.
             var frames = new List<InterpretedDeoptFrame>();
@@ -667,10 +700,19 @@ internal sealed class MaglevCodeGenerator
                 InterpretedDeoptFrame f = frames[i];
                 MaglevCompilationUnit unit = f.Unit;
                 var registers = new Register[f.Values.Length];
+                ArgumentsObjectKind[]? materialize = null;
                 for (int k = 0; k < f.Values.Length; k++)
                 {
                     registers[k] = f.Values[k].Register;
-                    EmitStoreScratch(scratch + k, f.Values[k].Value);
+                    ValueNode value = f.Values[k].Value;
+                    if (IsElidedArguments(value))
+                    {
+                        // The Deoptimizer creates the elided arguments object.
+                        (materialize ??= new ArgumentsObjectKind[f.Values.Length])[k] = ((CallBuiltinInfo)value.Obj0!).ArgumentsKind;
+                        spill.Add(null);
+                        continue;
+                    }
+                    spill.Add(value);
                 }
                 data[i] = new DeoptFrameData
                 {
@@ -683,6 +725,7 @@ internal sealed class MaglevCodeGenerator
                     BytecodeOffset = f.BytecodeOffset,
                     NextOffset = f.NextOffset,
                     Registers = registers,
+                    Materialize = materialize,
                     ScratchStart = scratch,
                 };
                 scratch += registers.Length;
@@ -693,24 +736,54 @@ internal sealed class MaglevCodeGenerator
                 if (result is not null && lazy.ResultSize == 1)
                 {
                     point.ResultScratchIndex = scratch;
-                    EmitStoreScratch(scratch, result);
+                    spill.Add(result);
                     scratch++;
                 }
             }
+            _spilledValues += spill.Count;
+            EmitSpill(spill);
             point.Frames = data;
             point.ScratchSize = scratch;
             _maxScratch = Math.Max(_maxScratch, scratch);
             int index = _deoptPoints.Count;
             _deoptPoints.Add(point);
             info.DeoptIndex = index;
-            // Deoptimizer::Deoptimize(isolate, ref state, code, index); return to MaglevExecution.Run.
+            // Deoptimizer::Deoptimize(isolate, ref state, code, index, reason); return to MaglevExecution.Run.
             _il.Emit(OpCodes.Ldarg_1);
             _il.Emit(OpCodes.Ldarg_2);
             _il.Emit(OpCodes.Ldarg_0);
             _il.Emit(OpCodes.Ldc_I4, index);
+            if (kind == DeoptimizeKind.kEager) _il.Emit(OpCodes.Ldloc, _deoptReason);
+            else _il.Emit(OpCodes.Ldc_I4, (int)reason);
             _il.Emit(OpCodes.Call, s_deoptimize);
             LoadUndefined();
             _il.Emit(OpCodes.Ret);
+        }
+    }
+
+    /// <summary>
+    /// Stores <paramref name="values"/> to the deopt scratch buffer from index
+    /// 0, in chunks through MaglevBuiltins.Spill* (an elided value, null, is
+    /// left for the Deoptimizer): a few bytes of IL per value, so the exits
+    /// do not dominate the method's IL size.
+    /// </summary>
+    void EmitSpill(List<ValueNode?> values)
+    {
+        int i = 0;
+        while (i < values.Count)
+        {
+            int remaining = values.Count - i;
+            int chunk = remaining >= 8 ? 8 : remaining >= 4 ? 4 : remaining >= 2 ? 2 : 1;
+            _il.Emit(OpCodes.Ldarg_1);
+            _il.Emit(OpCodes.Ldfld, s_deoptScratch);
+            _il.Emit(OpCodes.Ldc_I4, i);
+            for (int k = 0; k < chunk; k++)
+            {
+                if (values[i + k] is { } value) Load(value, ValueRepresentation.kTagged);
+                else LoadUndefined();
+            }
+            Call("Spill" + chunk);
+            i += chunk;
         }
     }
 
@@ -739,6 +812,16 @@ internal sealed class MaglevCodeGenerator
         {
             // ---- Values ---------------------------------------------------------------------------
             case Opcode.InitialValue:
+                if (node.Int0 is InterpreterRuntime.kClosureOffset or InterpreterRuntime.kContextOffset)
+                {
+                    // The closure and the context come from the state (MaglevCalls
+                    // does not write their frame slots).
+                    _il.Emit(OpCodes.Ldarg_2);
+                    _il.Emit(OpCodes.Ldfld, node.Int0 == InterpreterRuntime.kClosureOffset ? s_stateFunction : s_stateContext);
+                    _il.Emit(OpCodes.Call, s_jsValueFromObject);
+                    Store(v!);
+                    return;
+                }
                 LoadFrameSlotAddress(null, node.Int0);
                 _il.Emit(OpCodes.Ldobj, typeof(JSValue));
                 Store(v!);

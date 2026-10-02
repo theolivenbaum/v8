@@ -99,6 +99,37 @@ public static class MaglevBuiltins
     [MethodImpl(Inline)]
     public static JSValue HoleyFloat64ToTagged(double value) => IsHoleNaN(value) ? JSValue.Undefined : JSValue.FromNumber(value);
 
+    // ---- Deopt exits: the values of a frame state into the scratch buffer --------------------------------
+
+    public static void Spill1(JSValue[] s, int i, JSValue a) => s[i] = a;
+
+    public static void Spill2(JSValue[] s, int i, JSValue a, JSValue b)
+    {
+        s[i] = a;
+        s[i + 1] = b;
+    }
+
+    public static void Spill4(JSValue[] s, int i, JSValue a, JSValue b, JSValue c, JSValue d)
+    {
+        s[i] = a;
+        s[i + 1] = b;
+        s[i + 2] = c;
+        s[i + 3] = d;
+    }
+
+    public static void Spill8(JSValue[] s, int i, JSValue a, JSValue b, JSValue c, JSValue d, JSValue e, JSValue f, JSValue g,
+        JSValue h)
+    {
+        s[i] = a;
+        s[i + 1] = b;
+        s[i + 2] = c;
+        s[i + 3] = d;
+        s[i + 4] = e;
+        s[i + 5] = f;
+        s[i + 6] = g;
+        s[i + 7] = h;
+    }
+
     /// <summary>ConvertHoleToUndefined.</summary>
     [MethodImpl(Inline)]
     public static JSValue ConvertHoleToUndefined(JSValue value) => value.IsTheHole ? JSValue.Undefined : value;
@@ -378,6 +409,33 @@ public static class MaglevBuiltins
     /// </summary>
     public static JSValue CallKnownJSFunction(Isolate isolate, JSValue target, JSValue receiver, int argsStart, int argc, int mode) =>
         MaglevCalls.Call(isolate, target, receiver, argsStart, argc, (ConvertReceiverMode)mode);
+
+    /// <summary>
+    /// CallForwardVarargs: f.apply(thisArg, arguments) with the frame's
+    /// arguments object. An elided object (undefined here) means the frame's
+    /// actual arguments are passed; otherwise CallWithArrayLike.
+    /// </summary>
+    public static JSValue CallForwardArguments(Isolate isolate, ref InterpreterState state, JSValue target, JSValue receiver,
+        JSValue argumentsObject)
+    {
+        if (argumentsObject._obj is not null)
+        {
+            return Builtins.BuiltinsFunction.CallWithArrayLike(isolate, target, receiver, argumentsObject);
+        }
+        int argc = state.Argc;
+        int fp = state.Fp;
+        int start = isolate.AllocateRegisters(argc);
+        JSValue[] stack = isolate.RegisterStack;
+        for (int i = 0; i < argc; i++) stack[start + i] = stack[fp + InterpreterRuntime.kFirstArgumentOffset - i];
+        try
+        {
+            return MaglevCalls.Call(isolate, target, receiver, start, argc, ConvertReceiverMode.Any);
+        }
+        finally
+        {
+            isolate.RegisterStackTop = start;
+        }
+    }
 
     /// <summary>Construct of a known base constructor with the receiver FastNewObject allocated.</summary>
     public static JSValue ConstructKnownJSFunction(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, int argsStart,

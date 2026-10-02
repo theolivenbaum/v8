@@ -559,14 +559,29 @@ public sealed partial class MaglevGraphBuilder
 
             // ---- Arguments ----------------------------------------------------------------------------------
             case Bytecode.CreateMappedArguments:
+            {
                 RequireOutermostFrame();
-                SetAccumulator(CallBaseline("CreateMappedArguments", [_frame.Context],
-                    [BuiltinArg.Isolate, BuiltinArg.State, BuiltinArg.In(0)], ParameterStores())!);
+                ValueNode arguments = CallBaseline("CreateMappedArguments", [_frame.Context],
+                    [BuiltinArg.Isolate, BuiltinArg.State, BuiltinArg.In(0)], ParameterStores())!;
+                // Elidable when no parameter is context-allocated (no aliasing):
+                // the object then holds the frame's arguments.
+                if (!_info.IsOsr && !HasContextAllocatedParameters(_unit.SharedFunctionInfo.ScopeInfo))
+                {
+                    ((CallBuiltinInfo)arguments.Obj0!).ArgumentsKind = ArgumentsObjectKind.Mapped;
+                }
+                arguments.Type = NodeType.kOtherJSReceiver;
+                SetAccumulator(arguments);
                 break;
+            }
             case Bytecode.CreateUnmappedArguments:
+            {
                 RequireOutermostFrame();
-                SetAccumulator(CallBaseline("CreateUnmappedArguments", [], [BuiltinArg.Isolate, BuiltinArg.State], ParameterStores())!);
+                ValueNode arguments = CallBaseline("CreateUnmappedArguments", [], [BuiltinArg.Isolate, BuiltinArg.State], ParameterStores())!;
+                if (!_info.IsOsr) ((CallBuiltinInfo)arguments.Obj0!).ArgumentsKind = ArgumentsObjectKind.Unmapped;
+                arguments.Type = NodeType.kOtherJSReceiver;
+                SetAccumulator(arguments);
                 break;
+            }
             case Bytecode.CreateRestParameter:
                 RequireOutermostFrame();
                 SetAccumulator(CallBaseline("CreateRestParameter", [], [BuiltinArg.Isolate, BuiltinArg.State], ParameterStores())!);

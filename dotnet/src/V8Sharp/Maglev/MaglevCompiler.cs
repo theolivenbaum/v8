@@ -80,6 +80,7 @@ public static class MaglevCompiler
             FinalizeGraph(info.Graph);
             if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph);
             ComputeUseCounts(info.Graph);
+            ElideArgumentsObjects(info.Graph);
             if (isolate.Flags.print_maglev_graph) MaglevGraphPrinter.Print(info, Console.Out);
             long graphBuilt = System.Diagnostics.Stopwatch.GetTimestamp();
 
@@ -181,6 +182,48 @@ public static class MaglevCompiler
     /// lazy deopt results), removing unused nodes without effects (V8's
     /// DeadNodeSweepingProcessor) until nothing changes.
     /// </summary>
+    /// <summary>
+    /// Elides the arguments objects whose only uses (besides deopt frames) are
+    /// CallForwardArguments calls (V8's escape analysis of the arguments
+    /// object, for this one pattern).
+    /// </summary>
+    static void ElideArgumentsObjects(Graph graph)
+    {
+        List<ValueNode>? candidates = null;
+        foreach (BasicBlock block in graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Node node in block.Nodes)
+            {
+                if (node is ValueNode { Opcode: Opcode.CallBuiltin, Obj0: CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None } } v)
+                {
+                    (candidates ??= []).Add(v);
+                }
+            }
+        }
+        if (candidates is null) return;
+        var escaping = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
+        foreach (BasicBlock block in graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Phi phi in block.Phis) foreach (ValueNode input in phi.Inputs) escaping.Add(input);
+            foreach (Node node in block.Nodes)
+            {
+                bool forwards = node.Obj0 is CallBuiltinInfo { ForwardsArguments: true };
+                for (int i = 0; i < node.Inputs.Length; i++)
+                {
+                    if (forwards && i == 2) continue;
+                    escaping.Add(node.Inputs[i]);
+                }
+            }
+            foreach (ValueNode input in block.Control!.Inputs) escaping.Add(input);
+        }
+        foreach (ValueNode candidate in candidates)
+        {
+            if (!escaping.Contains(candidate)) ((CallBuiltinInfo)candidate.Obj0!).Elided = true;
+        }
+    }
+
     internal static void ComputeUseCounts(Graph graph)
     {
         foreach (ValueNode c in graph.Constants) c.UseCount = 0;
