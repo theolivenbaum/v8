@@ -5,7 +5,7 @@
 // Port of src/ast/scopes.h and src/ast/scopes.cc.
 //
 // V8 packs scope flags into flags_; here they are plain bool fields with the
-// same accessor names. VariableMap is a hash map keyed by AstRawString identity
+// same accessor names. VariableMap is a map keyed by AstRawString identity
 // (AstRawStrings are unique per AstValueFactory) that iterates in insertion
 // order; V8's ZoneHashMap iterates in hash-bucket order, which is only
 // observable in FindVariableDeclaredIn (which duplicate name an error
@@ -53,13 +53,34 @@ public sealed class UnresolvedList : ThreadedList<VariableProxy>
 }
 
 // A hash map to support fast variable declaration and lookup.
+//
+// V8's VariableMap is a ZoneHashMap allocated with 8 entries. Most scopes
+// declare a handful of variables, so here the entries are kept in an array in
+// insertion order and searched linearly (keys are compared by identity, as
+// AstRawStrings are unique per factory); only a map that grows past
+// kLinearLimit entries also gets a hash index. The array is allocated on the
+// first declaration, so a scope without variables costs nothing. Iteration
+// is in insertion order, and a removed entry's slot is reused by the next
+// insertion (the order a .NET Dictionary iterates in).
 public sealed class VariableMap
 {
-    private readonly Dictionary<AstRawString, Variable> _map;
+    private const int kLinearLimit = 8;
 
-    public VariableMap() => _map = new Dictionary<AstRawString, Variable>(8);
+    private KeyValuePair<AstRawString, Variable>[]? _entries;
+    // Slots in use, including removed ones (null keys).
+    private int _count;
+    private int _occupancy;
+    // Removed slots, reused last-removed first.
+    private Stack<int>? _freeSlots;
+    // name -> slot, once the map has more than kLinearLimit slots.
+    private Dictionary<AstRawString, int>? _index;
 
-    public VariableMap(VariableMap other) => _map = new Dictionary<AstRawString, Variable>(other._map);
+    public VariableMap() { }
+
+    public VariableMap(VariableMap other)
+    {
+        foreach (var p in other) Add(p.Value);
+    }
 
     public Variable Declare(Scope? scope, AstRawString name, VariableMode mode, VariableKind kind,
                             InitializationFlag initialization_flag, MaybeAssignedFlag maybe_assigned_flag,
@@ -67,45 +88,122 @@ public sealed class VariableMap
     {
         // AstRawStrings are unambiguous, i.e., the same string is always represented
         // by the same AstRawString*.
-        ref Variable? slot = ref CollectionsMarshal.GetValueRefOrAddDefault(_map, name, out bool exists);
-        was_added = !exists;
-        if (was_added)
+        int slot = Find(name);
+        if (slot >= 0)
         {
-            // The variable has not been declared yet -> insert it.
-            slot = new Variable(scope, name, mode, kind, initialization_flag, maybe_assigned_flag, is_static_flag);
+            was_added = false;
+            return _entries![slot].Value;
         }
-        return slot!;
+        // The variable has not been declared yet -> insert it.
+        was_added = true;
+        var var = new Variable(scope, name, mode, kind, initialization_flag, maybe_assigned_flag, is_static_flag);
+        Insert(name, var);
+        return var;
     }
 
-    public Variable? Lookup(AstRawString name) => _map.GetValueOrDefault(name);
+    public Variable? Lookup(AstRawString name)
+    {
+        int slot = Find(name);
+        return slot >= 0 ? _entries![slot].Value : null;
+    }
 
-    public void Remove(Variable var) => _map.Remove(var.raw_name());
+    public void Remove(Variable var)
+    {
+        int slot = Find(var.raw_name());
+        if (slot >= 0) RemoveAt(slot);
+    }
 
     public void RemoveDynamic()
     {
-        List<AstRawString>? toRemove = null;
-        foreach (var kv in _map)
+        for (int i = 0; i < _count; i++)
         {
-            if (kv.Value.is_dynamic()) (toRemove ??= []).Add(kv.Key);
+            Variable? var = _entries![i].Value;
+            if (var != null && var.is_dynamic()) RemoveAt(i);
         }
-        if (toRemove == null) return;
-        foreach (var key in toRemove) _map.Remove(key);
     }
 
-    public void Add(Variable var) => _map[var.raw_name()] = var;
+    public void Add(Variable var)
+    {
+        AstRawString name = var.raw_name();
+        int slot = Find(name);
+        if (slot >= 0) _entries![slot] = new(name, var);
+        else Insert(name, var);
+    }
 
-    public int occupancy() => _map.Count;
+    public int occupancy() => _occupancy;
 
-    public int capacity() => _map.Count == 0 ? 8 : _map.EnsureCapacity(0);
+    public int capacity() => Math.Max(kLinearLimit, _entries?.Length ?? 0);
 
-    public Dictionary<AstRawString, Variable>.Enumerator GetEnumerator() => _map.GetEnumerator();
-
-    public Dictionary<AstRawString, Variable>.ValueCollection Values => _map.Values;
+    public Enumerator GetEnumerator() => new(this);
 
     public Variable? First()
     {
-        foreach (var kv in _map) return kv.Value;
+        foreach (var p in this) return p.Value;
         return null;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int Find(AstRawString name)
+    {
+        if (_index != null) return _index.TryGetValue(name, out int slot) ? slot : -1;
+        KeyValuePair<AstRawString, Variable>[]? entries = _entries;
+        if (entries == null) return -1;
+        int count = _count;
+        for (int i = 0; i < count && i < entries.Length; i++)
+        {
+            if (ReferenceEquals(entries[i].Key, name)) return i;
+        }
+        return -1;
+    }
+
+    private void Insert(AstRawString name, Variable var)
+    {
+        int slot;
+        if (_freeSlots is { Count: > 0 })
+        {
+            slot = _freeSlots.Pop();
+        }
+        else
+        {
+            if (_entries == null) _entries = new KeyValuePair<AstRawString, Variable>[kLinearLimit];
+            else if (_count == _entries.Length) Array.Resize(ref _entries, _count * 2);
+            slot = _count++;
+            if (_index == null && _count > kLinearLimit)
+            {
+                _index = new Dictionary<AstRawString, int>(_count * 2);
+                for (int i = 0; i < _count - 1; i++)
+                {
+                    if (_entries[i].Key != null) _index.Add(_entries[i].Key, i);
+                }
+            }
+        }
+        _entries![slot] = new(name, var);
+        _index?.Add(name, slot);
+        _occupancy++;
+    }
+
+    private void RemoveAt(int slot)
+    {
+        _index?.Remove(_entries![slot].Key);
+        _entries![slot] = default;
+        (_freeSlots ??= new Stack<int>()).Push(slot);
+        _occupancy--;
+    }
+
+    public struct Enumerator(VariableMap map)
+    {
+        private int _index = -1;
+
+        public readonly KeyValuePair<AstRawString, Variable> Current => map._entries![_index];
+
+        public bool MoveNext()
+        {
+            while (++_index < map._count)
+            {
+                if (map._entries![_index].Key != null) return true;
+            }
+            return false;
+        }
     }
 }
 
