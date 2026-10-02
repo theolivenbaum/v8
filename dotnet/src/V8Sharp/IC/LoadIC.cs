@@ -96,6 +96,10 @@ public sealed class LoadIC : IC
                     // (kField with kArrayLengthFieldDescriptorIndex); the handler
                     // is recorded only for JSArray maps.
                     if (handler.HandlerKind == LoadHandler.Kind.kArrayLength) return Unsafe.As<JSArray>(r).Length;
+                    // LoadHandler::LoadFullChain for a missing property: the
+                    // validity cell guards the chain; a dictionary-mode receiver
+                    // could have it (LookupOnLookupStartObject).
+                    if (handler.HandlerKind == LoadHandler.Kind.kNonExistent && handler.IsValid && !map.IsDictionaryMap) return default;
                     // A builtin getter on the prototype chain whose fast case needs
                     // no frame (typed array length: BuiltinFastPaths.TryCall0).
                     if (handler.HandlerKind == LoadHandler.Kind.kAccessorFromPrototype && handler.IsValid && !map.IsDictionaryMap)
