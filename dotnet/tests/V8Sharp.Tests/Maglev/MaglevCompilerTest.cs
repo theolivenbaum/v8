@@ -521,6 +521,8 @@ public class MaglevCompilerTest
         Assert.Equal("true", Run("--maglev --invocation-count-for-maglev=5", """
             function f(x) { return x * 2; }
             for (var i = 0; i < 10000; i++) f(i);
+            // The tiering manager compiles concurrently; wait for the install.
+            %WaitForBackgroundOptimization();
             String(%ActiveTierIsMaglev(f));
             """));
     }
