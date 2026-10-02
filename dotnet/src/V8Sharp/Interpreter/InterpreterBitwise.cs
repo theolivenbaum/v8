@@ -147,13 +147,25 @@ internal static class InterpreterBitwise
         double ld = lhs._num;
         int l = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(ld)) : (int)ld;
         int r = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(rd)) : (int)rd;
-        if (l != ld || r != rd) return default;
+        bool integral = l == ld && r == rd;
+        if (!integral)
+        {
+            // A fraction or an int32 overflow (asm.js `x | 0` of a sum):
+            // TruncateTaggedToWord32 of a HeapNumber, Number feedback.
+            l = TruncateToWord32(ld);
+            r = TruncateToWord32(rd);
+        }
         double result = Apply(op, l, r);
-        bool smi = InSmiRange(l) && (rhsIsSmi || InSmiRange(r)) && result <= JSValue.SmiMaxValue && result >= JSValue.SmiMinValue &&
-                   (l != 0 || !double.IsNegative(ld)) && (rhsIsSmi || r != 0 || !double.IsNegative(rd));
+        bool smi = integral && InSmiRange(l) && (rhsIsSmi || InSmiRange(r)) && result <= JSValue.SmiMaxValue &&
+                   result >= JSValue.SmiMinValue && (l != 0 || !double.IsNegative(ld)) &&
+                   (rhsIsSmi || r != 0 || !double.IsNegative(rd));
         InterpreterOps.UpdateBinaryFeedback(ref feedback, smi ? BOF.TypeIndex.SignedSmall : BOF.TypeIndex.Number);
         return JSValue.FromNumber(result);
     }
+
+    /// <summary>ToInt32 of a Number (DoubleToInt32), out of line for the dispatch loop.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int TruncateToWord32(double d) => V8Sharp.Base.Numbers.Conversions.DoubleToInt32(d);
 
     /// <summary>A bitwise operator with a Smi immediate right operand (BitwiseAndSmi ...).</summary>
     public static JSValue WithSmi<TOp>(Isolate isolate, JSValue lhs, int rhs, ref byte feedback) where TOp : struct, IInt32BitwiseOp

@@ -20,16 +20,7 @@ public static class InterpreterOps
 
     /// <summary>Whether a double would be a Smi in V8 (31-bit, integral, not -0).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsSmiDouble(double d)
-    {
-        // cvttsd2si gives int.MinValue for NaN and out-of-range values, which
-        // fails the range check; C#'s (int) cast saturates with extra compares.
-        // Comparing the bits of the round trip rejects fractions, NaN and -0
-        // in one compare (a double compare needs a parity branch for NaN and
-        // cannot tell -0 from 0).
-        int i = Sse2.IsSupported ? Sse2.ConvertToInt32WithTruncation(Vector128.CreateScalarUnsafe(d)) : (int)d;
-        return BitConverter.DoubleToInt64Bits(i) == BitConverter.DoubleToInt64Bits(d) && IsSmiRange(i);
-    }
+    public static bool IsSmiDouble(double d) => JSValue.IsSmiDouble(d);
 
     /// <summary>IsSmiDouble, with the Smi's value (V8's TaggedIsSmi then SmiUntag).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

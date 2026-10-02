@@ -368,6 +368,90 @@ public static class TypedArrayElementsOps
     }
 
     /// <summary>
+    /// The length of a typed array whose length is fixed (JSTypedArray::length:
+    /// not length-tracking, not backed by a resizable buffer) and that is
+    /// attached; false when the variable-length and detach checks of
+    /// GetLengthOrOutOfBounds are needed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryGetFixedLength(JSTypedArray array, out ulong length)
+    {
+        length = array.RawLength;
+        return !array.IsLengthTracking && !array.IsBackedByRab && !array.Buffer.WasDetached;
+    }
+
+    /// <summary>
+    /// LoadFixedTypedArrayElementAsTagged for an in-bounds index of an attached
+    /// array, specialized per kind (the element size is the case's constant).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue LoadElement(Isolate isolate, JSTypedArray array, ElementsKind kind, int index)
+    {
+        ReadOnlySpan<byte> s = array.Buffer.BackingStoreBuffer.AsSpan((int)array.ByteOffset);
+        switch (kind)
+        {
+            case ElementsKind.UINT8_ELEMENTS:
+            case ElementsKind.UINT8_CLAMPED_ELEMENTS:
+                return JSValue.FromInt(s[index]);
+            case ElementsKind.INT8_ELEMENTS:
+                return JSValue.FromInt((sbyte)s[index]);
+            case ElementsKind.UINT16_ELEMENTS:
+                return JSValue.FromInt(MemoryMarshal.Read<ushort>(s.Slice(index * 2)));
+            case ElementsKind.INT16_ELEMENTS:
+                return JSValue.FromInt(MemoryMarshal.Read<short>(s.Slice(index * 2)));
+            case ElementsKind.INT32_ELEMENTS:
+                return JSValue.FromInt(MemoryMarshal.Read<int>(s.Slice(index * 4)));
+            case ElementsKind.UINT32_ELEMENTS:
+                return Uint32Element.Load(isolate, s.Slice(index * 4));
+            case ElementsKind.FLOAT32_ELEMENTS:
+                return Float32Element.Load(isolate, s.Slice(index * 4));
+            case ElementsKind.FLOAT64_ELEMENTS:
+                return Float64Element.Load(isolate, s.Slice(index * 8));
+            default:
+                int size = ElementsKinds.ElementsKindToByteSize(kind);
+                return LoadFromBytes(isolate, kind, s.Slice(index * size, size));
+        }
+    }
+
+    /// <summary>
+    /// StoreJSTypedArrayElementFromNumeric for a Number into an in-bounds index
+    /// of an attached array of a Number kind, specialized per kind.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void StoreElement(JSTypedArray array, ElementsKind kind, int index, double value)
+    {
+        Span<byte> d = array.Buffer.BackingStoreBuffer.AsSpan((int)array.ByteOffset);
+        switch (kind)
+        {
+            case ElementsKind.UINT8_ELEMENTS:
+            case ElementsKind.INT8_ELEMENTS:
+                d[index] = (byte)Conversions.DoubleToInt32(value);
+                return;
+            case ElementsKind.UINT8_CLAMPED_ELEMENTS:
+                d[index] = TypedArrayScalars.ClampDouble(value);
+                return;
+            case ElementsKind.UINT16_ELEMENTS:
+            case ElementsKind.INT16_ELEMENTS:
+                MemoryMarshal.Write(d.Slice(index * 2), (ushort)Conversions.DoubleToInt32(value));
+                return;
+            case ElementsKind.UINT32_ELEMENTS:
+            case ElementsKind.INT32_ELEMENTS:
+                MemoryMarshal.Write(d.Slice(index * 4), Conversions.DoubleToInt32(value));
+                return;
+            case ElementsKind.FLOAT32_ELEMENTS:
+                Float32Element.StoreDouble(d.Slice(index * 4), value);
+                return;
+            case ElementsKind.FLOAT64_ELEMENTS:
+                MemoryMarshal.Write(d.Slice(index * 8), value);
+                return;
+            default:
+                int size = ElementsKinds.ElementsKindToByteSize(kind);
+                StoreDoubleToBytes(kind, d.Slice(index * size, size), value);
+                return;
+        }
+    }
+
+    /// <summary>
     /// StoreJSTypedArrayElementFromNumeric: stores a Number (or BigInt for
     /// BigInt arrays) already converted by the caller into an in-bounds index.
     /// </summary>

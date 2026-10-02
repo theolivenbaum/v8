@@ -1,8 +1,8 @@
 // Port of the fast element access paths of src/ic/accessor-assembler.cc
 // (EmitElementLoad, HandleLoadICSmiHandlerLoadNamedCase's element case) and
 // src/codegen/code-stub-assembler.cc (EmitElementStore, CheckForCapacityGrow)
-// for the fast elements kinds. Everything else (typed arrays, dictionary,
-// sealed/frozen, sloppy arguments, transitions) misses to the runtime.
+// for the fast elements kinds and typed arrays. Everything else (dictionary,
+// sealed/frozen, sloppy arguments) misses to the runtime.
 using System.Runtime.CompilerServices;
 
 namespace V8Sharp.IC;
@@ -83,6 +83,17 @@ public static class ElementAccess
         result = default;
         long index = (long)key;
         if (index != key || index < 0) return false;
+        if (TypedArrayElementsOps.TryGetFixedLength(array, out ulong fixedLength))
+        {
+            if ((ulong)index < fixedLength)
+            {
+                result = TypedArrayElementsOps.LoadElement(isolate, array, array.Map.ElementsKind, (int)index);
+                return true;
+            }
+            if (!handler.AllowOutOfBounds) return false;
+            result = JSValue.Undefined;
+            return true;
+        }
         ulong length = array.GetLength();
         if ((ulong)index >= length)
         {
@@ -120,7 +131,11 @@ public static class ElementAccess
             JSObject.TransitionElementsKind(isolate, obj, transition.ElementsKind);
         }
         ElementsKind kind = obj.Map.ElementsKind;
-        if (!ElementsKinds.IsFastElementsKind(kind)) return false;
+        if (!ElementsKinds.IsFastElementsKind(kind))
+        {
+            return ElementsKinds.IsTypedArrayOrRabGsabTypedArrayElementsKind(handler.ElementsKind) && obj is JSTypedArray typedArray &&
+                   TryStoreTypedElement(typedArray, key, handler, value);
+        }
 
         // The value must fit the elements kind without a transition.
         if (ElementsKinds.IsSmiElementsKind(kind))
@@ -170,12 +185,10 @@ public static class ElementAccess
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryStoreInBounds(JSObject obj, double key, JSValue value)
     {
-        int index = (int)key;
-        if (index != key || index < 0) return false;
+        if (!JSValue.TryGetIndex(key, out int index)) return false;
         FixedArrayBase elements = obj.Elements;
         ElementsKind kind = obj.Map.ElementsKind;
-        int length = obj.InstanceType == InstanceType.JSArrayType ? (int)Unsafe.As<JSArray>(obj).Length._num : int.MaxValue;
-        if (index >= length) return false;
+        if (obj.InstanceType == InstanceType.JSArrayType && index >= Unsafe.As<JSArray>(obj).Length._num) return false;
         if (elements is FixedArray fixedArray)
         {
             JSValue[] data = fixedArray._data;
@@ -205,6 +218,45 @@ public static class ElementAccess
             return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// EmitElementStoreTypedArray for a value that needs no conversion (a
+    /// Number, or a BigInt for the BigInt kinds; anything else takes the
+    /// runtime, which converts it). Out of bounds, including detached, the
+    /// store is skipped when the handler's store mode ignores out-of-bounds
+    /// stores and misses otherwise.
+    /// </summary>
+    static bool TryStoreTypedElement(JSTypedArray array, double key, StoreHandler handler, JSValue value)
+    {
+        if (ElementsKinds.IsBigIntTypedArrayElementsKind(handler.ElementsKind) ? value._obj is not BigInt : !value.IsNumber)
+        {
+            return false;
+        }
+        long index = (long)key;
+        if (index != key) return false;
+        if (value.IsNumber && TypedArrayElementsOps.TryGetFixedLength(array, out ulong fixedLength) && (ulong)index < fixedLength &&
+            !array.Buffer.IsImmutable)
+        {
+            TypedArrayElementsOps.StoreElement(array, array.Map.ElementsKind, (int)index, value._num);
+            return true;
+        }
+        bool ignoresOob = handler.StoreMode == KeyedAccessStoreMode.kIgnoreTypedArrayOOB;
+        if (ignoresOob)
+        {
+            // An immutable buffer must throw in the runtime.
+            if (array.Buffer.IsImmutable) return false;
+            if (!TypedArrayElementsOps.TryGetLengthAndValidate(array, TypedArrayAccessMode.kRead, out ulong readLength)) return true;
+            // Skip the store beyond the length or to a negative index.
+            if ((ulong)index >= readLength) return true;
+        }
+        else
+        {
+            if (!TypedArrayElementsOps.TryGetLengthAndValidate(array, TypedArrayAccessMode.kWrite, out ulong length)) return false;
+            if ((ulong)index >= length) return false;
+        }
+        TypedArrayElementsOps.StoreNumeric(array, (ulong)index, value);
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
