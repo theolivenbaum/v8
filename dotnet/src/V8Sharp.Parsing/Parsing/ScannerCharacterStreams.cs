@@ -433,8 +433,20 @@ public static class ScannerStream
     public static Utf16CharacterStream For(string data, int start_pos, int end_pos)
     {
         if (start_pos < 0 || start_pos > end_pos || end_pos > data.Length) throw new ArgumentOutOfRangeException(nameof(start_pos));
-        return new UnbufferedCharacterStream(start_pos, new ArrayCharacterSource(data.ToCharArray(0, end_pos), 0, end_pos, can_access_heap: true));
+        return new UnbufferedCharacterStream(start_pos, new ArrayCharacterSource(SourceChars(data, end_pos), 0, end_pos, can_access_heap: true));
     }
+
+    // V8 scans the source string on the heap. The streams here read a char[];
+    // a large source (a script, whose functions are each parsed again by lazy
+    // compilation) is copied once and the copy kept while the string lives,
+    // instead of copying the script up to the function for every lazy compile.
+    const int kMinCachedSourceLength = 4096;
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<string, char[]> s_sourceChars = new();
+
+    static char[] SourceChars(string data, int end_pos) =>
+        data.Length < kMinCachedSourceLength
+            ? data.ToCharArray(0, end_pos)
+            : s_sourceChars.GetValue(data, static source => source.ToCharArray());
 
     // Stream over a slice of an existing char array (V8: a SlicedString's
     // parent plus offset); positions are relative to `offset`.
