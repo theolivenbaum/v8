@@ -28,7 +28,8 @@ public static class BaselineCalls
         {
             SharedFunctionInfo shared = function.Shared;
             BaselineCode? code = shared.BaselineCode;
-            if (code is not null && function.RawFeedbackCell.Value is FeedbackVector vector)
+            // (A closure with Maglev code runs it: InterpreterCalls.Call enters through EnterFrame.)
+            if (code is not null && function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: null } vector)
             {
                 if (shared.IsClassConstructor) return RuntimeClasses.ThrowConstructorNonCallableError(isolate, function);
                 if (!receiver.IsJSReceiver && !shared.Native && shared.LanguageMode == LanguageMode.Sloppy)
@@ -52,7 +53,7 @@ public static class BaselineCalls
         int argc)
     {
         if (constructor._obj is JSFunction function && function.Shared.BaselineCode is { } code &&
-            function.RawFeedbackCell.Value is FeedbackVector vector && function.Map.IsConstructor)
+            function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: null } vector && function.Map.IsConstructor)
         {
             InterpreterCalls.CollectConstructFeedback(isolate, fv, slot, constructor, newTarget);
             JSValue implicitReceiver;
@@ -145,6 +146,7 @@ public static class BaselineCalls
         frame.Kind = InterpreterFrameKind.Interpreted;
         frame.IsConstructor = isConstruct;
         frame.IsBaseline = true;
+        frame.IsMaglev = false;
         frame.InlineCall = false;
         frame.ReturnPc = 0;
         frame.RegisterStart = 0;

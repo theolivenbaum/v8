@@ -295,6 +295,7 @@ public static class InterpreterCalls
         frame.Kind = InterpreterFrameKind.Builtin;
         frame.IsConstructor = !newTarget.IsUndefined;
         frame.IsBaseline = false;
+        frame.IsMaglev = false;
         frame.InlineCall = false;
         frame.ReturnPc = 0;
         frame.RegisterStart = 0;

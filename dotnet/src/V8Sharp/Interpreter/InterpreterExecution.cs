@@ -123,6 +123,7 @@ public static partial class InterpreterExecution
         frame.Kind = InterpreterFrameKind.Interpreted;
         frame.IsConstructor = isConstruct;
         frame.IsBaseline = false;
+        frame.IsMaglev = false;
         frame.InlineCall = false;
         frame.ReturnPc = 0;
         frame.RegisterStart = 0;
@@ -156,6 +157,8 @@ public static partial class InterpreterExecution
         };
         try
         {
+            // A function with Maglev code (on its feedback vector) runs it.
+            if (feedbackVector?.MaglevCode is { } maglevCode) return Maglev.MaglevExecution.Run(isolate, ref state, maglevCode);
             return baselineCode is null ? Run(isolate, ref state) : Baseline.BaselineExecution.Run(isolate, ref state, baselineCode);
         }
         finally
@@ -203,6 +206,17 @@ public static partial class InterpreterExecution
             try
             {
                 JSValue result = Loop<SingleScale>(isolate, ref state);
+                if (state.OsrToMaglev)
+                {
+                    // OSR to Maglev code at the loop header (state.Pc).
+                    state.OsrToMaglev = false;
+                    Maglev.MaglevCode osrCode = state.OsrCode!;
+                    state.OsrCode = null;
+                    if (state.FrameIndex == state.BaseFrameIndex) return Maglev.MaglevExecution.RunOsr(isolate, ref state, osrCode);
+                    JSValue osrValue = Maglev.MaglevExecution.RunOsr(isolate, ref state, osrCode);
+                    state.Accumulator = InterpreterInlineCalls.Return(isolate, ref state, osrValue);
+                    continue;
+                }
                 if (!state.OsrToBaseline) return result;
 
                 // InterpreterOnStackReplacement_ToBaseline: JumpLoop found baseline
