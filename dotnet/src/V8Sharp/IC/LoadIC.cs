@@ -100,6 +100,27 @@ public sealed class LoadIC : IC
                     // validity cell guards the chain; a dictionary-mode receiver
                     // could have it (LookupOnLookupStartObject).
                     if (handler.HandlerKind == LoadHandler.Kind.kNonExistent && handler.IsValid && !map.IsDictionaryMap) return default;
+                    // LoadHandler::LoadNormal: the property dictionary of the
+                    // receiver, or of the holder when the receiver is fast (a
+                    // dictionary-mode receiver could have the name itself);
+                    // CallGetterIfAccessor for an accessor pair.
+                    if (handler.HandlerKind == LoadHandler.Kind.kNormal && handler.IsValid &&
+                        (handler.Holder is null ? map.IsDictionaryMap : !map.IsDictionaryMap) &&
+                        (handler.Holder ?? r) is JSObject { HasFastProperties: false } dictionaryHolder && dictionaryHolder is not JSGlobalObject)
+                    {
+                        NameDictionary dictionary = dictionaryHolder.PropertyDictionary;
+                        InternalIndex entry = dictionary.FindEntry(name);
+                        if (entry.IsFound)
+                        {
+                            JSValue value = dictionary.ValueAt(entry);
+                            if (dictionary.DetailsAt(entry).Kind == PropertyKind.Data) return value;
+                            if (wantGetter && value._obj is AccessorPair pair && pair.Getter._obj is JSFunction dictionaryGetter)
+                            {
+                                getter = dictionaryGetter;
+                                return default;
+                            }
+                        }
+                    }
                     // A builtin getter on the prototype chain whose fast case needs
                     // no frame (typed array length: BuiltinFastPaths.TryCall0).
                     if (handler.HandlerKind == LoadHandler.Kind.kAccessorFromPrototype && handler.IsValid && !map.IsDictionaryMap)
@@ -289,8 +310,20 @@ public sealed class LoadIC : IC
                 InternalIndex entry = dictionary.FindEntry(name);
                 if (!entry.IsFound) return false;
                 PropertyDetails details = dictionary.DetailsAt(entry);
-                if (details.Kind != PropertyKind.Data) return false;
                 result = dictionary.ValueAt(entry);
+                if (details.Kind != PropertyKind.Data)
+                {
+                    // CallGetterIfAccessor: a JavaScript getter is called with the
+                    // receiver; anything else (AccessorInfo) takes the miss.
+                    if (result._obj is not AccessorPair pair) return false;
+                    JSValue pairGetter = pair.Getter;
+                    if (!pairGetter.IsJSReceiver)
+                    {
+                        result = JSValue.Undefined;
+                        return true;
+                    }
+                    result = ObjectOps.GetPropertyWithDefinedGetter(isolate, receiver, pairGetter.As<JSReceiver>());
+                }
                 return true;
             }
             case LoadHandler.Kind.kGlobal:
@@ -566,9 +599,13 @@ public sealed class LoadIC : IC
                         return LoadHandler.LoadFromPrototype(_isolate, map, holder, LoadHandler.Kind.kAccessorFromPrototype,
                             data: getter);
                     }
-                    // Dictionary-mode holders: the slow path (V8 uses LoadNormal/LoadGlobal handlers that
-                    // call the accessor through the runtime).
-                    return LoadHandler.LoadSlow(_isolate);
+                    // A dictionary-mode holder (object literals with accessors are
+                    // dictionaries): LoadHandler::LoadNormal, whose dictionary load
+                    // calls the getter (CallGetterIfAccessor). Global objects keep
+                    // the slow path (V8 uses LoadGlobal there).
+                    if (holder is JSGlobalObject) return LoadHandler.LoadSlow(_isolate);
+                    if (holderIsLookupStartObject) return LoadHandler.LoadNormal(_isolate);
+                    return LoadHandler.LoadFromPrototype(_isolate, map, holder, LoadHandler.Kind.kNormal);
                 }
 
                 if (accessors is AccessorInfo info)
