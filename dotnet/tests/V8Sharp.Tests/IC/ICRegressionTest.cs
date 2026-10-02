@@ -95,4 +95,24 @@ public class ICRegressionTest : TestWithContext
             m;
             """));
     }
+
+    [Fact]
+    public void ThirtyThirdPropertyIsNotADuplicate()
+    {
+        // Adding the 33rd property sorts the descriptors; the collision check
+        // must start at the new descriptor's own sorted key index, as V8's
+        // DescriptorArray::Append does (the Octane TypeScript compiler hit a
+        // false "duplicate descriptor" here).
+        Assert.Equal("100", RunString("""
+            var n = 0;
+            for (var k = 0; k < 100; k++) {
+              var body = '';
+              for (var j = 0; j < 32; j++) body += 'this.p' + (k % 7) + '_' + j + ' = ' + j + ';';
+              body += 'this.q' + k + ' = ' + k + ';';
+              var o = new (new Function(body))();
+              if (o['q' + k] === k) n++;
+            }
+            String(n);
+            """));
+    }
 }
