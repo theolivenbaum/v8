@@ -8,6 +8,7 @@
 //
 // V8's AllocationMementos are the JSArray.AllocationMementoSite field (see
 // deviations.md).
+using System.Runtime.CompilerServices;
 using V8Sharp.Interpreter;
 using V8Sharp.RegExp;
 
@@ -48,6 +49,29 @@ public static class RuntimeLiterals
     /// memento of an array copy, as StructureWalk gives it). Null when there is
     /// no boilerplate yet (the handler calls the runtime).
     /// </summary>
+    /// <summary>
+    /// The common case of ConstructorBuiltinsAssembler::CreateShallowObjectLiteral
+    /// (builtins-constructor-gen.cc): a boilerplate in fast mode whose
+    /// properties are all in-object and that has no elements is copied word
+    /// for word (one allocation; the copy needs no property or elements
+    /// array). Null when the site has no boilerplate yet or the boilerplate
+    /// needs <see cref="TryCreateShallowLiteral"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSObject? TryCreateShallowObjectLiteral(FeedbackVector vector, int slot)
+    {
+        if (vector.Slots[slot]._obj is not AllocationSite site) return null;
+        JSObject? boilerplate = site.Boilerplate;
+        if (boilerplate is null || boilerplate.InstanceType != InstanceType.JSObjectType ||
+            boilerplate._fields.Length != 0 || !ReferenceEquals(boilerplate.Elements, FixedArray.Empty))
+        {
+            return null;
+        }
+        Map map = boilerplate.Map;
+        if (map.IsDeprecated || map.IsDictionaryMap) return null;
+        return boilerplate.CloneShallowCore();
+    }
+
     public static JSObject? TryCreateShallowLiteral(Isolate isolate, FeedbackVector vector, int slot, int flags)
     {
         JSValue literalSite = vector.Slots[slot];
@@ -56,8 +80,9 @@ public static class RuntimeLiterals
         JSObject boilerplate = site.Boilerplate!;
         if (boilerplate.Map.IsDeprecated) return null;
         JSObject copy = isolate.Factory.CopyJSObject(boilerplate);
-        if (copy is JSArray copyArray)
+        if (copy.InstanceType == InstanceType.JSArrayType)
         {
+            var copyArray = Unsafe.As<JSArray>(copy);
             var usageContext = new AllocationSiteUsageContext(site, (flags & kDisableMementos) == 0);
             copyArray.AllocationMementoSite = usageContext.ShouldCreateMemento(boilerplate) ? site : null;
         }

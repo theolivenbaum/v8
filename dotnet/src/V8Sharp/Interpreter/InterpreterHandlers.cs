@@ -536,16 +536,21 @@ public static partial class InterpreterExecution
     static JSValue CreateObjectLiteral<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
         int S = Scale<TS>();
-        JSValue description = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1)];
         int slot = Unsigned<TS>(ref ip, 1 + S);
         int flags = Byte(ref ip, 1 + 2 * S);
-        if (st.FeedbackVector is { } fv && CreateObjectLiteralFlags.DecodeFastCloneSupported((byte)flags) &&
-            RuntimeLiterals.TryCreateShallowLiteral(isolate, fv, slot, CreateObjectLiteralFlags.DecodeFlags((byte)flags)) is { } shallow)
+        if (st.FeedbackVector is { } fv && CreateObjectLiteralFlags.DecodeFastCloneSupported((byte)flags))
         {
-            return shallow;
+            // CreateShallowObjectLiteral: an allocation, so no SavePc.
+            if (RuntimeLiterals.TryCreateShallowObjectLiteral(fv, slot) is { } fast) return fast;
+            SavePc(isolate, ref st, ref ip);
+            if (RuntimeLiterals.TryCreateShallowLiteral(isolate, fv, slot, CreateObjectLiteralFlags.DecodeFlags((byte)flags)) is { } shallow)
+            {
+                return shallow;
+            }
         }
+        SavePc(isolate, ref st, ref ip);
+        JSValue description = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1)];
         return RuntimeLiterals.CreateObjectLiteral(isolate, st.FeedbackVector, slot, description.UncheckedAs<ObjectBoilerplateDescription>(),
             CreateObjectLiteralFlags.DecodeFlags((byte)flags));
     }
