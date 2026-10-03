@@ -553,13 +553,13 @@ public sealed partial class MaglevGraphBuilder
         bool small = length <= Flags.max_maglev_inlined_bytecode_size_small;
         int depth = _unit.InliningDepth + 1;
         if (depth > Flags.max_maglev_hard_inline_depth) return "too deep";
-        if (!small && depth > Flags.max_maglev_inline_depth) return "inline depth";
+        if (!small && depth > MaxInlineDepth) return "inline depth";
         if (length > Flags.max_maglev_inlined_bytecode_size) return "too big";
         if (!small && _info.InlinedBytecodeSize + length > Flags.max_maglev_inlined_bytecode_size_cumulative) return "budget";
         if (!small)
         {
             float frequency = nexus.IsNull ? 1f : nexus.ComputeCallFrequency();
-            if (frequency < Flags.min_maglev_inlining_frequency) return "infrequent";
+            if (frequency < MinInliningFrequency) return "infrequent";
         }
         // Direct recursion is not inlined.
         for (MaglevCompilationUnit? u = _unit; u is not null; u = u.Caller)
@@ -568,6 +568,22 @@ public sealed partial class MaglevGraphBuilder
         }
         return null;
     }
+
+    // Experiment hooks (V8SHARP_MAGLEV_INLINE_DEPTH / _FREQUENCY): the
+    // flags' values unless the variables are set.
+    // (Also the runtimeconfig properties V8Sharp.MaglevInlineDepth / V8Sharp.MaglevInlineFrequency.)
+    static readonly int s_inlineDepth = int.TryParse(Setting("V8SHARP_MAGLEV_INLINE_DEPTH", "V8Sharp.MaglevInlineDepth"), out int d) ? d : -1;
+    static readonly double s_inlineFrequency = double.TryParse(Setting("V8SHARP_MAGLEV_INLINE_FREQUENCY", "V8Sharp.MaglevInlineFrequency"),
+        System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double f) ? f : -1;
+
+    static string? Setting(string variable, string property) =>
+        Environment.GetEnvironmentVariable(variable) ?? AppContext.GetData(property)?.ToString();
+
+    int MaxInlineDepth => s_inlineDepth >= 0 && !Flags.IsExplicitlySet("max_maglev_inline_depth") ? s_inlineDepth : Flags.max_maglev_inline_depth;
+
+    double MinInliningFrequency => s_inlineFrequency >= 0 && !Flags.IsExplicitlySet("min_maglev_inlining_frequency")
+        ? s_inlineFrequency
+        : Flags.min_maglev_inlining_frequency;
 
     /// <summary>Bytecodes that read the frame through the interpreter state cannot run in an inlined frame.</summary>
     static bool InlineableBytecodes(BytecodeArray bytecode)
