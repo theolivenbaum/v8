@@ -583,6 +583,11 @@ public static partial class InterpreterExecution
                     ip = ref Unsafe.Add(ref ip, ReferenceEquals(acc._obj, (Bytecode)ip == Bytecode.JumpIfTrueConstant ? Oddball.True : Oddball.False)
                         ? (int)InterpreterRuntime.FrameBytecode(ref fpSlot).ConstantPoolValues![Unsigned<TS>(ref ip, 1)]._num : 1 + S);
                     continue;
+                case Bytecode.JumpIfToBooleanTrueConstant:
+                case Bytecode.JumpIfToBooleanFalseConstant:
+                    ip = ref Unsafe.Add(ref ip, ToBoolean(acc) == ((Bytecode)ip == Bytecode.JumpIfToBooleanTrueConstant)
+                        ? (int)InterpreterRuntime.FrameBytecode(ref fpSlot).ConstantPoolValues![Unsigned<TS>(ref ip, 1)]._num : 1 + S);
+                    continue;
                 case Bytecode.JumpIfToBooleanTrue:
                     ip = ref Unsafe.Add(ref ip, ToBoolean(acc) ? Unsigned<TS>(ref ip, 1) : 1 + S);
                     continue;
@@ -1100,6 +1105,12 @@ public static partial class InterpreterExecution
                             case Bytecode.ModSmi when isWide:
                                 acc = BinarySmiOp<DoubleScale>(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1), acc);
                                 ip = ref Unsafe.Add(ref ip, 2 + 2 + 1);
+                                continue;
+                            case Bytecode.SetNamedProperty when isWide:
+                                if (RegAt(ref fpSlot, Signed<DoubleScale>(ref ip, 2))._obj is { } receiver && InstanceTypeChecks.IsJSObject(receiver.InstanceType)
+                                    ? SetNamedProperty<DoubleScale>(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1), acc)
+                                    : SetNamedPropertySlow<DoubleScale>(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1), acc)) goto entered;
+                                ip = ref Unsafe.Add(ref ip, 2 + 3 * 2);
                                 continue;
                             case Bytecode.JumpLoop when isWide:
                             {
