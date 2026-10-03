@@ -91,9 +91,70 @@ public static partial class BaselineBuiltins
     [MethodImpl(Outline)]
     public static bool TryStoreOwnField(JSObject obj, StoreHandler handler, JSValue value) => StoreIC.TryStoreOwnField(obj, handler, value);
 
+    /// <summary>
+    /// GetKeyedProperty when the inline monomorphic hit missed: KeyedLoadIC_Baseline.
+    /// Its polymorphic element case comes first (AccessorAssembler::HandlePolymorphicCase
+    /// followed by the element handler's in-bounds load, EmitFastElementsLoad):
+    /// an indexed load from objects of a few maps (crypto's BigInteger digit
+    /// arrays) finds its handler and reads the element without entering the
+    /// IC's general path.
+    /// </summary>
     [MethodImpl(Outline)]
-    public static JSValue GetKeyedPropertySlow(Isolate isolate, FeedbackVector fv, int slot, JSValue obj, JSValue key) =>
-        KeyedLoadIC.Load(isolate, fv, slot, obj, key);
+    public static JSValue GetKeyedPropertySlow(Isolate isolate, FeedbackVector fv, int slot, JSValue obj, JSValue key)
+    {
+        if (ReferenceEquals(key._obj, NumberTag.Instance) && ICMaps.AsJSObject(obj._obj) is { } jsObject &&
+            fv.Slots[slot]._obj is FixedArray polymorphic)
+        {
+            Map map = jsObject.Map;
+            JSValue[] data = polymorphic.Data;
+            for (int i = 0; i + 1 < data.Length; i += 2)
+            {
+                if (!ReferenceEquals(data[i]._obj, map)) continue;
+                if (data[i + 1]._obj is LoadHandler { HandlerKind: LoadHandler.Kind.kElement } handler &&
+                    TryLoadFastElementInBounds(jsObject, key._num, handler, out JSValue value))
+                {
+                    return value;
+                }
+                break;
+            }
+        }
+        return KeyedLoadIC.Load(isolate, fv, slot, obj, key);
+    }
+
+    /// <summary>
+    /// An in-bounds, non-hole element of a fast (Smi, object or double) elements
+    /// kind under an element handler: the loads ElementAccess.TryLoadFastElement
+    /// does without a transition, hole or out-of-bounds case (those take the IC).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool TryLoadFastElementInBounds(JSObject obj, double key, LoadHandler handler, out JSValue result)
+    {
+        int index = BaselineBuiltins.TruncateToInt32(key);
+        FixedArrayBase elements = obj.Elements;
+        if (index == key && index >= 0 && (!handler.IsJSArray || index < Unsafe.As<JSArray>(obj)._length))
+        {
+            if (handler.FastElementsMode == 1 && elements is FixedArray fixedArray)
+            {
+                JSValue[] values = fixedArray._data;
+                if ((uint)index < (uint)values.Length)
+                {
+                    result = values[index];
+                    if (!ReferenceEquals(result._obj, Oddball.TheHole)) return true;
+                }
+            }
+            else if (handler.FastElementsMode == 2 && elements is FixedDoubleArray doubleArray)
+            {
+                double[] values = doubleArray._data;
+                if ((uint)index < (uint)values.Length && !FixedDoubleArray.IsHoleBits(values[index]))
+                {
+                    result = JSValue.FromNumber(values[index]);
+                    return true;
+                }
+            }
+        }
+        result = default;
+        return false;
+    }
 
     [MethodImpl(Outline)]
     public static void SetKeyedPropertySlow(Isolate isolate, FeedbackVector fv, int slot, JSValue obj, JSValue key, JSValue value) =>
