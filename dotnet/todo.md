@@ -1106,6 +1106,64 @@ progress, off by default.
     (V8Sharp's interpreter is 42% of V8's on this run).
   - The tier stays off by default until it is conformance-clean under
     forced optimization and a net win on Octane.
+- Phase 2 measurements (2026-10-03; V8Sharp.Bench `compare`, octane-steady
+  (thread CPU after a warm pass), 3 interleaved runs, parity publishes,
+  bench-session.sh under the lock; host load 1.1-1.8, steal 0%, cpu-cal
+  1855/1710 ms, mem-bw 30.8/31.1 GB/s before/after). "base" is 3f13618b
+  (with the Bench scoring fix), "final" this branch (5c8f2e12 + the
+  tier-up delay); sparkplug = `--sparkplug --no-maglev`, maglev =
+  `--sparkplug --maglev`:
+
+  | benchmark | base jitless | base sparkplug | base maglev | final jitless | final sparkplug | final maglev | v8:sparkplug | v8:maglev |
+  |---|---|---|---|---|---|---|---|---|
+  | Richards | 376 | 455 | 1083 | 388 | 468 | 942 | 860 | 10129 |
+  | DeltaBlue | 326 | 396 | 1105 | 330 | 396 | 1096 | 943 | 10104 |
+  | Crypto | 53.6 | 53.8 | 114 | 51.9 | 56.3 | 111 | 130 | 1719 |
+  | RayTrace | 188 | 234 | 183 | 188 | 236 | 270 | 545 | 4749 |
+  | EarleyBoyer | 76.1 | 90.0 | 114 | 75.9 | 88.5 | 135 | 246 | 1200 |
+  | RegExp | 199 | 264 | 272 | 206 | 273 | 284 | 868 | 1422 |
+  | Splay | 3073 | 3606 | 3737 | 3066 | 3461 | 4473 | 4733 | 16413 |
+  | NavierStokes | 251 | 323 | 1086 | 242 | 335 | 1056 | 257 | 2763 |
+  | PdfJS | 688 | 812 | 908 | 695 | 846 | 979 | 2471 | 7983 |
+  | Mandreel | 65.6 | 57.2 | 266 | 66.4 | 69.5 | 438 | 199 | 4379 |
+  | Gameboy | 312 | 372 | 838 | 315 | 372 | 1012 | 988 | 7530 |
+  | CodeLoad | 3081 | 2710 | 2689 | 3300 | 3034 | 2699 | 4173 | 3676 |
+  | Box2D | 534 | 544 | 573 | 537 | 550 | 1254 | 1076 | 15901 |
+  | zlib | 15.3 | 15.5 | 16.0 | 15.2 | 16.3 | 25.3 | 1817 | 1826 |
+  | Typescript | 238 | 261 | 229 | 248 | 249 | 249 | 901 | 2519 |
+  | geomean (with latencies) | 573 | 650 | 1011 | 590 | 650 | 1153 | 1428 | 6238 |
+
+  Final: the baseline tier beats the interpreter on every benchmark but
+  CodeLoad (-8%) and Typescript (equal); Maglev beats the baseline tier on
+  every benchmark but CodeLoad (-11%) and Typescript (equal). CodeLoad
+  compiles fresh code all the time: the compile threads' work slows the
+  main thread (thread CPU, R2R build; under full JIT, where the runtime's
+  own tiering thread is busy too, the tiers are even). Cold (octane, wall-clock
+  scores, same builds, 3 runs, 13:37-15:07Z, load 1.7-3.0, steal 0%):
+
+  | benchmark | base jitless | base sparkplug | base maglev | final jitless | final sparkplug | final maglev | v8:sparkplug | v8:maglev |
+  |---|---|---|---|---|---|---|---|---|
+  | Richards | 676 | 808 | 2076 | 677 | 863 | 1578 | 1775 | 23870 |
+  | DeltaBlue | 558 | 708 | 2217 | 582 | 675 | 2462 | 1783 | 34159 |
+  | Crypto | 605 | 658 | 1338 | 625 | 691 | 1380 | 1648 | 21397 |
+  | RayTrace | 1267 | 1682 | 1210 | 1305 | 1587 | 1821 | 4087 | 39552 |
+  | EarleyBoyer | 2150 | 2450 | 2910 | 2081 | 2481 | 3282 | 7468 | 30863 |
+  | RegExp | 891 | 1179 | 1144 | 905 | 1150 | 1232 | 4023 | 6007 |
+  | Splay | 2120 | 2342 | 2508 | 2121 | 2626 | 3414 | 3820 | 7414 |
+  | NavierStokes | 1676 | 2340 | 7452 | 1738 | 2475 | 7400 | 1771 | 20954 |
+  | PdfJS | 2290 | 2480 | 2382 | 2304 | 2461 | 2966 | 8981 | 31029 |
+  | Mandreel | 428 | 365 | 1307 | 429 | 453 | 2348 | 1251 | 25813 |
+  | Gameboy | 3054 | 3298 | 3546 | 2872 | 3461 | 5233 | 8667 | 67388 |
+  | CodeLoad | 9642 | 8627 | 9043 | 9679 | 8902 | 8958 | 17603 | 17357 |
+  | Box2D | 2063 | 2031 | 1950 | 2032 | 2058 | 2207 | 4636 | 71094 |
+  | zlib | 689 | 698 | 702 | 679 | 732 | 1127 | 72865 | 73992 |
+  | Typescript | 5782 | 5930 | 5494 | 5641 | 5571 | 5937 | 20941 | 54448 |
+  | geomean (with latencies) | 1608 | 1772 | 2458 | 1614 | 1832 | 2896 | 5211 | 25983 |
+
+  Cold, the final baseline tier is ahead of the interpreter on every
+  benchmark but CodeLoad (-8%) and Typescript (-1%), and Maglev is
+  ahead of the baseline tier everywhere but CodeLoad (+1%, equal).
+
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays
 - [ ] Benchmarks: test/js-perf-test, JetStream-like, against the oracle
 
