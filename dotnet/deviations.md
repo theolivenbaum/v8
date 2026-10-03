@@ -533,7 +533,16 @@ for now, to be revisited when the reason goes away.
   (function data, builtin id, baseline code, MayHaveMaglevCode, kind,
   language mode, native); V8 decides by the JSFunction's code field, which
   the tiers update. The call handlers push the callee's frame straight-line
-  per argument form (`EnterInline`, with BaselineCalls' `ICallArguments`).
+  per argument form (`EnterInline`, with BaselineCalls' `ICallArguments`),
+  first through `InterpreterInlineCalls.TryEnterFast`, which covers the
+  common case without calling out (V8's trampoline also has one such path
+  with the rest in runtime calls) and stores every scalar before any
+  reference, so RyuJIT keeps its values in registers across the write
+  barrier helpers; anything else (an interrupt pending, no feedback vector
+  yet, feedback to update, a primitive receiver to convert) takes the
+  general entry. After a call or a return the loop continues from refs the
+  entry leaves in `InterpreterState` (`ResumeFp`/`ResumeIp`) rather than
+  recomputing the frame and bytecode from indices.
 - The number fast paths of the loop (Add, Sub, Mul, Inc, Dec, AddSmi,
   SubSmi, the comparisons) run inline only when the embedded feedback
   already covers the operation (number-saturated, or Smi feedback with Smi
@@ -586,7 +595,19 @@ for now, to be revisited when the reason goes away.
   the same load/store; --jitless V8 does not use them either).
 - ICs: handlers are C# objects (`LoadHandler`/`StoreHandler`) instead of Smi
   handlers and code; the megamorphic stub cache holds them. `LoadSuperIC` is
-  the generic path. No allocation-site pretenuring feedback.
+  the generic path. No allocation-site pretenuring feedback. A field handler
+  stored in a feedback slot or polymorphic array beside its map carries its
+  field index (and, for a store, the field's representation) in the payload
+  of the JSValue that holds it (`FeedbackNexus.EncodeHandler`,
+  `StoreIC.EncodeFieldStore`): V8's field handlers are Smis read from the
+  slot, and the interpreter's field loads and stores read the payload the
+  same way instead of loading the handler object. A handler stored by any
+  other path has a zero payload and is read through the object. The stub
+  cache hashes a map by a precomputed `Map.StubCacheHash` and the secondary
+  table a name by its hash field, where V8 hashes their addresses (a managed
+  object has no stable address; its identity hash is a runtime call). The
+  interpreter's GetNamedProperty/SetNamedProperty handlers probe it for
+  megamorphic feedback themselves, as V8's LoadIC_Megamorphic does.
 - CloneObjectIC: FastCloneJSObject copies the source's field array and
   elements into an object of the cached result map (V8 copies the in-object
   words and the PropertyArray; V8Sharp has one field array). null and

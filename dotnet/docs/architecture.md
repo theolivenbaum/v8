@@ -273,17 +273,35 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   `SharedFunctionInfo.InterpreterCallMode` (or `InterpreterConstructMode`
   for `new`; cached, reset by the setters of the fields they depend on)
   says whether it runs in the loop; a sloppy callee gets the global proxy
-  for an undefined receiver inline; `EnterInline` (the entry other call
-  sites such as accessor ICs can use) reserves parameters, fixed slots and register file at
-  the stack top, clears the register file below `RegisterStackDirtyEnd`,
-  copies the receiver and arguments from the caller's registers into the
-  parameter slots (the only copy; V8's InterpreterPushArgsThenCall pushes
-  them too), writes the six fixed slots, pushes the record (four fields)
-  at `InterpreterFrameDepth` (the caller's record is the one below it,
-  which gets `ReturnPc`) and sets `InterpreterState`'s `Fp`, `FrameIndex`,
-  `Pc` and accumulator. A return restores those four from the caller's
-  record (the context comes from the caller's slot) and leaves the
-  callee's slots and record as they are. Calls from builtins and runtime
+  for an undefined receiver inline; the entry reserves parameters, fixed
+  slots and register file at the stack top, clears the register file below
+  `RegisterStackDirtyEnd`, copies the receiver and arguments from the
+  caller's registers into the parameter slots (the only copy; V8's
+  InterpreterPushArgsThenCall pushes them too), writes the six fixed slots,
+  pushes the record (four fields) at `InterpreterFrameDepth` (the caller's
+  record is the one below it, which gets `ReturnPc`) and sets
+  `InterpreterState`'s `Fp`, `FrameIndex`, `Pc`, accumulator and
+  `ResumeFp`/`ResumeIp` (ref fields: the callee's slot at fp and its first
+  bytecode, which the loop continues from without recomputing them). There
+  are two entries with this effect. `TryEnterFast` is the common case and
+  calls nothing (the call handlers, getters and setters use it): the callee's
+  call mode is inline, it has a feedback vector and materialized constants,
+  the call feedback needs only its count bumped, and the frame fits under
+  `Isolate.RegisterStackInterruptLimit`, V8's interrupt stack limit (the
+  register stack limit, or 0 while `StackGuard` has an interrupt pending), so
+  one compare covers overflow and interrupts as in V8's
+  InterpreterEntryTrampoline; it does every scalar store before the
+  reference stores. Otherwise it changes nothing and the handler takes
+  `EnterInline` (the general entry, which other call sites such as
+  `f.call`/`f.apply`/`new` use), which handles interrupts, overflow, feedback
+  allocation and receiver conversion. A return (`ReturnInline`) restores
+  `Fp`, `FrameIndex`, `Pc` and the resume refs from the caller's record (the
+  context comes from the caller's slot), keeps the loop's accumulator as the
+  result (a construct frame's receiver replaces it), and leaves the callee's
+  slots and record as they are. A handler that returns a value to the loop
+  (GetNamedProperty, the call handlers) returns
+  `InterpreterInlineCalls.FrameEntered`, a marker no JavaScript value can be,
+  when it entered a frame instead. Calls from builtins and runtime
   code enter a new loop through `InterpreterExecution.EnterFrame` / `Run`,
   which is also where the baseline tier enters (OSR from `JumpLoop` sets
   `InterpreterState.OsrToBaseline`, and `Run` continues the frame in
@@ -323,7 +341,13 @@ V8 exactly:
   (this revision's V8) and against the oracle's `--print-bytecode` output.
 - `FeedbackVector` / `FeedbackMetadata` with V8's slot kinds; ICs
   (`src/ic`) record monomorphic/polymorphic/megamorphic state per slot with
-  V8's transitions, because the optimizing tier reads them.
+  V8's transitions, because the optimizing tier reads them. Handlers are
+  objects (`LoadHandler`/`StoreHandler`); a field handler stored beside its
+  map (`FeedbackNexus.EncodeHandler`) also carries its field index (and a
+  store's representation) in the payload of the JSValue that holds it,
+  which is otherwise unused for an object and not part of its identity, so
+  the interpreter's field loads and stores read it as V8 reads a Smi
+  handler. Readers of the slots that test the handler object are unaffected.
 - `Interpreter` is a `switch` dispatch loop over the bytecode array, with the
   accumulator and the register window as locals.
 
