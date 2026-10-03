@@ -88,7 +88,7 @@ public static partial class InterpreterExecution
             // The offset is not stored in the frame record here: the handlers
             // that call out store it (SavePc), as V8's SaveBytecodeOffset.
 #if BYTECODE_STATS
-            BytecodeStats.Count(ip);
+            BytecodeStats.Count(ip, Unsafe.Add(ref ip, 1));
 #endif
             switch ((Bytecode)ip)
             {
@@ -1111,6 +1111,30 @@ public static partial class InterpreterExecution
                                 acc = BinarySmiOp<DoubleScale>(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1), acc);
                                 ip = ref Unsafe.Add(ref ip, 2 + 2 + 1);
                                 continue;
+                            // Calls of huge functions (TypeScript): the general
+                            // handlers, which enter a callee in this loop.
+                            case Bytecode.CallProperty when isWide:
+                            case Bytecode.CallAnyReceiver when isWide:
+                            case Bytecode.CallProperty0 when isWide:
+                            case Bytecode.CallProperty1 when isWide:
+                            case Bytecode.CallProperty2 when isWide:
+                            case Bytecode.CallUndefinedReceiver when isWide:
+                            case Bytecode.CallUndefinedReceiver0 when isWide:
+                            case Bytecode.CallUndefinedReceiver1 when isWide:
+                            case Bytecode.CallUndefinedReceiver2 when isWide:
+                            case Bytecode.Construct when isWide:
+                            {
+                                var inner = (Bytecode)Unsafe.Add(ref ip, 1);
+                                JSValue called = WideCall(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1), acc);
+                                if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                                acc = called;
+                                // Prefix and bytecode, then 2, 3, 4 or 5 two-byte operands.
+                                int operands = inner == Bytecode.CallUndefinedReceiver0 ? 2
+                                    : inner is Bytecode.CallProperty0 or Bytecode.CallUndefinedReceiver1 ? 3
+                                    : inner == Bytecode.CallProperty2 ? 5 : 4;
+                                ip = ref Unsafe.Add(ref ip, 2 + 2 * operands);
+                                goto starLookahead;
+                            }
                             case Bytecode.SetNamedProperty when isWide:
                                 if (RegAt(ref fpSlot, Signed<DoubleScale>(ref ip, 2))._obj is { } receiver && InstanceTypeChecks.IsJSObject(receiver.InstanceType)
                                     ? SetNamedProperty<DoubleScale>(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1), acc)
@@ -1154,9 +1178,8 @@ public static partial class InterpreterExecution
                     st.Pc = PcOf(ref fpSlot, ref ip) + 1;
                     st.Accumulator = acc;
                     if (RunPrefixed(st.Isolate, ref st)) return st.Accumulator;
-                    ip = ref IpAt(st.Bytecode, st.Pc);
-                    acc = st.Accumulator;
-                    continue;
+                    // A call handler may have entered a frame (st describes it).
+                    goto reload;
                 }
 
                 default:

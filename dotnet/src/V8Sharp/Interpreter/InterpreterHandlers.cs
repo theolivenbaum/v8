@@ -1063,6 +1063,28 @@ public static partial class InterpreterExecution
     // ---- Calls --------------------------------------------------------------------
 
     /// <summary>
+    /// The call and construct bytecodes with the Wide prefix (functions with
+    /// more than 256 feedback slots or 128 registers: TypeScript's), run from
+    /// the single-scale loop (<paramref name="ip"/> is the bytecode after the
+    /// prefix) by the handlers of the single-scale calls, which enter a callee
+    /// that runs in the loop. Returns the result or FrameEntered.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue WideCall(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc) =>
+        (Bytecode)ip switch
+        {
+            Bytecode.CallProperty or Bytecode.CallAnyReceiver => CallProperty<DoubleScale>(isolate, ref st, ref fp, ref ip),
+            Bytecode.CallProperty0 => CallProperty0<DoubleScale>(isolate, ref st, ref fp, ref ip),
+            Bytecode.CallProperty1 => CallProperty1<DoubleScale>(isolate, ref st, ref fp, ref ip),
+            Bytecode.CallProperty2 => CallProperty2<DoubleScale>(isolate, ref st, ref fp, ref ip),
+            Bytecode.CallUndefinedReceiver => CallUndefinedReceiver<DoubleScale>(isolate, ref st, ref fp, ref ip),
+            Bytecode.CallUndefinedReceiver0 => CallUndefinedReceiver0<DoubleScale>(isolate, ref st, ref fp, ref ip),
+            Bytecode.CallUndefinedReceiver1 => CallUndefinedReceiver1<DoubleScale>(isolate, ref st, ref fp, ref ip),
+            Bytecode.CallUndefinedReceiver2 => CallUndefinedReceiver2<DoubleScale>(isolate, ref st, ref fp, ref ip),
+            _ => Construct<DoubleScale>(isolate, ref st, ref fp, ref ip, acc),
+        };
+
+    /// <summary>
     /// CallProperty: a call to a function that runs in this loop, with feedback
     /// that needs only its call count bumped, through
     /// InterpreterInlineCalls.TryEnterFast; everything else is CallPropertySlow.
@@ -1071,10 +1093,10 @@ public static partial class InterpreterExecution
     static JSValue CallProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        if (typeof(TS) == typeof(SingleScale) &&
+        if (typeof(TS) != typeof(QuadrupleScale) &&
             Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
         {
-            const int S = 1;
+            int S = Scale<TS>();
             JSValue[] slots = fv.Slots;
             int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
             if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
@@ -1103,7 +1125,7 @@ public static partial class InterpreterExecution
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
         JSValue receiver = Unsafe.Add(ref fp, first);
         InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee, receiver);
-        if (typeof(TS) == typeof(SingleScale))
+        if (typeof(TS) != typeof(QuadrupleScale))
         {
             if (InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
             {
@@ -1134,10 +1156,10 @@ public static partial class InterpreterExecution
     static JSValue CallProperty0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        if (typeof(TS) == typeof(SingleScale) &&
+        if (typeof(TS) != typeof(QuadrupleScale) &&
             Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
         {
-            const int S = 1;
+            int S = Scale<TS>();
             JSValue[] slots = fv.Slots;
             int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
             if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
@@ -1163,7 +1185,7 @@ public static partial class InterpreterExecution
         JSValue receiver = Reg<TS>(ref fp, ref ip, 1 + S);
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
         InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee, receiver);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
+        if (typeof(TS) != typeof(QuadrupleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver, new Baseline.BaselineCalls.NoArguments(),
                 PcOf(ref fp, ref ip) + 1 + 3 * S);
@@ -1186,10 +1208,10 @@ public static partial class InterpreterExecution
     static JSValue CallProperty1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        if (typeof(TS) == typeof(SingleScale) &&
+        if (typeof(TS) != typeof(QuadrupleScale) &&
             Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
         {
-            const int S = 1;
+            int S = Scale<TS>();
             JSValue[] slots = fv.Slots;
             int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
             if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
@@ -1216,7 +1238,7 @@ public static partial class InterpreterExecution
         int argOperand = Signed<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
         InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee, receiver);
-        if (typeof(TS) == typeof(SingleScale))
+        if (typeof(TS) != typeof(QuadrupleScale))
         {
             if (InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
             {
@@ -1250,10 +1272,10 @@ public static partial class InterpreterExecution
     static JSValue CallProperty2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        if (typeof(TS) == typeof(SingleScale) &&
+        if (typeof(TS) != typeof(QuadrupleScale) &&
             Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
         {
-            const int S = 1;
+            int S = Scale<TS>();
             JSValue[] slots = fv.Slots;
             int slot = Unsigned<TS>(ref ip, 1 + 4 * S);
             if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
@@ -1266,7 +1288,7 @@ public static partial class InterpreterExecution
                 }
             }
             // target.apply(thisArg, arguments) (Class.create-style constructors).
-            if ((uint)(slot + 1) < (uint)slots.Length &&
+            if (typeof(TS) == typeof(SingleScale) && (uint)(slot + 1) < (uint)slots.Length &&
                 ReferenceEquals(function, InterpreterRuntime.FrameContext(ref fp).NativeContext.FunctionPrototypeApply) &&
                 InterpreterInlineCalls.TryApplyFast(isolate, ref st, ref fp, ref ip, function, slots, slot))
             {
@@ -1288,7 +1310,7 @@ public static partial class InterpreterExecution
         int arg1 = Signed<TS>(ref ip, 1 + 3 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 4 * S);
         InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee, receiver);
-        if (typeof(TS) == typeof(SingleScale))
+        if (typeof(TS) != typeof(QuadrupleScale))
         {
             if (InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
             {
@@ -1332,10 +1354,10 @@ public static partial class InterpreterExecution
     static JSValue CallUndefinedReceiver<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        if (typeof(TS) == typeof(SingleScale) &&
+        if (typeof(TS) != typeof(QuadrupleScale) &&
             Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
         {
-            const int S = 1;
+            int S = Scale<TS>();
             JSValue[] slots = fv.Slots;
             int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
             if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
@@ -1363,7 +1385,7 @@ public static partial class InterpreterExecution
         int count = Unsigned<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
         InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
+        if (typeof(TS) != typeof(QuadrupleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
                 new Baseline.BaselineCalls.RegisterArguments(st.Fp + first, count), PcOf(ref fp, ref ip) + 1 + 4 * S);
@@ -1381,10 +1403,10 @@ public static partial class InterpreterExecution
     static JSValue CallUndefinedReceiver0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        if (typeof(TS) == typeof(SingleScale) &&
+        if (typeof(TS) != typeof(QuadrupleScale) &&
             Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
         {
-            const int S = 1;
+            int S = Scale<TS>();
             JSValue[] slots = fv.Slots;
             int slot = Unsigned<TS>(ref ip, 1 + 1 * S);
             if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
@@ -1409,7 +1431,7 @@ public static partial class InterpreterExecution
         JSValue callee = Reg<TS>(ref fp, ref ip, 1);
         int slot = Unsigned<TS>(ref ip, 1 + S);
         InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
+        if (typeof(TS) != typeof(QuadrupleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue), new Baseline.BaselineCalls.NoArguments(),
                 PcOf(ref fp, ref ip) + 1 + 2 * S);
@@ -1427,10 +1449,10 @@ public static partial class InterpreterExecution
     static JSValue CallUndefinedReceiver1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        if (typeof(TS) == typeof(SingleScale) &&
+        if (typeof(TS) != typeof(QuadrupleScale) &&
             Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
         {
-            const int S = 1;
+            int S = Scale<TS>();
             JSValue[] slots = fv.Slots;
             int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
             if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
@@ -1456,7 +1478,7 @@ public static partial class InterpreterExecution
         int argOperand = Signed<TS>(ref ip, 1 + S);
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
         InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
+        if (typeof(TS) != typeof(QuadrupleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
                 new Baseline.BaselineCalls.OneArgument(Unsafe.Subtract(ref fp, kRegBase + argOperand)), PcOf(ref fp, ref ip) + 1 + 3 * S);
@@ -1479,10 +1501,10 @@ public static partial class InterpreterExecution
     static JSValue CallUndefinedReceiver2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        if (typeof(TS) == typeof(SingleScale) &&
+        if (typeof(TS) != typeof(QuadrupleScale) &&
             Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
         {
-            const int S = 1;
+            int S = Scale<TS>();
             JSValue[] slots = fv.Slots;
             int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
             if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
@@ -1509,7 +1531,7 @@ public static partial class InterpreterExecution
         int arg1 = Signed<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
         InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee);
-        if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
+        if (typeof(TS) != typeof(QuadrupleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
                 new Baseline.BaselineCalls.TwoArguments(Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1)),
@@ -1559,10 +1581,10 @@ public static partial class InterpreterExecution
     static JSValue Construct<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        if (typeof(TS) == typeof(SingleScale) && Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function &&
+        if (typeof(TS) != typeof(QuadrupleScale) && Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function &&
             ReferenceEquals(acc._obj, function) && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
         {
-            const int S = 1;
+            int S = Scale<TS>();
             int pc = PcOf(ref fp, ref ip);
             if (InterpreterInlineCalls.TryConstructFast(isolate, ref st, ref fp, pc, pc + 1 + 4 * S, fv.Slots, Unsigned<TS>(ref ip, 1 + 3 * S),
                     function, st.Fp + InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref ip, 1 + S), Unsigned<TS>(ref ip, 1 + 2 * S)))
@@ -1583,7 +1605,7 @@ public static partial class InterpreterExecution
         int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref ip, 1 + S);
         int count = Unsigned<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
-        if (typeof(TS) == typeof(SingleScale) &&
+        if (typeof(TS) != typeof(QuadrupleScale) &&
             InterpreterInlineCalls.TryPushConstructFrame(isolate, ref st, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, constructor, acc, st.Fp + first, count, PcOf(ref fp, ref ip) + 1 + 4 * S))
         {
             return InterpreterInlineCalls.FrameEntered;
