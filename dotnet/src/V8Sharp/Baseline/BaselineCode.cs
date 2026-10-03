@@ -146,9 +146,18 @@ public sealed class BaselineCode
             feedback: vector);
         compiler.GenerateCode();
         string? fullStatistics = null;
+        if (compiler.ExceedsOptimizationLimits && BaselineCompiler.s_forceCompact is null)
+        {
+            // Over RyuJIT's limits: first the form with the number checks out
+            // of line (BaselineCompiler._outOfLineChecks), which keeps the fast paths.
+            fullStatistics = compiler.Statistics;
+            compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, methodName: methodName, optimizeFully: optimizeFully,
+                feedback: vector, outOfLineChecks: true);
+            compiler.GenerateCode();
+        }
         if (compiler.ExceedsOptimizationLimits || BaselineCompiler.s_forceCompact is not null)
         {
-            fullStatistics = compiler.Statistics;
+            fullStatistics ??= compiler.Statistics;
             // RyuJIT would not optimize the method (BaselineILEmitter): emit the
             // compact form, whose bytecodes call out of line.
             compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, compact: true, methodName: methodName,

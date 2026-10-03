@@ -92,6 +92,11 @@ public sealed partial class BaselineCompiler
     static readonly MethodInfo s_hasPendingInterrupts =
         typeof(StackGuard).GetProperty(nameof(StackGuard.HasPendingInterrupts))!.GetMethod!;
     static readonly MethodInfo s_truncate = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.TruncateToInt32))!;
+    static readonly MethodInfo s_binaryFeedbackUnchanged = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.BinaryFeedbackUnchanged))!;
+    static readonly MethodInfo s_binaryFeedbackUnchangedSmiRhs =
+        typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.BinaryFeedbackUnchangedSmiRhs))!;
+    static readonly MethodInfo s_compareFeedbackUnchanged = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.CompareFeedbackUnchanged))!;
+    static readonly MethodInfo s_isSmiNumber = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.IsSmiNumber))!;
     static readonly MethodInfo s_doubleToBits = typeof(BitConverter).GetMethod(nameof(BitConverter.DoubleToInt64Bits))!;
     static readonly MethodInfo s_fromNumber = typeof(JSValue).GetMethod(nameof(JSValue.FromNumber))!;
 
@@ -382,10 +387,22 @@ public sealed partial class BaselineCompiler
         // (Feedback that was saturated at compile time still is.)
         if (BinaryOpSite(1) != NumberSite.Saturated)
         {
-            BranchOnBinaryFeedback(feedbackOffset, unchanged, slow);
-            BranchIfNotSmi(lhs, TInt, slow);
-            if (!smiForm) BranchIfNotSmi(rhs, TInt, slow);
-            BranchIfNotSmi(() => Emit(OpCodes.Ldloc, TDouble), TInt, slow);
+            if (_outOfLineChecks)
+            {
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                lhs();
+                if (!smiForm) rhs();
+                Emit(OpCodes.Ldloc, TDouble);
+                Emit(OpCodes.Call, smiForm ? s_binaryFeedbackUnchangedSmiRhs : s_binaryFeedbackUnchanged);
+                Emit(OpCodes.Brfalse, slow);
+            }
+            else
+            {
+                BranchOnBinaryFeedback(feedbackOffset, unchanged, slow);
+                BranchIfNotSmi(lhs, TInt, slow);
+                if (!smiForm) BranchIfNotSmi(rhs, TInt, slow);
+                BranchIfNotSmi(() => Emit(OpCodes.Ldloc, TDouble), TInt, slow);
+            }
         }
 
         _il.MarkLabel(unchanged);
@@ -430,11 +447,23 @@ public sealed partial class BaselineCompiler
         // SignedSmall stays when the input is a Smi and the result is one.
         if (BinaryOpSite(0) != NumberSite.Saturated)
         {
-            BranchOnBinaryFeedback(feedbackOffset, unchanged, slow);
-            BranchIfNotSmi(AccNum, TInt, slow);
-            Emit(OpCodes.Ldloc, TInt);
-            Emit(OpCodes.Ldc_I4, increment ? JSValue.SmiMaxValue : JSValue.SmiMinValue);
-            Emit(OpCodes.Beq, slow);
+            // SignedSmall stays when the input and the result are Smis.
+            if (_outOfLineChecks)
+            {
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                AccNum();
+                Emit(OpCodes.Ldloc, TDouble);
+                Emit(OpCodes.Call, s_binaryFeedbackUnchangedSmiRhs);
+                Emit(OpCodes.Brfalse, slow);
+            }
+            else
+            {
+                BranchOnBinaryFeedback(feedbackOffset, unchanged, slow);
+                BranchIfNotSmi(AccNum, TInt, slow);
+                Emit(OpCodes.Ldloc, TInt);
+                Emit(OpCodes.Ldc_I4, increment ? JSValue.SmiMaxValue : JSValue.SmiMinValue);
+                Emit(OpCodes.Beq, slow);
+            }
         }
         _il.MarkLabel(unchanged);
         SetAccNumber(TDouble);
@@ -514,34 +543,46 @@ public sealed partial class BaselineCompiler
         // (-0 is not), as InterpreterBitwise computes it.
         if (BinaryOpSite(1) != NumberSite.Saturated)
         {
-            Label checkOperands = _il.DefineLabel();
-            _masm.LoadEmbeddedFeedback(feedbackOffset);
-            Emit(OpCodes.Dup);
-            Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.SignedSmall);
-            Emit(OpCodes.Beq, checkOperands);
-            Emit(OpCodes.Dup);
-            Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.Any);
-            Label popUnchanged = _il.DefineLabel();
-            Emit(OpCodes.Beq, popUnchanged);
-            Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.Number);
-            Emit(OpCodes.Sub);
-            Emit(OpCodes.Ldc_I4_1);
-            Emit(OpCodes.Ble_Un, unchanged);
-            Emit(OpCodes.Br, slow);
-            _il.MarkLabel(popUnchanged);
-            Emit(OpCodes.Pop);
-            Emit(OpCodes.Br, unchanged);
-            _il.MarkLabel(checkOperands);
-            Emit(OpCodes.Pop);
-            BranchIfIntegralNotSmi(lhs, TInt, slow);
-            if (!smiForm) BranchIfIntegralNotSmi(AccNum, TInt2, slow);
-            // The result is an integer (never -0): its range.
-            Emit(OpCodes.Ldloc, TDouble);
-            Emit(OpCodes.Ldc_R8, (double)JSValue.SmiMaxValue);
-            Emit(OpCodes.Bgt_Un, slow);
-            Emit(OpCodes.Ldloc, TDouble);
-            Emit(OpCodes.Ldc_R8, (double)JSValue.SmiMinValue);
-            Emit(OpCodes.Blt_Un, slow);
+            if (_outOfLineChecks)
+            {
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                lhs();
+                if (!smiForm) AccNum();
+                Emit(OpCodes.Ldloc, TDouble);
+                Emit(OpCodes.Call, smiForm ? s_binaryFeedbackUnchangedSmiRhs : s_binaryFeedbackUnchanged);
+                Emit(OpCodes.Brfalse, slow);
+            }
+            else
+            {
+                Label checkOperands = _il.DefineLabel();
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                Emit(OpCodes.Dup);
+                Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.SignedSmall);
+                Emit(OpCodes.Beq, checkOperands);
+                Emit(OpCodes.Dup);
+                Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.Any);
+                Label popUnchanged = _il.DefineLabel();
+                Emit(OpCodes.Beq, popUnchanged);
+                Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.Number);
+                Emit(OpCodes.Sub);
+                Emit(OpCodes.Ldc_I4_1);
+                Emit(OpCodes.Ble_Un, unchanged);
+                Emit(OpCodes.Br, slow);
+                _il.MarkLabel(popUnchanged);
+                Emit(OpCodes.Pop);
+                Emit(OpCodes.Br, unchanged);
+                _il.MarkLabel(checkOperands);
+                Emit(OpCodes.Pop);
+                BranchIfIntegralNotSmi(lhs, TInt, slow);
+                if (!smiForm) BranchIfIntegralNotSmi(AccNum, TInt2, slow);
+                // The result is an integer (never -0): its range.
+                Emit(OpCodes.Ldloc, TDouble);
+                Emit(OpCodes.Ldc_R8, (double)JSValue.SmiMaxValue);
+                Emit(OpCodes.Bgt_Un, slow);
+                Emit(OpCodes.Ldloc, TDouble);
+                Emit(OpCodes.Ldc_R8, (double)JSValue.SmiMinValue);
+                Emit(OpCodes.Blt_Un, slow);
+            }
         }
 
         _il.MarkLabel(unchanged);
@@ -577,7 +618,7 @@ public sealed partial class BaselineCompiler
     /// </summary>
     void EmitCompareBranch(Operation op, Label isTrue, Label isFalse)
     {
-        Label slow = _il.DefineLabel(), compare = _il.DefineLabel(), feedbackSlow = _il.DefineLabel();
+        Label slow = _il.DefineLabel(), compare = _il.DefineLabel();
         int feedbackOffset = EmbeddedFeedbackOffset(1);
         Reg(RegisterOperand(0));
         Emit(OpCodes.Stloc, TVal);
@@ -592,23 +633,35 @@ public sealed partial class BaselineCompiler
         // NumberOrOddball, Any), or SignedSmall with two Smis, is left as it is.
         if (CompareSite(1) != NumberSite.Saturated)
         {
-            _masm.LoadEmbeddedFeedback(feedbackOffset);
-            Emit(OpCodes.Stloc, TInt2);
-            Emit(OpCodes.Ldloc, TInt2);
-            Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.Number);
-            Emit(OpCodes.Sub);
-            Emit(OpCodes.Ldc_I4_2);
-            Emit(OpCodes.Ble_Un, compare);
-            Emit(OpCodes.Ldloc, TInt2);
-            Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.Any);
-            Emit(OpCodes.Beq, compare);
-            Emit(OpCodes.Ldloc, TInt2);
-            Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.SignedSmall);
-            Emit(OpCodes.Bne_Un, feedbackSlow);
-            BranchIfNotSmi(() => LocalNum(TVal), TInt, feedbackSlow);
-            BranchIfNotSmi(AccNum, TInt, feedbackSlow);
-            Emit(OpCodes.Br, compare);
-            _il.MarkLabel(feedbackSlow);
+            if (_outOfLineChecks)
+            {
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                LocalNum(TVal);
+                AccNum();
+                Emit(OpCodes.Call, s_compareFeedbackUnchanged);
+                Emit(OpCodes.Brtrue, compare);
+            }
+            else
+            {
+                Label feedbackSlow = _il.DefineLabel();
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                Emit(OpCodes.Stloc, TInt2);
+                Emit(OpCodes.Ldloc, TInt2);
+                Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.Number);
+                Emit(OpCodes.Sub);
+                Emit(OpCodes.Ldc_I4_2);
+                Emit(OpCodes.Ble_Un, compare);
+                Emit(OpCodes.Ldloc, TInt2);
+                Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.Any);
+                Emit(OpCodes.Beq, compare);
+                Emit(OpCodes.Ldloc, TInt2);
+                Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.SignedSmall);
+                Emit(OpCodes.Bne_Un, feedbackSlow);
+                BranchIfNotSmi(() => LocalNum(TVal), TInt, feedbackSlow);
+                BranchIfNotSmi(AccNum, TInt, feedbackSlow);
+                Emit(OpCodes.Br, compare);
+                _il.MarkLabel(feedbackSlow);
+            }
             LocalNum(TVal);
             AccNum();
             Feedback(1);
@@ -1110,7 +1163,9 @@ public sealed partial class BaselineCompiler
         AccObj();
         Emit(OpCodes.Ldsfld, s_numberTag);
         Emit(OpCodes.Bne_Un, notTaggedField);
-        BranchIfNotSmi(AccNum, TInt2, notTaggedField);
+        AccNum();
+        Emit(OpCodes.Call, s_isSmiNumber);
+        Emit(OpCodes.Brfalse, notTaggedField);
         Emit(OpCodes.Br, store);
         _il.MarkLabel(notSmiField);
         Emit(OpCodes.Ldloc, TInt);

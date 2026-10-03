@@ -56,6 +56,18 @@ public sealed partial class BaselineCompiler
     /// RyuJIT's optimization limits (BaselineILEmitter).
     /// </summary>
     readonly bool _compact;
+
+    /// <summary>
+    /// The number paths' feedback checks call BaselineBuiltins.BinaryFeedbackUnchanged
+    /// and CompareFeedbackUnchanged instead of emitting them: for a function
+    /// whose full code would exceed RyuJIT's limits. RyuJIT counts a method's
+    /// own IL, not what it inlines, so the checks still compile inline where
+    /// RyuJIT inlines them; inline IL measured faster in small loops.
+    /// </summary>
+    readonly bool _outOfLineChecks;
+
+    /// <summary>V8SHARP_BASELINE_OUT_OF_LINE_CHECKS=1: every function gets the out-of-line checks (for testing).</summary>
+    static readonly bool s_forceOutOfLineChecks = Environment.GetEnvironmentVariable("V8SHARP_BASELINE_OUT_OF_LINE_CHECKS") == "1";
     readonly BytecodeArrayIterator _iterator;
 
     // Labels at bytecode offsets (V8: labels_ / label_tags_).
@@ -78,8 +90,9 @@ public sealed partial class BaselineCompiler
     }
 
     public BaselineCompiler(Isolate isolate, SharedFunctionInfo sharedFunctionInfo, BytecodeArray bytecode, bool compact = false,
-        string? methodName = null, bool optimizeFully = false, FeedbackVector? feedback = null)
+        string? methodName = null, bool optimizeFully = false, FeedbackVector? feedback = null, bool outOfLineChecks = false)
     {
+        _outOfLineChecks = outOfLineChecks || s_forceOutOfLineChecks;
         _isolate = isolate;
         // --always-sparkplug compiles before anything ran: no feedback to go by.
         _feedback = isolate.Flags.always_sparkplug ? null : feedback;
@@ -148,7 +161,7 @@ public sealed partial class BaselineCompiler
     /// <summary>The emitter's counts (for tracing and tests).</summary>
     internal string Statistics =>
         $"il={_il.ILOffset} instructions={_il.Instructions} blocks<={_il.BlockBoundaries} localrefs={_il.LocalReferences}" +
-        (_compact ? " compact" : "");
+        (_compact ? " compact" : _outOfLineChecks ? " outofline-checks" : "");
 
     // V8SHARP_BASELINE_IL_PROFILE=1: IL instructions emitted per bytecode, printed at exit.
     static readonly Dictionary<Bytecode, (long Count, long Instructions)>? s_ilProfile = CreateILProfile();

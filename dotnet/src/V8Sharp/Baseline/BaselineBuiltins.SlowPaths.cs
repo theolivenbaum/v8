@@ -38,6 +38,73 @@ public static partial class BaselineBuiltins
     public static JSValue BitwiseSmiSlow(Isolate isolate, int operation, JSValue lhs, int rhs, ref byte feedback) =>
         InterpreterOps.Bitwise(isolate, (Operation)operation, lhs, JSValue.FromInt(rhs), ref feedback);
 
+    // ---- The feedback checks of the inline number paths ------------------------------------------
+    //
+    // Called from the IL of the inline paths (BaselineCompiler.Inline.cs) rather
+    // than emitted there: RyuJIT counts a method's own IL against its
+    // optimization limits, not the IL of what it inlines, so a check written
+    // once here keeps big functions under the limits (and costs RyuJIT less to
+    // import) while compiling to the same code where it is inlined.
+
+    /// <summary>
+    /// Whether a number result leaves the binary operation feedback
+    /// <paramref name="feedback"/> as it is: feedback that no number can widen
+    /// (Number, NumberOrOddball, Any; InterpreterOps.IsNumberFeedbackSaturated),
+    /// or SignedSmall with Smi operands and a Smi result.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool BinaryFeedbackUnchanged(int feedback, double lhs, double rhs, double result)
+    {
+        if ((uint)(feedback - (int)BinaryOperationFeedback.TypeIndex.Number) <= 1u ||
+            feedback == (int)BinaryOperationFeedback.TypeIndex.Any)
+        {
+            return true;
+        }
+        return feedback == (int)BinaryOperationFeedback.TypeIndex.SignedSmall && IsSmiNumber(lhs) && IsSmiNumber(rhs) &&
+               IsSmiNumber(result);
+    }
+
+    /// <summary>
+    /// <see cref="BinaryFeedbackUnchanged"/> with a Smi right operand (the Smi
+    /// forms' immediate, Inc's and Dec's 1): only the left operand and the
+    /// result are checked (RyuJIT does not fold the conversion of a constant).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool BinaryFeedbackUnchangedSmiRhs(int feedback, double lhs, double result)
+    {
+        if ((uint)(feedback - (int)BinaryOperationFeedback.TypeIndex.Number) <= 1u ||
+            feedback == (int)BinaryOperationFeedback.TypeIndex.Any)
+        {
+            return true;
+        }
+        return feedback == (int)BinaryOperationFeedback.TypeIndex.SignedSmall && IsSmiNumber(lhs) && IsSmiNumber(result);
+    }
+
+    /// <summary>
+    /// Whether comparing two numbers leaves the compare feedback as it is
+    /// (Number, NumberOrBoolean, NumberOrOddball, Any; or SignedSmall with two
+    /// Smis), else InterpreterOps.UpdateCompareFeedbackForNumbers records it.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool CompareFeedbackUnchanged(int feedback, double lhs, double rhs)
+    {
+        if ((uint)(feedback - (int)CompareOperationFeedback.TypeIndex.Number) <= 2u ||
+            feedback == (int)CompareOperationFeedback.TypeIndex.Any)
+        {
+            return true;
+        }
+        return feedback == (int)CompareOperationFeedback.TypeIndex.SignedSmall && IsSmiNumber(lhs) && IsSmiNumber(rhs);
+    }
+
+    /// <summary>Whether a number is a Smi: integral, in the 31-bit range, not -0 (JSValue.IsSmi).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsSmiNumber(double value)
+    {
+        int i = double.ConvertToIntegerNative<int>(value);
+        return i == value && (uint)(i - JSValue.SmiMinValue) <= (uint)(JSValue.SmiMaxValue - JSValue.SmiMinValue) &&
+               (i != 0 || BitConverter.DoubleToInt64Bits(value) == 0);
+    }
+
     /// <summary>The int32 conversion of a number that the inline paths test for exactness (cvttsd2si).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int TruncateToInt32(double value) => double.ConvertToIntegerNative<int>(value);
