@@ -560,6 +560,16 @@ public static partial class InterpreterExecution
                 case Bytecode.Jump:
                     ip = ref Unsafe.Add(ref ip, Unsigned<TS>(ref ip, 1));
                     continue;
+                // The jumps of huge functions whose offset is in the constant pool
+                // (Emscripten code); the rest of the *Constant jumps are in LoopCold.
+                case Bytecode.JumpConstant:
+                    ip = ref Unsafe.Add(ref ip, (int)InterpreterRuntime.FrameBytecode(ref fpSlot).ConstantPoolValues![Unsigned<TS>(ref ip, 1)]._num);
+                    continue;
+                case Bytecode.JumpIfTrueConstant:
+                case Bytecode.JumpIfFalseConstant:
+                    ip = ref Unsafe.Add(ref ip, ReferenceEquals(acc._obj, (Bytecode)ip == Bytecode.JumpIfTrueConstant ? Oddball.True : Oddball.False)
+                        ? (int)InterpreterRuntime.FrameBytecode(ref fpSlot).ConstantPoolValues![Unsigned<TS>(ref ip, 1)]._num : 1 + S);
+                    continue;
                 case Bytecode.JumpIfToBooleanTrue:
                     ip = ref Unsafe.Add(ref ip, ToBoolean(acc) ? Unsigned<TS>(ref ip, 1) : 1 + S);
                     continue;
@@ -1018,9 +1028,64 @@ public static partial class InterpreterExecution
                                 acc = JSValue.FromInt(immediate);
                                 ip = ref Unsafe.Add(ref ip, immediateEnd);
                                 continue;
+                            // Register moves and context loads of huge functions
+                            // (Emscripten code: more than 128 registers), which
+                            // otherwise take RunPrefixed for one step.
+                            case Bytecode.Ldar:
+                                acc = RegAt(ref fpSlot, immediate);
+                                ip = ref Unsafe.Add(ref ip, immediateEnd);
+                                continue;
+                            case Bytecode.Star:
+                                StoreRegister(ref RegAt(ref fpSlot, immediate), acc);
+                                ip = ref Unsafe.Add(ref ip, immediateEnd);
+                                continue;
+                            case Bytecode.Mov:
+                                StoreRegister(ref RegAt(ref fpSlot, isWide ? Signed<DoubleScale>(ref ip, 4) : Signed<QuadrupleScale>(ref ip, 6)),
+                                    RegAt(ref fpSlot, immediate));
+                                ip = ref Unsafe.Add(ref ip, 2 * immediateEnd - 2);
+                                continue;
+                            case Bytecode.LdaCurrentContextSlotNoCell:
+                            case Bytecode.LdaCurrentContextSlot:
+                            case Bytecode.LdaImmutableCurrentContextSlot:
+                                acc = InterpreterRuntime.FrameContext(ref fpSlot).Slots[isWide ? Unsigned<DoubleScale>(ref ip, 2) : Unsigned<QuadrupleScale>(ref ip, 2)];
+                                ip = ref Unsafe.Add(ref ip, immediateEnd);
+                                continue;
+                            // Keyed accesses with a wide feedback slot or register
+                            // (TryRunWide's, without its call layers).
+                            case Bytecode.GetKeyedProperty when isWide:
+                                acc = GetKeyedProperty<DoubleScale>(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1), acc);
+                                ip = ref Unsafe.Add(ref ip, 2 + 2 * 2);
+                                continue;
+                            case Bytecode.SetKeyedProperty when isWide:
+                                if (!SetKeyedProperty<DoubleScale>(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1), acc))
+                                {
+                                    SetKeyedPropertySlow<DoubleScale>(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1), acc);
+                                }
+                                ip = ref Unsafe.Add(ref ip, 2 + 3 * 2);
+                                continue;
+                            case Bytecode.JumpLoop when isWide:
+                            {
+                                // JumpLoop without its interrupt and OSR cases (those
+                                // take the scaled loop). The offset is relative to
+                                // the prefixed bytecode, as in TryRunWide.
+                                int relative = Unsigned<DoubleScale>(ref ip, 2);
+                                FeedbackCell cell = InterpreterRuntime.FrameFunction(ref fpSlot).RawFeedbackCell;
+                                if (cell.InterruptBudget - relative >= 0 && !st.Isolate.StackGuard.HasPendingInterrupts &&
+                                    !(st.Isolate.MayHaveBaselineCode && InterpreterRuntime.FrameFunction(ref fpSlot).Shared.BaselineCode is not null))
+                                {
+                                    cell.InterruptBudget -= relative;
+                                    acc = default;
+                                    ip = ref Unsafe.Subtract(ref ip, relative - 1);
+                                    continue;
+                                }
+                                break;
+                            }
                             case Bytecode.BitwiseAndSmi:
                             case Bytecode.BitwiseOrSmi:
                             case Bytecode.BitwiseXorSmi:
+                            case Bytecode.ShiftLeftSmi:
+                            case Bytecode.ShiftRightSmi:
+                            case Bytecode.ShiftRightLogicalSmi:
                                 result = InterpreterBitwise.TryAnySmi((Bytecode)Unsafe.Add(ref ip, 1), acc, immediate,
                                     ref Unsafe.Add(ref ip, immediateEnd));
                                 break;
