@@ -375,7 +375,13 @@ public sealed partial class MaglevGraphBuilder
     /// V8Sharp always builds the catch block, as the interpreter does not
     /// record handler use.)
     /// </summary>
-    void AttachExceptionHandlerInfo(Node node)
+    /// <remarks>
+    /// A node of an inlined function called inside a try block attaches the
+    /// caller's catch block (the caller's frame at the call merges into it,
+    /// with what the inlined code knows, <paramref name="known"/>), as V8's
+    /// inlined calls in try blocks do.
+    /// </remarks>
+    void AttachExceptionHandlerInfo(Node node, KnownNodeAspects? known = null)
     {
         (int _, int handler, int contextRegister) = _catchBlockStack.Peek();
         MergePointInterpreterFrameState? state = _catchStates[handler];
@@ -386,7 +392,21 @@ public sealed partial class MaglevGraphBuilder
             _catchStates[handler] = state;
         }
         node.ExceptionHandler = new ExceptionHandlerInfo(state, state.PredecessorsSoFar);
-        state.MergeThrow(this, _frame);
+        state.MergeThrow(this, _frame, known);
+    }
+
+    /// <summary>
+    /// The builder of the innermost caller of this inlined function whose call
+    /// is inside a try block (the catch block a throw in the inlined code
+    /// continues at, after its inlined frames are dropped), or null.
+    /// </summary>
+    MaglevGraphBuilder? CallerInsideTryBlock()
+    {
+        for (MaglevGraphBuilder? b = _caller; b is not null; b = b._caller)
+        {
+            if (b.IsInsideTryBlock) return b;
+        }
+        return null;
     }
 
     /// <summary>
@@ -700,7 +720,14 @@ public sealed partial class MaglevGraphBuilder
             node.LazyDeoptInfo = new LazyDeoptInfo(GetDeoptFrameForLazyDeopt(), _lazyResultLocation, _lazyResultSize);
         }
         _currentBlock!.Nodes.Add(node);
-        if (_catchBlockStack.Count > 0 && CanThrowInTry(node)) AttachExceptionHandlerInfo(node);
+        if (_catchBlockStack.Count > 0)
+        {
+            if (CanThrowInTry(node)) AttachExceptionHandlerInfo(node);
+        }
+        else if (_caller is not null && CanThrowInTry(node) && CallerInsideTryBlock() is { } catcher)
+        {
+            catcher.AttachExceptionHandlerInfo(node, _frame.Known);
+        }
         if ((node.Properties & (OpProperties.kCanWrite | OpProperties.kCall)) != 0)
         {
             _frame.Known.ClearUnstableMaps();

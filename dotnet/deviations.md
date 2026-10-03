@@ -389,8 +389,10 @@ for now, to be revisited when the reason goes away.
   first instruction dispatches to the catch block. V8 returns to a handler
   address. Catch blocks are always built: V8 lazy-deopts instead when the
   handler was never used, but the interpreter does not record handler use.
-  Calls inside try blocks and functions with handlers are not inlined (V8
-  inlines them and drops the inlined frames on a throw).
+  Functions with handlers are not inlined (V8 inlines them). Calls inside
+  try blocks are inlined: a throw in the inlined code drops its frames
+  (EnterCatchBlock pops to the optimized frame) and continues at the
+  caller's catch block, as in V8.
 - Select diamonds of one node: charCodeAt's out-of-bounds NaN
   (`BuiltinStringPrototypeCharCodeAtOrNaN`) and the keyed name check against
   the name's primitive (`CheckValueEqualsString` with the primitive) are one

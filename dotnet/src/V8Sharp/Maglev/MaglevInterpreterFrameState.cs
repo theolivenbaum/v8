@@ -372,8 +372,9 @@ public sealed class MergePointInterpreterFrameState
     /// block's context register). A value that differs between throws becomes
     /// an exception phi whose inputs are the values at each throw.
     /// </summary>
-    public void MergeThrow(MaglevGraphBuilder builder, InterpreterFrameState frame)
+    public void MergeThrow(MaglevGraphBuilder builder, InterpreterFrameState frame, KnownNodeAspects? known = null)
     {
+        known ??= frame.Known;
         int index = PredecessorsSoFar;
         int accumulatorSlot = InterpreterFrameState.AccumulatorSlot(Unit);
         int contextSlot = InterpreterFrameState.ContextSlot(Unit);
@@ -413,8 +414,8 @@ public sealed class MergePointInterpreterFrameState
             Phis.Add(newPhi);
             Values[slot] = newPhi;
         }
-        if (Known is null) Known = frame.Known.Clone();
-        else Known.Merge(frame.Known);
+        if (Known is null) Known = known.Clone();
+        else Known.Merge(known);
         PredecessorsSoFar++;
     }
 

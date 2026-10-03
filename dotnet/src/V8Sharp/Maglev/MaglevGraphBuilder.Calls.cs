@@ -495,7 +495,6 @@ public sealed partial class MaglevGraphBuilder
         // V8Sharp: the IL backend's catch blocks are in the outermost function
         // (an exception leaves inlined frames through the interpreter's frames).
         if (bytecode.HandlerTable.Length != 0) return "exception handlers";
-        if (IsInsideTryBlock) return "inside a try block";
         int length = bytecode.Length;
         bool small = length <= Flags.max_maglev_inlined_bytecode_size_small;
         int depth = _unit.InliningDepth + 1;

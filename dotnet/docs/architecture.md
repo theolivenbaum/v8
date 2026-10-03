@@ -549,8 +549,10 @@ filtered catch clause runs that node's trampoline (the exception phis from
 the node's values, the exception into the accumulator phi, the pending
 message) and leaves to the start of the region, whose first instruction
 dispatches to the catch block. The catch block then runs in the same
-method with the same locals. Functions with handlers, and calls inside try
-blocks, are not inlined.
+method with the same locals. Functions with handlers are not inlined;
+calls inside try blocks are (a throw in the inlined code continues at the
+caller's catch block, whose state merges the caller's frame at the call;
+EnterCatchBlock drops the inlined frames).
 
 **Code.** The graph becomes one static method `JSValue Code(MaglevCode,
 Isolate, ref InterpreterState)` in the dynamic assembly baseline code uses
