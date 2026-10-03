@@ -146,9 +146,41 @@ public static partial class BaselineBuiltins
 
     // ---- Property access ---------------------------------------------------------------------------
 
+    /// <summary>
+    /// GetNamedProperty when the inline path did not apply: LoadIC_Baseline.
+    /// Its own-field hits come first, monomorphic or polymorphic
+    /// (AccessorAssembler::HandlePolymorphicCase, then the field load of the
+    /// Smi handler): the field index is in the payload of the handler half of
+    /// the matching pair (FeedbackNexus.EncodeHandler), so the hit reads the
+    /// feedback and the receiver only, not the handler object.
+    /// </summary>
     [MethodImpl(Outline)]
-    public static JSValue GetNamedPropertySlow(Isolate isolate, FeedbackVector fv, int slot, JSValue receiver, JSValue name) =>
-        LoadIC.LoadNamed(isolate, fv, slot, receiver, Unsafe.As<Name>(name._obj!));
+    public static JSValue GetNamedPropertySlow(Isolate isolate, FeedbackVector fv, int slot, JSValue receiver, JSValue name)
+    {
+        if (ICMaps.AsJSObject(receiver._obj) is { } obj)
+        {
+            JSValue[] slots = fv.Slots;
+            HeapObject? feedback = slots[slot]._obj;
+            Map map = obj.Map;
+            if (ReferenceEquals(feedback, map))
+            {
+                int field = FeedbackNexus.DecodeOwnField(in slots[slot + 1]);
+                if (field >= 0) return obj.FieldAt(field);
+            }
+            else if (feedback is FixedArray polymorphic)
+            {
+                JSValue[] data = polymorphic.Data;
+                for (int i = 0; i + 1 < data.Length; i += 2)
+                {
+                    if (!ReferenceEquals(data[i]._obj, map)) continue;
+                    int field = FeedbackNexus.DecodeOwnField(in data[i + 1]);
+                    if (field >= 0) return obj.FieldAt(field);
+                    break;
+                }
+            }
+        }
+        return LoadIC.LoadNamed(isolate, fv, slot, receiver, Unsafe.As<Name>(name._obj!));
+    }
 
     [MethodImpl(Outline)]
     public static void SetNamedPropertySlow(Isolate isolate, FeedbackVector fv, int slot, JSValue obj, JSValue name, JSValue value) =>
