@@ -101,24 +101,24 @@ public static partial class InterpreterExecution
                 case Bytecode.LdaZero:
                     acc = JSValue.Zero;
                     ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.LdaSmi:
                     acc = JSValue.FromInt(Signed<TS>(ref ip, 1));
                     ip = ref Unsafe.Add(ref ip, 1 + S);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.LdaUndefined:
                     acc = default(JSValue);
                     ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.LdaNull:
                     acc = JSValue.Null;
                     ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.LdaTheHole:
                 case Bytecode.LdaTdzHole:
                     acc = JSValue.TheHole;
                     ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.LdaTrue:
                     acc = JSValue.True;
                     ip = ref Unsafe.Add(ref ip, 1);
@@ -130,7 +130,7 @@ public static partial class InterpreterExecution
                 case Bytecode.LdaConstant:
                     acc = InterpreterRuntime.FrameBytecode(ref fpSlot).ConstantPoolValues![Unsigned<TS>(ref ip, 1)];
                     ip = ref Unsafe.Add(ref ip, 1 + S);
-                    continue;
+                    goto starLookahead;
 
                 // Deviation: V8Sharp has no ContextCells (script/function context
                 // cells are an optimizing-tier device that V8 --jitless disables),
@@ -144,14 +144,14 @@ public static partial class InterpreterExecution
                     while (depth-- > 0) c = Unsafe.As<Context>(c.Slots[(int)Context.Field.PREVIOUS_INDEX]._obj!);
                     acc = c.Slots[Unsigned<TS>(ref ip, 1 + S)];
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                    continue;
+                    goto starLookahead;
                 }
                 case Bytecode.LdaCurrentContextSlotNoCell:
                 case Bytecode.LdaCurrentContextSlot:
                 case Bytecode.LdaImmutableCurrentContextSlot:
                     acc = InterpreterRuntime.FrameContext(ref fpSlot).Slots[Unsigned<TS>(ref ip, 1)];
                     ip = ref Unsafe.Add(ref ip, 1 + S);
-                    continue;
+                    goto starLookahead;
 
                 // ---- Register loads ----------------------------------------------------
                 case Bytecode.Star:
@@ -163,68 +163,25 @@ public static partial class InterpreterExecution
                         RegAt(ref fpSlot, Signed<TS>(ref ip, 1)));
                     ip = ref Unsafe.Add(ref ip, 1 + 2 * S);
                     continue;
-                case Bytecode.Star0:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 0), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star1:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 1), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star2:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 2), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star3:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 3), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star4:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 4), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star5:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 5), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star6:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 6), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star7:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 7), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star8:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 8), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star9:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 9), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star10:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 10), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star11:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 11), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star12:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 12), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star13:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 13), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
-                case Bytecode.Star14:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 14), acc);
-                    ip = ref Unsafe.Add(ref ip, 1);
-                    continue;
                 case Bytecode.Star15:
-                    StoreRegister(ref Unsafe.Add(ref fpSlot, 15), acc);
+                case Bytecode.Star14:
+                case Bytecode.Star13:
+                case Bytecode.Star12:
+                case Bytecode.Star11:
+                case Bytecode.Star10:
+                case Bytecode.Star9:
+                case Bytecode.Star8:
+                case Bytecode.Star7:
+                case Bytecode.Star6:
+                case Bytecode.Star5:
+                case Bytecode.Star4:
+                case Bytecode.Star3:
+                case Bytecode.Star2:
+                case Bytecode.Star1:
+                case Bytecode.Star0:
+                    // The short Star codes are the last opcodes, Star15 .. Star0
+                    // (Bytecodes.kFirstShortStar): r(Star0 - opcode).
+                    StoreRegister(ref Unsafe.Add(ref fpSlot, (int)Bytecode.Star0 - ip), acc);
                     ip = ref Unsafe.Add(ref ip, 1);
                     continue;
 
@@ -279,12 +236,12 @@ public static partial class InterpreterExecution
                         {
                             acc = value;
                             ip = ref Unsafe.Add(ref ip, 1 + 2 * S);
-                            continue;
+                            goto starLookahead;
                         }
                     }
                     acc = LdaGlobal<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 1 + 2 * S);
-                    continue;
+                    goto starLookahead;
                 }
                 case Bytecode.StaGlobal:
                     StaGlobal<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
@@ -333,7 +290,7 @@ public static partial class InterpreterExecution
                             {
                                 acc = Unsafe.As<JSObject>(o).FieldAt(field);
                                 ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                                continue;
+                                goto starLookahead;
                             }
                             if (handlerSlot._obj is LoadHandler handler)
                             {
@@ -341,14 +298,14 @@ public static partial class InterpreterExecution
                                 {
                                     acc = handler.Data;
                                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                                    continue;
+                                    goto starLookahead;
                                 }
                                 if (handler.HandlerKind == LoadHandler.Kind.kArrayLength)
                                 {
                                     // Recorded only for JSArray maps (JSArray::kLengthOffset).
                                     acc = Unsafe.As<JSArray>(o).Length;
                                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                                    continue;
+                                    goto starLookahead;
                                 }
                             }
                         }
@@ -365,7 +322,7 @@ public static partial class InterpreterExecution
                         acc = loaded;
                     }
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                    continue;
+                    goto starLookahead;
                 }
                 case Bytecode.GetKeyedProperty:
                 {
@@ -395,7 +352,7 @@ public static partial class InterpreterExecution
                                     {
                                         acc = data[index];
                                         ip = ref Unsafe.Add(ref ip, 1 + 2 * S);
-                                        continue;
+                                        goto starLookahead;
                                     }
                                 }
                                 else if (elements is FixedDoubleArray doubleArray)
@@ -405,7 +362,7 @@ public static partial class InterpreterExecution
                                     {
                                         acc = JSValue.FromNumber(data[index]);
                                         ip = ref Unsafe.Add(ref ip, 1 + 2 * S);
-                                        continue;
+                                        goto starLookahead;
                                     }
                                 }
                             }
@@ -413,7 +370,7 @@ public static partial class InterpreterExecution
                     }
                     acc = o is JSTypedArray ? GetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc) : GetKeyedPropertySlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 1 + 2 * S);
-                    continue;
+                    goto starLookahead;
                 }
 
                 // ---- Property stores ------------------------------------------------------------------------
@@ -682,7 +639,13 @@ public static partial class InterpreterExecution
                         // the accumulator is the result, unless a construct frame
                         // returned its receiver instead.
                         int returned = InterpreterInlineCalls.ReturnInline(st.Isolate, ref st, acc);
-                        if (returned == InterpreterInlineCalls.kReturnedAccumulator) goto resumed;
+                        if (returned == InterpreterInlineCalls.kReturnedAccumulator)
+                        {
+                            // The caller usually stores the result (CallProperty .. Star).
+                            fpSlot = ref st.ResumeFp;
+                            ip = ref st.ResumeIp;
+                            goto starLookahead;
+                        }
                         if (returned != InterpreterInlineCalls.kReturnNotInline)
                         {
                             acc = st.Accumulator;
@@ -705,7 +668,7 @@ public static partial class InterpreterExecution
                         acc = called;
                     }
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.CallProperty0:
                     {
                         JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
@@ -714,7 +677,7 @@ public static partial class InterpreterExecution
                         acc = called;
                     }
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.CallProperty1:
                     {
                         JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
@@ -723,7 +686,7 @@ public static partial class InterpreterExecution
                         acc = called;
                     }
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.CallProperty2:
                     {
                         JSValue called = RegAt(ref fpSlot, Signed<TS>(ref ip, 1))._obj is JSFunction
@@ -732,7 +695,7 @@ public static partial class InterpreterExecution
                         acc = called;
                     }
                     ip = ref Unsafe.Add(ref ip, 1 + 5 * S);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.CallUndefinedReceiver:
                     {
                         JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
@@ -741,7 +704,7 @@ public static partial class InterpreterExecution
                         acc = called;
                     }
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.CallUndefinedReceiver0:
                     {
                         JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
@@ -750,7 +713,7 @@ public static partial class InterpreterExecution
                         acc = called;
                     }
                     ip = ref Unsafe.Add(ref ip, 1 + 2 * S);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.CallUndefinedReceiver1:
                     {
                         JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
@@ -759,7 +722,7 @@ public static partial class InterpreterExecution
                         acc = called;
                     }
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.CallUndefinedReceiver2:
                     {
                         JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
@@ -768,7 +731,7 @@ public static partial class InterpreterExecution
                         acc = called;
                     }
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.CallRuntime:
                     acc = CallRuntime<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 3 + 2 * S);
@@ -783,7 +746,7 @@ public static partial class InterpreterExecution
                     if (Construct<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) goto entered;
                     acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
-                    continue;
+                    goto starLookahead;
 
                 // ---- Unary operators ------------------------------------------------------------------------------
                 case Bytecode.Inc:
@@ -796,13 +759,13 @@ public static partial class InterpreterExecution
                         {
                             acc = JSValue.FromNumber(acc._num + 1);
                             ip = ref Unsafe.Add(ref ip, 2);
-                            continue;
+                            goto starLookahead;
                         }
                     }
                     // Also numbers whose feedback changes (UnaryOp updates it).
                     acc = UnaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.Dec:
                     if (acc._obj == NumberTag.Instance)
                     {
@@ -813,13 +776,13 @@ public static partial class InterpreterExecution
                         {
                             acc = JSValue.FromNumber(acc._num - 1);
                             ip = ref Unsafe.Add(ref ip, 2);
-                            continue;
+                            goto starLookahead;
                         }
                     }
                     // Also numbers whose feedback changes (UnaryOp updates it).
                     acc = UnaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.Negate:
                 case Bytecode.BitwiseNot:
                     acc = UnaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
@@ -836,7 +799,7 @@ public static partial class InterpreterExecution
                 case Bytecode.TypeOf:
                     acc = InterpreterOps.TypeOf(st.Isolate, acc, InterpreterRuntime.FrameFeedbackVector(ref fpSlot), Unsigned<TS>(ref ip, 1));
                     ip = ref Unsafe.Add(ref ip, 1 + S);
-                    continue;
+                    goto starLookahead;
 
                 // ---- Binary operators with an immediate ---------------------------------------------------------
                 case Bytecode.AddSmi:
@@ -850,13 +813,13 @@ public static partial class InterpreterExecution
                         {
                             acc = JSValue.FromNumber(acc._num + imm);
                             ip = ref Unsafe.Add(ref ip, 2 + S);
-                            continue;
+                            goto starLookahead;
                         }
                     }
                     // Also numbers whose feedback changes (BinarySmiOp updates it).
                     acc = BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.SubSmi:
                     if (acc._obj == NumberTag.Instance)
                     {
@@ -868,13 +831,13 @@ public static partial class InterpreterExecution
                         {
                             acc = JSValue.FromNumber(acc._num - imm);
                             ip = ref Unsafe.Add(ref ip, 2 + S);
-                            continue;
+                            goto starLookahead;
                         }
                     }
                     // Also numbers whose feedback changes (BinarySmiOp updates it).
                     acc = BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
-                    continue;
+                    goto starLookahead;
                 case Bytecode.MulSmi:
                 case Bytecode.DivSmi:
                 case Bytecode.ModSmi:
@@ -908,13 +871,13 @@ public static partial class InterpreterExecution
                         {
                             acc = JSValue.FromNumber(lhs._num + acc._num);
                             ip = ref Unsafe.Add(ref ip, 2 + S);
-                            continue;
+                            goto starLookahead;
                         }
                     }
                     // Also numbers whose feedback changes (AddSlow updates it).
                     acc = AddSlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
-                    continue;
+                    goto starLookahead;
                 }
                 case Bytecode.Sub:
                 {
@@ -927,13 +890,13 @@ public static partial class InterpreterExecution
                         {
                             acc = JSValue.FromNumber(lhs._num - acc._num);
                             ip = ref Unsafe.Add(ref ip, 2 + S);
-                            continue;
+                            goto starLookahead;
                         }
                     }
                     // Also numbers whose feedback changes (BinaryOp updates it).
                     acc = BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
-                    continue;
+                    goto starLookahead;
                 }
                 case Bytecode.Mul:
                 {
@@ -946,13 +909,13 @@ public static partial class InterpreterExecution
                         {
                             acc = JSValue.FromNumber(lhs._num * acc._num);
                             ip = ref Unsafe.Add(ref ip, 2 + S);
-                            continue;
+                            goto starLookahead;
                         }
                     }
                     // Also numbers whose feedback changes (BinaryOp updates it).
                     acc = BinaryOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
-                    continue;
+                    goto starLookahead;
                 }
                 case Bytecode.Div:
                 case Bytecode.Mod:
@@ -1092,6 +1055,18 @@ public static partial class InterpreterExecution
                     if (next == kColdReload) goto reload;
                     return acc;
                 }
+            }
+
+        // V8's StarDispatchLookahead (Bytecodes::IsStarLookahead): a handler
+        // that writes the accumulator and is often followed by a short Star
+        // does the Star itself when the next bytecode is one, which saves that
+        // bytecode's dispatch. The short Stars are the last opcodes, so one
+        // compare tests for them. (Single operand scale only, as in V8.)
+        starLookahead:
+            if (typeof(TS) == typeof(SingleScale) && (uint)(ip - (byte)Bytecodes.kFirstShortStar) <= (uint)(Bytecodes.kLastShortStar - Bytecodes.kFirstShortStar))
+            {
+                StoreRegister(ref Unsafe.Add(ref fpSlot, (int)Bytecode.Star0 - ip), acc);
+                ip = ref Unsafe.Add(ref ip, 1);
             }
         }
     }
