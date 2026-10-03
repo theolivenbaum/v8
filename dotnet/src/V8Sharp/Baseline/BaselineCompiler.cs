@@ -121,10 +121,16 @@ public sealed partial class BaselineCompiler
         return result;
     }
 
-    // RyuJIT's MinOpts limits (compSetOptimizationLevel), with a margin.
+    // RyuJIT's MinOpts limits (compSetOptimizationLevel), with a margin, in
+    // the emitter's counts. Calibrated against RyuJIT's own decision
+    // (DOTNET_JitDisasmSummary with V8SHARP_BASELINE_IGNORE_LIMITS=1, Octane's
+    // largest functions, 2026-10-03): RyuJIT's instruction count (limit 20000)
+    // runs about 1.27x the emitter's (full at 15736, MinOpts from 15797), and
+    // the emitter's block bound overcounts RyuJIT's blocks (limit 2000; full at
+    // 2522 counted).
     const int kMaxOptimizedILBytes = 50000;
-    const int kMaxOptimizedInstructions = 16000;
-    const int kMaxOptimizedBlocks = 1600;
+    const int kMaxOptimizedInstructions = 15000;
+    const int kMaxOptimizedBlocks = 2400;
     const int kMaxOptimizedLocalReferences = 6500;
 
     /// <summary>
@@ -132,9 +138,12 @@ public sealed partial class BaselineCompiler
     /// optimization (BaselineILEmitter): the code is then generated again in
     /// the compact form.
     /// </summary>
-    public bool ExceedsOptimizationLimits =>
+    /// <summary>V8SHARP_BASELINE_IGNORE_LIMITS=1: never fall back to compact code (to calibrate the limits).</summary>
+    static readonly bool s_ignoreLimits = Environment.GetEnvironmentVariable("V8SHARP_BASELINE_IGNORE_LIMITS") == "1";
+
+    public bool ExceedsOptimizationLimits => !s_ignoreLimits && (
         _il.ILOffset > kMaxOptimizedILBytes || _il.Instructions > kMaxOptimizedInstructions ||
-        _il.BlockBoundaries > kMaxOptimizedBlocks || _il.LocalReferences > kMaxOptimizedLocalReferences;
+        _il.BlockBoundaries > kMaxOptimizedBlocks || _il.LocalReferences > kMaxOptimizedLocalReferences);
 
     /// <summary>The emitter's counts (for tracing and tests).</summary>
     internal string Statistics =>

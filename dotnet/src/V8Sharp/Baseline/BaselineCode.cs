@@ -145,8 +145,10 @@ public sealed class BaselineCode
         var compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, methodName: methodName, optimizeFully: optimizeFully,
             feedback: vector);
         compiler.GenerateCode();
+        string? fullStatistics = null;
         if (compiler.ExceedsOptimizationLimits || BaselineCompiler.s_forceCompact is not null)
         {
+            fullStatistics = compiler.Statistics;
             // RyuJIT would not optimize the method (BaselineILEmitter): emit the
             // compact form, whose bytecodes call out of line.
             compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, compact: true, methodName: methodName,
@@ -161,7 +163,7 @@ public sealed class BaselineCode
         {
             long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
             Console.WriteLine("[baseline code for " + methodName + ": bytecode=" + Bytecode.Length + " " + compiler.Statistics +
-                              " emit=" + Ms(t0, t1) + " build=" + Ms(t1, t2) + " jit=" + Ms(t2, t3) + "]");
+                              (fullStatistics is null ? "" : " (full: " + fullStatistics + ")") + " emit=" + Ms(t0, t1) + " build=" + Ms(t1, t2) + " jit=" + Ms(t2, t3) + "]");
         }
         _ilSize = ilSize;
         return _entry = entry;
