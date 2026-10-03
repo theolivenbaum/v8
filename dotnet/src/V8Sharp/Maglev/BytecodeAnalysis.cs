@@ -250,7 +250,11 @@ public sealed class BytecodeAnalysis
             int header = JumpTargetOffset(it, _constants);
             int end = jumpLoop + it.CurrentBytecodeSize();
             loops.Add((header, end, jumpLoop));
-            if (jumpLoop == OsrBailoutId) OsrEntryPoint = header;
+            // (The OSR offset of a prefixed JumpLoop may name the prefix or the bytecode after it.)
+            if (jumpLoop == OsrBailoutId || jumpLoop + it.CurrentBytecodeSize() - it.CurrentBytecodeSizeWithoutPrefix() == OsrBailoutId)
+            {
+                OsrEntryPoint = header;
+            }
         }
         // Nesting: the parent is the innermost other loop that contains the header.
         loops.Sort((a, b) => a.Header.CompareTo(b.Header));
