@@ -364,8 +364,12 @@ public sealed class ICIsolateState
 /// </summary>
 public static class ICMaps
 {
-    public sealed class PrimitiveMaps(Map stringMap, Map numberMap, Map booleanMap, Map symbolMap, Map bigIntMap)
+    public sealed class PrimitiveMaps(Map stringMap, Map numberMap, Map booleanMap, Map symbolMap, Map bigIntMap, Map nullMap,
+        Map undefinedMap)
     {
+        /// <summary>V8's null_map and undefined_map: feedback of loads and stores on null/undefined (they throw).</summary>
+        public readonly Map NullMap = nullMap;
+        public readonly Map UndefinedMap = undefinedMap;
         public readonly Map StringMap = stringMap;
         public readonly Map NumberMap = numberMap;
         public readonly Map BooleanMap = booleanMap;
@@ -378,8 +382,9 @@ public static class ICMaps
     {
         HeapObject? o = value.HeapObjectOrNull;
         if (o is JSReceiver receiver) return receiver.Map;
-        if (value.IsNullOrUndefined) return null;
         PrimitiveMaps maps = GetPrimitiveMaps(isolate, isolate.NativeContext);
+        if (value.IsUndefined) return maps.UndefinedMap;
+        if (value.IsNull) return maps.NullMap;
         if (value.IsNumber) return maps.NumberMap;
         return o switch
         {
@@ -400,7 +405,9 @@ public static class ICMaps
             NewPrimitiveMap(isolate, InstanceType.HeapNumberType, nativeContext.NumberFunction),
             NewPrimitiveMap(isolate, InstanceType.OddballType, nativeContext.BooleanFunction),
             NewPrimitiveMap(isolate, InstanceType.SymbolType, nativeContext.SymbolFunction),
-            NewPrimitiveMap(isolate, InstanceType.BigIntType, nativeContext.BigIntFunction));
+            NewPrimitiveMap(isolate, InstanceType.BigIntType, nativeContext.BigIntFunction),
+            isolate.Factory.NewMap(InstanceType.OddballType, 0),
+            isolate.Factory.NewMap(InstanceType.OddballType, 0));
         nativeContext.ICPrimitiveMaps = maps;
         return maps;
     }

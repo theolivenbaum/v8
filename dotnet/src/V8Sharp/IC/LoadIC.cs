@@ -365,7 +365,7 @@ public sealed class LoadIC : IC
         // of its properties; throw a TypeError in that case.
         if (IsAnyHas ? !obj.IsJSReceiver : obj.IsNullOrUndefined)
         {
-            if (useIc && !obj.IsNullOrUndefined)
+            if (useIc)
             {
                 // Ensure the IC state progresses.
                 UpdateLookupStartObjectMap(obj);
