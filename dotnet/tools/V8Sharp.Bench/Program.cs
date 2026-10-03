@@ -52,14 +52,16 @@ public static partial class Program
     /// <summary>V8Sharp's modes: its V8 flags for each tier configuration.</summary>
     static readonly Dictionary<string, string> V8SharpModes = new()
     {
-        [""] = "",                                      // as configured by default: Ignition + baseline IL
+        [""] = "",                                      // as configured by default
         ["jitless"] = "--jitless",                      // the interpreter only
-        ["sparkplug"] = "--sparkplug",                  // Ignition + baseline IL (tiering with V8's budgets)
+        // The same tier configurations as the oracle's modes, whatever the defaults:
+        ["sparkplug"] = "--sparkplug --no-maglev",      // Ignition + baseline IL (tiering with V8's budgets)
         ["no-sparkplug"] = "--no-sparkplug",            // the interpreter only, with compiled regexps
         ["sync-sparkplug"] = "--sparkplug --no-concurrent-sparkplug",      // baseline compiled on the main thread
         ["concurrent-sparkplug"] = "--sparkplug --concurrent-sparkplug",   // baseline compiled on a background thread
         ["always-sparkplug"] = "--always-sparkplug",    // baseline IL from the first call
-        ["maglev"] = "--maglev",                        // + the optimizing tier (Maglev, IL)
+        ["maglev"] = "--sparkplug --maglev",            // Ignition + baseline IL + the optimizing tier (Maglev, IL)
+        ["maglev-only"] = "--no-sparkplug --maglev",    // Ignition + Maglev, no baseline tier
     };
 
     public static int Main(string[] args)
