@@ -77,6 +77,15 @@ public readonly struct JSValue : IEquatable<JSValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static JSValue FromObject(HeapObject? o) => new(o, 0);
 
+    /// <summary>
+    /// An object value whose otherwise unused payload carries
+    /// <paramref name="payload"/> (the field index of a field handler in a
+    /// feedback slot: FeedbackNexus.EncodeHandler). The payload of an object
+    /// value is not part of its identity (<see cref="IsIdenticalTo"/>).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static JSValue FromObjectWithPayload(HeapObject o, long payload) => new(o, BitConverter.Int64BitsToDouble(payload));
+
     public static implicit operator JSValue(HeapObject obj) => new(obj);
 
     // ---- Type tests --------------------------------------------------------

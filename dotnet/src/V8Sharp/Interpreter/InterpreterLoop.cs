@@ -323,26 +323,33 @@ public static partial class InterpreterExecution
                         JSValue[] slots = fv.Slots;
                         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
                         if ((uint)(slot + 1) < (uint)slots.Length &&
-                            ReferenceEquals(slots[slot]._obj, Unsafe.As<JSReceiver>(o).Map) && slots[slot + 1]._obj is LoadHandler handler)
+                            ReferenceEquals(Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(slots), slot)._obj, Unsafe.As<JSReceiver>(o).Map))
                         {
-                            if (handler.OwnFieldIndex >= 0)
+                            // An own field: the index is in the handler slot's payload
+                            // (FeedbackNexus.EncodeHandler), as V8 reads a Smi handler.
+                            ref JSValue handlerSlot = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(slots), slot + 1);
+                            int field = FeedbackNexus.DecodeOwnField(handlerSlot);
+                            if (field >= 0)
                             {
-                                acc = Unsafe.As<JSObject>(o).FieldAt(handler.OwnFieldIndex);
+                                acc = Unsafe.As<JSObject>(o).FieldAt(field);
                                 ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                                 continue;
                             }
-                            if (handler.IsPrototypeConstant && handler.IsValid)
+                            if (handlerSlot._obj is LoadHandler handler)
                             {
-                                acc = handler.Data;
-                                ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                                continue;
-                            }
-                            if (handler.HandlerKind == LoadHandler.Kind.kArrayLength)
-                            {
-                                // Recorded only for JSArray maps (JSArray::kLengthOffset).
-                                acc = Unsafe.As<JSArray>(o).Length;
-                                ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                                continue;
+                                if (handler.IsPrototypeConstant && handler.IsValid)
+                                {
+                                    acc = handler.Data;
+                                    ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
+                                    continue;
+                                }
+                                if (handler.HandlerKind == LoadHandler.Kind.kArrayLength)
+                                {
+                                    // Recorded only for JSArray maps (JSArray::kLengthOffset).
+                                    acc = Unsafe.As<JSArray>(o).Length;
+                                    ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
+                                    continue;
+                                }
                             }
                         }
                     }
