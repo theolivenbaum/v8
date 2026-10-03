@@ -157,7 +157,18 @@ public abstract partial class JSString : Name
 {
     protected JSString(InstanceType instanceType) : base(instanceType) { }
 
-    public abstract int Length { get; }
+    /// <summary>
+    /// String::length. V8 reads a field of every string; here the flat case
+    /// (the common one) is a type test and a load, the rest a virtual call.
+    /// </summary>
+    public int Length
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => this is SeqString seq ? seq.Value.Length : RepresentationLength;
+    }
+
+    /// <summary>The length of a non-flat representation (see <see cref="Length"/>).</summary>
+    private protected abstract int RepresentationLength { get; }
 
     /// <summary>True once this string is the canonical copy in the string table.</summary>
     public bool IsInternalized
@@ -187,7 +198,7 @@ public abstract partial class JSString : Name
 public sealed class SeqString(string value) : JSString(InstanceType.SeqStringType)
 {
     public readonly string Value = value;
-    public override int Length => Value.Length;
+    private protected override int RepresentationLength => Value.Length;
     public override bool IsFlat => true;
     public override string Flatten() => Value;
 }
@@ -214,7 +225,7 @@ public sealed class ConsString : JSString
         _length = checked(first.Length + second.Length);
     }
 
-    public override int Length => _length;
+    private protected override int RepresentationLength => _length;
     // ConsString::IsFlat: second()->length() == 0.
     public override bool IsFlat => _flat is not null || _second is null || _second.Length == 0;
     public JSString First => _first;
@@ -331,7 +342,7 @@ public sealed class SlicedString : JSString
 
     public JSString Parent => _parent;
     public int Offset => _offset;
-    public override int Length => _length;
+    private protected override int RepresentationLength => _length;
     public override bool IsFlat => true;
 
     /// <summary>The characters, without materialising a new string.</summary>
