@@ -2675,14 +2675,22 @@ internal sealed class MaglevCodeGenerator
         il.Emit(OpCodes.Call, s_finishFastCall);
         il.Emit(OpCodes.Stloc, result);
         il.Emit(OpCodes.Leave, end);
-        il.BeginFinallyBlock();
-        il.Emit(OpCodes.Ldarg_1);
-        il.Emit(OpCodes.Ldloc, depth);
-        il.Emit(OpCodes.Ldloc, start);
-        il.Emit(OpCodes.Ldloc, saved);
-        il.Emit(OpCodes.Call, s_leaveFastFrame);
+        // The epilogue: a fault block for exceptions and inline code after the
+        // try (RyuJIT calls a finally's funclet on the normal path too when it
+        // does not clone it).
+        void Leave()
+        {
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Ldloc, depth);
+            il.Emit(OpCodes.Ldloc, start);
+            il.Emit(OpCodes.Ldloc, saved);
+            il.Emit(OpCodes.Call, s_leaveFastFrame);
+        }
+        il.BeginFaultBlock();
+        Leave();
         il.EndExceptionBlock();
         il.MarkLabel(end);
+        Leave();
         il.Emit(OpCodes.Ldloc, result);
         il.Emit(OpCodes.Ret);
         return method;

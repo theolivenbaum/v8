@@ -200,13 +200,17 @@ public static class MaglevCalls
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void LeaveFastFrame(Isolate isolate, int depth, int start, Context? saved)
     {
-        if (isolate.InterpreterFrameDepth > depth + 1) isolate.PopFramesTo(depth + 1);
+        if (isolate.InterpreterFrameDepth > depth + 1) PopFramesTo(isolate, depth + 1);
         isolate.InterpreterFrameDepth = depth;
         int top = isolate.RegisterStackTop;
         if (top > isolate.RegisterStackDirtyEnd) isolate.RegisterStackDirtyEnd = top;
         isolate.RegisterStackTop = start;
         if (!ReferenceEquals(isolate.Context, saved)) isolate.Context = saved;
     }
+
+    /// <summary>Inlined frames left above a returning frame (an exception leaving them): out of line.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void PopFramesTo(Isolate isolate, int depth) => isolate.PopFramesTo(depth);
 
     /// <summary>After the callee's code returned: the interpreter continues its frames if it deoptimized.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
