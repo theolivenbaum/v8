@@ -94,36 +94,8 @@ maglev/regress-330427711  # FAIL: optimizing-tier fidelity (Maglev port is off b
 maglev/regress-525732296  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
 maglev/regress-536945254  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
 maglev/regress-539121142  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/regress-556962428  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/resolve-promise-elide-then  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/strict-equals-receiver-or-null-or-undefined  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
 maglev/string-compare  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/truncate-int32  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-abs  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-as-number  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-as-number-large  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-bitwise  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-branch-if-root  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-branch-if-to-boolean-true  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-custom-1b  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-custom-2b  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-deopt-large  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-detached-1  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-exception-phi  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-index-into-array  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-index-into-array-large  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-iteration  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-iteration-large  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-parseint  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-phi  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-store-as-uint8clamped  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-store-into-global  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-store-into-global-large  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
 maglev/typed-array-length-store-script-context  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-store-script-context-large  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-to-boolean  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-to-number  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-to-number-large  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
 maglev/typedarray-bounds-check-elimination  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
 measure-memory  # FAIL
 measure-memory-multiple-realms  # FAIL
@@ -139,8 +111,6 @@ regress/regress-13652  # FAIL
 regress/regress-1394663  # FAIL
 regress/regress-1494164  # FAIL
 regress/regress-1502014  # TIMEOUT
-regress/regress-319722-ArrayBuffer  # FAIL
-regress/regress-319722-TypedArrays  # FAIL
 regress/regress-351926098  # FAIL
 regress/regress-353628445  # FAIL
 regress/regress-354626177  # FAIL
@@ -229,16 +199,6 @@ turbolev/instanceof  # FAIL
 turbolev/osr  # FAIL
 turbolev/regress-488090094  # FAIL
 turbolev/static-assert-fail  # PASS
-turbolev/typed-array-length-as-number-large  # FAIL
-turbolev/typed-array-length-deopt-large  # FAIL
-turbolev/typed-array-length-index-into-array-large  # FAIL
-turbolev/typed-array-length-iteration-large  # FAIL
-turbolev/typed-array-length-store-into-global-large  # FAIL
-turbolev/typed-array-length-store-script-context-large  # FAIL
-turbolev/typed-array-length-to-number-large  # FAIL
-turboshaft/checkmaps-with-migration-and-deopt-poly  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-turboshaft/checkmaps-with-migration-and-deopt-poly2  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-turboshaft/checkmaps-with-migration-and-deopt-poly3  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
 turboshaft/regress-539984773  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
 typedarray-resizablearraybuffer-atomics  # FAIL
 verify-assert-false  # FAIL
