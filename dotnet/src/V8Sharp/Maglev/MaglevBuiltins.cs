@@ -470,36 +470,88 @@ public static class MaglevBuiltins
             : isJSArray != 0 ? length + 1L : elementsLength;
         if ((uint)index >= limit) return default;
         if (o.Elements.IsCowArray) JSObject.EnsureWritableFastElements(isolate, o);
-        FixedArrayBase elements = o.Elements;
-        if (index >= elements.Length)
-        {
-            // Grow as Runtime_GrowArrayElements / the CSA grow path (new capacity from NewElementsCapacity).
-            if (index >= FixedArrayBase.kMaxLength) return default;
-            int capacity = JSObject.NewElementsCapacity(index + 1);
-            if (ElementsKinds.IsDoubleElementsKind(e))
-            {
-                var grown = new FixedDoubleArray(capacity);
-                // An empty double array's elements are the empty FixedArray.
-                int oldLength = 0;
-                if (elements is FixedDoubleArray old)
-                {
-                    Array.Copy(old._data, grown._data, old.Length);
-                    oldLength = old.Length;
-                }
-                grown._data.AsSpan(oldLength).Fill(FixedDoubleArray.HoleNaN);
-                o.Elements = grown;
-            }
-            else
-            {
-                var grown = new FixedArray(capacity);
-                var old = (FixedArray)elements;
-                Array.Copy(old._data, grown._data, old.Length);
-                grown._data.AsSpan(old.Length).Fill(JSValue.TheHole);
-                o.Elements = grown;
-            }
-        }
+        if (index >= o.Elements.Length && !GrowFastElements(o, e, index + 1)) return default;
         if (isJSArray != 0 && index >= length) Unsafe.As<JSArray>(o).Length = JSValue.FromInt(index + 1);
         return JSValue.FromObject(o.Elements);
+    }
+
+    /// <summary>
+    /// MaybeGrowFastElements of TryReduceArrayPrototypePush: room for
+    /// <paramref name="count"/> elements appended at <paramref name="oldLength"/>
+    /// of a map-checked fast JSArray, and the new length. Returns the writable
+    /// elements, or undefined to deoptimize (the length would leave the Smi range).
+    /// </summary>
+    public static JSValue MaybeGrowFastElementsForPush(Isolate isolate, JSValue obj, int oldLength, int count)
+    {
+        var a = Unsafe.As<JSArray>(obj._obj!);
+        long newLength = (long)oldLength + count;
+        if (newLength > JSValue.SmiMaxValue || newLength >= FixedArrayBase.kMaxLength) return default;
+        if (a.Elements.IsCowArray) JSObject.EnsureWritableFastElements(isolate, a);
+        if (newLength > a.Elements.Length && !GrowFastElements(a, a.Map.ElementsKind, (int)newLength)) return default;
+        a.Length = JSValue.FromInt((int)newLength);
+        return JSValue.FromObject(a.Elements);
+    }
+
+    /// <summary>Grows fast elements to hold <paramref name="needed"/> elements (Runtime_GrowArrayElements / the CSA grow path).</summary>
+    static bool GrowFastElements(JSObject o, ElementsKind e, int needed)
+    {
+        if (needed > FixedArrayBase.kMaxLength) return false;
+        FixedArrayBase elements = o.Elements;
+        // New capacity from NewElementsCapacity.
+        int capacity = JSObject.NewElementsCapacity(needed);
+        if (ElementsKinds.IsDoubleElementsKind(e))
+        {
+            var grown = new FixedDoubleArray(capacity);
+            // An empty double array's elements are the empty FixedArray.
+            int oldLength = 0;
+            if (elements is FixedDoubleArray old)
+            {
+                Array.Copy(old._data, grown._data, old.Length);
+                oldLength = old.Length;
+            }
+            grown._data.AsSpan(oldLength).Fill(FixedDoubleArray.HoleNaN);
+            o.Elements = grown;
+        }
+        else
+        {
+            var grown = new FixedArray(capacity);
+            var old = (FixedArray)elements;
+            Array.Copy(old._data, grown._data, old.Length);
+            grown._data.AsSpan(old.Length).Fill(JSValue.TheHole);
+            o.Elements = grown;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// TryReduceArrayPrototypePop's nodes for a map-checked fast JSArray: the
+    /// last element (a hole is undefined) with the hole stored in its place and
+    /// the length decremented; undefined for an empty array.
+    /// </summary>
+    public static JSValue ArrayPop(Isolate isolate, JSValue obj)
+    {
+        var a = Unsafe.As<JSArray>(obj._obj!);
+        int length = (int)a.Length._num;
+        if (length == 0) return JSValue.Undefined;
+        int newLength = length - 1;
+        ElementsKind kind = a.Map.ElementsKind;
+        JSValue value;
+        if (ElementsKinds.IsDoubleElementsKind(kind))
+        {
+            var elements = Unsafe.As<FixedDoubleArray>(a.Elements);
+            value = elements.IsTheHole(newLength) ? JSValue.Undefined : JSValue.FromNumber(elements._data[newLength]);
+            elements.SetTheHole(newLength);
+        }
+        else
+        {
+            if (a.Elements.IsCowArray) JSObject.EnsureWritableFastElements(isolate, a);
+            JSValue[] data = Unsafe.As<FixedArray>(a.Elements)._data;
+            value = data[newLength];
+            if (value.IsTheHole) value = JSValue.Undefined;
+            data[newLength] = JSValue.TheHole;
+        }
+        a.Length = JSValue.FromInt(newLength);
+        return value;
     }
 
     // ---- Strings -------------------------------------------------------------------------------------------

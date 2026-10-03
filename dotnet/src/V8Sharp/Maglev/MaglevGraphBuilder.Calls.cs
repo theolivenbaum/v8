@@ -373,6 +373,10 @@ public sealed partial class MaglevGraphBuilder
                 case Builtin.MathMax:
                 case Builtin.MathMin:
                     return ReduceMathMinMax(id == Builtin.MathMax, args);
+                case Builtin.ArrayPrototypePush:
+                    return TryReduceArrayPrototypePush(receiver, args);
+                case Builtin.ArrayPrototypePop:
+                    return TryReduceArrayPrototypePop(receiver);
                 case Builtin.MathPow:
                     if (args.Length < 2) return null;
                     return Float64Binary(Opcode.Float64Exponentiate, GetFloat64(args[0]), GetFloat64(args[1]));

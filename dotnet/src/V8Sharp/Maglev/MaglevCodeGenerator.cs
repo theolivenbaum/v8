@@ -1606,9 +1606,18 @@ internal sealed class MaglevCodeGenerator
                 _il.Emit(OpCodes.Ldarg_1);
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
-                _il.Emit(OpCodes.Ldc_I4, node.Int0);
-                _il.Emit(OpCodes.Ldc_I4, node.Int1);
-                Call(nameof(MaglevBuiltins.MaybeGrowFastElements));
+                if (node.Int2 > 0)
+                {
+                    // Array.prototype.push: append Int2 elements at the old length.
+                    _il.Emit(OpCodes.Ldc_I4, node.Int2);
+                    Call(nameof(MaglevBuiltins.MaybeGrowFastElementsForPush));
+                }
+                else
+                {
+                    _il.Emit(OpCodes.Ldc_I4, node.Int0);
+                    _il.Emit(OpCodes.Ldc_I4, node.Int1);
+                    Call(nameof(MaglevBuiltins.MaybeGrowFastElements));
+                }
                 _il.Emit(OpCodes.Stloc, _tmpValue);
                 _il.Emit(OpCodes.Ldloc, _tmpValue);
                 _il.Emit(OpCodes.Ldfld, s_obj);
