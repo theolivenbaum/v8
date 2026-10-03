@@ -398,8 +398,13 @@ for now, to be revisited when the reason goes away.
   the name's primitive (`CheckValueEqualsString` with the primitive) are one
   node each where V8 builds a branch and a phi.
 - No escape analysis (except the arguments object forwarded to
-  Function.prototype.apply), loop peeling, LICM, CSE, truncation pass, or
+  Function.prototype.apply), loop peeling, LICM, CSE, range analysis, or
   DataView/string builder reductions yet.
+- Truncation pass (maglev-truncation.cc): int32 additions, subtractions and
+  multiplications whose uses all truncate become wrapping operations when
+  the exact result is a safe integer; without range analysis the bound
+  comes from the inputs' static ranges (constants, masks, shifts; int32
+  otherwise), and Float64 operations are not truncated.
 - Generators: the generator fields (context, input_or_debug_pos,
   continuation) are read and written by dedicated nodes
   (`LoadGeneratorField`, `StoreGeneratorContinuation`) where V8 uses

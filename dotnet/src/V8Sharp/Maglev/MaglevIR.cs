@@ -156,6 +156,12 @@ public enum Opcode : ushort
     // ---- Int32 ------------------------------------------------------------------
     Int32AddWithOverflow,
     Int32SubtractWithOverflow,
+    /// <summary>Int32Add: the wrapping sum (a truncated Int32AddWithOverflow, MaglevTruncation).</summary>
+    Int32Add,
+    /// <summary>Int32Subtract: the wrapping difference (MaglevTruncation).</summary>
+    Int32Subtract,
+    /// <summary>Int32Multiply: the wrapping product (MaglevTruncation).</summary>
+    Int32Multiply,
     Int32MultiplyWithOverflow,
     Int32DivideWithOverflow,
     Int32ModulusWithOverflow,

@@ -1058,6 +1058,14 @@ internal sealed class MaglevCodeGenerator
             case Opcode.Int32MultiplyWithOverflow:
                 EmitInt32Overflowing(node);
                 return;
+            case Opcode.Int32Add:
+            case Opcode.Int32Subtract:
+            case Opcode.Int32Multiply:
+                Load(node.Inputs[0], ValueRepresentation.kInt32);
+                Load(node.Inputs[1], ValueRepresentation.kInt32);
+                _il.Emit(node.Opcode == Opcode.Int32Add ? OpCodes.Add : node.Opcode == Opcode.Int32Subtract ? OpCodes.Sub : OpCodes.Mul);
+                Store(v!);
+                return;
             case Opcode.Int32DivideWithOverflow:
             case Opcode.Int32ModulusWithOverflow:
                 Load(node.Inputs[0], ValueRepresentation.kInt32);

@@ -112,6 +112,7 @@ public static class MaglevCompiler
             builder.Build();
             FinalizeGraph(info.Graph);
             if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph);
+            if (isolate.Flags.maglev_truncation) MaglevTruncation.Run(info.Graph);
             ComputeUseCounts(info.Graph);
             ElideArgumentsObjects(info.Graph);
             CheckStackSlots(info.Graph);
@@ -193,6 +194,7 @@ public static class MaglevCompiler
             builder.Build();
             FinalizeGraph(info.Graph);
             if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph);
+            if (isolate.Flags.maglev_truncation) MaglevTruncation.Run(info.Graph);
             ComputeUseCounts(info.Graph);
             ElideArgumentsObjects(info.Graph);
             CheckStackSlots(info.Graph);

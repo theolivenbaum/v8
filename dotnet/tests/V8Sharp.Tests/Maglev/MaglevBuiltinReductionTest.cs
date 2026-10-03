@@ -30,11 +30,45 @@ public class MaglevBuiltinReductionTest
           return out.join();
         })()
         """,
+        // Truncated int32 arithmetic (MaglevTruncation) around overflows, and
+        // values also used untruncated (not truncated).
+        """
+        (function() {
+          function h(a, b, c) { var x = a + b, y = x * c, z = (a - b) * 3; return [(x + y) | 0, (y ^ z) >>> 1, x, (z << 2) | 0].join(); }
+          function m(x, e) { var xh = x >> 14, l = e & 0x3fff; return (xh * l + 7) & 0xffff; }
+          var out = [];
+          for (var k = 0; k < 60; k++) {
+            var big = k > 40 ? 2147483000 : k;
+            out.push(h(big, k * 1000, k & 7), h(-big, big, 3), m(big * 100 | 0, k * 31));
+          }
+          return out.join(';');
+        })()
+        """,
     };
 
     [Theory]
     [MemberData(nameof(Snippets))]
     public void SameResultWhenOptimized(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
+    [Fact]
+    public void TruncatedInt32ArithmeticDoesNotDeoptOnOverflow()
+    {
+        // MaglevTruncation (mjsunit/maglev/truncate-int32, int32-mul-truncation):
+        // additions and range-bounded multiplications used only truncated wrap.
+        Assert.Equal("10,-1073741827,0,-1,-128,8", MaglevCompilerTest.Run("--maglev", """
+            function add(a, b) { let x = a + b + b; return x | 0; }
+            function mul(x, e) { let xh = x >> 14, l = e & 0x3fff; return (xh * l + xh * l) & 0xff; }
+            function both(a, b) { let x = a + b; return [x | 0, x]; }
+            %PrepareFunctionForOptimization(add);
+            %PrepareFunctionForOptimization(mul);
+            add(0, 1); mul(268435455, 12345); mul(1000, 2000);
+            %OptimizeMaglevOnNextCall(add);
+            %OptimizeMaglevOnNextCall(mul);
+            var r = [add(6, 2), add(1073741823, 1073741823), mul(-268435455, 0), ~0, mul(-268435455, 16383) - 128 | 0];
+            r.push((%GetOptimizationStatus(add) & %GetOptimizationStatus(mul)) & 8);
+            r.join();
+            """));
+    }
 
     [Fact]
     public void FunctionsWithTooManyLiveValuesAreNotOptimized()
