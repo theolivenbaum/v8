@@ -209,20 +209,32 @@ public static partial class Program
                           Math.max(bs[b].minIterations, Math.ceil(bs[b].deterministicIterations / scale));
                     }
                   }
+                  var starts = {};
                   if (__benchSteady) {
-                    // octane-steady: one unmeasured pass first, so the measured
-                    // one runs warm (tier-1 code, filled caches and feedback).
-                    BenchmarkSuite.RunSuites({
-                      NotifyResult: function (name, result) { },
-                      NotifyError: function (name, error) { print(name + '(Error): ' + error); },
-                      NotifyScore: function (score) { }
-                    });
+                    // octane-steady: within ONE pass, each benchmark first runs its
+                    // own iterations unmeasured (as many as it then measures), so
+                    // the measured part runs warm (tier-1 code, filled caches and
+                    // feedback). Running the whole suite twice instead breaks
+                    // benchmarks whose tearDown clears state the next setUp needs
+                    // (Box2D, Typescript, Gameboy).
+                    for (var s2 = 0; s2 < BenchmarkSuite.suites.length; s2++) {
+                      var bs2 = BenchmarkSuite.suites[s2].benchmarks;
+                      for (var b2 = 0; b2 < bs2.length; b2++) (function (bm) {
+                        var warm = bm.deterministicIterations, n = 0, run = bm.run;
+                        bm.deterministicIterations = warm * 2;
+                        bm.run = function () {
+                          if (n++ === warm) starts[bm.name] = cpuTimeMs();
+                          return run.apply(this, arguments);
+                        };
+                      })(bs2[b2]);
+                    }
                   }
                   var last = cpuTimeMs();
                   BenchmarkSuite.RunSuites({
                     NotifyResult: function (name, result) {
                       var now = cpuTimeMs();
-                      print(name + '(Score): ' + (1e6 / (now - last)));
+                      var from = starts[name] !== undefined ? starts[name] : last;
+                      print(name + '(Score): ' + (1e6 / (now - from)));
                       last = now;
                     },
                     NotifyError: function (name, error) { print(name + '(Error): ' + error); },
