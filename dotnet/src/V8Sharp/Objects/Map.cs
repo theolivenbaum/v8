@@ -32,6 +32,17 @@ public sealed class Map : HeapObject
 
     // ---- Fields ---------------------------------------------------------------
 
+    /// <summary>
+    /// The map's hash for the stub cache (StubCache's offsets), in place of
+    /// V8's map address bits: a managed object has no stable address, and its
+    /// identity hash (RuntimeHelpers.GetHashCode) is a runtime call on every
+    /// megamorphic access. Spread by the golden ratio over a counter; a race
+    /// between threads creating maps only repeats a value.
+    /// </summary>
+    internal readonly uint StubCacheHash = unchecked((uint)++s_stubCacheHashCounter * 0x9E3779B9u);
+
+    static int s_stubCacheHashCounter;
+
     /// <summary>The instance type of this map's instances (map->instance_type()).</summary>
     public new InstanceType InstanceType
     {

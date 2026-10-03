@@ -295,6 +295,12 @@ public static partial class InterpreterExecution
                         }
                     }
                 }
+                else if (ReferenceEquals(feedback, ReadOnlyRoots.megamorphic_symbol) && isolate.ICState is { } icState)
+                {
+                    // LoadIC_Megamorphic: TryProbeStubCache.
+                    var name = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
+                    found = icState.LoadStubCache.Get(name, map);
+                }
                 if (found is LoadHandler handler)
                 {
                     if (handler.OwnFieldIndex >= 0)
@@ -468,6 +474,13 @@ public static partial class InterpreterExecution
                             break;
                         }
                     }
+                }
+                else if (ReferenceEquals(feedback, ReadOnlyRoots.megamorphic_symbol) && isolate.ICState is { } icState)
+                {
+                    // StoreIC_Megamorphic: TryProbeStubCache (SetNamedProperty is
+                    // never a DefineNamedOwn slot, so the store stub cache).
+                    var name = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
+                    found = icState.StoreStubCache.Get(name, map);
                 }
                 if (found is StoreHandler handler)
                 {
