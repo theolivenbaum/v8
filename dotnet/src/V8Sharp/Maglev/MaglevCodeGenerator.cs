@@ -217,7 +217,7 @@ internal sealed class MaglevCodeGenerator
         }
 
         MethodBuilder? fastCall = DefineFastCallEntry();
-        if (_optimizeFully || _il.ILOffset <= s_aggressiveMaxIL)
+        if (_optimizeFully || _il.ILOffset <= s_aggressiveMaxIL || _il.ILOffset > kAggressiveILBytes)
         {
             _method.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
             fastCall?.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
@@ -283,12 +283,19 @@ internal sealed class MaglevCodeGenerator
     }
 
     /// <summary>
-    /// The most IL a tiering compile may produce: RyuJIT compiles methods over
-    /// 60000 IL bytes, 20000 IL instructions or 8000 local references with
-    /// MinOpts; Maglev's IL averages about 2.5 bytes per instruction and 5
-    /// per local reference.
+    /// The most IL a tiering compile may produce. RyuJIT switches a tier-0
+    /// compile of a method over 60000 IL bytes, 20000 IL instructions or 8000
+    /// local references to MinOpts (it never tiers up when the code is an OSR
+    /// loop); methods over <see cref="kAggressiveILBytes"/> are therefore
+    /// compiled fully optimized at once (AggressiveOptimization, as the
+    /// concurrent compiles are), which these limits do not apply to (measured:
+    /// FullOpts up to 47000 bytes of Maglev IL). The limit bounds RyuJIT's
+    /// compile time.
     /// </summary>
-    static readonly int kMaxOptimizedILBytes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_IL"), out int maxIL) ? maxIL : 36000;
+    static readonly int kMaxOptimizedILBytes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_IL"), out int maxIL) ? maxIL : 60000;
+
+    /// <summary>Methods with more IL are compiled with AggressiveOptimization (see kMaxOptimizedILBytes).</summary>
+    const int kAggressiveILBytes = 20000;
 
     // V8SHARP_MAGLEV_SHARE_LOCALS=0 gives every value its own IL local (for comparison).
     static readonly bool s_shareLocals = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_SHARE_LOCALS") != "0";
