@@ -297,7 +297,13 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   released with the frame. Otherwise it changes nothing and the handler takes
   `EnterInline` (the general entry, which other call sites such as
   `f.call`, the general `f.apply` and `new` use), which handles interrupts,
-  overflow, feedback allocation and receiver conversion. A return (`ReturnInline`) restores
+  overflow, feedback allocation and receiver conversion. `new` has the same
+  split: `TryConstructFast` (a monomorphic ordinary constructor that is its
+  own new.target, an initial map in fast mode) checks everything, allocates
+  the receiver (FastNewObject, the one call) and enters through the shared
+  `EnterFastCore` with the construct stub's slots reserved below the frame,
+  the `Constructor` flag on the record and new.target in its register;
+  `TryPushConstructFrame` is the general construct entry. A return (`ReturnInline`) restores
   `Fp`, `FrameIndex`, `Pc` and the resume refs from the caller's record (the
   context comes from the caller's slot), keeps the loop's accumulator as the
   result (a construct frame's receiver replaces it), and leaves the callee's
@@ -360,7 +366,9 @@ V8 exactly:
   `Star` likewise runs a following `Ldar` (a V8Sharp addition). The frequent
   Wide forms of huge functions (register moves, context loads, keyed and
   named loads, keyed and named stores, Smi arithmetic, `JumpLoop`) and
-  the frequent constant-pool jumps are decoded by the single-scale loop itself; the rest
+  the frequent constant-pool jumps are decoded by the single-scale loop itself,
+  and the Wide calls and `Construct` run the single-scale call handlers
+  (`WideCall`; the handlers enter a callee for both scales); the rest
   of the prefixed bytecodes run one step in `Loop<DoubleScale>` /
   `Loop<QuadrupleScale>` (`RunPrefixed`). The loop is compiled once, at full
   optimization, on its first call, so every class whose statics it reads

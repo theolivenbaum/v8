@@ -23,6 +23,10 @@ for now, to be revisited when the reason goes away.
 - No Smi/HeapNumber distinction in `JSValue`; `IsSmi` is computed from the
   value (architecture.md section 3). So `%IsSmi(%AllocateHeapNumberWithValue(1))`
   is true (mjsunit call-intrinsic-fuzzing fails on it).
+- Host configuration, not engine behaviour: V8Sharp.Bench runs V8Sharp with
+  the .NET GC's non-region write barrier (`DOTNET_GCWriteBarrier=3`), as V8's
+  stack stores need no barrier at all and the register stack is an old,
+  pinned array (tools/V8Sharp.Bench/README.md). Other hosts may set it too.
 
 ## V8Sharp.Base (numbers, math, unicode, hashing)
 
