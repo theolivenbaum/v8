@@ -30,7 +30,6 @@ internal sealed class BaselineAssembler
     readonly BaselineILEmitter _il;
 
     public readonly LocalBuilder FpRef;       // ref JSValue: the slot at fp
-    public readonly LocalBuilder Frame;       // ref InterpreterFrameRecord
     public readonly LocalBuilder Acc;         // JSValue
     public readonly LocalBuilder Context;     // Context
     public readonly LocalBuilder Fv;          // FeedbackVector
@@ -45,7 +44,6 @@ internal sealed class BaselineAssembler
     {
         _il = il;
         FpRef = il.DeclareLocal(typeof(JSValue).MakeByRefType());
-        Frame = il.DeclareLocal(typeof(InterpreterFrameRecord).MakeByRefType());
         Acc = il.DeclareLocal(typeof(JSValue));
         Context = il.DeclareLocal(typeof(Context));
         Fv = il.DeclareLocal(typeof(FeedbackVector));

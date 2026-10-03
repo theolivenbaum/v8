@@ -270,17 +270,9 @@ public sealed partial class BaselineCompiler
     // ---- Prologue ---------------------------------------------------------------------------------
 
     static readonly FieldInfo s_registerStack = typeof(V8Sharp.Isolate).GetField(nameof(V8Sharp.Isolate.RegisterStack))!;
-    static readonly MethodInfo s_interpreterFrames = typeof(V8Sharp.Isolate).GetProperty(nameof(V8Sharp.Isolate.InterpreterFrames))!.GetMethod!;
     static readonly FieldInfo s_stFp = typeof(InterpreterState).GetField(nameof(InterpreterState.Fp))!;
-    static readonly FieldInfo s_stFrameIndex = typeof(InterpreterState).GetField(nameof(InterpreterState.FrameIndex))!;
-    static readonly MethodInfo s_stFunction = typeof(InterpreterState).GetProperty(nameof(InterpreterState.Function))!.GetMethod!;
-    static readonly FieldInfo s_constantPoolValues = typeof(BytecodeArray).GetField(nameof(BytecodeArray.ConstantPoolValues))!;
-    static readonly MethodInfo s_stBytecode = typeof(InterpreterState).GetProperty(nameof(InterpreterState.Bytecode))!.GetMethod!;
     static readonly FieldInfo s_stAccumulator = typeof(InterpreterState).GetField(nameof(InterpreterState.Accumulator))!;
-    static readonly MethodInfo s_stContext = typeof(InterpreterState).GetProperty(nameof(InterpreterState.Context))!.GetMethod!;
-    static readonly MethodInfo s_stFeedbackVector = typeof(InterpreterState).GetProperty(nameof(InterpreterState.FeedbackVector))!.GetMethod!;
     static readonly FieldInfo s_stPc = typeof(InterpreterState).GetField(nameof(InterpreterState.Pc))!;
-    static readonly MethodInfo s_bytecodes = typeof(BytecodeArray).GetProperty(nameof(BytecodeArray.Bytecodes))!.GetMethod!;
 
     /// <summary>
     /// BaselineCompiler::Prologue. The frame itself was built by the entry
@@ -301,24 +293,16 @@ public sealed partial class BaselineCompiler
         il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFp);
         il.Emit(OpCodes.Stloc, _masm.Fp);
-        // frame = ref isolate.InterpreterFrames[st.FrameIndex]
-        il.Emit(OpCodes.Ldarg_1);
-        il.Emit(OpCodes.Call, s_interpreterFrames);
-        il.Emit(OpCodes.Ldarg_2);
-        il.Emit(OpCodes.Ldfld, s_stFrameIndex);
-        il.Emit(OpCodes.Ldelema, typeof(InterpreterFrameRecord));
-        il.Emit(OpCodes.Stloc, _masm.Frame);
-        il.Emit(OpCodes.Ldarg_2);
-        il.Emit(OpCodes.Call, s_stFunction);
+        // The closure, from its frame slot; the constant pool and the bytecodes
+        // from the code object (the method's first argument), which holds them
+        // for the bytecode it was compiled from.
+        LoadFrameSlotObject(InterpreterRuntime.kClosureOffset);
         il.Emit(OpCodes.Stloc, _masm.Function);
-        // (The entry materialized the constant pool.)
-        il.Emit(OpCodes.Ldarg_2);
-        il.Emit(OpCodes.Call, s_stBytecode);
-        il.Emit(OpCodes.Ldfld, s_constantPoolValues);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldfld, s_codeConstants);
         il.Emit(OpCodes.Stloc, _masm.Constants);
-        il.Emit(OpCodes.Ldarg_2);
-        il.Emit(OpCodes.Call, s_stBytecode);
-        il.Emit(OpCodes.Callvirt, s_bytecodes);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldfld, s_codeBytecodes);
         il.Emit(OpCodes.Stloc, _masm.Code);
 
         // Re-entry (after a Throw dispatched to a handler of this frame): the
@@ -328,11 +312,9 @@ public sealed partial class BaselineCompiler
         il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stAccumulator);
         il.Emit(OpCodes.Stloc, _masm.Acc);
-        il.Emit(OpCodes.Ldarg_2);
-        il.Emit(OpCodes.Call, s_stContext);
+        LoadFrameSlotObject(InterpreterRuntime.kContextOffset);
         il.Emit(OpCodes.Stloc, _masm.Context);
-        il.Emit(OpCodes.Ldarg_2);
-        il.Emit(OpCodes.Call, s_stFeedbackVector);
+        LoadFrameSlotObject(InterpreterRuntime.kFeedbackVectorOffset);
         il.Emit(OpCodes.Stloc, _masm.Fv);
         // Baseline frames always have a feedback vector (Runtime_InstallBaselineCode).
         il.Emit(OpCodes.Ldloc, _masm.Fv);
@@ -385,6 +367,20 @@ public sealed partial class BaselineCompiler
             }
             il.Emit(OpCodes.Br, _labels[offset]);
         }
+    }
+
+    static readonly FieldInfo s_codeConstants = typeof(BaselineCode).GetField(nameof(BaselineCode.Constants))!;
+    static readonly FieldInfo s_codeBytecodes = typeof(BaselineCode).GetField(nameof(BaselineCode.Bytecodes))!;
+
+    /// <summary>
+    /// Pushes the object half of the fixed frame slot at <paramref name="offset"/>
+    /// (the closure, context or feedback vector, which the entry stored; the
+    /// IL takes it as the local's type, as InterpreterRuntime.Frame* do with Unsafe.As).
+    /// </summary>
+    void LoadFrameSlotObject(int offset)
+    {
+        _masm.LoadFrameSlotAddress(offset);
+        _il.Emit(OpCodes.Ldfld, s_obj);
     }
 
     // ---- Operand helpers (BaselineCompiler::RegisterOperand, Constant, Uint ...) --------------------------

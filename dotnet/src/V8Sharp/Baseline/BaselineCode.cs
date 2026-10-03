@@ -81,6 +81,14 @@ public sealed class BaselineCode
     // What a call needs to know about the callee (BaselineCalls), read from
     // the code object instead of the SharedFunctionInfo and the BytecodeArray.
 
+    /// <summary>
+    /// The materialized constant pool and the bytecodes of <see cref="Bytecode"/>,
+    /// which the code's prologue loads from its code object (set when the code
+    /// is generated; the constant pool is materialized by then).
+    /// </summary>
+    public JSValue[]? Constants;
+    public byte[]? Bytecodes;
+
     /// <summary>The bytecode's formal parameter count (without the receiver).</summary>
     public readonly int FormalParameterCount;
 
@@ -130,6 +138,8 @@ public sealed class BaselineCode
 
     BaselineCodeEntry Generate(string methodName, bool prepare, FeedbackVector? vector)
     {
+        Constants = Bytecode.ConstantPoolValues ?? throw new InvalidOperationException("constant pool not materialized");
+        Bytecodes = Bytecode.Bytecodes;
         bool optimizeFully = prepare && !s_tieredConcurrentCode;
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         var compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, methodName: methodName, optimizeFully: optimizeFully,
