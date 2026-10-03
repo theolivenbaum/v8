@@ -118,11 +118,12 @@ for now, to be revisited when the reason goes away.
   origin options of unnamed scripts). Eval cache: keeps only the
   SharedFunctionInfo (no FeedbackCell per native context); an entry unused
   between two full collections is demoted to a weak reference (hits while
-  the eval's closures are alive) rather than dropped; sources over 16K
-  characters are cached weakly when first compiled and strongly when
-  compiled again (V8 caches every source strongly; holding large distinct
+  the eval's closures are alive) rather than dropped; a source over 16K
+  characters is only marked as seen when first compiled and cached when
+  compiled again, so a repeated large eval hits from its third evaluation
+  (V8 caches every source on the first compile; holding large distinct
   sources alive across gen-2 collections cost 25-30% on large distinct
-  evals).
+  evals, and holding them weakly 7% on micro:compile CompilePdfJS).
 - Parsing: VariableMap keeps up to 8 entries in an insertion-ordered array
   searched by identity, allocated on first use, plus a hash index beyond 8
   (V8: a ZoneHashMap of 8 entries).

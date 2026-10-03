@@ -257,8 +257,10 @@ public sealed class CompilationCacheEval
     /// .NET GC that makes every gen-2 collection in between mark it: compiling
     /// large distinct sources through eval (the compile micro-benchmarks on
     /// Octane's PdfJS and TypeScript sources) ran 25-30% slower with them
-    /// cached. A source longer than this is cached weakly when first compiled
-    /// (it hits while its code is alive) and strongly when compiled again.
+    /// cached, and 7% slower on PdfJS with them held weakly. A source longer
+    /// than this is only marked as seen when first compiled and cached
+    /// strongly when compiled again before the next full collection, so a
+    /// repeated large eval hits from its third evaluation (V8: its second).
     /// </summary>
     public const int kMaxSourceLength = 16 * 1024;
 
@@ -321,8 +323,9 @@ public sealed class CompilationCacheEval
             ref Entry? head = ref CollectionsMarshal.GetValueRefOrAddDefault(_table, key, out bool exists);
             if (exists)
             {
-                // A matching entry, or one whose code died (this source, or one with
-                // the same hash, was compiled before): hold the new result strongly.
+                // A matching entry, a seen marker or one whose code died (this
+                // source, or one with the same hash, was compiled before): hold the
+                // new result strongly.
                 for (Entry? e = head; e is not null; e = e.Next)
                 {
                     if (e.Target is { } other && !SourceEquals(other, source)) continue;
@@ -332,9 +335,10 @@ public sealed class CompilationCacheEval
                     return;
                 }
             }
+            // A large source is only marked as seen (an entry without a target,
+            // dropped at the next age); compiled again, it is held strongly.
             var entry = new Entry { Next = head };
             if (source.Length <= kMaxSourceLength) entry.Shared = shared;
-            else entry.Weak = new WeakReference<SharedFunctionInfo>(shared);
             head = entry;
             if (_table.Count > kCapacity) EnsureCapacity();
         }
@@ -355,7 +359,9 @@ public sealed class CompilationCacheEval
             Entry? head = pair.Value, previous = null;
             for (Entry? e = head; e is not null; e = e.Next)
             {
-                if (e.Target is null)
+                // Dead: a weak entry whose code died, or a seen marker unused
+                // since the previous age.
+                if (e.Target is null && !(e.Weak is null && e.Used))
                 {
                     if (previous is null) head = e.Next; else previous.Next = e.Next;
                 }
@@ -370,14 +376,16 @@ public sealed class CompilationCacheEval
 
     /// <summary>
     /// CompilationCacheEval::Age, run when a full collection happened since the
-    /// last call: entries not used since the previous age are demoted to weak
-    /// references; entries whose code died go.
+    /// last call: entries whose code died and seen markers unused since the
+    /// previous age go; entries not used since the previous age are demoted to
+    /// weak references.
     /// </summary>
     void MaybeAge()
     {
         int gen2Count = GC.CollectionCount(2);
         if (gen2Count == _gen2Count) return;
         _gen2Count = gen2Count;
+        RemoveDeadEntries();
         foreach (Entry head in _table.Values)
         {
             for (Entry? e = head; e is not null; e = e.Next)
@@ -390,7 +398,6 @@ public sealed class CompilationCacheEval
                 e.Used = false;
             }
         }
-        RemoveDeadEntries();
     }
 
     /// <summary>For tests: ages the table as a full collection would.</summary>

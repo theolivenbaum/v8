@@ -769,8 +769,8 @@ offsets, origin options; scripts and modules), so compiling the same
 script again reuses its Script and SharedFunctionInfos (d8 load() of one
 file, Realm.eval of one source in several realms). The eval cache now
 keys by source hash (no strong copy of the source), demotes unused
-entries to weak references at full collections, and caches sources over
-16K weakly on first compile, strongly on the second. Tests:
+entries to weak references at full collections, and caches a source over
+16K when it is compiled a second time (marked as seen on the first). Tests:
 tests/V8Sharp.Tests/Codegen/CompilationCacheUnitTest.cs. Finding: Octane
 CodeLoad does not hit the compilation cache in V8 either: every run
 evaluates a source salted with a new value (the steady harness does not

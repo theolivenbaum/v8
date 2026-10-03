@@ -183,8 +183,8 @@ public class CompilationCacheUnitTest : TestWithContext
         Assert.Same(m1.GetSharedFunctionInfo(), m2.GetSharedFunctionInfo());
     }
 
-    // The eval cache holds a large source weakly when first compiled: it hits
-    // while the eval's code is alive, and is held strongly once compiled again.
+    // The eval cache marks a large source as seen when first compiled and
+    // holds it strongly once compiled again (V8: cached on the first compile).
     [Fact]
     public void EvalCacheLargeSource()
     {
@@ -192,10 +192,13 @@ public class CompilationCacheUnitTest : TestWithContext
         Run("var bigSource = " + QuoteJs(body) + ";");
         Run("var big1 = (0, eval)(bigSource + 'big');");
         Run("var big2 = (0, eval)(bigSource + 'big');");
+        Run("var big3 = (0, eval)(bigSource + 'big');");
         var big1 = Run("big1").As<JSFunction>();
         var big2 = Run("big2").As<JSFunction>();
-        Assert.Same(big1.Shared, big2.Shared);
-        Assert.Equal(7, Run("big2()").Number);
+        var big3 = Run("big3").As<JSFunction>();
+        Assert.NotSame(big1.Shared, big2.Shared);
+        Assert.Same(big2.Shared, big3.Shared);
+        Assert.Equal(7, Run("big3()").Number);
     }
 
     [Fact]
