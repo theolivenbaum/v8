@@ -21,7 +21,16 @@ namespace V8Sharp;
 /// <summary>V8's StringTable.</summary>
 public sealed class StringTable
 {
-    SeqString?[] _slots;
+    // A slot keeps the string's hash field beside it, so a probe that meets
+    // another string compares the hashes without loading that string (the
+    // table holds every internalized string, far more than the caches hold).
+    struct Slot
+    {
+        public uint Hash;
+        public SeqString? String;
+    }
+
+    Slot[] _slots;
     int _count;
 
     public StringTable(Isolate isolate)
@@ -29,7 +38,7 @@ public sealed class StringTable
         SeqString[] roots = RootsBuilder.AllStrings();
         int capacity = 1024;
         while (capacity < roots.Length * 4) capacity *= 2;
-        _slots = new SeqString?[capacity];
+        _slots = new Slot[capacity];
         foreach (SeqString s in roots)
         {
             uint hash = s.EnsureRawHash();
@@ -47,14 +56,14 @@ public sealed class StringTable
     /// <summary>StringTable::Data::FindEntry: the internalized string with these contents and hash, or null.</summary>
     SeqString? Find(ReadOnlySpan<char> chars, uint rawHashField)
     {
-        SeqString?[] slots = _slots;
+        Slot[] slots = _slots;
         int mask = slots.Length - 1;
         // Linear probing, as V8's NextProbe over a power-of-two table.
         for (int i = FirstProbe(rawHashField, mask); ; i = (i + 1) & mask)
         {
-            SeqString? s = slots[i];
-            if (s is null) return null;
-            if (s.RawHashField == rawHashField && chars.SequenceEqual(s.Value)) return s;
+            ref Slot slot = ref slots[i];
+            if (slot.String is not { } s) return null;
+            if (slot.Hash == rawHashField && chars.SequenceEqual(s.Value)) return s;
         }
     }
 
@@ -66,20 +75,21 @@ public sealed class StringTable
         _count++;
     }
 
-    static void Insert(SeqString?[] slots, SeqString s, uint rawHashField)
+    static void Insert(Slot[] slots, SeqString s, uint rawHashField)
     {
         int mask = slots.Length - 1;
         int i = FirstProbe(rawHashField, mask);
-        while (slots[i] is not null) i = (i + 1) & mask;
-        slots[i] = s;
+        while (slots[i].String is not null) i = (i + 1) & mask;
+        slots[i].Hash = rawHashField;
+        slots[i].String = s;
     }
 
     void Grow()
     {
-        var slots = new SeqString?[_slots.Length * 2];
-        foreach (SeqString? s in _slots)
+        var slots = new Slot[_slots.Length * 2];
+        foreach (Slot slot in _slots)
         {
-            if (s is not null) Insert(slots, s, s.RawHashField);
+            if (slot.String is { } s) Insert(slots, s, slot.Hash);
         }
         _slots = slots;
     }
