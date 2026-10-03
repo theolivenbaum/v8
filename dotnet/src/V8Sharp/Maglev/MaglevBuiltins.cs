@@ -31,13 +31,7 @@ public static class MaglevBuiltins
 
     /// <summary>A Smi (31-bit, integral, not -0), as JSValue.IsSmi.</summary>
     [MethodImpl(Inline)]
-    public static bool IsSmi(JSValue v)
-    {
-        if (!ReferenceEquals(v._obj, NumberTag.Instance)) return false;
-        double d = v._num;
-        int i = (int)d;
-        return i == d && i >= JSValue.SmiMinValue && i <= JSValue.SmiMaxValue && (i != 0 || BitConverter.DoubleToInt64Bits(d) == 0);
-    }
+    public static bool IsSmi(JSValue v) => ReferenceEquals(v._obj, NumberTag.Instance) && JSValue.IsSmiDouble(v._num);
 
     [MethodImpl(Inline)]
     public static bool IsHeapObject(JSValue v) => v._obj is not null && !ReferenceEquals(v._obj, NumberTag.Instance);
@@ -276,6 +270,33 @@ public static class MaglevBuiltins
     /// (TryBuildFastInstanceOf): the prototype chain walk of
     /// ObjectOps.FastInstanceOf, or the generic InstanceOf when it does not apply.
     /// </summary>
+    /// <summary>
+    /// BuildOrdinaryHasInstance with the constructor's prototype known at
+    /// compile time (HasInPrototypeChain): valid while the constructor keeps
+    /// its map and its prototype (V8 depends on both); otherwise, and for
+    /// proxies and access-checked objects on the chain, InstanceOfFunction.
+    /// </summary>
+    [MethodImpl(Inline)]
+    public static JSValue OrdinaryHasInstance(Isolate isolate, JSValue obj, JSFunction function, Map functionMap, HeapObject protoOrMap,
+        JSReceiver prototype)
+    {
+        if (ReferenceEquals(function.Map, functionMap) && ReferenceEquals(function.PrototypeOrInitialMap, protoOrMap))
+        {
+            HeapObject? o = obj._obj;
+            if (o is null || o.InstanceType < InstanceTypeChecks.FirstJSReceiver) return JSValue.False;
+            Map map = Unsafe.As<JSReceiver>(o).Map;
+            while (!Map.IsSpecialReceiverMap(map))
+            {
+                JSReceiver? next = map.Prototype;
+                if (next is null) return JSValue.False;
+                if (ReferenceEquals(next, prototype)) return JSValue.True;
+                map = next.Map;
+            }
+        }
+        return InstanceOfFunction(isolate, obj, function);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue InstanceOfFunction(Isolate isolate, JSValue obj, JSValue constructor)
     {
         int fast = ObjectOps.FastInstanceOf(obj, constructor);

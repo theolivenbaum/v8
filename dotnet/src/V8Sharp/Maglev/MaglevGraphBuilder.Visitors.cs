@@ -439,6 +439,16 @@ public sealed partial class MaglevGraphBuilder
                         SetAccumulator(GetBooleanConstant(false));
                         break;
                     }
+                    if (ObjectOps.OrdinaryHasInstancePrototype(constructor) is { } prototype)
+                    {
+                        // The prototype as a constant, checked against the
+                        // constructor's map and prototype slot at run time.
+                        SetAccumulator(CallMaglev("OrdinaryHasInstance", [obj],
+                            [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.C(constructor), BuiltinArg.C(constructor.Map),
+                             BuiltinArg.C(constructor.PrototypeOrInitialMap), BuiltinArg.C(prototype)],
+                            OpProperties.kGenericCall, type: NodeType.kBoolean)!);
+                        break;
+                    }
                     SetAccumulator(CallMaglev("InstanceOfFunction", [obj, GetConstant(constructor)],
                         [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1)], OpProperties.kGenericCall, type: NodeType.kBoolean)!);
                     break;

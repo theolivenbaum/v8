@@ -1020,6 +1020,24 @@ public static class ObjectOps
         return 1;
     }
 
+    /// <summary>
+    /// The prototype OrdinaryHasInstance walks to for <paramref name="function"/>
+    /// when FastInstanceOf handles it (no own @@hasInstance, the ordinary
+    /// prototype accessor), else null. For Maglev's TryBuildFastInstanceOf.
+    /// </summary>
+    internal static JSReceiver? OrdinaryHasInstancePrototype(JSFunction function)
+    {
+        Map functionMap = function.Map;
+        sbyte state = functionMap.OrdinaryHasInstanceState;
+        if (state == 0) functionMap.OrdinaryHasInstanceState = state = ComputeOrdinaryHasInstanceState(functionMap);
+        if (state < 0 || !ReferenceEquals(functionMap.Prototype, function.Context.NativeContext.FunctionPrototypeObject)) return null;
+        HeapObject? protoOrMap = function.PrototypeOrInitialMap;
+        if (protoOrMap is null) return null;
+        return protoOrMap.InstanceType == InstanceType.MapType
+            ? Unsafe.As<Map>(protoOrMap).Prototype
+            : protoOrMap.InstanceType >= InstanceTypeChecks.FirstJSReceiver ? Unsafe.As<JSReceiver>(protoOrMap) : null;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static int FastInstanceOf(in JSValue obj, in JSValue callable)
     {
