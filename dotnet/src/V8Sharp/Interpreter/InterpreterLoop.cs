@@ -685,47 +685,72 @@ public static partial class InterpreterExecution
                 }
                 // ---- Calls ------------------------------------------------------------------------------------------
                 // A call to a function with bytecode enters it in this loop (the
-                // handler sets up the frame and returns true); anything else
-                // returns false with the result in st.Accumulator.
+                // handler sets up the frame and returns
+                // InterpreterInlineCalls.FrameEntered); anything else returns
+                // the result.
                 case Bytecode.CallAnyReceiver:
                 case Bytecode.CallProperty:
-                    if (CallProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
-                    acc = st.Accumulator;
+                    {
+                        JSValue called = CallProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                        acc = called;
+                    }
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
                     continue;
                 case Bytecode.CallProperty0:
-                    if (CallProperty0<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
-                    acc = st.Accumulator;
+                    {
+                        JSValue called = CallProperty0<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                        acc = called;
+                    }
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
                 case Bytecode.CallProperty1:
-                    if (CallProperty1<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
-                    acc = st.Accumulator;
+                    {
+                        JSValue called = CallProperty1<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                        acc = called;
+                    }
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
                     continue;
                 case Bytecode.CallProperty2:
-                    if (CallProperty2<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
-                    acc = st.Accumulator;
+                    {
+                        JSValue called = CallProperty2<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                        acc = called;
+                    }
                     ip = ref Unsafe.Add(ref ip, 1 + 5 * S);
                     continue;
                 case Bytecode.CallUndefinedReceiver:
-                    if (CallUndefinedReceiver<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
-                    acc = st.Accumulator;
+                    {
+                        JSValue called = CallUndefinedReceiver<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                        acc = called;
+                    }
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
                     continue;
                 case Bytecode.CallUndefinedReceiver0:
-                    if (CallUndefinedReceiver0<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
-                    acc = st.Accumulator;
+                    {
+                        JSValue called = CallUndefinedReceiver0<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                        acc = called;
+                    }
                     ip = ref Unsafe.Add(ref ip, 1 + 2 * S);
                     continue;
                 case Bytecode.CallUndefinedReceiver1:
-                    if (CallUndefinedReceiver1<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
-                    acc = st.Accumulator;
+                    {
+                        JSValue called = CallUndefinedReceiver1<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                        acc = called;
+                    }
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
                 case Bytecode.CallUndefinedReceiver2:
-                    if (CallUndefinedReceiver2<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
-                    acc = st.Accumulator;
+                    {
+                        JSValue called = CallUndefinedReceiver2<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                        acc = called;
+                    }
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
                     continue;
                 case Bytecode.CallRuntime:

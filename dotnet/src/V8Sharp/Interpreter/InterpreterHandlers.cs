@@ -970,7 +970,7 @@ public static partial class InterpreterExecution
     /// InterpreterInlineCalls.TryEnterFast; everything else is CallPropertySlow.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         if (typeof(TS) == typeof(SingleScale) &&
@@ -986,7 +986,7 @@ public static partial class InterpreterExecution
                 if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 4 * S, ref slots[slot + 1], function,
                         Unsafe.Add(ref fp, first), new Baseline.BaselineCalls.RegisterArguments(st.Fp + first + 1, Unsigned<TS>(ref ip, 1 + 2 * S) - 1)))
                 {
-                    return true;
+                    return InterpreterInlineCalls.FrameEntered;
                 }
             }
         }
@@ -994,7 +994,7 @@ public static partial class InterpreterExecution
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallPropertySlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallPropertySlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -1011,21 +1011,20 @@ public static partial class InterpreterExecution
             {
                 InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
                     new Baseline.BaselineCalls.RegisterArguments(st.Fp + first + 1, count - 1), PcOf(ref fp, ref ip) + 1 + 4 * S);
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
             // f.call(thisArg, ...args).
             if (IsFunctionPrototypeCall(callee) &&
                 InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, count > 1 ? Unsafe.Add(ref fp, first + 1) : default,
                     st.Fp + first + 2, count > 1 ? count - 2 : 0, PcOf(ref fp, ref ip) + 1 + 4 * S))
             {
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, receiver, st.Fp + first + 1, count - 1,
+        return InterpreterCalls.Call(isolate, callee, receiver, st.Fp + first + 1, count - 1,
             (Bytecode)ip == Bytecode.CallProperty
                 ? ConvertReceiverMode.NotNullOrUndefined
                 : ConvertReceiverMode.Any);
-        return false;
     }
 
     /// <summary>
@@ -1034,7 +1033,7 @@ public static partial class InterpreterExecution
     /// InterpreterInlineCalls.TryEnterFast; everything else is CallProperty0Slow.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallProperty0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallProperty0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         if (typeof(TS) == typeof(SingleScale) &&
@@ -1049,7 +1048,7 @@ public static partial class InterpreterExecution
                 if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 3 * S, ref slots[slot + 1], function,
                         Reg<TS>(ref fp, ref ip, 1 + S), new Baseline.BaselineCalls.NoArguments()))
                 {
-                    return true;
+                    return InterpreterInlineCalls.FrameEntered;
                 }
             }
         }
@@ -1057,7 +1056,7 @@ public static partial class InterpreterExecution
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallProperty0Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallProperty0Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -1070,16 +1069,14 @@ public static partial class InterpreterExecution
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver, new Baseline.BaselineCalls.NoArguments(),
                 PcOf(ref fp, ref ip) + 1 + 3 * S);
-            return true;
+            return InterpreterInlineCalls.FrameEntered;
         }
         // a.pop(), a.shift(), n.toString(): the builtins' CSA fast paths.
         if (BuiltinFastPaths.TryCall0(isolate, callee, receiver, out JSValue fastResult))
         {
-            st.Accumulator = fastResult;
-            return false;
+            return fastResult;
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, receiver, 0, 0, ConvertReceiverMode.NotNullOrUndefined);
-        return false;
+        return InterpreterCalls.Call(isolate, callee, receiver, 0, 0, ConvertReceiverMode.NotNullOrUndefined);
     }
 
     /// <summary>
@@ -1088,7 +1085,7 @@ public static partial class InterpreterExecution
     /// InterpreterInlineCalls.TryEnterFast; everything else is CallProperty1Slow.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallProperty1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallProperty1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         if (typeof(TS) == typeof(SingleScale) &&
@@ -1103,7 +1100,7 @@ public static partial class InterpreterExecution
                 if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 4 * S, ref slots[slot + 1], function,
                         Reg<TS>(ref fp, ref ip, 1 + S), new Baseline.BaselineCalls.OneArgument(Reg<TS>(ref fp, ref ip, 1 + 2 * S))))
                 {
-                    return true;
+                    return InterpreterInlineCalls.FrameEntered;
                 }
             }
         }
@@ -1111,7 +1108,7 @@ public static partial class InterpreterExecution
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallProperty1Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallProperty1Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -1127,25 +1124,23 @@ public static partial class InterpreterExecution
             {
                 InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
                     new Baseline.BaselineCalls.OneArgument(Unsafe.Subtract(ref fp, kRegBase + argOperand)), PcOf(ref fp, ref ip) + 1 + 4 * S);
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
             // f.call(thisArg).
             if (IsFunctionPrototypeCall(callee) &&
                 InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, Reg<TS>(ref fp, ref ip, 1 + 2 * S), 0, 0,
                     PcOf(ref fp, ref ip) + 1 + 4 * S))
             {
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
         }
         // a.push(x), Math.floor(x), s.charCodeAt(i) ...: the builtins' CSA fast paths.
         if (BuiltinFastPaths.TryCall1(isolate, callee, receiver, Reg<TS>(ref fp, ref ip, 1 + 2 * S), out JSValue fastResult))
         {
-            st.Accumulator = fastResult;
-            return false;
+            return fastResult;
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
+        return InterpreterCalls.Call(isolate, callee, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
             ConvertReceiverMode.NotNullOrUndefined);
-        return false;
     }
 
     /// <summary>
@@ -1154,7 +1149,7 @@ public static partial class InterpreterExecution
     /// InterpreterInlineCalls.TryEnterFast; everything else is CallProperty2Slow.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallProperty2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallProperty2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         if (typeof(TS) == typeof(SingleScale) &&
@@ -1169,7 +1164,7 @@ public static partial class InterpreterExecution
                 if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 5 * S, ref slots[slot + 1], function,
                         Reg<TS>(ref fp, ref ip, 1 + S), new Baseline.BaselineCalls.TwoArguments(Reg<TS>(ref fp, ref ip, 1 + 2 * S), Reg<TS>(ref fp, ref ip, 1 + 3 * S))))
                 {
-                    return true;
+                    return InterpreterInlineCalls.FrameEntered;
                 }
             }
         }
@@ -1177,7 +1172,7 @@ public static partial class InterpreterExecution
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallProperty2Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallProperty2Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -1195,34 +1190,32 @@ public static partial class InterpreterExecution
                 InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
                     new Baseline.BaselineCalls.TwoArguments(Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1)),
                     PcOf(ref fp, ref ip) + 1 + 5 * S);
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
             // f.call(thisArg, arg).
             if (IsFunctionPrototypeCall(callee) &&
                 InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
                     st.Fp + InterpreterRuntime.kRegisterOperandBase - arg1, 1, PcOf(ref fp, ref ip) + 1 + 5 * S))
             {
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
             // f.apply(thisArg, arguments) (Class.create-style constructors).
             if (ReferenceEquals(callee._obj, InterpreterRuntime.FrameContext(ref fp).NativeContext.FunctionPrototypeApply) &&
                 InterpreterInlineCalls.TryPushApplyFrame(isolate, ref st, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
                     Unsafe.Subtract(ref fp, kRegBase + arg1), PcOf(ref fp, ref ip) + 1 + 5 * S))
             {
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
         }
         // Math.max(a, b), Math.pow(a, b) ...: the builtins' CSA fast paths.
         if (BuiltinFastPaths.TryCall2(isolate, callee, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1),
                 out JSValue fastResult))
         {
-            st.Accumulator = fastResult;
-            return false;
+            return fastResult;
         }
-        st.Accumulator = InterpreterCalls.Call2(isolate, callee, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
+        return InterpreterCalls.Call2(isolate, callee, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
             Unsafe.Subtract(ref fp, kRegBase + arg1), st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0, arg1 == arg0 - 1,
             ConvertReceiverMode.NotNullOrUndefined);
-        return false;
     }
 
     /// <summary>
@@ -1231,7 +1224,7 @@ public static partial class InterpreterExecution
     /// InterpreterInlineCalls.TryEnterFast; everything else is CallUndefinedReceiverSlow.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiver<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiver<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         if (typeof(TS) == typeof(SingleScale) &&
@@ -1247,7 +1240,7 @@ public static partial class InterpreterExecution
                 if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 4 * S, ref slots[slot + 1], function,
                         default(JSValue), new Baseline.BaselineCalls.RegisterArguments(st.Fp + first, Unsigned<TS>(ref ip, 1 + 2 * S))))
                 {
-                    return true;
+                    return InterpreterInlineCalls.FrameEntered;
                 }
             }
         }
@@ -1255,7 +1248,7 @@ public static partial class InterpreterExecution
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiverSlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiverSlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -1269,10 +1262,9 @@ public static partial class InterpreterExecution
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
                 new Baseline.BaselineCalls.RegisterArguments(st.Fp + first, count), PcOf(ref fp, ref ip) + 1 + 4 * S);
-            return true;
+            return InterpreterInlineCalls.FrameEntered;
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + first, count, ConvertReceiverMode.NullOrUndefined);
-        return false;
+        return InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + first, count, ConvertReceiverMode.NullOrUndefined);
     }
 
     /// <summary>
@@ -1281,7 +1273,7 @@ public static partial class InterpreterExecution
     /// InterpreterInlineCalls.TryEnterFast; everything else is CallUndefinedReceiver0Slow.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiver0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiver0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         if (typeof(TS) == typeof(SingleScale) &&
@@ -1296,7 +1288,7 @@ public static partial class InterpreterExecution
                 if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 2 * S, ref slots[slot + 1], function,
                         default(JSValue), new Baseline.BaselineCalls.NoArguments()))
                 {
-                    return true;
+                    return InterpreterInlineCalls.FrameEntered;
                 }
             }
         }
@@ -1304,7 +1296,7 @@ public static partial class InterpreterExecution
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiver0Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiver0Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -1316,10 +1308,9 @@ public static partial class InterpreterExecution
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue), new Baseline.BaselineCalls.NoArguments(),
                 PcOf(ref fp, ref ip) + 1 + 2 * S);
-            return true;
+            return InterpreterInlineCalls.FrameEntered;
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, default(JSValue), 0, 0, ConvertReceiverMode.NullOrUndefined);
-        return false;
+        return InterpreterCalls.Call(isolate, callee, default(JSValue), 0, 0, ConvertReceiverMode.NullOrUndefined);
     }
 
     /// <summary>
@@ -1328,7 +1319,7 @@ public static partial class InterpreterExecution
     /// InterpreterInlineCalls.TryEnterFast; everything else is CallUndefinedReceiver1Slow.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiver1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiver1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         if (typeof(TS) == typeof(SingleScale) &&
@@ -1343,7 +1334,7 @@ public static partial class InterpreterExecution
                 if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 3 * S, ref slots[slot + 1], function,
                         default(JSValue), new Baseline.BaselineCalls.OneArgument(Reg<TS>(ref fp, ref ip, 1 + S))))
                 {
-                    return true;
+                    return InterpreterInlineCalls.FrameEntered;
                 }
             }
         }
@@ -1351,7 +1342,7 @@ public static partial class InterpreterExecution
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiver1Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiver1Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -1364,16 +1355,14 @@ public static partial class InterpreterExecution
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
                 new Baseline.BaselineCalls.OneArgument(Unsafe.Subtract(ref fp, kRegBase + argOperand)), PcOf(ref fp, ref ip) + 1 + 3 * S);
-            return true;
+            return InterpreterInlineCalls.FrameEntered;
         }
         if (BuiltinFastPaths.TryCall1(isolate, callee, default(JSValue), Unsafe.Subtract(ref fp, kRegBase + argOperand), out JSValue fastResult))
         {
-            st.Accumulator = fastResult;
-            return false;
+            return fastResult;
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand,
+        return InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand,
             1, ConvertReceiverMode.NullOrUndefined);
-        return false;
     }
 
     /// <summary>
@@ -1382,7 +1371,7 @@ public static partial class InterpreterExecution
     /// InterpreterInlineCalls.TryEnterFast; everything else is CallUndefinedReceiver2Slow.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiver2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiver2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         if (typeof(TS) == typeof(SingleScale) &&
@@ -1397,7 +1386,7 @@ public static partial class InterpreterExecution
                 if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 4 * S, ref slots[slot + 1], function,
                         default(JSValue), new Baseline.BaselineCalls.TwoArguments(Reg<TS>(ref fp, ref ip, 1 + S), Reg<TS>(ref fp, ref ip, 1 + 2 * S))))
                 {
-                    return true;
+                    return InterpreterInlineCalls.FrameEntered;
                 }
             }
         }
@@ -1405,7 +1394,7 @@ public static partial class InterpreterExecution
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiver2Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiver2Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -1420,18 +1409,16 @@ public static partial class InterpreterExecution
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
                 new Baseline.BaselineCalls.TwoArguments(Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1)),
                 PcOf(ref fp, ref ip) + 1 + 4 * S);
-            return true;
+            return InterpreterInlineCalls.FrameEntered;
         }
         if (BuiltinFastPaths.TryCall2(callee, Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1),
                 out JSValue fastResult))
         {
-            st.Accumulator = fastResult;
-            return false;
+            return fastResult;
         }
-        st.Accumulator = InterpreterCalls.Call2(isolate, callee, default(JSValue), Unsafe.Subtract(ref fp, kRegBase + arg0),
+        return InterpreterCalls.Call2(isolate, callee, default(JSValue), Unsafe.Subtract(ref fp, kRegBase + arg0),
             Unsafe.Subtract(ref fp, kRegBase + arg1), st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0, arg1 == arg0 - 1,
             ConvertReceiverMode.NullOrUndefined);
-        return false;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
