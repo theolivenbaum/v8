@@ -33,14 +33,18 @@ hour and every other agent waits. Work in two loops:
 
 - **Inner loop (each change):** pick the 2-5 benchmarks the change should
   move, plus one it should not, and A/B them with `octane-quick:<name>`
-  (octane-steady scaled to about 2-3 s per benchmark) and the relevant
+  (octane-steady with small fixed iteration counts, about 2-4 s per benchmark;
+  zlib needs about 40 s, as one iteration is that long) and the relevant
   `micro:*` suite. Keep a session under about 15 minutes of lock time:
   ```bash
   tools/V8Sharp.Bench/bench-session.sh \
-      --suites octane-quick:richards,octane-quick:deltablue,octane-quick:zlib,micro:calls \
+      --suites octane-quick:richards,octane-quick:deltablue,octane-quick:raytrace,micro:calls \
       --engines v8sharp@artifacts/a,v8sharp@artifacts/b,v8:jitless --runs 3
   ```
-  Quick scores are comparable only within one session (different work from
+  V8Sharp.Bench builds made before octane-quick used fixed counts do not
+  apply them and are reported
+  as errors (rebuild them). Quick scores are comparable only within one
+  session (different work from
   octane-steady); report them as ratios to the V8 column or to build A.
 - **Outer loop (end of a pass):** one full `octane-steady` session on parity
   publishes for the headline number. Split it by benchmark groups into
