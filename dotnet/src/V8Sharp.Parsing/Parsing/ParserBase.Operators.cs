@@ -667,7 +667,7 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
         Token op = peek();
         if (Token.IsUnaryOrCountOp(op)) return ParseUnaryOrPrefixExpression();
-        if (is_await_allowed() && op == Token.Await)
+        if (op == Token.Await && is_await_allowed())
         {
             return ParseAwaitExpression();
         }
