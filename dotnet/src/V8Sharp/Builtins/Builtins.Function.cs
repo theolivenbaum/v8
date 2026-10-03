@@ -10,6 +10,7 @@
 // (runtime-internal.cc). Also the trivial builtins of builtins-internal.cc
 // behind %FunctionPrototype% and the poison-pill/unsupported throwers.
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using V8Sharp.Parsing;
 
 namespace V8Sharp.Builtins;
@@ -295,7 +296,11 @@ public static class BuiltinsFunction
     {
         elements = null;
         length = 0;
-        if (argumentsList.HeapObjectOrNull is not JSObject obj) return false;
+        // An instance type test, not a type test of the (unsealed) JSObject
+        // class, which is a call to the cast helper.
+        HeapObject? o = argumentsList._obj;
+        if (o is null || !InstanceTypeChecks.IsJSObject(o.InstanceType)) return false;
+        var obj = Unsafe.As<JSObject>(o);
         Map map = obj.Map;
         NativeContext nativeContext = isolate.NativeContext;
 
