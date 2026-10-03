@@ -271,6 +271,18 @@ public static class MaglevBuiltins
         return undetectable ? JSValue.True : JSValue.False;
     }
 
+    /// <summary>
+    /// OrdinaryHasInstance for the checked constructor of an instanceof
+    /// (TryBuildFastInstanceOf): the prototype chain walk of
+    /// ObjectOps.FastInstanceOf, or the generic InstanceOf when it does not apply.
+    /// </summary>
+    public static JSValue InstanceOfFunction(Isolate isolate, JSValue obj, JSValue constructor)
+    {
+        int fast = ObjectOps.FastInstanceOf(obj, constructor);
+        if (fast >= 0) return fast != 0 ? JSValue.True : JSValue.False;
+        return ObjectOps.InstanceOf(isolate, obj, constructor) ? JSValue.True : JSValue.False;
+    }
+
     /// <summary>TestUndetectable under the NoUndetectableObjects protector: null or undefined.</summary>
     [MethodImpl(Inline)]
     public static JSValue TestUndefinedOrNull(JSValue v) =>

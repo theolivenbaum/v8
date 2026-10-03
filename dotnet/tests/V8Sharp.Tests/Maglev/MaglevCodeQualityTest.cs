@@ -80,6 +80,25 @@ public class MaglevCodeQualityTest
 
     public static TheoryData<string> LoadEliminationSnippets => new()
     {
+        // instanceof with the feedback's constructor: prototype reassignment,
+        // primitives, Symbol.hasInstance, proxies, bound functions.
+        """
+        (function() {
+          function A() {} function B() {} B.prototype = Object.create(A.prototype);
+          function isA(x) { return x instanceof A; }
+          var out = [], a = new A(), b = new B();
+          for (var k = 0; k < 40; k++) {
+            out.push(isA(a), isA(b), isA({}), isA(k), isA(null), isA('s'));
+            if (k == 20) A.prototype = {};
+            if (k == 30) Object.defineProperty(A, Symbol.hasInstance, { value: function(v) { return v === 5; } });
+          }
+          out.push(isA(5), isA(new Proxy(b, {})));
+          function isF(x, F) { return x instanceof F; }
+          var bound = A.bind(null);
+          for (var k = 0; k < 20; k++) out.push(isF(b, B), isF(b, k > 10 ? bound : B));
+          return out.join();
+        })()
+        """,
         // Loaded fields, lengths and context slots reused across a loop whose
         // body stores some of them (the loop's effects), through aliases, and
         // with growing arrays and calls.

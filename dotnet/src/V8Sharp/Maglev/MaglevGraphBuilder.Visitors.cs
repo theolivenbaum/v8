@@ -426,10 +426,28 @@ public sealed partial class MaglevGraphBuilder
                 VisitCompareOperation(CompareOperation.kGreaterThanOrEqual, "TestGreaterThanOrEqual");
                 break;
             case Bytecode.TestInstanceOf:
+            {
+                // TryBuildFastInstanceOf: the feedback's constructor (checked), then
+                // OrdinaryHasInstance without the IC (MaglevBuiltins.InstanceOfFunction).
+                JSValue feedback = _unit.Feedback.Slots[FeedbackSlot(1)];
+                if (feedback.HeapObjectOrNull is JSFunction constructor && GetSpeculationModeAllowsInstanceOf())
+                {
+                    ValueNode obj = LoadRegister(0);
+                    BuildCheckValue(GetAccumulator(), constructor, DeoptimizeReason.kWrongValue);
+                    if (obj.Representation != ValueRepresentation.kTagged || !NodeTypes.CanBe(GetType(obj), NodeType.kJSReceiver))
+                    {
+                        SetAccumulator(GetBooleanConstant(false));
+                        break;
+                    }
+                    SetAccumulator(CallMaglev("InstanceOfFunction", [obj, GetConstant(constructor)],
+                        [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1)], OpProperties.kGenericCall, type: NodeType.kBoolean)!);
+                    break;
+                }
                 SetAccumulator(CallBaseline("TestInstanceOf", [LoadRegister(0), GetAccumulator()],
                     [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(1)), BuiltinArg.In(0), BuiltinArg.In(1)])!);
                 GetAccumulator().Type = NodeType.kBoolean;
                 break;
+            }
             case Bytecode.TestIn:
                 SetAccumulator(CallBaseline("TestIn", [LoadRegister(0), GetAccumulator()],
                     [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(1)), BuiltinArg.In(0), BuiltinArg.In(1)])!);
@@ -1613,6 +1631,9 @@ public sealed partial class MaglevGraphBuilder
         MergeIntoFrameStateFrom(target, _currentBlock!);
         FinishBlock(new ControlNode(Opcode.Jump) { Int0 = target });
     }
+
+    /// <summary>(TestInstanceOf's feedback is the constructor or megamorphic; there is no speculation mode.)</summary>
+    static bool GetSpeculationModeAllowsInstanceOf() => true;
 
     void BuildBranchIfToBooleanTrue(ValueNode value, int jumpOffset, bool jumpOnTrue)
     {
