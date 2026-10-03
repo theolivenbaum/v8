@@ -1468,6 +1468,13 @@ internal sealed class MaglevCodeGenerator
                 Store(v!);
                 return;
             }
+            case Opcode.MigrateMapIfNeeded:
+                _il.Emit(OpCodes.Ldarg_1);
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Load(node.Inputs[1], ValueRepresentation.kTagged);
+                Call(nameof(MaglevBuiltins.MigrateMapIfNeeded));
+                Store(v!);
+                return;
             case Opcode.LoadTaggedField:
                 if (TryLoadFieldAddress(node.Inputs[0], node.Int0))
                 {

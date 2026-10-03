@@ -36,6 +36,54 @@ public class MaglevFeedbackTest
     }
 
     [Fact]
+    public void MonomorphicDeprecatedMapIsReplacedByItsUpdatedMap()
+    {
+        // Port of mjsunit/maglev/checkmaps-with-migration-and-deopt-mono: the
+        // check is on the updated map, the old object is migrated and deopts once.
+        Assert.Equal("0,8,8", MaglevCompilerTest.Run("--maglev", """
+            class Vector { constructor(x) { this.x = x; } }
+            function magnitude(v) { return v.x; }
+            const zero = new Vector(0);
+            const anotherOldObject = new Vector(0);
+            %PrepareFunctionForOptimization(magnitude);
+            magnitude(zero);
+            const nonzero = new Vector(0.6);
+            %OptimizeMaglevOnNextCall(magnitude);
+            magnitude(zero);
+            var r = [%GetOptimizationStatus(magnitude) & 8];
+            %OptimizeMaglevOnNextCall(magnitude);
+            magnitude(zero);
+            r.push(%GetOptimizationStatus(magnitude) & 8);
+            magnitude(anotherOldObject);
+            r.push(%GetOptimizationStatus(magnitude) & 8);
+            r.join();
+            """));
+    }
+
+    [Fact]
+    public void PolymorphicAccessMigratesDeprecatedObjects()
+    {
+        // Port of mjsunit/maglev/no-deopt-deprecated-map (MigrateMapIfNeeded).
+        Assert.Equal("8,8,2", MaglevCompilerTest.Run("--maglev", """
+            let o1 = {y: 0, a: 1};
+            let o2_1 = {y: 0, a: 1};
+            let o2_2 = {y: 0, a: 1};
+            let o3 = {x: 0, y: 0, a: 1};
+            o2_1.a = 3.1415;
+            o2_2.a = 4.12;
+            function foo(o) { o.y = 2; }
+            %PrepareFunctionForOptimization(foo);
+            foo(o2_1); foo(o2_2); foo(o3);
+            %OptimizeMaglevOnNextCall(foo);
+            foo(o2_1);
+            var r = [%GetOptimizationStatus(foo) & 8];
+            foo(o1);
+            r.push(%GetOptimizationStatus(foo) & 8, o1.y);
+            r.join();
+            """));
+    }
+
+    [Fact]
     public void AccessesOnNullAndUndefinedHaveFeedback()
     {
         // Port of the null/undefined cases of mjsunit/compiler/misc-ensure-no-deopt:

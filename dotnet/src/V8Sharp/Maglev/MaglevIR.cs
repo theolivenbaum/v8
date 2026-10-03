@@ -227,6 +227,8 @@ public enum Opcode : ushort
     // ---- Loads and stores ---------------------------------------------------------------
     /// <summary>The map of a JSReceiver as a tagged value (undefined for anything else).</summary>
     LoadMap,
+    /// <summary>MigrateMapIfNeeded: the object's map after migrating it if the map (input 0) is deprecated.</summary>
+    MigrateMapIfNeeded,
     LoadTaggedField,
     StoreTaggedField,
     /// <summary>A field-adding map transition: grows the PropertyArray if needed, stores the value, then the map.</summary>

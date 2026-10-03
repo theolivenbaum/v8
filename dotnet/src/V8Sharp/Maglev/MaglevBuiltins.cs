@@ -369,6 +369,19 @@ public static class MaglevBuiltins
     }
 
     /// <summary>
+    /// MigrateMapIfNeeded: an object whose map is deprecated is migrated
+    /// (Runtime_TryMigrateInstance); the result is its map then. (V8 deopts
+    /// when the migration fails; V8Sharp returns the deprecated map, which the
+    /// dispatch's last map check rejects.)
+    /// </summary>
+    public static JSValue MigrateMapIfNeeded(Isolate isolate, JSValue map, JSValue obj)
+    {
+        if (map._obj is not Map { IsDeprecated: true } || obj._obj is not JSObject o) return map;
+        JSObject.TryMigrateInstance(isolate, o);
+        return o.Map;
+    }
+
+    /// <summary>
     /// Runtime_TryMigrateInstanceAndMarkMapAsMigrationTarget (the deferred code of
     /// CheckMapsWithMigrationAndDeopt): migrates an object with a deprecated map.
     /// </summary>

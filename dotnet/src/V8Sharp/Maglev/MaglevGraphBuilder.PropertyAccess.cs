@@ -47,24 +47,61 @@ public sealed partial class MaglevGraphBuilder
     /// updated map.
     /// </summary>
     /// <remarks>
-    /// Deviation: V8 replaces a deprecated map by its updated map (and computes
-    /// the access from that map); V8Sharp's accesses come from the IC handlers,
-    /// which belong to the deprecated map, so the map is dropped.
+    /// As V8, a deprecated map is replaced by its updated map (Map::TryUpdate).
+    /// Deviation: V8 computes the access from the updated map; V8Sharp's
+    /// accesses come from the IC handlers, which belong to the deprecated map,
+    /// so the updated map keeps the handler only for a named load whose handler
+    /// applies to it unchanged (<see cref="LoadHandlerAppliesToUpdatedMap"/>);
+    /// otherwise the map is dropped.
     /// </remarks>
-    List<(Map Map, JSValue Handler)>? MapsAndHandlers(int slot)
+    List<(Map Map, JSValue Handler)>? MapsAndHandlers(int slot, Name? loadName = null)
     {
         var nexus = new FeedbackNexus(Isolate, _unit.Feedback, slot);
         InlineCacheState state = nexus.IcState();
         if (state is not (InlineCacheState.MONOMORPHIC or InlineCacheState.POLYMORPHIC)) return null;
-        var result = new List<(Map, JSValue)>();
+        var result = new List<(Map Map, JSValue Handler)>();
         nexus.ExtractMapsAndHandlers(result);
-        foreach ((Map map, JSValue _) in result)
+        for (int i = 0; i < result.Count; i++)
         {
+            (Map map, JSValue handler) = result[i];
             if (!map.IsDeprecated) continue;
-            if (Map.TryUpdate(Isolate, map) is { IsMigrationTarget: false }) _hasDeprecatedMapWithoutMigrationTarget = true;
+            Map? updated = Map.TryUpdate(Isolate, map);
+            if (updated is null) continue;
+            if (!updated.IsMigrationTarget) _hasDeprecatedMapWithoutMigrationTarget = true;
+            if (loadName is not null && !result.Exists(e => ReferenceEquals(e.Map, updated)) &&
+                LoadHandlerAppliesToUpdatedMap(map, updated, loadName, handler))
+            {
+                result[i] = (updated, handler);
+            }
         }
-        result.RemoveAll(static e => e.Item1.IsDeprecated);
+        result.RemoveAll(static e => e.Map.IsDeprecated);
         return result.Count == 0 ? null : result;
+    }
+
+    /// <summary>
+    /// Whether the load handler of a deprecated map gives the same access for
+    /// its updated map: an own field at the same storage index, or a lookup on
+    /// the (same) prototype chain of a property the map does not have.
+    /// </summary>
+    static bool LoadHandlerAppliesToUpdatedMap(Map deprecated, Map updated, Name name, JSValue handlerValue)
+    {
+        if (handlerValue.HeapObjectOrNull is not LoadHandler h || h.LookupOnLookupStartObject) return false;
+        if (!ReferenceEquals(updated.Prototype, deprecated.Prototype) || updated.InstanceType != deprecated.InstanceType) return false;
+        InternalIndex descriptor = updated.InstanceDescriptors.Search(name, updated);
+        switch (h.HandlerKind)
+        {
+            case LoadHandler.Kind.kField when h.Holder is null:
+                return descriptor.IsFound &&
+                       updated.InstanceDescriptors.GetDetails(descriptor).Location == PropertyLocation.Field &&
+                       FieldIndex.ForDescriptor(updated, descriptor).StorageIndex == h.FieldIndex;
+            case LoadHandler.Kind.kField:
+            case LoadHandler.Kind.kConstantFromPrototype:
+            case LoadHandler.Kind.kNonExistent:
+            case LoadHandler.Kind.kAccessorFromPrototype:
+                return descriptor.IsNotFound;
+            default:
+                return false;
+        }
     }
 
     /// <summary>The feedback of the current access had a deprecated map without migration target.</summary>
@@ -84,7 +121,7 @@ public sealed partial class MaglevGraphBuilder
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForGenericNamedAccess);
             return;
         }
-        if (MapsAndHandlers(slot) is { } feedback && TryBuildNamedLoad(receiver, feedback) is { } result)
+        if (MapsAndHandlers(slot, (Name)name.Object) is { } feedback && TryBuildNamedLoad(receiver, feedback) is { } result)
         {
             SetAccumulator(result);
             return;
@@ -302,6 +339,23 @@ public sealed partial class MaglevGraphBuilder
             Type = NodeType.kOtherHeapObject,
             Properties = OpProperties.kCanRead,
         });
+        // TryBuildPolymorphicPropertyAccess: when a map is a migration target,
+        // an object with a deprecated map is migrated before the dispatch
+        // (MigrateMapIfNeeded).
+        bool needsMigration = false;
+        foreach ((Map[] maps, Func<ValueNode?> _) in cases)
+        {
+            foreach (Map m in maps) needsMigration |= m.IsMigrationTarget;
+        }
+        if (needsMigration)
+        {
+            map = AddNewNode(new ValueNode(Opcode.MigrateMapIfNeeded, ValueRepresentation.kTagged)
+            {
+                Inputs = [map, receiver],
+                Type = NodeType.kOtherHeapObject,
+                Properties = OpProperties.kCanWrite | OpProperties.kCanAllocate | OpProperties.kNotIdempotent,
+            });
+        }
         KnownNodeAspects entryKnown = _frame.Known.Clone();
         BasicBlock join = _graph.NewBlock();
         var results = new List<(BasicBlock Block, ValueNode? Value, KnownNodeAspects Known)>();
