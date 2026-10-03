@@ -91,6 +91,9 @@ public sealed class MaglevCode
     public DeoptPoint[] DeoptPoints { get; internal set; } = [];
     /// <summary>The code was generated and jitted on the background compile thread.</summary>
     public bool CompiledConcurrently { get; internal set; }
+
+    /// <summary>Why the concurrent job could not generate the code (a bailout of the code generator), or null.</summary>
+    public string? FailureReason { get; internal set; }
     /// <summary>The background job's time (IL generation and RyuJIT), for --trace-opt.</summary>
     public double BackgroundMs { get; internal set; }
     /// <summary>The call feedback slots eager deopts disallow speculation for (EagerDeoptInfo.FeedbackToUpdate).</summary>

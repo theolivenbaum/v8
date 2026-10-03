@@ -93,7 +93,7 @@ public static class MaglevCompiler
     /// high JIT cost and runs slower than the interpreter. Explicit requests
     /// (%OptimizeFunctionOnNextCall) compile them anyway.
     /// </summary>
-    internal static readonly int kMaxTieringGraphNodes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_NODES"), out int n) ? n : 500;
+    internal static readonly int kMaxTieringGraphNodes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_NODES"), out int n) ? n : 2000;
 
     public static MaglevCode? Compile(Isolate isolate, JSFunction function, int osrOffset = -1, bool byTieringManager = false)
     {
@@ -235,8 +235,10 @@ public static class MaglevCompiler
             }
             catch (Exception e) when (e is not OutOfMemoryException)
             {
-                // The function stays in its current tier (V8: a failed job).
+                // The function stays in its current tier (V8: a failed job); a
+                // bailout disables its optimization at the install.
                 code.MarkedForDeoptimization = true;
+                if (e is MaglevBailoutException) code.FailureReason = e.Message;
                 if (isolate.Flags.trace_opt) Console.WriteLine($"[concurrent Maglev compile of {DebugName(shared)} failed: {e.Message}]");
             }
             isolate.MaglevInstallQueue.Enqueue(code);
@@ -261,6 +263,7 @@ public static class MaglevCompiler
         while (isolate.MaglevInstallQueue.TryDequeue(out MaglevCode? code))
         {
             SharedFunctionInfo shared = code.SharedFunctionInfo;
+            if (code.FailureReason is { } failure) Fail(isolate, shared, failure);
             SharedState sharedState = StateOf(shared);
             if (code.OsrOffset < 0) sharedState.CompileInProgress = false;
             else sharedState.OsrInProgress?.Remove(code.OsrOffset);

@@ -236,8 +236,14 @@ for now, to be revisited when the reason goes away.
   collectible (RyuJIT does not tier collectible code), so baseline code is
   never freed, where V8 collects Code objects; no bytecode offset table: the current
   bytecode offset is stored in the frame's bytecode offset slot (fp - 2)
-  before each bytecode that can throw or call (`BaselineAssembler.StoreBytecodeOffset`), so the frame walker
-  and handler lookup work as for interpreted frames.
+  before each builtin call that can throw or call out (`BaselineCompiler.CallBuiltin`,
+  where V8 would derive it from the call's return address), as IL rather
+  than a call (`BaselineAssembler.StoreBytecodeOffset`), so the frame walker
+  and handler lookup work as for interpreted frames and a fast path that
+  does not call out stores nothing.
+- Each thread that emits code (the main thread, the Sparkplug and the
+  Maglev compile threads) has its own dynamic assemblies: IL emission
+  resolves member tokens in the module's tables, which are not thread-safe.
 - Exception handlers and OSR entries: the code is entered at a bytecode offset
   through a dispatch at the method start (handlers, loop headers, 0), not at a
   machine pc. `BaselineExecution.Run` re-enters it after the handler lookup.
@@ -264,6 +270,12 @@ for now, to be revisited when the reason goes away.
   compiles the method at its first call, at tier 0 first. The builtins and
   call paths baseline code calls are `AggressiveOptimization` in both modes:
   at tier 0 they ran slower than the interpreter's own (optimized) loop.
+- Calls between tiers: a call (also `new`, `f.call`, `f.apply`) from
+  baseline code to a closure with Maglev code enters the Maglev code
+  directly (`BaselineCalls.EnterMaglev`, `MaglevCalls.ConstructWithReceiver`),
+  and a call from Maglev code to a function with baseline code or bytecode
+  enters it directly (`BaselineCalls.CallFromOptimizedCode`); V8's Call
+  builtin jumps to the closure's code whatever its tier.
 - Calls: a call from baseline code to a function with baseline code (and no
   exception handlers) enters it directly, C# call to C# call, through
   `BaselineCalls.Enter` with the arguments in registers or locals
@@ -322,8 +334,13 @@ for now, to be revisited when the reason goes away.
   (`todo.md`). `Isolate.UseOptimizer` is `--maglev && !--jitless`.
 - Code generation: IL in the baseline code space instead of machine code
   (architecture.md section 9.2); values live in IL locals rather than
-  registers and stack slots, so there is no register allocator (RyuJIT
-  allocates) and no safepoint table. The code is never freed (the assembly
+  registers and stack slots, and no safepoint table. In place of the register
+  allocator, values whose live ranges (LiveRangeAndNextUseProcessor's) do not
+  overlap share an IL local of their CLR type, so a method has about as many
+  locals as values live at once (RyuJIT does not inline into methods with
+  more than 512 locals and compiles those with more than 2000 with MinOpts);
+  RyuJIT allocates the machine registers. Code with catch blocks keeps one
+  local per value. The code is never freed (the assembly
   is not collectible); invalidated code is only unreferenced.
 - Frames: the optimized frame is the interpreter frame the call built, and
   inlined functions push real interpreter frames (V8 has one optimized frame
@@ -334,17 +351,20 @@ for now, to be revisited when the reason goes away.
   tiering manager's requests build the graph on the main thread (V8 builds it
   on a worker, with the heap broker's snapshot of the heap); the IL
   generation and a fully optimized RyuJIT compile (`AggressiveOptimization`,
-  `RuntimeHelpers.PrepareMethod`) run on the process-wide background compile
-  thread the baseline tier uses, and the code is installed at the next
+  `RuntimeHelpers.PrepareMethod`) run on a process-wide Maglev compile
+  thread (beside the baseline tier's), and the code is installed at the next
   INSTALL_MAGLEV_CODE interrupt. The dependencies are registered when the
   graph is built: an invalidation before the install marks the code and the
-  install drops it (V8 validates them at commit). `%OptimizeFunctionOnNextCall`,
-  `%OptimizeMaglevOnNextCall` and OSR compile synchronously (RyuJIT tier 0
-  first).
+  install drops it (V8 validates them at commit). OSR requests are concurrent too
+  (`--concurrent-osr`): the frame keeps running and a later back edge enters
+  the code installed in the OSR cache. `%OptimizeFunctionOnNextCall`,
+  `%OptimizeMaglevOnNextCall`, `%OptimizeOsr` and every compile in natives
+  tests (`--allow-natives-syntax`) are synchronous (RyuJIT tier 0 first).
 - OSR: the check for OSR code runs at the JumpLoop budget interrupt (V8
-  checks the OSR urgency on every back edge); OSR code takes the
-  interpreter frame's registers as its initial values at the loop header,
-  and runs in the same frame. No OSR from a Wide/ExtraWide JumpLoop.
+  checks the OSR urgency on every back edge), in interpreted and baseline
+  frames (`BaselineExecution.BudgetInterruptOnJumpLoopOsr`); OSR code takes
+  the frame's registers as its initial values at the loop header, and runs
+  in the same frame. No OSR from a Wide/ExtraWide JumpLoop.
 - Bytecode liveness is computed by an iterative fixed point over all
   bytecodes (V8 does one backward pass plus a loop fix-up pass); the result
   is the same.
@@ -363,13 +383,14 @@ for now, to be revisited when the reason goes away.
   feedback vector only for Turbofan and lets Maglev re-optimize). Explicit
   requests (`%OptimizeFunctionOnNextCall`) still compile, as in V8.
 - The tiering manager does not optimize functions whose graph exceeds
-  `MaglevCompiler.kMaxTieringGraphNodes` (500 nodes, `V8SHARP_MAGLEV_MAX_NODES`
-  overrides it): RyuJIT's cost grows with the IL (big graphs exceed its
-  MinOpts limits and are jitted without optimization), and big functions are
-  mostly straight-line code that runs a few times (Octane's RegExp runBlocks).
-  V8 optimizes them. `%OptimizeFunctionOnNextCall` still compiles such
-  functions. Measured with fixed work: RegExp and PdfJS gain, the rest is
-  within noise.
+  `MaglevCompiler.kMaxTieringGraphNodes` (2000 nodes, `V8SHARP_MAGLEV_MAX_NODES`
+  overrides it) or whose IL exceeds 36000 bytes
+  (`MaglevCodeGenerator.kMaxOptimizedILBytes`): RyuJIT compiles bigger methods
+  with MinOpts, slower than the baseline code. V8 optimizes them.
+  `%OptimizeFunctionOnNextCall` still compiles such functions.
+- Deopt exits: constant values of a frame state are literals of the deopt
+  point's translation (V8's StoreLiteral), written by the Deoptimizer; exits
+  whose remaining values are the same share their spill code.
 - Typed array stores: V8Sharp's keyed store IC gives typed arrays a slow
   handler (and goes megamorphic), so the element store is built from the
   feedback maps alone, and megamorphic keyed stores call

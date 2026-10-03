@@ -156,7 +156,6 @@ internal sealed class MaglevCodeGenerator
     static readonly FieldInfo s_markedForDeoptimization = typeof(MaglevCode).GetField(nameof(MaglevCode.MarkedForDeoptimization))!;
     static readonly FieldInfo s_deoptScratch = typeof(Isolate).GetField(nameof(Isolate.MaglevDeoptScratch))!;
     static readonly FieldInfo s_propertyCellValue = typeof(PropertyCell).GetField(nameof(PropertyCell.Value))!;
-    static readonly MethodInfo s_deoptimize = typeof(V8Sharp.Deoptimizer.Deoptimizer).GetMethod(nameof(V8Sharp.Deoptimizer.Deoptimizer.Deoptimize))!;
     static readonly MethodInfo s_doubleToInt64Bits = typeof(BitConverter).GetMethod(nameof(BitConverter.DoubleToInt64Bits), [typeof(double)])!;
 
     /// <summary>Time spent creating the code's type and delegate (V8SHARP_JIT_STATS).</summary>
@@ -204,6 +203,13 @@ internal sealed class MaglevCodeGenerator
         int bodySize = _il.ILOffset;
         EmitDeoptExits();
         if (_hasCatchBlocks) EmitTryRegionEnd();
+        if (_il.ILOffset > kMaxOptimizedILBytes && !_info.Isolate.Flags.allow_natives_syntax)
+        {
+            // RyuJIT would compile the method with MinOpts (compSetOptimizationLevel),
+            // slower than the baseline code it replaces (V8Sharp's limit on top
+            // of V8's max_maglev_optimized_bytecode_size; deviations.md).
+            throw new MaglevBailoutException($"IL beyond RyuJIT's optimization limits ({_il.ILOffset} bytes)");
+        }
         if (_info.Isolate.Flags.trace_opt_verbose)
         {
             Console.WriteLine($"[maglev code: {bodySize} bytes IL body, {_il.ILOffset - bodySize} bytes in {_pendingExits.Count} deopt exits " +
@@ -265,6 +271,14 @@ internal sealed class MaglevCodeGenerator
             }
         }
     }
+
+    /// <summary>
+    /// The most IL a tiering compile may produce: RyuJIT compiles methods over
+    /// 60000 IL bytes, 20000 IL instructions or 8000 local references with
+    /// MinOpts; Maglev's IL averages about 2.5 bytes per instruction and 5
+    /// per local reference.
+    /// </summary>
+    const int kMaxOptimizedILBytes = 36000;
 
     // V8SHARP_MAGLEV_SHARE_LOCALS=0 gives every value its own IL local (for comparison).
     static readonly bool s_shareLocals = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_SHARE_LOCALS") != "0";
@@ -1160,15 +1174,28 @@ internal sealed class MaglevCodeGenerator
         {
             _il.MarkLabel(block);
             _spilledValues += spill.Count;
-            EmitSpill(spill);
+            // The last (up to four) values go with the Deoptimize call
+            // (MaglevBuiltins.DeoptN), the others through Spill*.
+            int tail = spill.Count;
+            int tailCount = 0;
+            while (tail > 0 && tailCount < 4 && spill[tail - 1] is not null)
+            {
+                tail--;
+                tailCount++;
+            }
+            EmitSpill(spill.GetRange(0, tail));
             // Deoptimizer::Deoptimize(isolate, ref state, code, index, reason); return to MaglevExecution.Run.
             _il.Emit(OpCodes.Ldarg_1);
             _il.Emit(OpCodes.Ldarg_2);
             _il.Emit(OpCodes.Ldarg_0);
             _il.Emit(OpCodes.Ldloc, _deoptIndex);
             _il.Emit(OpCodes.Ldloc, _deoptReason);
-            _il.Emit(OpCodes.Call, s_deoptimize);
-            LoadUndefined();
+            if (tailCount > 0)
+            {
+                _il.Emit(OpCodes.Ldc_I4, tail);
+                for (int k = 0; k < tailCount; k++) Load(spill[tail + k]!, ValueRepresentation.kTagged);
+            }
+            Call("Deopt" + tailCount);
             EmitReturn();
         }
     }
