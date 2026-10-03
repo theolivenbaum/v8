@@ -235,8 +235,8 @@ internal sealed class MaglevCodeGenerator
         var entry = (MaglevCodeEntry)method.CreateDelegate(typeof(MaglevCodeEntry), _code);
         if (fastCall is not null)
         {
-            _code.FastCall = type.GetMethod(fastCall.Name)!.CreateDelegate(MaglevFastCalls.DelegateTypes[_info.Toplevel.Bytecode.ParameterCount - 1], _code);
-            _code.FastCallArity = _info.Toplevel.Bytecode.ParameterCount - 1;
+            _code.FastCall = type.GetMethod(fastCall.Name)!.CreateDelegate(MaglevFastCalls.DelegateTypes[_fastCallArity], _code);
+            _code.FastCallArity = _fastCallArity;
         }
         CreateTypeMs += System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalMilliseconds;
         return (entry, _il.ILOffset);
@@ -2523,6 +2523,24 @@ internal sealed class MaglevCodeGenerator
 
     LocalBuilder? _callResult;
     LocalBuilder? _calleeCode;
+    int _fastCallArity;
+
+    /// <summary>Bytecodes that read the actual arguments beyond the formal parameters.</summary>
+    internal static bool ReadsActualArguments(BytecodeArray bytecode)
+    {
+        for (var it = new BytecodeArrayIterator(bytecode); !it.Done(); it.Advance())
+        {
+            switch (it.CurrentBytecode())
+            {
+                case Bytecode.CreateMappedArguments:
+                case Bytecode.CreateUnmappedArguments:
+                case Bytecode.CreateRestParameter:
+                case Bytecode.ConstructForwardAllArgs:
+                    return true;
+            }
+        }
+        return false;
+    }
     readonly Dictionary<Type, LocalBuilder> _fastCallLocals = new();
 
     /// <summary>
@@ -2539,7 +2557,12 @@ internal sealed class MaglevCodeGenerator
         BytecodeArray bytecode = _info.Toplevel.Bytecode;
         int formal = bytecode.ParameterCount - 1;
         if (formal > MaglevFastCalls.kMaxArity) return null;
-        var parameters = new Type[5 + formal];
+        // A function that reads its actual arguments (arguments objects, rest
+        // parameters) takes kMaxArity values, the frame keeping the argc first
+        // ones (V8 pushes every argument).
+        int arity = ReadsActualArguments(bytecode) ? MaglevFastCalls.kMaxArity : formal;
+        _fastCallArity = arity;
+        var parameters = new Type[5 + arity];
         parameters[0] = typeof(MaglevCode);
         parameters[1] = typeof(Isolate);
         parameters[2] = typeof(JSFunction);
@@ -2554,9 +2577,27 @@ internal sealed class MaglevCodeGenerator
         LocalBuilder saved = il.DeclareLocal(typeof(Context));
         LocalBuilder state = il.DeclareLocal(typeof(InterpreterState));
         LocalBuilder result = il.DeclareLocal(typeof(JSValue));
-        // fpRef = EnterFastFrame(isolate, formal, registers, out start, out fp, out depth)
+        LocalBuilder? paramSlots = null;
+        if (arity > formal)
+        {
+            // paramSlots = max(argc & int.MaxValue, formal)
+            paramSlots = il.DeclareLocal(typeof(int));
+            Label atLeastFormal = il.DefineLabel();
+            il.Emit(OpCodes.Ldarg_3);
+            il.Emit(OpCodes.Ldc_I4, int.MaxValue);
+            il.Emit(OpCodes.And);
+            il.Emit(OpCodes.Stloc, paramSlots);
+            il.Emit(OpCodes.Ldloc, paramSlots);
+            il.Emit(OpCodes.Ldc_I4, formal);
+            il.Emit(OpCodes.Bge, atLeastFormal);
+            il.Emit(OpCodes.Ldc_I4, formal);
+            il.Emit(OpCodes.Stloc, paramSlots);
+            il.MarkLabel(atLeastFormal);
+        }
+        // fpRef = EnterFastFrame(isolate, paramSlots, registers, out start, out fp, out depth)
         il.Emit(OpCodes.Ldarg_1);
-        il.Emit(OpCodes.Ldc_I4, formal);
+        if (paramSlots is not null) il.Emit(OpCodes.Ldloc, paramSlots);
+        else il.Emit(OpCodes.Ldc_I4, formal);
         il.Emit(OpCodes.Ldc_I4, bytecode.RegisterCount);
         il.Emit(OpCodes.Ldloca, start);
         il.Emit(OpCodes.Ldloca, fp);
@@ -2584,6 +2625,15 @@ internal sealed class MaglevCodeGenerator
         }
         StoreSlot(InterpreterRuntime.kReceiverOffset, 4);
         for (int i = 0; i < formal; i++) StoreSlot(InterpreterRuntime.kFirstArgumentOffset - i, 5 + i);
+        for (int i = formal; i < arity; i++)
+        {
+            Label skip = il.DefineLabel();
+            il.Emit(OpCodes.Ldloc, paramSlots!);
+            il.Emit(OpCodes.Ldc_I4, i);
+            il.Emit(OpCodes.Ble, skip);
+            StoreSlot(InterpreterRuntime.kFirstArgumentOffset - i, 5 + i);
+            il.MarkLabel(skip);
+        }
         // saved = InitializeFastFrame(isolate, ref fpRef, fp, function, vector, bytecode, argc, newTargetRegister)
         // (a construct's argc has the sign bit set; new.target is undefined for a call)
         Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;

@@ -122,6 +122,14 @@ public sealed partial class MaglevGraphBuilder
         else if (feedback.HeapObjectOrNull is JSFunction target && !FeedbackVector.IsCleared(feedback))
         {
             BuildCheckValue(callee, target, DeoptimizeReason.kWrongCallTarget);
+            // TryReduceBuiltin's Function.prototype.apply (feedback naming
+            // apply itself once the applied functions differ).
+            if (ReferenceEquals(target, Isolate.NativeContext.FunctionPrototypeApply) &&
+                TryReduceFunctionPrototypeApply(receiver, args) is { } applied2)
+            {
+                SetAccumulator(applied2);
+                return;
+            }
             // SaveCallSpeculationScope: the reduction's checks disallow speculation here when they fail.
             ValueNode? reduced = null;
             if (speculate)
@@ -342,7 +350,10 @@ public sealed partial class MaglevGraphBuilder
         if (shared.FunctionData is not BytecodeArray bytecode || shared.HasBuiltinId || shared.IsClassConstructor) return null;
         if (target.RawFeedbackCell.Value is not FeedbackVector vector) return null;
         int formal = bytecode.ParameterCount - 1;
-        if (formal > MaglevFastCalls.kMaxArity || args.Length > formal) return null;
+        if (formal > MaglevFastCalls.kMaxArity) return null;
+        // The direct entry's arity (MaglevCodeGenerator.DefineFastCallEntry).
+        if (MaglevCodeGenerator.ReadsActualArguments(bytecode)) formal = MaglevFastCalls.kMaxArity;
+        if (args.Length > formal) return null;
         // The slow path takes the arguments from consecutive registers or as values.
         if (!argsFirst.IsValid && args.Length > 3) return null;
         var info = new KnownCallInfo

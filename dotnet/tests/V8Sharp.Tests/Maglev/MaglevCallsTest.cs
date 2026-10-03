@@ -87,6 +87,30 @@ public class MaglevCallsTest
           return out.join();
         })()
         """,
+        // Functions reading their actual arguments (arguments objects, rest
+        // parameters) entered directly with fewer, as many and more arguments
+        // than formal parameters, and beyond the direct entry's arity; apply
+        // forwarding them with megamorphic targets.
+        """
+        (function() {
+          function count(a) { var s = arguments.length + ':'; for (var i = 0; i < arguments.length; i++) s += arguments[i]; return s + a; }
+          function rest(a, ...r) { 'use strict'; return a + '/' + r.length + '/' + r.join('') + '/' + arguments.length; }
+          function sum() { var t = 0; for (var i = 0; i < arguments.length; i++) t += arguments[i]; return t; }
+          var fs = [];
+          for (var j = 0; j < 5; j++) fs.push(new Function('a', 'b', 'return a + b * ' + j + ';'));
+          function fwd() { return fs[arguments[0] % 5].apply(this, arguments); }
+          function C() { this.v = sum.apply(null, arguments); this.n = arguments.length; }
+          var out = [];
+          for (var k = 0; k < 40; k++) {
+            out.push(count(), count(k), count(k, 1), count(k, 1, 2, 3, 4, 5), count(1, 2, 3, 4, 5, 6, 7, 8));
+            out.push(rest(), rest(k), rest(k, 1, 2), rest(1, 2, 3, 4, 5, 6, 7, 8));
+            out.push(sum(), sum(k), sum(1, 2, 3, 4, 5, 6), sum(1, 2, 3, 4, 5, 6, 7), fwd(k, 2), fwd(k, 3, 4));
+            var c = new C(k, 1, 2), d = new C();
+            out.push(c.v, c.n, d.v, d.n);
+          }
+          return out.join();
+        })()
+        """,
         // function.arguments of a frame entered through a direct call.
         """
         (function() {

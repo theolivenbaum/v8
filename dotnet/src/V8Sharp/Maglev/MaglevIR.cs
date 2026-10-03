@@ -684,7 +684,7 @@ public sealed class KnownCallInfo
 {
     public JSFunction Target = null!;
     public FeedbackVector Vector = null!;
-    /// <summary>The callee's formal parameter count (its direct entry's arity).</summary>
+    /// <summary>The arity of the callee's direct entry (MaglevCode.FastCallArity).</summary>
     public int FormalCount;
     public int Argc;
     public ConvertReceiverMode Mode;
