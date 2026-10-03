@@ -1627,6 +1627,19 @@ public sealed partial class MaglevGraphBuilder
             BuildBranchIfTrue(value, jumpOffset, jumpOnTrue);
             return;
         }
+        // A receiver is true unless undetectable; with null and undefined the
+        // only other values, it is a null test (NoUndetectableObjects protector).
+        if (value.Representation == ValueRepresentation.kTagged && CheckType(value, NodeType.kJSReceiverOrNullOrUndefined) &&
+            _info.DependOnProtector(Protectors.IsNoUndetectableObjectsIntact(Isolate), "NoUndetectableObjects"))
+        {
+            if (CheckType(value, NodeType.kJSReceiver))
+            {
+                BuildUnconditionalBranch(jumpOnTrue ? jumpOffset : _it.NextOffset());
+                return;
+            }
+            BuildBranch(new ControlNode(Opcode.BranchIfUndefinedOrNull) { Inputs = [value] }, jumpOffset, !jumpOnTrue);
+            return;
+        }
         switch (value.Representation)
         {
             case ValueRepresentation.kInt32:

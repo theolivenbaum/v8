@@ -236,7 +236,15 @@ public static class MaglevBuiltins
     public static JSValue TaggedEqual(JSValue a, JSValue b) => a.IsIdenticalTo(b) ? JSValue.True : JSValue.False;
 
     [MethodImpl(Inline)]
-    public static bool ToBoolean(JSValue v) => InterpreterOps.ToBoolean(v);
+    public static bool ToBoolean(JSValue v)
+    {
+        // Receivers first (`if (node)`), by instance type: ObjectOps.BooleanValue
+        // is not inlined.
+        HeapObject? o = v._obj;
+        if (o is null) return false;
+        if (o.InstanceType >= InstanceTypeChecks.FirstJSReceiver) return !Unsafe.As<JSReceiver>(o).Map.IsUndetectable;
+        return InterpreterOps.ToBoolean(v);
+    }
 
     [MethodImpl(Inline)]
     public static bool Float64ToBoolean(double d) => d != 0 && !double.IsNaN(d);

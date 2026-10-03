@@ -135,12 +135,13 @@ public class MaglevCodeQualityTest
         string source = """
             function isNull(x) { return x == null; }
             function nn(x) { return x != null ? 1 : 0; }
+            function tb(o) { var r = o; if (o && o.k) r = o.k; return r ? 1 : 0; }
             var vals = [null, undefined, 0, '', {}, [], false, NaN];
             var out = [];
-            for (var k = 0; k < 30; k++) for (var v of vals) out.push(isNull(v), nn(v));
+            for (var k = 0; k < 30; k++) for (var v of vals) out.push(isNull(v), nn(v), tb(v), tb({ k: v }), tb(k & 1 ? null : { k: k }));
             var u = %GetUndetectable();
             out.push(isNull(u), nn(u), isNull({}), nn(null));
-            for (var k = 0; k < 30; k++) out.push(isNull(u), isNull(k), nn(u));
+            for (var k = 0; k < 30; k++) out.push(isNull(u), isNull(k), nn(u), tb(u), tb({ k: u }), tb(k & 1 ? null : { k: k }));
             out.join();
             """;
         string interpreted = MaglevCompilerTest.Run("--no-maglev --no-sparkplug", source);
