@@ -421,11 +421,19 @@ public static partial class InterpreterExecution
                         JSValue[] slots = fv.Slots;
                         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
                         // A field store handler is only recorded for a JSObject map.
-                        if (ReferenceEquals(slots[slot]._obj, Unsafe.As<JSReceiver>(o).Map) && slots[slot + 1]._obj is StoreHandler handler &&
-                            StoreIC.TryStoreOwnField(Unsafe.As<JSObject>(o), handler, acc))
+                        if ((uint)(slot + 1) < (uint)slots.Length &&
+                            ReferenceEquals(Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(slots), slot)._obj, Unsafe.As<JSReceiver>(o).Map))
                         {
-                            ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                            continue;
+                            // A field store encoded in the handler slot's payload
+                            // (FeedbackNexus.EncodeHandler), or the handler's own fields.
+                            ref JSValue handlerSlot = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(slots), slot + 1);
+                            long encoded = handlerSlot._bits;
+                            if (encoded != 0 ? StoreIC.TryStoreEncodedField(Unsafe.As<JSObject>(o), encoded, acc)
+                                : handlerSlot._obj is StoreHandler handler && StoreIC.TryStoreOwnField(Unsafe.As<JSObject>(o), handler, acc))
+                            {
+                                ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
+                                continue;
+                            }
                         }
                     }
                     if ((Bytecode)ip == Bytecode.SetNamedProperty)

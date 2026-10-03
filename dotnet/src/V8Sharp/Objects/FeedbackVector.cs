@@ -721,19 +721,23 @@ public readonly struct FeedbackNexus
     /// <summary>
     /// A handler as it is stored beside its map: a load handler for an own
     /// field carries its field index + 1 in the value's payload
-    /// (<see cref="DecodeOwnField"/>), so the interpreter's monomorphic and
-    /// polymorphic field loads read the field without loading the handler,
-    /// as V8's Smi field handlers are read from the feedback slot itself.
+    /// (<see cref="DecodeOwnField"/>), a field store handler its field index
+    /// and representation (StoreIC.EncodeFieldStore), so the interpreter's
+    /// monomorphic field loads and stores need not load the handler, as V8's
+    /// Smi field handlers are read from the feedback slot itself.
     /// Any other handler, and any handler stored by another path, has a zero
     /// payload and takes the handler's own fields.
     /// </summary>
     // Deviation (deviations.md, Interpreter): V8 encodes field handlers as
     // Smis; V8Sharp's handlers are objects, and the payload of the JSValue
     // that holds one is the cheap place for the same bits.
-    internal static JSValue EncodeHandler(JSValue handler) =>
-        handler._obj is IC.LoadHandler { OwnFieldIndex: >= 0 } loadHandler
-            ? JSValue.FromObjectWithPayload(loadHandler, loadHandler.OwnFieldIndex + 1)
-            : handler;
+    internal static JSValue EncodeHandler(JSValue handler) => handler._obj switch
+    {
+        IC.LoadHandler { OwnFieldIndex: >= 0 } loadHandler => JSValue.FromObjectWithPayload(loadHandler, loadHandler.OwnFieldIndex + 1),
+        IC.StoreHandler storeHandler when IC.StoreIC.EncodeFieldStore(storeHandler) is var encoded && encoded != 0 =>
+            JSValue.FromObjectWithPayload(storeHandler, encoded),
+        _ => handler,
+    };
 
     /// <summary>
     /// The own field index a handler slot's payload carries
