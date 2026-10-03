@@ -288,7 +288,7 @@ internal sealed class MaglevCodeGenerator
     /// MinOpts; Maglev's IL averages about 2.5 bytes per instruction and 5
     /// per local reference.
     /// </summary>
-    const int kMaxOptimizedILBytes = 36000;
+    static readonly int kMaxOptimizedILBytes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_IL"), out int maxIL) ? maxIL : 36000;
 
     // V8SHARP_MAGLEV_SHARE_LOCALS=0 gives every value its own IL local (for comparison).
     static readonly bool s_shareLocals = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_SHARE_LOCALS") != "0";
