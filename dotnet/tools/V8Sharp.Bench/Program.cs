@@ -40,6 +40,21 @@ public static partial class Program
         "navier-stokes", "pdfjs", "mandreel", "gbemu", "code-load", "box2d", "zlib", "typescript",
     ];
 
+    /// <summary>
+    /// octane-quick:&lt;name&gt; is octane-steady:&lt;name&gt; with the iterations
+    /// divided further by this factor (on top of V8SHARP_BENCH_SCALE), chosen so
+    /// each benchmark takes about 2-3 s of V8Sharp interpreter wall time
+    /// (2026-10-03 parity publish; zlib alone was 134 s at the default scale).
+    /// For quick A/B iterations; its scores are comparable only within a
+    /// session, not with octane-steady.
+    /// </summary>
+    static readonly Dictionary<string, int> QuickDivisors = new()
+    {
+        ["richards"] = 2, ["deltablue"] = 2, ["crypto"] = 10, ["raytrace"] = 3, ["earley-boyer"] = 7,
+        ["regexp"] = 2, ["splay"] = 1, ["navier-stokes"] = 2, ["pdfjs"] = 1, ["mandreel"] = 14,
+        ["gbemu"] = 3, ["code-load"] = 1, ["box2d"] = 2, ["zlib"] = 50, ["typescript"] = 3,
+    };
+
     /// <summary>The oracle's modes: V8 flags for each tier configuration.</summary>
     static readonly Dictionary<string, string> V8Modes = new()
     {
@@ -96,6 +111,8 @@ public static partial class Program
             suites:  octane (all), octane:<name>, octane-cpu (all) | octane-cpu:<name> (fixed work, scored
                      by thread CPU time; V8SHARP_BENCH_SCALE divides the iterations, default 50),
                      octane-steady (all) | octane-steady:<name> (octane-cpu after one unmeasured pass),
+                     octane-quick (all) | octane-quick:<name> (octane-steady scaled to ~2-3 s per benchmark,
+                     for A/B iterations; comparable only within one session),
                      perf:<js-perf-test dir>, micro:<name> | micro:all
             Octane is fetched by tools/V8Sharp.Bench/fetch-octane.sh into dotnet/artifacts/octane.
             """);
@@ -284,7 +301,7 @@ public static partial class Program
     static int Compare(string[] args)
     {
         var suites = (Arg(args, "--suites") ?? "octane").Split(',', StringSplitOptions.RemoveEmptyEntries)
-            .SelectMany(s => s is "octane" or "octane-cpu" or "octane-steady" ? OctaneBenchmarks.Select(b => s + ":" + b) : [s]).ToList();
+            .SelectMany(s => s is "octane" or "octane-cpu" or "octane-steady" or "octane-quick" ? OctaneBenchmarks.Select(b => s + ":" + b) : [s]).ToList();
         var engines = (Arg(args, "--engines") ?? "v8:jit,v8:jitless,v8sharp").Split(',', StringSplitOptions.RemoveEmptyEntries);
         int runs = int.Parse(Arg(args, "--runs") ?? "1", CultureInfo.InvariantCulture);
         int timeout = int.Parse(Arg(args, "--timeout") ?? "600", CultureInfo.InvariantCulture);
@@ -341,6 +358,17 @@ public static partial class Program
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        // octane-quick:<name>: the child runs octane-steady:<name> with a larger
+        // scale (also understood by older V8Sharp.Bench builds passed as @<dir>).
+        string childSuite = suite;
+        if (suite.StartsWith("octane-quick:", StringComparison.Ordinal))
+        {
+            string name = suite["octane-quick:".Length..];
+            int baseScale = int.Parse(Environment.GetEnvironmentVariable("V8SHARP_BENCH_SCALE") ?? "50", CultureInfo.InvariantCulture);
+            childSuite = "octane-steady:" + name;
+            psi.Environment["V8SHARP_BENCH_SCALE"] =
+                (baseScale * QuickDivisors.GetValueOrDefault(name, 1)).ToString(CultureInfo.InvariantCulture);
+        }
         var wallClock = Stopwatch.StartNew();
         if (childEngine == "d8sharp" || childEngine.StartsWith("d8sharp:", StringComparison.Ordinal))
         {
@@ -350,8 +378,8 @@ public static partial class Program
             if (buildDir is null) throw new ArgumentException("d8sharp needs @<dir> (a d8sharp build or publish)");
             string mode = childEngine == "d8sharp" ? "" : childEngine[8..];
             if (!V8SharpModes.TryGetValue(mode, out var flags)) throw new ArgumentException("unknown v8sharp mode " + mode);
-            if (suite.StartsWith("octane-cpu:", StringComparison.Ordinal) || suite.StartsWith("octane-steady:", StringComparison.Ordinal))
-                throw new ArgumentException("octane-cpu and octane-steady need the in-process hosts (cpuTimeMs)");
+            if (childSuite.StartsWith("octane-cpu:", StringComparison.Ordinal) || childSuite.StartsWith("octane-steady:", StringComparison.Ordinal))
+                throw new ArgumentException("octane-cpu, octane-steady and octane-quick need the in-process hosts (cpuTimeMs)");
             string shell = Path.Combine(buildDir, OperatingSystem.IsWindows() ? "d8sharp.exe" : "d8sharp");
             var (workDir, files, driver) = Workload(suite);
             psi.FileName = File.Exists(shell) ? shell : "dotnet";
@@ -398,7 +426,7 @@ public static partial class Program
         else if (Path.GetFileNameWithoutExtension(psi.FileName) == "dotnet")
             psi.ArgumentList.Add(typeof(Program).Assembly.Location);
         if (!childEngine.StartsWith("d8sharp", StringComparison.Ordinal))
-            foreach (var a in new[] { "run", "--engine", childEngine, "--suite", suite }) psi.ArgumentList.Add(a);
+            foreach (var a in new[] { "run", "--engine", childEngine, "--suite", childSuite }) psi.ArgumentList.Add(a);
 
         using var p = Process.Start(psi)!;
         var stdout = new StringBuilder();

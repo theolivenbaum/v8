@@ -25,6 +25,29 @@ CPU calibration, memory bandwidth, disk bandwidth and IOPS), runs one
 `V8Sharp.Bench compare` with V8 and V8Sharp interleaved, then fingerprints
 again. The log goes to `dotnet/artifacts/bench/session-*.log`.
 
+## Iterate small, measure the whole suite rarely
+
+A full `octane-steady` session is about 18 minutes per run for V8Sharp plus
+5 for V8 (zlib alone is 134 s), so three runs hold the shared lock for over an
+hour and every other agent waits. Work in two loops:
+
+- **Inner loop (each change):** pick the 2-5 benchmarks the change should
+  move, plus one it should not, and A/B them with `octane-quick:<name>`
+  (octane-steady scaled to about 2-3 s per benchmark) and the relevant
+  `micro:*` suite. Keep a session under about 15 minutes of lock time:
+  ```bash
+  tools/V8Sharp.Bench/bench-session.sh \
+      --suites octane-quick:richards,octane-quick:deltablue,octane-quick:zlib,micro:calls \
+      --engines v8sharp@artifacts/a,v8sharp@artifacts/b,v8:jitless --runs 3
+  ```
+  Quick scores are comparable only within one session (different work from
+  octane-steady); report them as ratios to the V8 column or to build A.
+- **Outer loop (end of a pass):** one full `octane-steady` session on parity
+  publishes for the headline number. Split it by benchmark groups into
+  sessions under 2 hours if needed (background commands die at 2 h).
+- Never queue more than one session at a time per agent, and cancel queued
+  sessions you no longer need: a waiting session still takes its turn.
+
 ## Rules
 
 1. **Warm up before measuring.** A cold run measures .NET's JIT compiling
