@@ -291,10 +291,13 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   register stack limit, or 0 while `StackGuard` has an interrupt pending), so
   one compare covers overflow and interrupts as in V8's
   InterpreterEntryTrampoline; it does every scalar store before the
-  reference stores. Otherwise it changes nothing and the handler takes
+  reference stores. Slots reserved below the frame (`reservedBelow`: the
+  argument window of `f.apply(thisArg, arguments)`, `TryApplyFast`) start at
+  the old stack top, which becomes the record's `RegisterStart`, and are
+  released with the frame. Otherwise it changes nothing and the handler takes
   `EnterInline` (the general entry, which other call sites such as
-  `f.call`/`f.apply`/`new` use), which handles interrupts, overflow, feedback
-  allocation and receiver conversion. A return (`ReturnInline`) restores
+  `f.call`, the general `f.apply` and `new` use), which handles interrupts,
+  overflow, feedback allocation and receiver conversion. A return (`ReturnInline`) restores
   `Fp`, `FrameIndex`, `Pc` and the resume refs from the caller's record (the
   context comes from the caller's slot), keeps the loop's accumulator as the
   result (a construct frame's receiver replaces it), and leaves the callee's
