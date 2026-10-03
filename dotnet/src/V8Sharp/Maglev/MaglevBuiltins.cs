@@ -288,9 +288,9 @@ public static class MaglevBuiltins
     /// boilerplates never get): a copy of it; the runtime's path once its map
     /// is deprecated (the deep copy migrates it).
     /// </summary>
-    public static JSValue CloneObjectLiteral(Isolate isolate, FeedbackVector fv, int slot, JSValue description, int flags, JSObject boilerplate)
+    public static JSValue CloneObjectLiteral(Isolate isolate, FeedbackVector fv, int slot, JSValue description, int flags, LiteralShape shape)
     {
-        if (!boilerplate.Map.IsDeprecated) return isolate.Factory.CopyJSObject(boilerplate);
+        if (shape.IsValid()) return shape.Clone(isolate);
         return Baseline.BaselineBuiltins.CreateObjectLiteral(isolate, fv, slot, description, flags);
     }
 
@@ -958,4 +958,66 @@ public static class MaglevBuiltins
 internal static class BaselineBuiltinsBridge
 {
     public static JSValue TestTypeOf(JSValue v, int literal) => Baseline.BaselineBuiltins.TestTypeOf(v, literal);
+}
+
+/// <summary>
+/// The shape of a literal boilerplate Maglev code copies (CloneObjectLiteral):
+/// a fast-mode object without elements whose object-valued fields are such
+/// boilerplates or arrays of primitives (their copy-on-write elements shared).
+/// </summary>
+/// <remarks>
+/// Deviation: the runtime's copy (StructureWalk) gives the nested arrays
+/// allocation mementos of their sites; these copies do not, so elements kind
+/// changes of arrays Maglev code created do not reach the site.
+/// </remarks>
+public sealed class LiteralShape
+{
+    public JSObject Boilerplate = null!;
+    public (FieldIndex Index, LiteralShape Shape)[] Nested = [];
+
+    public static LiteralShape? TryCreate(JSObject boilerplate, int depth)
+    {
+        if (depth > 3 || boilerplate.Map.IsDeprecated || !boilerplate.HasFastProperties) return null;
+        if (boilerplate is JSArray array)
+        {
+            if (!ElementsKinds.IsFastElementsKind(array.Map.ElementsKind)) return null;
+            if (array.Elements is FixedArray elements)
+            {
+                for (int i = 0; i < elements.Length; i++) if (elements._data[i].HeapObjectOrNull is JSObject) return null;
+            }
+            return new LiteralShape { Boilerplate = boilerplate };
+        }
+        if (boilerplate.Map.InstanceType != InstanceType.JSObjectType || boilerplate.Elements.Length != 0) return null;
+        Map map = boilerplate.Map;
+        DescriptorArray descriptors = map.InstanceDescriptors;
+        int count = map.NumberOfOwnDescriptors;
+        List<(FieldIndex, LiteralShape)>? nested = null;
+        for (int i = 0; i < count; i++)
+        {
+            PropertyDetails details = descriptors.GetDetails(new InternalIndex(i));
+            if (details.Location != PropertyLocation.Field) continue;
+            FieldIndex index = FieldIndex.ForDetails(map, details);
+            if (boilerplate.RawFastPropertyAt(index).HeapObjectOrNull is JSObject value)
+            {
+                if (TryCreate(value, depth + 1) is not { } child) return null;
+                (nested ??= []).Add((index, child));
+            }
+        }
+        return new LiteralShape { Boilerplate = boilerplate, Nested = nested?.ToArray() ?? [] };
+    }
+
+    /// <summary>The boilerplates are as when the shape was made (none migrated since).</summary>
+    public bool IsValid()
+    {
+        if (Boilerplate.Map.IsDeprecated) return false;
+        foreach ((FieldIndex _, LiteralShape child) in Nested) if (!child.IsValid()) return false;
+        return true;
+    }
+
+    public JSObject Clone(Isolate isolate)
+    {
+        JSObject copy = isolate.Factory.CopyJSObject(Boilerplate);
+        foreach ((FieldIndex index, LiteralShape child) in Nested) copy.FastPropertyAtPut(index, child.Clone(isolate));
+        return copy;
+    }
 }

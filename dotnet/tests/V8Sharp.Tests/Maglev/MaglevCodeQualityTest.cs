@@ -72,6 +72,23 @@ public class MaglevCodeQualityTest
           return out.join(';');
         })()
         """,
+        // Object literals with nested object and array boilerplates: each
+        // evaluation is a fresh deep copy (mutating one copy, its nested
+        // arrays or objects, never reaches the next), field type changes.
+        """
+        (function() {
+          function make(k) { return { a: 1, b: { c: [1, 2, 3], d: { e: 'x' } }, f: [1.5, 2.5], g: k }; }
+          var out = [], prev = null;
+          for (var k = 0; k < 40; k++) {
+            var o = make(k);
+            out.push(JSON.stringify(o), prev === null || (prev.b !== o.b && prev.b.c !== o.b.c && prev.f !== o.f));
+            o.b.c.push(k); o.b.d.e = k; o.f[0] = 'str'; o.a = 'changed'; o.b.c[0] = 0.5;
+            if (k == 25) { o.b.d.z = 1; o.b.d = 7; }
+            prev = o;
+          }
+          return out.join(';');
+        })()
+        """,
     };
 
     [Theory]

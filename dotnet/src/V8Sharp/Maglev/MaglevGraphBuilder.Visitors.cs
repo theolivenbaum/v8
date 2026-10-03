@@ -513,13 +513,14 @@ public sealed partial class MaglevGraphBuilder
                 }
                 if (bytecode == Bytecode.CreateObjectLiteral &&
                     _unit.Feedback.Slots[FeedbackSlot(1)].HeapObjectOrNull is AllocationSite { Boilerplate: { } boilerplate } &&
-                    IsShallowObjectBoilerplate(boilerplate))
+                    LiteralShape.TryCreate(boilerplate, 0) is { } shape)
                 {
-                    // TryBuildFastCreateObjectOrArrayLiteral for a boilerplate without
-                    // nested objects: a copy of it (MaglevBuiltins.CloneObjectLiteral).
+                    // TryBuildFastCreateObjectOrArrayLiteral for a boilerplate whose nested
+                    // values are such boilerplates or arrays of primitives: copies of them
+                    // (MaglevBuiltins.CloneObjectLiteral).
                     ValueNode clone = CallMaglev("CloneObjectLiteral", [],
                         [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(1)), BuiltinArg.C(Constant(ConstantPoolIndex(0))),
-                         BuiltinArg.I(Flag8(2)), BuiltinArg.C(boilerplate)], OpProperties.kCanAllocate | OpProperties.kNotIdempotent,
+                         BuiltinArg.I(Flag8(2)), BuiltinArg.C(shape)], OpProperties.kCanAllocate | OpProperties.kNotIdempotent,
                         type: NodeType.kOtherJSReceiver)!;
                     SetAccumulator(clone);
                     break;
@@ -1643,26 +1644,6 @@ public sealed partial class MaglevGraphBuilder
         }
         MergeIntoFrameStateFrom(target, _currentBlock!);
         FinishBlock(new ControlNode(Opcode.Jump) { Int0 = target });
-    }
-
-    /// <summary>A literal boilerplate a shallow copy reproduces: fast properties, no elements, no nested objects.</summary>
-    static bool IsShallowObjectBoilerplate(JSObject boilerplate)
-    {
-        if (boilerplate is JSArray || !boilerplate.HasFastProperties || boilerplate.Map.IsDeprecated || boilerplate.Elements.Length != 0)
-        {
-            return false;
-        }
-        if (boilerplate.Map.InstanceType != InstanceType.JSObjectType) return false;
-        Map map = boilerplate.Map;
-        DescriptorArray descriptors = map.InstanceDescriptors;
-        int count = map.NumberOfOwnDescriptors;
-        for (int i = 0; i < count; i++)
-        {
-            PropertyDetails details = descriptors.GetDetails(new InternalIndex(i));
-            if (details.Location != PropertyLocation.Field) continue;
-            if (boilerplate.RawFastPropertyAt(FieldIndex.ForDetails(map, details)).HeapObjectOrNull is JSObject) return false;
-        }
-        return true;
     }
 
     /// <summary>(TestInstanceOf's feedback is the constructor or megamorphic; there is no speculation mode.)</summary>
