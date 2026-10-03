@@ -520,6 +520,52 @@ public static class MaglevBuiltins
         isolate.Context = Unsafe.As<Context>(context._obj!);
     }
 
+    // ---- Generators (LoadTaggedField / StoreTaggedFieldNoWriteBarrier of JSGeneratorObject fields,
+    //      GeneratorStore, GeneratorRestoreRegister) ------------------------------------------------------
+
+    [MethodImpl(Inline)]
+    public static JSValue LoadGeneratorContext(JSValue generator) => Unsafe.As<JSGeneratorObject>(generator._obj!).Context;
+
+    [MethodImpl(Inline)]
+    public static JSValue LoadGeneratorInputOrDebugPos(JSValue generator) =>
+        Unsafe.As<JSGeneratorObject>(generator._obj!).InputOrDebugPos;
+
+    [MethodImpl(Inline)]
+    public static int LoadGeneratorContinuation(JSValue generator) =>
+        Unsafe.As<JSGeneratorObject>(generator._obj!).ContinuationValue;
+
+    [MethodImpl(Inline)]
+    public static void StoreGeneratorContinuation(JSValue generator, int value) =>
+        Unsafe.As<JSGeneratorObject>(generator._obj!).ContinuationValue = value;
+
+    /// <summary>The generator's parameters_and_registers (GeneratorStore writes it element by element).</summary>
+    [MethodImpl(Inline)]
+    public static JSValue[] GeneratorRegisterFile(JSValue generator) =>
+        Unsafe.As<JSGeneratorObject>(generator._obj!).ParametersAndRegisters.Data;
+
+    /// <summary>GeneratorStore's fixed part: the context, the continuation and input_or_debug_pos.</summary>
+    [MethodImpl(Inline)]
+    public static void GeneratorSuspend(JSValue generator, JSValue context, int suspendId, int bytecodeOffset)
+    {
+        var g = Unsafe.As<JSGeneratorObject>(generator._obj!);
+        g.Context = Unsafe.As<Context>(context._obj!);
+        g.ContinuationValue = suspendId;
+        g.InputOrDebugPos = JSValue.FromInt(bytecodeOffset);
+    }
+
+    /// <summary>
+    /// GeneratorRestoreRegister: the saved value, and the slot cleared so the
+    /// generator does not keep it alive (V8 writes the stale register sentinel).
+    /// </summary>
+    [MethodImpl(Inline)]
+    public static JSValue GeneratorRestoreRegister(JSValue generator, int index)
+    {
+        JSValue[] data = Unsafe.As<JSGeneratorObject>(generator._obj!).ParametersAndRegisters.Data;
+        JSValue value = data[index];
+        data[index] = default;
+        return value;
+    }
+
     // ---- Math ----------------------------------------------------------------------------------------------
 
     [MethodImpl(Inline)]

@@ -258,6 +258,8 @@ public sealed class MergePointInterpreterFrameState
     public readonly BytecodeLivenessState Liveness;
     public readonly LoopInfo? Loop;
     public BasicBlock? Block;
+    /// <summary>A loop entered by generator resume edges too (is_resumable_loop).</summary>
+    public bool IsResumableLoop;
     /// <summary>The loop's back edge has been merged.</summary>
     public bool LoopClosed;
     /// <summary>A catch block's state (NewForCatchBlock): merged from the throwing nodes (MergeThrow).</summary>
@@ -421,9 +423,16 @@ public sealed class MergePointInterpreterFrameState
     /// with a Phi for every live slot the loop assigns (and the context when
     /// the loop changes it).
     /// </summary>
+    /// <remarks>
+    /// A resumable loop (<paramref name="resumable"/>) is also entered by the
+    /// resume edges of the generator switch, which do not pass its header: every
+    /// live value is a phi, and nothing is known at the header
+    /// (NewForLoop's is_resumable_loop).
+    /// </remarks>
     public void InitializeLoop(MaglevGraphBuilder builder, InterpreterFrameState unmerged, BasicBlock? predecessor,
-        bool loopChangesContext)
+        bool loopChangesContext, bool resumable = false)
     {
+        IsResumableLoop = resumable;
         LoopInfo loop = Loop!;
         int accumulatorSlot = InterpreterFrameState.AccumulatorSlot(Unit);
         int contextSlot = InterpreterFrameState.ContextSlot(Unit);
@@ -436,7 +445,7 @@ public sealed class MergePointInterpreterFrameState
             }
             ValueNode? entry = unmerged.Values[slot];
             bool assigned;
-            if (slot == accumulatorSlot) assigned = true;
+            if (slot == accumulatorSlot || resumable) assigned = true;
             else if (slot == contextSlot) assigned = loopChangesContext;
             else if (slot < Unit.ParameterCount) assigned = loop.Assignments.ContainsParameter(slot);
             else assigned = loop.Assignments.ContainsLocal(slot - Unit.ParameterCount - 1);
@@ -457,7 +466,7 @@ public sealed class MergePointInterpreterFrameState
         // The back edge can change anything the loop body changes: V8 keeps
         // the stable facts (LoopEffects); V8Sharp starts the loop with the
         // entry's facts about values the loop does not assign, minus unstable maps.
-        Known = unmerged.Known.Clone();
+        Known = resumable ? new KnownNodeAspects() : unmerged.Known.Clone();
         Known.ClearUnstableMaps();
         foreach (Phi phi in Phis)
         {

@@ -45,7 +45,7 @@ public class MaglevCompilerTest
         "--maglev --sparkplug --no-baseline-batch-compilation --invocation-count-for-maglev=2 --invocation-count-for-feedback-allocation=1",
     ];
 
-    static void AssertSameWhenOptimized(string source)
+    internal static void AssertSameWhenOptimized(string source)
     {
         string interpreted = Run("--no-maglev --no-sparkplug", source);
         foreach (string flags in StressConfigurations)

@@ -262,6 +262,17 @@ public enum Opcode : ushort
     /// <summary>V8Sharp: EnsureWritableFastElements + MaybeGrowFastElements for an append store.</summary>
     MaybeGrowFastElements,
     UpdateJSArrayLength,
+    /// <summary>
+    /// V8Sharp: BuildLoadTaggedField of a JSGeneratorObject field (V8 loads by
+    /// offset): Int0 is the field (GeneratorField).
+    /// </summary>
+    LoadGeneratorField,
+    /// <summary>V8Sharp: BuildStoreTaggedFieldNoWriteBarrier of the generator's continuation (Int32 input).</summary>
+    StoreGeneratorContinuation,
+    /// <summary>GeneratorStore: the parameters and registers, the context, the suspend id and the bytecode offset.</summary>
+    GeneratorStore,
+    /// <summary>GeneratorRestoreRegister: element Int0 of the generator's register file (then cleared).</summary>
+    GeneratorRestoreRegister,
 
     // ---- Operations ------------------------------------------------------------------------
     TaggedEqual,
@@ -315,6 +326,17 @@ public enum CompareOperation : byte
     kLessThanOrEqual,
     kGreaterThan,
     kGreaterThanOrEqual,
+}
+
+/// <summary>The JSGeneratorObject fields LoadGeneratorField reads.</summary>
+public enum GeneratorField : byte
+{
+    /// <summary>context_ (tagged).</summary>
+    kContext,
+    /// <summary>input_or_debug_pos_ (tagged).</summary>
+    kInputOrDebugPos,
+    /// <summary>continuation_ (Int32).</summary>
+    kContinuation,
 }
 
 /// <summary>The roots RootConstant can name.</summary>

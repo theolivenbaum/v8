@@ -67,6 +67,9 @@ public sealed class Graph
     int _nextNodeId = 1;
     int _nextBlockId;
 
+    /// <summary>The graph resumes a generator (set_has_resumable_generator).</summary>
+    public bool HasResumableGenerator;
+
     public int NewNodeId() => _nextNodeId++;
     public BasicBlock NewBlock() => new(_nextBlockId++);
     public int NodeCount => _nextNodeId;

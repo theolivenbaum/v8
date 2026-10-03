@@ -758,6 +758,17 @@ public sealed partial class MaglevGraphBuilder
                     [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1)], properties: OpProperties.kCanThrow | OpProperties.kNotIdempotent);
                 break;
 
+            // ---- Generators -------------------------------------------------------------------------------
+            case Bytecode.SwitchOnGeneratorState:
+                VisitSwitchOnGeneratorState();
+                break;
+            case Bytecode.SuspendGenerator:
+                VisitSuspendGenerator();
+                break;
+            case Bytecode.ResumeGenerator:
+                VisitResumeGenerator();
+                break;
+
             // ---- Misc --------------------------------------------------------------------------------------
             case Bytecode.Debugger:
                 // Runtime_HandleDebuggerStatement: no debugger is attached.

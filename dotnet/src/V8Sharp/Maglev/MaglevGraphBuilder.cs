@@ -12,10 +12,9 @@
 // CallBuiltin nodes that call the same BaselineBuiltins method the baseline
 // compiler calls for that bytecode (V8 uses Generic* nodes that call the
 // interpreter's builtins with feedback, which is the same thing); register
-// lists those builtins read are stored into the frame first. Exception
-// handlers, generators and a few bytecodes are not supported yet: the
-// compilation bails out (MaglevBailoutException) and the function stays in
-// the lower tiers.
+// lists those builtins read are stored into the frame first. Debug-break
+// bytecodes and a few others are not supported yet: the compilation bails out
+// (MaglevBailoutException) and the function stays in the lower tiers.
 using System.Reflection;
 using V8Sharp.Baseline;
 using V8Sharp.Deoptimizer;
@@ -130,16 +129,12 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>The bytecodes and features the builder supports; others bail out.</summary>
     internal static string? UnsupportedReason(SharedFunctionInfo shared, BytecodeArray bytecode)
     {
-        if (Globals.IsResumableFunction(shared.Kind)) return "resumable function";
         var it = new BytecodeArrayIterator(bytecode);
         for (; !it.Done(); it.Advance())
         {
             Bytecode bc = it.CurrentBytecode();
             switch (bc)
             {
-                case Bytecode.SwitchOnGeneratorState:
-                case Bytecode.SuspendGenerator:
-                case Bytecode.ResumeGenerator:
                 case Bytecode.Illegal:
                     return "unsupported bytecode " + bc;
             }
@@ -512,7 +507,7 @@ public sealed partial class MaglevGraphBuilder
         var state = new MergePointInterpreterFrameState(_unit, offset, _predecessorCount[offset],
             _analysis.GetInLivenessFor(offset), loop);
         _mergeStates[offset] = state;
-        state.InitializeLoop(this, _frame, entryPredecessor, _loopChangesContext[offset]);
+        state.InitializeLoop(this, _frame, entryPredecessor, _loopChangesContext[offset], IsResumableLoop(loop));
         BasicBlock header = _graph.NewBlock();
         header.IsLoopHeader = true;
         header.Offset = offset;
