@@ -713,6 +713,61 @@ loop 1.1x, add loop 1.7x, int arithmetic 2.6x, call 2.0x, prototype method
   other agents' (object layout, Factory).
 Conformance at the end of the pass: mjsunit 7602 run, 0 newly failing, 0
 newly passing; test262 95123 run, 0 newly failing, 0 newly passing.
+
+Sixth interpreter performance pass: frame shape and object creation
+(2026-10-03; parity publish, `bench-session.sh`, V8 --jitless in the same
+session; "before" is b214fa4f built with this branch's V8Sharp.Bench,
+"after" 3f13618b, which also contains the merged front-end pass, so
+CodeLoad's gain is mostly that pass's). The host was loaded during both
+sessions (load 13-21, idle 0-23% in the fingerprints, cpu-cal 1.65-1.75 s,
+mem-bw 25-34 GB/s); the columns are interleaved.
+
+| | before | after | V8 --jitless | before / after of jitless |
+|---|---|---|---|---|
+| micro cpu + calls + objects geomean (24 scores, 3 runs) | 36.9 | 37.8 | 61.7 | 59.8% / 61.3% |
+| octane-steady geomean (15, no latency scores, 2 runs) | 226.6 | 235.4 | 482.5 | 47.0% / 48.8% |
+
+Object creation (micro, after/before): ClosureCreate +48%, CpuClosure
++28%, ObjectLiteral +28%, CpuObjectLiteral +26%, NewClass +34%,
+NewFunction +9%, CpuNewObject +11%. octane-steady: Richards +2.7%,
+DeltaBlue +2.8%, Crypto +1.8%, RayTrace +4.6%, EarleyBoyer +8.7%, RegExp
++3.4%, Splay +4.7%, Box2D +8.9%, CodeLoad +34.7% (front-end pass), PdfJS
+-6.7%, NavierStokes -2.5%, Gameboy -2.0%, the rest within 2%.
+
+The pass, one commit each (git log b214fa4f..):
+- FastNewClosure: the JSFunction allocated from the native context's
+  function map with its fields written once, the closure feedback cell
+  array read from the feedback vector, no SavePc (CpuClosure +14%); call
+  feedback tests the closures' FeedbackCell first.
+- CreateShallowObjectLiteral's fast case: a boilerplate with only
+  in-object properties and no elements is copied by its copy constructor;
+  DefineNamedOwnProperty shares SetNamedProperty's inline monomorphic store.
+- Construct: the construct mode cached on the SharedFunctionInfo beside
+  the call mode, the monomorphic construct feedback hit inline, the
+  feedback vector passed from the frame pointer, the runtime allocation out
+  of line; FastNewObject (constructors that write only the map and the
+  empty elements); the in-object StoreIC transition without the property
+  array and double cases.
+- The interpreter frame in V8's shape (architecture.md section 7): the
+  bytecode array, bytecode offset and argument count in their fixed slots
+  (fp - 3, fp - 2, fp - 4), every frame value held once; InterpreterState
+  keeps the accumulator, offset and frame indices; the record is the frame
+  pointer, a flags byte and the inline call's return state. Baseline,
+  Maglev and the deoptimizer use the slots. For calls this was about
+  neutral (CallLoop, MethodCall, CpuCall within noise): most of the
+  removed stores were the compare-and-skip kind that cost little.
+- A sloppy call's global proxy receiver inline (ConvertReceiver was a call
+  per call); Context.NativeContext inline.
+
+What is left: a call and return are still about 2x V8 --jitless (CpuCall
+1.6x, MethodCall 1.8x, CpuProtoMethod 2.2x): the call handler's operand
+decoding and feedback, EnterInline's interrupt, stack-limit and
+dirty-register checks, the receiver and argument copies, the loop reload
+after the call and return. `new` (2.7x), object literals (2.9x) and
+closures (2.5x) allocate through the CLR allocator (header, zeroing) and
+pay a write barrier for every reference field store into the new object.
+Conformance at the end of the pass: mjsunit 7602 run, 0 newly failing, 0
+newly passing; test262 95123 run, 0 newly failing, 0 newly passing.
 Front end and bytecode compilation pass (2026-10-02; parity publish,
 thread CPU, under the benchmark lock, mean of 3 interleaved runs).
 `micro:compile` (tools/V8Sharp.Bench/micro/compile.js: Octane's sources
