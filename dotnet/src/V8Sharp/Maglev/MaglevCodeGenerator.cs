@@ -1362,8 +1362,14 @@ internal sealed class MaglevCodeGenerator
                 return;
             case Opcode.LoadTypedArrayLength:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
-                Call(nameof(MaglevBuiltins.TypedArrayLength));
+                Call(node.Int0 == 1 ? nameof(MaglevBuiltins.TypedArrayLengthAsFloat64) : nameof(MaglevBuiltins.TypedArrayLength));
                 Store(v!);
+                return;
+            case Opcode.CheckTypedArrayValid:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                _il.Emit(node.Int0 == 1 ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0);
+                Call(nameof(MaglevBuiltins.IsTypedArrayValid));
+                DeoptIfFalse(node);
                 return;
             case Opcode.LoadTypedArrayElement:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);

@@ -299,6 +299,22 @@ public static class MaglevBuiltins
         return length > int.MaxValue ? int.MaxValue : (int)length;
     }
 
+    /// <summary>CheckTypedArrayValid: not detached, and for a write not immutable.</summary>
+    [MethodImpl(Inline)]
+    public static bool IsTypedArrayValid(JSValue obj, bool write)
+    {
+        JSArrayBuffer buffer = Unsafe.As<JSTypedArray>(obj._obj!).Buffer;
+        return !buffer.WasDetached && !(write && buffer.IsImmutable);
+    }
+
+    /// <summary>LoadTypedArrayLength of the length property: the whole length (V8: an IntPtr).</summary>
+    [MethodImpl(Inline)]
+    public static double TypedArrayLengthAsFloat64(JSValue obj)
+    {
+        var a = Unsafe.As<JSTypedArray>(obj._obj!);
+        return a.Buffer.WasDetached ? 0 : a.IsVariableLength ? a.GetLength() : a.RawLength;
+    }
+
     [MethodImpl(Inline)]
     public static bool TypedArrayIndexInBounds(JSValue obj, int index) => (uint)index < (uint)TypedArrayLength(obj);
 

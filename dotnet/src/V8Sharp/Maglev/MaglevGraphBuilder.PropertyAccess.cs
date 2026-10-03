@@ -24,7 +24,7 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>A PropertyAccessInfo for one receiver map.</summary>
     sealed class PropertyAccessInfo
     {
-        public enum Kind { DataField, DataConstant, NotFound, ArrayLength, StringLength, FieldStore, ConstFieldStore, TransitionStore }
+        public enum Kind { DataField, DataConstant, NotFound, ArrayLength, StringLength, TypedArrayLength, FieldStore, ConstFieldStore, TransitionStore }
         public Kind AccessKind;
         public Map Map = null!;
         public int StorageIndex = -1;
@@ -94,7 +94,7 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>ComputePropertyAccessInfo for a load handler, or null when Maglev does not handle it.</summary>
-    static PropertyAccessInfo? LoadAccessInfo(Map map, JSValue handlerValue)
+    PropertyAccessInfo? LoadAccessInfo(Map map, JSValue handlerValue)
     {
         if (handlerValue.HeapObjectOrNull is not LoadHandler h) return null;
         if (h.LookupOnLookupStartObject) return null;
@@ -120,9 +120,41 @@ public sealed partial class MaglevGraphBuilder
             case LoadHandler.Kind.kStringLength:
                 info.AccessKind = PropertyAccessInfo.Kind.StringLength;
                 return info;
+            case LoadHandler.Kind.kAccessorFromPrototype:
+                // AccessInfoFactory::LookupSpecialFieldAccessorInHolder: the
+                // TypedArray.prototype.length getter of a (non-RAB/GSAB) typed array.
+                if (Flags.typed_array_length_loading && map.InstanceType == InstanceType.JSTypedArrayType &&
+                    !ElementsKinds.IsRabGsabTypedArrayElementsKind(map.ElementsKind) &&
+                    h.Data.HeapObjectOrNull is JSFunction { Shared.BuiltinId: Builtins.Builtin.TypedArrayPrototypeLength } &&
+                    h.Holder is not null)
+                {
+                    info.AccessKind = PropertyAccessInfo.Kind.TypedArrayLength;
+                    info.Holder = h.Holder;
+                    return info;
+                }
+                return null;
             default:
                 return null;
         }
+    }
+
+    /// <summary>
+    /// CompilationDependencies::DependOnStablePrototypeChain: the maps of the
+    /// prototypes of <paramref name="map"/> up to <paramref name="holder"/> stay
+    /// stable (false when one is not stable now).
+    /// </summary>
+    bool DependOnStablePrototypeChain(Map map, JSReceiver holder)
+    {
+        var maps = new List<Map>();
+        for (JSReceiver? prototype = map.Prototype; prototype is not null; prototype = prototype.Map.Prototype)
+        {
+            Map prototypeMap = prototype.Map;
+            if (!prototypeMap.IsStable) return false;
+            maps.Add(prototypeMap);
+            if (ReferenceEquals(prototype, holder)) break;
+        }
+        foreach (Map m in maps) _info.AddDependency(m, Objects.DependentCode.DependencyGroups.PrototypeCheck);
+        return true;
     }
 
     /// <summary>TryBuildNamedAccess for loads: map checks and the access per map (polymorphic: a map dispatch).</summary>
@@ -231,6 +263,14 @@ public sealed partial class MaglevGraphBuilder
                     Inputs = [GetTaggedValue(receiver)],
                     Type = NodeType.kSmi,
                 });
+            case PropertyAccessInfo.Kind.TypedArrayLength:
+                // TryBuildPropertyLoad's kTypedArrayLength: with the prototype
+                // chain stable (the getter cannot change without a deopt) and
+                // without detached buffers (a detached array's length is 0,
+                // which LoadTypedArrayLength also returns).
+                DependOnStablePrototypeChain(info.Map, info.Holder!);
+                _info.DependOnProtector(Protectors.IsArrayBufferDetachingIntact(Isolate), "ArrayBufferDetaching");
+                return BuildLoadTypedArrayLengthAsNumber(receiver);
             default:
                 throw new InvalidOperationException();
         }
@@ -713,6 +753,25 @@ public sealed partial class MaglevGraphBuilder
         _ => ValueRepresentation.kInt32,
     };
 
+    /// <summary>
+    /// BuildLoadTypedArrayLength for the length property: the whole length as a number.
+    /// </summary>
+    /// <remarks>
+    /// Deviation: V8's LoadTypedArrayLength is an IntPtr value (converted by
+    /// CheckedIntPtrToInt32, TruncateIntPtrToInt32 or IntPtrToNumber where it
+    /// is used); V8Sharp has no IntPtr representation and gives it Float64
+    /// representation, which holds any typed array length exactly and has the
+    /// same conversions (checked to int32, truncated, tagged).
+    /// </remarks>
+    ValueNode BuildLoadTypedArrayLengthAsNumber(ValueNode obj) =>
+        AddNewNode(new ValueNode(Opcode.LoadTypedArrayLength, ValueRepresentation.kFloat64)
+        {
+            Inputs = [GetTaggedValue(obj)],
+            Int0 = 1,
+            Type = NodeType.kNumber,
+            Properties = OpProperties.kCanRead,
+        });
+
     ValueNode BuildLoadTypedArrayLength(ValueNode obj) =>
         AddNewNode(new ValueNode(Opcode.LoadTypedArrayLength, ValueRepresentation.kInt32)
         {
@@ -769,6 +828,18 @@ public sealed partial class MaglevGraphBuilder
         var maps = new Map[feedback.Count];
         for (int i = 0; i < maps.Length; i++) maps[i] = feedback[i].Map;
         BuildCheckMaps(obj, maps);
+        // TryBuildElementAccessOnTypedArray: a store needs a mutable buffer
+        // (detached buffers have length 0, which the bounds check and the
+        // out-of-bounds store handle).
+        if (!_info.DependOnProtector(Protectors.IsArrayBufferMutableIntact(Isolate), "ArrayBufferMutable"))
+        {
+            AddNewNode(new Node(Opcode.CheckTypedArrayValid)
+            {
+                Inputs = [obj],
+                Int0 = 1,
+                Properties = OpProperties.kEagerDeopt,
+            }, DeoptimizeReason.kArrayBufferWasDetached);
+        }
         ValueNode index = GetInt32ElementIndex(key);
         // The value as the kind's number type (ToNumber of an oddball is fine: typed arrays store it).
         ValueNode stored = kind switch

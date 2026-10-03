@@ -253,6 +253,11 @@ public enum Opcode : ushort
     TransitionElementsKind,
     /// <summary>LoadTypedArrayLength: the length of a typed array (0 when detached).</summary>
     LoadTypedArrayLength,
+    /// <summary>
+    /// CheckTypedArrayValid: the typed array's buffer is not detached and, for
+    /// a write (Int0 = 1), not immutable.
+    /// </summary>
+    CheckTypedArrayValid,
     /// <summary>LoadTypedArrayElement (LoadSignedIntTypedArrayElement ...): Int0 is the elements kind.</summary>
     LoadTypedArrayElement,
     /// <summary>StoreTypedArrayElement (StoreIntTypedArrayElement ...): Int0 is the elements kind; Int1 ignores out of bounds.</summary>
