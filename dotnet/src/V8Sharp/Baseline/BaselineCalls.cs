@@ -325,8 +325,11 @@ public static class BaselineCalls
     static bool TryApply(Isolate isolate, JSValue target, JSValue thisArg, JSValue argumentsList, out JSValue result)
     {
         result = default;
-        bool baseline = TryGetBaselineCallee(target, out _, out _, out _);
-        if (!baseline && !TryGetInterpretedCallee(target, out _, out _)) return false;
+        if (!TryGetBaselineCallee(target, out _, out _, out _) && !TryGetMaglevCallee(target, out _, out _, out _) &&
+            !TryGetInterpretedCallee(target, out _, out _))
+        {
+            return false;
+        }
         FixedArrayBase? elements = null;
         int length = 0;
         if (!argumentsList.IsNullOrUndefined && !BuiltinsFunction.TryGetFastElements(isolate, argumentsList, out elements, out length))
@@ -461,8 +464,8 @@ public static class BaselineCalls
     public static JSValue Construct(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, int argsStart,
         int argc)
     {
-        if (constructor._obj is JSFunction function && function.Shared.BaselineCode is { } code &&
-            function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: null } vector && function.Map.IsConstructor &&
+        if (constructor._obj is JSFunction function && function.RawFeedbackCell.Value is FeedbackVector vector &&
+            (vector.MaglevCode is not null || function.Shared.BaselineCode is not null) && function.Map.IsConstructor &&
             newTarget._obj is JSReceiver newTargetReceiver)
         {
             InterpreterCalls.CollectConstructFeedback(isolate, fv, slot, constructor, newTarget);
@@ -484,9 +487,19 @@ public static class BaselineCalls
                 // If not derived class constructor: Allocate the new receiver object.
                 implicitReceiver = AllocateReceiver(isolate, function, newTargetReceiver);
             }
-            int stubStart = isolate.AllocateRegisters(kConstructStubFrameSlots);
-            JSValue result = Enter(isolate, function, code, vector, implicitReceiver, new RegisterArguments(argsStart, argc), newTarget, true);
-            isolate.RegisterStackTop = stubStart;
+            JSValue result;
+            if (vector.MaglevCode is not null)
+            {
+                // The constructor's Maglev code (MaglevCalls: the construct stub's frame and the call).
+                result = MaglevCalls.ConstructWithReceiver(isolate, constructor, implicitReceiver, newTarget, argsStart, argc);
+            }
+            else
+            {
+                int stubStart = isolate.AllocateRegisters(kConstructStubFrameSlots);
+                result = Enter(isolate, function, function.Shared.BaselineCode!, vector, implicitReceiver, new RegisterArguments(argsStart, argc),
+                    newTarget, true);
+                isolate.RegisterStackTop = stubStart;
+            }
             // If the result is an object (in the ECMA sense), we should get rid
             // of the receiver and use the result; see ECMA-262 section 13.2.2-7
             // on page 74.
