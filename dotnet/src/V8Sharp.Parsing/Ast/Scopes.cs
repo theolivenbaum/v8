@@ -459,7 +459,7 @@ public class Scope
         }
     }
 
-    public sealed class Snapshot : IDisposable
+    public readonly struct Snapshot : IDisposable
     {
         private readonly Scope _outerScope;
         private readonly Scope _declarationScope;
