@@ -396,9 +396,36 @@ for now, to be revisited when the reason goes away.
   the name's primitive (`CheckValueEqualsString` with the primitive) are one
   node each where V8 builds a branch and a phi.
 - No escape analysis (except the arguments object forwarded to
-  Function.prototype.apply), loop peeling, LICM, or typed array/DataView/string
-  builder reductions yet; generators and async functions are not optimized
-  (the compile bails out).
+  Function.prototype.apply), loop peeling, LICM, CSE, truncation pass, or
+  DataView/string builder reductions yet.
+- Generators: the generator fields (context, input_or_debug_pos,
+  continuation) are read and written by dedicated nodes
+  (`LoadGeneratorField`, `StoreGeneratorContinuation`) where V8 uses
+  LoadTaggedField/StoreTaggedFieldNoWriteBarrier by offset. Inlining a
+  generator function (V8 inlines its initialization part) is not done.
+- Deprecated feedback maps: V8 replaces them by their updated map and
+  computes the access from it; V8Sharp's accesses come from the IC handlers,
+  so the updated map keeps the deprecated map's handler only for named loads
+  where it applies unchanged (an own field at the same storage index, or a
+  prototype-chain lookup with the same prototype); otherwise the map is
+  dropped. `MigrateMapIfNeeded` returns the deprecated map when the
+  migration fails (the dispatch's last map check then deopts) instead of
+  deopting itself.
+- Typed array length (the `length` property): a Float64 value where V8's
+  LoadTypedArrayLength is an IntPtr (no IntPtr representation); it holds any
+  length exactly and converts as V8's does (checked to Int32, truncated,
+  tagged).
+- Array.prototype.pop is one Maglev builtin call after the map inference
+  and the NoElements dependency (V8 builds the length test, the COW check,
+  the load and the hole store as nodes per elements kind).
+- `CheckHeapObject` (field stores of HeapObject representation) passes
+  undefined and rejects every number: numbers are unboxed and undefined is
+  not a HeapObject in V8Sharp's representation (Object::FitsRepresentation's
+  deviation).
+- kMaxStackSlots: without a register allocator, the stack slots of a graph
+  are estimated as the most values live at once (MaglevStackSlots; frame
+  slots of InitialValues are not counted). Without CSE, fewer values live
+  long than in V8 (mjsunit/maglev/regress-536945254 still compiles).
 
 ## Interpreter execution, ICs, runtime, compiler and modules
 
@@ -825,6 +852,12 @@ d8 host in the TestRunner (tools/V8Sharp.TestRunner/Shell)
 - `Isolate.CountUsage` is a no-op (no use counters).
 
 ## Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
+
+- `--mock-arraybuffer-allocator` (d8's MockArrayBufferAllocator) is applied
+  in BackingStore allocation from the isolate's flag (V8Sharp has no
+  ArrayBuffer::Allocator API): allocations above 10 MB get one 4 KB page,
+  so a mocked buffer must not be accessed beyond it (as in d8). The
+  `--mock-arraybuffer-allocator-limit` accounting is not implemented.
 
 - `a.push(x)`, `a.pop()` and `a.shift()` on a fast JSArray run the builtins'
   fast paths from the interpreter's call handlers (`BuiltinsArray.TryFastPush`
