@@ -768,6 +768,98 @@ closures (2.5x) allocate through the CLR allocator (header, zeroing) and
 pay a write barrier for every reference field store into the new object.
 Conformance at the end of the pass: mjsunit 7602 run, 0 newly failing, 0
 newly passing; test262 95123 run, 0 newly failing, 0 newly passing.
+Seventh interpreter performance pass: call entry, IC handler paths, frame
+resume (2026-10-03; "before" is 6a480c2f, the branch with the Maglev
+correctness merge). Parity publishes, `bench-session.sh`, 3 interleaved
+runs with V8 --jitless in the same session (session-20261003-102501,
+before/after fingerprint: load 1.9 / 1.1, steal 0%, idle 98%, cpu-cal
+1852 / 1771 ms, mem-bw 32.7 / 32.8 GB/s; V8 exited 139 on some runs, its
+means there are over 1-2 runs). "after" is 3a5e180f; the last commit
+(4928034b, routing, below) is measured only unlocked: the locked session
+for it never got the lock in 2 h.
+
+| | before | after | V8 --jitless | before / after of jitless |
+|---|---|---|---|---|
+| octane-steady geomean (15, no latency scores) | 263.8 | 274.9 | 501.0 | 52.7% / 54.9% |
+| micro accessors + cpu geomean (26 scores) | 17.8 | 19.5 | 35.3 | 50.5% / 55.4% |
+
+octane-steady after/before: Richards +16%, DeltaBlue +11%, Crypto +10%,
+Gameboy +8%, CodeLoad +8%, Mandreel +7%, zlib +7%, Box2D +6%, EarleyBoyer
++4%, Typescript +3%, RayTrace +2%, RegExp and NavierStokes flat, Splay -7%
+(noisy across sessions), PdfJS -7% (the declined fast handlers' extra call
+layer; addressed by 4928034b). Accessors (M ops/s, before / after / V8):
+ProtoGetter 13.1 / 17.2 / 29.4 (76 -> 58 ns, V8 34 ns), ProtoSetter 13.4 /
+16.0 / 27.4, ClassGetter 13.3 / 16.5 / 30.1, ClassSetter 13.0 / 15.9 /
+26.8, InheritedGetter 13.5 / 16.7 / 30.2, OwnDefinedGetter 13.5 / 16.9 /
+30.7, MethodCall 12.0 / 15.4 / 27.3, LiteralGetter 10.7 / 9.4 / 25.6 (a
+dictionary-mode holder; 4928034b). CpuCall 14.9 / 17.6 / 28.1,
+CpuProtoMethod 12.6 / 15.7 / 25.3.
+
+The pass, one commit each (git log 6a480c2f..), with the step's effect in
+the per-step sessions (bin builds, 3 interleaved runs; ab2: Richards,
+DeltaBlue, RayTrace, EarleyBoyer, Gameboy, Mandreel, zlib geomean; ab3:
+the micro geomean against the step before):
+- Call entry fast path (`InterpreterInlineCalls.TryEnterFast`): a call
+  with exact argc to a function with bytecode and feedback enters the frame
+  with no calls (the interrupt check folded into one compare against
+  `Isolate.RegisterStackInterruptLimit`, which `StackGuard` lowers to 0 when
+  an interrupt is requested), scalar slots stored before references; the
+  call handlers split into a fast front and a `*Slow` handler. +4.6%.
+- GetNamedProperty fast handler: monomorphic, polymorphic and megamorphic
+  (stub cache) hits, own and prototype fields, prototype constants, getters
+  entered through TryEnterFast. +1.3% (cumulative +5.9%).
+- GetKeyedProperty / SetKeyedProperty typed-array fast handlers with no
+  calls (zlib, Mandreel). +2.0% (cumulative +7.9%).
+- `ReturnInline`: the return to an inline caller without a call, the
+  context restored last. +1.7% (cumulative +9.6%).
+- `InterpreterState.ResumeFp` / `ResumeIp`: the loop resumes from refs
+  set at entry and return instead of recomputing them. Micro +1.3%.
+- SetNamedProperty fast handler: polymorphic fields, megamorphic store
+  stub cache, setters entered inline. Setters +31% (13.3 -> 17.5 M/s).
+- Bitwise operators on Smis inline (`TryAnySmi`). CpuIntArith +7.5%.
+- Load and store feedback encoding: an own-field handler's index carried in
+  the feedback pair's JSValue payload (`FeedbackNexus.EncodeHandler`,
+  `StoreIC.EncodeFieldStore`), read without dereferencing a handler.
+  Within noise (the octane geomean swings about 3% between steps).
+- Megamorphic stub cache with `Map.StubCacheHash` precomputed. Within noise.
+- StrictEquals switched on instance type. Within noise.
+- GetNamedProperty and the call handlers return the value or a
+  `FrameEntered` marker instead of writing the accumulator through
+  InterpreterState. Micro -3% / -0.2% (the extra call layer when the fast
+  handler declined; see the routing commit).
+- Function.prototype.apply with an array or arguments object entered
+  through TryEnterFast from CallProperty2 (`TryApplyFast`). Within noise.
+- The loop routes to a fast handler only when it can apply (callee is an
+  inline-able function, receiver is a JSObject / typed array) and calls the
+  general handler directly otherwise; dictionary-mode holders (kNormal) read
+  in the fast GetNamedProperty, their getters entered inline (4928034b).
+  Unlocked d8sharp micro, ns per iteration before the pass / after:
+  literal getter 104 / 85, prototype getter 68 / 54, Math.floor 56 / 55,
+  string length 31 / 31.
+
+Profiling method (scripts in dotnet/artifacts/scratch, not committed): perf
+cpu-clock samples with DOTNET_PerfMapEnabled, bucketed by the basic blocks
+of the method's JIT listing (DOTNET_JitDisasm from the same process),
+which shows per handler block where the dispatch loop and the handlers
+spend their time.
+
+Tried and dropped, measured: IsSmiDouble as a bit-pattern test (slower);
+a Construct fast front (no gain); the apply frame through TryEnterFast in
+TryPushApplyFrame (no gain); vectorized register-file fill (no gain);
+ReturnInline inlined into the loop (mixed micros, more spills in the loop).
+
+What is left (profiles of the final build): dispatch is 15-27% of the loop's
+samples (RyuJIT's switch shape); write barriers 7-12% on Richards,
+DeltaBlue, RayTrace and EarleyBoyer; a call and return are still about
+1.7-1.9x V8 --jitless (getters ~58 ns against 34 ns); allocation (`new`
+~2.5x). Not reached: 70% of V8 --jitless (54.9% measured).
+
+Conformance at the end of the pass (4928034b): V8Sharp.Tests 1061/1061;
+mjsunit 7602 run, 0 newly failing, 60 newly passing (Maglev expectations,
+not this pass); test262 95123 run, 0 newly failing, 0 newly passing;
+bytecode goldens 100/100 files, 557/557 snippets (bytecode generation untouched by the pass). regress/regress-1236560
+ran 73 s at the base and 77 s at 3a5e180f alone (exception unwinding
+through ExInfo); it can time out at 60 s under load in both.
 Front end and bytecode compilation pass (2026-10-02; parity publish,
 thread CPU, under the benchmark lock, mean of 3 interleaved runs).
 `micro:compile` (tools/V8Sharp.Bench/micro/compile.js: Octane's sources
@@ -1161,6 +1253,11 @@ one run of 7 benchmarks, its means there are over 2 runs):
 | Box2D | 565 | 899 | 63% |
 | zlib | 15.0 | 41.8 | 36% |
 | Typescript | 246 | 628 | 39% |
+
+After the seventh interpreter performance pass (3a5e180f, parity publish,
+session-20261003-102501, same harness): **54.9%** of V8 --jitless
+(274.9 / 501.0; the base of that pass, 6a480c2f, measured 52.7% in the
+same session). See "Seventh interpreter performance pass" above.
 
 ## Phase 2: the fast tiers
 
