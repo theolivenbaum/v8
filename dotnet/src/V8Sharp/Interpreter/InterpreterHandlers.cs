@@ -184,7 +184,10 @@ public static partial class InterpreterExecution
                 st.Pc += 1 + 2 * 2;
                 return true;
             case Bytecode.SetKeyedProperty:
-                SetKeyedProperty<DoubleScale>(isolate, ref st, ref fp, ref ip, st.Accumulator);
+                if (!SetKeyedProperty<DoubleScale>(isolate, ref st, ref fp, ref ip, st.Accumulator))
+                {
+                    SetKeyedPropertySlow<DoubleScale>(isolate, ref st, ref fp, ref ip, st.Accumulator);
+                }
                 st.Pc += 1 + 3 * 2;
                 return true;
             case Bytecode.JumpLoop:
@@ -551,11 +554,16 @@ public static partial class InterpreterExecution
     /// <summary>
     /// SetKeyedProperty after the loop's inline fast-elements hits: a
     /// monomorphic in-bounds store of a Number into a typed array
-    /// (KeyedStoreIC.Store's first case) written here, the rest in
-    /// <see cref="SetKeyedPropertySlow"/>.
+    /// (KeyedStoreIC.Store's first case) written here; false for the rest,
+    /// which the loop passes to <see cref="SetKeyedPropertySlow"/>.
     /// </summary>
+    // The loop calls the slow handler itself, so that this method adds no
+    // .NET frame to a store that calls into JavaScript (ToNumber of an object
+    // calls valueOf/toString): the runtime's exception unwinding grows faster
+    // than linearly with the frames on the stack, and a stack overflow
+    // through such stores (mjsunit regress-1236560) took 30% longer.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void SetKeyedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+    static bool SetKeyedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
         int S = Scale<TS>();
@@ -578,11 +586,11 @@ public static partial class InterpreterExecution
                     (Protectors.IsArrayBufferMutableIntact(isolate) || !array.Buffer.IsImmutable))
                 {
                     TypedArrayElementsOps.StoreElement(data, array.FastByteOffset, kind, index, acc._num);
-                    return;
+                    return true;
                 }
             }
         }
-        SetKeyedPropertySlow<TS>(isolate, ref st, ref fp, ref ip, acc);
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

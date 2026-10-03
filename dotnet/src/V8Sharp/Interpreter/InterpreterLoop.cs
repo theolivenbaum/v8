@@ -464,7 +464,7 @@ public static partial class InterpreterExecution
                             continue;
                         }
                     }
-                    SetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    if (!SetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) SetKeyedPropertySlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
                 }
