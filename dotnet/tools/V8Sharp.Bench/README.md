@@ -86,6 +86,18 @@ compile the loop, so it never sees those instantiations) and start at
 tier 0. From `bin/`, `TieredPGO` stays on: there it is worth about 20% of
 the steady-state score of the eight classic benchmarks.
 
+**The GC write barrier.** `compare` runs every V8Sharp child (in-process
+engines and d8sharp) with `DOTNET_GCWriteBarrier=3`, the GC's non-region
+("server") write barrier, unless the environment sets the variable already
+(0 is the runtime's default region barrier; a build's `bench.env` overrides
+it per engine). It is a GC knob only the environment sets. The interpreter
+stores references into the register stack (a pinned, old array) at most Stars
+and call entries; the region barrier looks up the generation of both regions,
+the server barrier compares against the ephemeral range and marks a card
+byte. octane-quick, 3 interleaved runs (session ab3 of the ninth pass):
+Richards +11%, EarleyBoyer +8%, DeltaBlue +5%, RayTrace +5%, Splay and PdfJS
+within noise. Run d8sharp with the same variable for comparable numbers.
+
 The yardsticks: phase 1 (interpreter) is measured against `v8:jitless`,
 the baseline IL tier against `v8:sparkplug`, the optimizing tier against
 `v8:maglev` and `v8:jit`.

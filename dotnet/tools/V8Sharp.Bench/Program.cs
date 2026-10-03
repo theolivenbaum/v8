@@ -384,6 +384,21 @@ public static partial class Program
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        // V8Sharp runs with the GC's non-region ("server") write barrier
+        // (DOTNET_GCWriteBarrier=3, a GC knob only the environment sets): an
+        // ephemeral range check and a card byte, where the default region
+        // barrier looks up the generation of both regions. The interpreter
+        // stores references into the register stack (a pinned, old array) at
+        // most Stars and call entries, so the barrier is 6-13% of the OO
+        // benchmarks; octane-quick (3 runs): Richards +11%, EarleyBoyer +8%,
+        // DeltaBlue +5%, RayTrace +5%. The card marking is coarser, so a GC
+        // may scan more cards. Set DOTNET_GCWriteBarrier (0 is the runtime's
+        // default) in the environment or a build's bench.env to override.
+        if (!childEngine.StartsWith("v8:", StringComparison.Ordinal) &&
+            Environment.GetEnvironmentVariable("DOTNET_GCWriteBarrier") is null)
+        {
+            psi.Environment["DOTNET_GCWriteBarrier"] = "3";
+        }
         // octane-quick:<name>: the child runs octane-steady:<name> with fixed
         // iteration counts (V8SHARP_BENCH_ITERATIONS); a child build that does
         // not apply them (older than this) is reported as an error below, since
