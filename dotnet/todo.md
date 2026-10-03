@@ -1020,6 +1020,16 @@ progress, also off by default.
         guarded by prototype maps, typed array loads/stores (number kinds),
         KeyedStoreIC_Megamorphic's typed array fast path; call
         speculation modes updated by deopts (out of bounds, disallow);
+        generators and async functions (generator switch, GeneratorStore,
+        GeneratorRestoreRegister, resumable loops; inlined generator
+        initialization); inlining of calls inside try blocks; deprecated
+        feedback maps (updated maps, CheckMapsWithMigrationAndDeopt,
+        MigrateMapIfNeeded); typed array length (the accessor, with
+        prototype-chain and detaching dependencies), CheckTypedArrayValid
+        (detaching/immutable protectors); Array.prototype.push/pop;
+        ReceiverOrNullOrUndefined compare feedback; string + string wrapper;
+        the kMaxStackSlots bailout (most values live at once); the
+        truncation pass for int32 add/sub/mul (MaglevTruncation);
         everything else through the baseline builtins (generic nodes).
       - Phi representation selector (untagged Int32/Float64 phis).
       - IL code generator: values in IL locals, deopt exits shared per frame
@@ -1035,16 +1045,25 @@ progress, also off by default.
         %ActiveTierIsMaglev, %GetOptimizationStatus bits.
       Tests: tests/V8Sharp.Tests/Maglev (interpreter vs forced optimization).
 - Maglev: open items
-  - Not optimized (the compile bails out): generators and async functions,
-    debug bytecodes; no inlining in or of try blocks; BigInt/Float16 and
-    resizable-buffer typed arrays, DataView,
-    Map/Set/iterators, string builders, array destructuring and for-of
-    reductions are generic.
-  - Missing reductions that mjsunit/maglev asserts (deopt policy and
-    optimization status): ReceiverOrNullOrUndefined compare feedback,
-    Array.prototype.push/pop as graph nodes, Math.min/max on mixed feedback,
-    typed array length, collection iterators, string compare feedback,
-    no stack-slot limit (regress-536945254).
+  - Not optimized (the compile bails out): debug bytecodes; functions with
+    exception handlers are not inlined; BigInt/Float16 and resizable-buffer
+    typed arrays, DataView, Map/Set/iterators, string builders, array
+    destructuring and for-of reductions are generic.
+  - Missing for mjsunit/maglev's optimization-status asserts (each listed
+    in mjsunit.v8sharp.txt): range analysis (the truncation pass covers
+    int32 add/sub/mul with static input ranges only); CSE
+    (regress-536945254 needs CSE'd values to exceed kMaxStackSlots);
+    function-context specialization of one-closure feedback cells (needs
+    code on the closure, not only on the feedback vector:
+    omit-default-ctors's FindNonDefaultConstructorOrConstruct reduction);
+    ThinStrings (string-compare); undefined in double arrays
+    (V8_ENABLE_UNDEFINED_DOUBLE: float64-conversions, turbolev
+    holey-double-load-arith); script context slot type tracking
+    (typed-array-length-store-script-context); Turbofan
+    (osr-from-ml-to-tf, osr-to-tf, osr-multiple-loops, osr-only-interrupt,
+    regress-2618's Turbofan OSR); block coverage (%DebugToggleBlockCoverage,
+    code-coverage-block-opt); super property ICs (super-ic-opt's
+    const-field dependency: GetNamedPropertyFromSuper records no feedback).
   - Performance: calls not inlined cost ~60 ns (frame record, register
     window, write barriers); deopt exits are most of the IL of big functions,
     and RyuJIT compiles big methods without optimization (MinOpts) and only
