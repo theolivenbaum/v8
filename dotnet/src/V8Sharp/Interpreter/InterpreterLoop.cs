@@ -353,8 +353,11 @@ public static partial class InterpreterExecution
                             }
                         }
                     }
-                    if (GetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
-                    acc = st.Accumulator;
+                    {
+                        JSValue loaded = GetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        if (ReferenceEquals(loaded._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                        acc = loaded;
+                    }
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
                 }

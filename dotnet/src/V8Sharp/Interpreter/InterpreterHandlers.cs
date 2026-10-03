@@ -260,14 +260,16 @@ public static partial class InterpreterExecution
     /// no call (monomorphic or polymorphic field and prototype constant hits),
     /// and JavaScript getters on the prototype chain or own accessor pairs
     /// entered in this loop (InterpreterInlineCalls.TryEnterFast); everything
-    /// else is <see cref="GetNamedPropertySlow"/>. False with the value in
-    /// st.Accumulator, true when a getter's frame was entered.
+    /// else is <see cref="GetNamedPropertySlow"/>. Returns the value, or
+    /// InterpreterInlineCalls.FrameEntered when a getter's frame was entered
+    /// (returning the value in registers, rather than storing it in
+    /// st.Accumulator for the loop to load again).
     /// </summary>
     // A separate method so that this path has no calls: the slow path's
     // inlined EnterInline and IC dispatch made RyuJIT save six registers and
     // spill on every polymorphic field load (13% of Octane Gameboy).
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool GetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue GetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         int S = Scale<TS>();
@@ -290,6 +292,9 @@ public static partial class InterpreterExecution
                     {
                         if (ReferenceEquals(data[i]._obj, map))
                         {
+                            // An own field encoded in the pair (FeedbackNexus.EncodeHandler).
+                            int field = FeedbackNexus.DecodeOwnField(data[i + 1]);
+                            if (field >= 0) return Unsafe.As<JSObject>(o).FieldAt(field);
                             found = data[i + 1]._obj;
                             break;
                         }
@@ -305,24 +310,21 @@ public static partial class InterpreterExecution
                 {
                     if (handler.OwnFieldIndex >= 0)
                     {
-                        st.Accumulator = Unsafe.As<JSObject>(o).FieldAt(handler.OwnFieldIndex);
-                        return false;
+                        return Unsafe.As<JSObject>(o).FieldAt(handler.OwnFieldIndex);
                     }
                     LoadHandler.Kind kind = handler.HandlerKind;
                     if (handler.IsValid)
                     {
                         if (handler.IsPrototypeConstant)
                         {
-                            st.Accumulator = handler.Data;
-                            return false;
+                            return handler.Data;
                         }
                         if (handler.PrototypeFieldIndex >= 0)
                         {
                             JSValue value = Unsafe.As<JSObject>(handler.Holder!).FieldAt(handler.PrototypeFieldIndex);
                             if (!ReferenceEquals(value._obj, Oddball.Uninitialized))
                             {
-                                st.Accumulator = value;
-                                return false;
+                                return value;
                             }
                         }
                         // A JavaScript getter (a function that runs in this loop
@@ -338,14 +340,14 @@ public static partial class InterpreterExecution
                             if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 3 * S, ref Unsafe.NullRef<JSValue>(), getter,
                                     JSValue.FromObject(o), new Baseline.BaselineCalls.NoArguments()))
                             {
-                                return true;
+                                return InterpreterInlineCalls.FrameEntered;
                             }
                         }
                     }
                 }
             }
         }
-        return GetNamedPropertySlow<TS>(isolate, ref st, ref fp, ref ip);
+        return GetNamedPropertySlow<TS>(isolate, ref st, ref fp, ref ip) ? InterpreterInlineCalls.FrameEntered : st.Accumulator;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

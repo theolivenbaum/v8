@@ -487,6 +487,20 @@ internal static class InterpreterInlineCalls
     }
 
     /// <summary>
+    /// A marker no JavaScript value can be (an object only this class has):
+    /// a handler that returns a value returns this when it entered a frame
+    /// in the loop instead (a getter called from GetNamedProperty).
+    /// </summary>
+    internal static readonly HeapObject FrameEnteredMarker = new FixedArray(0);
+
+    /// <summary><see cref="FrameEnteredMarker"/> as a value.</summary>
+    internal static JSValue FrameEntered
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => JSValue.FromObject(FrameEnteredMarker);
+    }
+
+    /// <summary>
     /// Sets <paramref name="count"/> slots to undefined: a loop for the usual
     /// small register files (Span.Clear is a call into SpanHelpers).
     /// </summary>
