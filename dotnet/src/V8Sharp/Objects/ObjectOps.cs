@@ -937,7 +937,8 @@ public static class ObjectOps
     /// <summary>Object::InstanceOf (ES #sec-instanceofoperator).</summary>
     public static bool InstanceOf(Isolate isolate, JSValue obj, JSValue callable)
     {
-        if (TryFastInstanceOf(obj, callable, out bool fastResult)) return fastResult;
+        int fast = FastInstanceOf(obj, callable);
+        if (fast >= 0) return fast != 0;
 
         // The {callable} must be a receiver.
         if (AsReceiverOrNull(callable) is not { } callableReceiver)
@@ -996,8 +997,8 @@ public static class ObjectOps
     /// the function prototype accessor, and the prototype chain of {obj} has
     /// no receiver that needs the full [[GetPrototypeOf]]. No JavaScript runs
     /// and nothing can throw, so V8Sharp does not build the builtin frame of
-    /// Function.prototype[@@hasInstance] for it. False when another path must
-    /// decide.
+    /// Function.prototype[@@hasInstance] for it. 1 or 0 (the result), or -1
+    /// when another path must decide.
     /// </summary>
     /// <summary>
     /// Whether a function map has neither an own @@hasInstance nor a redefined
@@ -1019,39 +1020,36 @@ public static class ObjectOps
         return 1;
     }
 
-    internal static bool TryFastInstanceOf(JSValue obj, JSValue callable, out bool result)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int FastInstanceOf(in JSValue obj, in JSValue callable)
     {
-        result = false;
-        if (callable._obj is not JSFunction function) return false;
+        const int kNotHandled = -1;
+        if (callable._obj is not JSFunction function) return kNotHandled;
         Map functionMap = function.Map;
         sbyte state = functionMap.OrdinaryHasInstanceState;
         if (state == 0) functionMap.OrdinaryHasInstanceState = state = ComputeOrdinaryHasInstanceState(functionMap);
-        if (state < 0 || !ReferenceEquals(functionMap.Prototype, function.Context.NativeContext.FunctionPrototypeObject)) return false;
+        if (state < 0 || !ReferenceEquals(functionMap.Prototype, function.Context.NativeContext.FunctionPrototypeObject)) return kNotHandled;
         // JSFunction::prototype(): the initial map's prototype, or the instance prototype.
         HeapObject? protoOrMap = function.PrototypeOrInitialMap;
-        if (protoOrMap is null) return false;
+        if (protoOrMap is null) return kNotHandled;
         JSReceiver? prototype = protoOrMap.InstanceType == InstanceType.MapType
             ? Unsafe.As<Map>(protoOrMap).Prototype
             : protoOrMap.InstanceType >= InstanceTypeChecks.FirstJSReceiver ? Unsafe.As<JSReceiver>(protoOrMap) : null;
-        if (prototype is null) return false;
+        if (prototype is null) return kNotHandled;
 
         // OrdinaryHasInstance step 3: a primitive {obj} is not an instance.
         HeapObject? o = obj._obj;
-        if (o is null || o.InstanceType < InstanceTypeChecks.FirstJSReceiver) return true;
+        if (o is null || o.InstanceType < InstanceTypeChecks.FirstJSReceiver) return 0;
         JSReceiver current = Unsafe.As<JSReceiver>(o);
         while (!Map.IsSpecialReceiverMap(current.Map))
         {
             JSReceiver? next = current.Map.Prototype;
-            if (next is null) return true;
-            if (ReferenceEquals(next, prototype))
-            {
-                result = true;
-                return true;
-            }
+            if (next is null) return 0;
+            if (ReferenceEquals(next, prototype)) return 1;
             current = next;
         }
         // A proxy or an access-checked object on the chain: the full walk.
-        return false;
+        return kNotHandled;
     }
 
     /// <summary>Object::GetMethod (ES #sec-getmethod).</summary>

@@ -851,7 +851,20 @@ public static partial class InterpreterExecution
         int S = Scale<TS>();
         JSValue obj = Reg<TS>(ref fp, ref ip, 1);
         int slot = Unsigned<TS>(ref ip, 1 + S);
-        return InterpreterOps.InstanceOf(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, obj, acc);
+        FeedbackVector? fv = InterpreterRuntime.FrameFeedbackVector(ref fp);
+        // CollectInstanceOfFeedback has nothing to update (monomorphic on this
+        // constructor, or megamorphic), and OrdinaryHasInstance's prototype walk
+        // applies: no further calls.
+        if (fv is not null && (uint)slot < (uint)fv.Slots.Length)
+        {
+            HeapObject? feedback = fv.Slots[slot]._obj;
+            if (ReferenceEquals(feedback, acc._obj) || ReferenceEquals(feedback, ReadOnlyRoots.megamorphic_symbol))
+            {
+                int fast = ObjectOps.FastInstanceOf(obj, acc);
+                if (fast >= 0) return fast != 0 ? JSValue.True : JSValue.False;
+            }
+        }
+        return InterpreterOps.InstanceOf(isolate, fv, slot, obj, acc);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

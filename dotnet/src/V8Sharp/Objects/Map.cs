@@ -73,7 +73,7 @@ public sealed class Map : HeapObject
 
     /// <summary>
     /// V8Sharp's cache for instanceof on functions of this map (ObjectOps.
-    /// TryFastInstanceOf): 0 not computed, 1 no own @@hasInstance and the
+    /// FastInstanceOf): 0 not computed, 1 no own @@hasInstance and the
     /// original "prototype" accessor, -1 otherwise.
     /// </summary>
     internal sbyte OrdinaryHasInstanceState;
@@ -865,6 +865,7 @@ public sealed class Map : HeapObject
     /// IsSpecialReceiverMap: receivers whose property lookup is not the ordinary
     /// one (proxies, globals, module namespaces, access-checked/interceptor maps).
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsSpecialReceiverMap(Map map)
     {
         bool result = map.InstanceType <= InstanceType.JSSpecialApiObjectType ||
