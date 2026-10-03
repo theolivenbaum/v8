@@ -185,7 +185,7 @@ public sealed partial class FlagList
     public int invocation_count_for_feedback_allocation = unchecked((int)(8));
     // V8Sharp: invocations (interrupt budget x bytecode length) before a function is
     // queued for baseline compilation; V8 queues it with the feedback allocation (deviations.md).
-    public int invocation_count_for_sparkplug = unchecked((int)(8));
+    public int invocation_count_for_sparkplug = unchecked((int)(64));
     public int invocation_count_for_maglev = unchecked((int)(400));  // V8: 400 (1000 only #if defined(ANDROID))
     public int invocation_count_for_maglev_osr = unchecked((int)(100));
     public int osr_from_maglev = unchecked((int)(3));

@@ -226,6 +226,14 @@ for now, to be revisited when the reason goes away.
   than V8's Sparkplug (RyuJIT: about 11 ms of CPU per function in PdfJS,
   on the concurrent Sparkplug thread), so a short program on a machine
   without idle cores can run slower than in the interpreter.
+- Tier-up: V8 queues a function for Sparkplug at its first budget interrupt,
+  when the feedback vector is allocated (8 invocations' worth of budget).
+  V8Sharp allocates the feedback vector there but queues the function only
+  after 64 invocations' worth (`--invocation-count-for-sparkplug`, a V8Sharp
+  flag; 8 restores V8's behaviour): a RyuJIT compile costs about a thousand
+  times a Sparkplug compile, and code that runs only a few times then stays
+  in the interpreter (Octane CodeLoad, steady: +21%; the other benchmarks
+  within noise).
 - Code generation: IL in a static method of a dynamic assembly per function
   instead of machine code (architecture.md section 9.1). The assembly is not
   collectible (RyuJIT does not tier collectible code), so baseline code is
