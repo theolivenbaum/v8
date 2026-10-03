@@ -486,6 +486,8 @@ public sealed partial class MaglevGraphBuilder
         SharedFunctionInfo shared = target.Shared;
         if (shared.FunctionData is not BytecodeArray bytecode) return "no bytecode";
         if (shared.HasBuiltinId || shared.Native) return "builtin";
+        // SharedFunctionInfo::GetInlineability: kHasOptimizationDisabled.
+        if (MaglevCompiler.OptimizationDisabled(shared)) return "optimization disabled";
         if (target.RawFeedbackCell.Value is not FeedbackVector) return "no feedback vector";
         if (!isConstruct && shared.IsClassConstructor) return "class constructor";
         if (isConstruct && Globals.IsDerivedConstructor(shared.Kind)) return "derived constructor";
