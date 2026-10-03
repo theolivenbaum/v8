@@ -44,7 +44,9 @@ public static class MaglevCalls
                 return result;
             }
         }
-        return InterpreterCalls.Call(isolate, callee, receiver, argsStart, argc, mode);
+        // Baseline code and interpreted functions are entered directly (V8's
+        // Call builtin jumps to the closure's code, whatever its tier).
+        return Baseline.BaselineCalls.CallFromOptimizedCode(isolate, callee, receiver, argsStart, argc, mode);
     }
 
     static bool TryBuiltinFastPath(Isolate isolate, JSValue callee, JSValue receiver, int argsStart, int argc, out JSValue result)

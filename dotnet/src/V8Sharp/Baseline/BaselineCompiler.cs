@@ -655,7 +655,7 @@ public sealed partial class BaselineCompiler
 
             // ---- Register transfers -------------------------------------------------------------------------
             case Bytecode.Star:
-                if (_compact) _masm.StoreAccumulatorToRegister(RegisterOperand(0));
+                if (_compact && _registerLocals is null) _masm.StoreAccumulatorToRegister(RegisterOperand(0));
                 else EmitStar(RegisterOperand(0));
                 break;
             case Bytecode.Star0:
@@ -674,11 +674,11 @@ public sealed partial class BaselineCompiler
             case Bytecode.Star13:
             case Bytecode.Star14:
             case Bytecode.Star15:
-                if (_compact) _masm.StoreAccumulatorToRegister(_iterator.GetStarTargetRegister());
+                if (_compact && _registerLocals is null) _masm.StoreAccumulatorToRegister(_iterator.GetStarTargetRegister());
                 else EmitStar(_iterator.GetStarTargetRegister());
                 break;
             case Bytecode.Mov:
-                if (_compact) _masm.MoveRegister(RegisterOperand(0), RegisterOperand(1));
+                if (_compact && _registerLocals is null) _masm.MoveRegister(RegisterOperand(0), RegisterOperand(1));
                 else EmitMov(RegisterOperand(0), RegisterOperand(1));
                 break;
 

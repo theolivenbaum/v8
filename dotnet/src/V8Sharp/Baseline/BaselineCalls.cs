@@ -30,6 +30,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using V8Sharp.Interpreter;
+using V8Sharp.Maglev;
 using V8Sharp.Runtime;
 
 namespace V8Sharp.Baseline;
@@ -194,6 +195,10 @@ public static class BaselineCalls
     [MethodImpl(Outline)]
     static JSValue CallSlow0(Isolate isolate, JSValue callee, JSValue receiver, ConvertReceiverMode mode)
     {
+        if (TryGetMaglevCallee(callee, out JSFunction maglevFunction, out MaglevCode maglevCode, out FeedbackVector maglevVector))
+        {
+            return EnterMaglev(isolate, maglevFunction, maglevCode, maglevVector, ConvertReceiver(isolate, maglevFunction, receiver), new NoArguments());
+        }
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
         {
             return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), new NoArguments());
@@ -209,6 +214,10 @@ public static class BaselineCalls
     [MethodImpl(Outline)]
     static JSValue CallSlow1(Isolate isolate, JSValue callee, JSValue receiver, JSValue arg0, ConvertReceiverMode mode)
     {
+        if (TryGetMaglevCallee(callee, out JSFunction maglevFunction, out MaglevCode maglevCode, out FeedbackVector maglevVector))
+        {
+            return EnterMaglev(isolate, maglevFunction, maglevCode, maglevVector, ConvertReceiver(isolate, maglevFunction, receiver), new OneArgument(arg0));
+        }
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
         {
             return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), new OneArgument(arg0));
@@ -226,6 +235,10 @@ public static class BaselineCalls
     [MethodImpl(Outline)]
     static JSValue CallSlow2(Isolate isolate, JSValue callee, JSValue receiver, JSValue arg0, JSValue arg1, ConvertReceiverMode mode)
     {
+        if (TryGetMaglevCallee(callee, out JSFunction maglevFunction, out MaglevCode maglevCode, out FeedbackVector maglevVector))
+        {
+            return EnterMaglev(isolate, maglevFunction, maglevCode, maglevVector, ConvertReceiver(isolate, maglevFunction, receiver), new TwoArguments(arg0, arg1));
+        }
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
         {
             return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver), new TwoArguments(arg0, arg1));
@@ -249,6 +262,11 @@ public static class BaselineCalls
     [MethodImpl(Outline)]
     static JSValue CallSlowRegisters(Isolate isolate, JSValue callee, JSValue receiver, int argsStart, int argc, ConvertReceiverMode mode)
     {
+        if (TryGetMaglevCallee(callee, out JSFunction maglevFunction, out MaglevCode maglevCode, out FeedbackVector maglevVector))
+        {
+            return EnterMaglev(isolate, maglevFunction, maglevCode, maglevVector, ConvertReceiver(isolate, maglevFunction, receiver),
+                new RegisterArguments(argsStart, argc));
+        }
         if (TryGetInterpretedCallee(callee, out JSFunction function, out BytecodeArray bytecode))
         {
             return EnterInterpreted(isolate, function, bytecode, ConvertReceiver(isolate, function, receiver),
@@ -283,6 +301,11 @@ public static class BaselineCalls
         if (TryGetBaselineCallee(target, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
             result = Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, thisArg), args);
+            return true;
+        }
+        if (TryGetMaglevCallee(target, out function, out MaglevCode maglevCode, out vector))
+        {
+            result = EnterMaglev(isolate, function, maglevCode, vector, ConvertReceiver(isolate, function, thisArg), args);
             return true;
         }
         if (TryGetInterpretedCallee(target, out function, out BytecodeArray bytecode))
@@ -354,6 +377,45 @@ public static class BaselineCalls
         function = null!;
         bytecode = null!;
         return false;
+    }
+
+    /// <summary>
+    /// A callee whose closure has Maglev code (on its feedback vector, shared by
+    /// the closures of its CreateClosure site): a JSFunction that is not a
+    /// class constructor. V8's Call builtin jumps to the closure's code,
+    /// whatever its tier; this is that jump from baseline code into Maglev code.
+    /// </summary>
+    [MethodImpl(Inline)]
+    static bool TryGetMaglevCallee(JSValue callee, out JSFunction function, out MaglevCode code, out FeedbackVector vector)
+    {
+        if (callee._obj is JSFunction f && f.RawFeedbackCell.Value is FeedbackVector { MaglevCode: { } c } v &&
+            !f.Shared.IsClassConstructor)
+        {
+            function = f;
+            code = c;
+            vector = v;
+            return true;
+        }
+        function = null!;
+        code = null!;
+        vector = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// A call from Maglev code (MaglevCalls.Call) to a callee without Maglev
+    /// code: its baseline code or the interpreter entered directly, as from
+    /// baseline code, with the arguments in registers.
+    /// </summary>
+    [MethodImpl(Outline)]
+    internal static JSValue CallFromOptimizedCode(Isolate isolate, JSValue callee, JSValue receiver, int argsStart, int argc,
+        ConvertReceiverMode mode)
+    {
+        if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
+        {
+            return Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new RegisterArguments(argsStart, argc));
+        }
+        return CallSlowRegisters(isolate, callee, receiver, argsStart, argc, mode);
     }
 
     /// <summary>CallFunction's receiver conversion for a sloppy, non-native callee.</summary>
@@ -541,6 +603,43 @@ public static class BaselineCalls
             BaseFrameIndex = depth,
         };
         JSValue result = code.HasHandlers ? BaselineExecution.Run(isolate, ref state, code) : code.EntryFor(vector)(isolate, ref state);
+        LeaveFrame(isolate, depth, start, savedContext);
+        return result;
+    }
+
+    /// <summary>
+    /// A call from baseline code to a function with Maglev code: the callee's
+    /// interpreter frame (as <see cref="Enter"/> builds it, marked Maglev) and
+    /// its Maglev code; after a deoptimization the interpreter continues the
+    /// frames the Deoptimizer materialized (MaglevExecution.ContinueAfterDeopt).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    static JSValue EnterMaglev<TArgs>(Isolate isolate, JSFunction function, MaglevCode code, FeedbackVector vector, JSValue receiver,
+        TArgs args) where TArgs : struct, ICallArguments
+    {
+        if (isolate.StackGuard.HasPendingInterrupts) isolate.StackGuard.HandleInterrupts();
+        int depth = isolate.InterpreterFrameDepth;
+        if ((depth & 3) == 0 && !RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
+        var bytecode = (BytecodeArray)function.Shared.FunctionData!;
+        Context? savedContext = isolate.Context;
+        int start = isolate.RegisterStackTop;
+        Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
+        int fp = PushFrame(isolate, function, bytecode, bytecode.ParameterCount - 1, bytecode.RegisterCount,
+            incoming.IsValid ? incoming.Index : int.MinValue, receiver, args, default, false, false, vector);
+        isolate.InterpreterFrames[depth].Flags = InterpreterFrameFlags.Maglev;
+        vector.InvocationCount++;
+
+        var state = new InterpreterState
+        {
+            Isolate = isolate,
+            Accumulator = JSValue.Undefined,
+            Fp = fp,
+            FrameIndex = depth,
+            BaseFrameIndex = depth,
+        };
+        JSValue result = code.Entry(isolate, ref state);
+        if (isolate.MaglevDeoptPending) result = MaglevExecution.ContinueAfterDeopt(isolate, ref state);
+        // (Inlined frames a deopt materialized have returned to this one.)
         LeaveFrame(isolate, depth, start, savedContext);
         return result;
     }
