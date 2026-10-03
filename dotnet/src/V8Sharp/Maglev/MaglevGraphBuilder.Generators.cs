@@ -120,6 +120,13 @@ public sealed partial class MaglevGraphBuilder
             Int1 = _it.CurrentOffset(),
             Properties = OpProperties.kCanWrite | OpProperties.kNotIdempotent,
         });
+        if (_unit.IsInline)
+        {
+            // An inlined generator suspends to its caller: the suspend is the
+            // inlined function's return (V8 jumps to the inline exit).
+            VisitReturn();
+            return;
+        }
         FinishBlock(new ControlNode(Opcode.Return) { Inputs = [GetTaggedValue(GetAccumulator())] });
     }
 

@@ -403,8 +403,7 @@ for now, to be revisited when the reason goes away.
 - Generators: the generator fields (context, input_or_debug_pos,
   continuation) are read and written by dedicated nodes
   (`LoadGeneratorField`, `StoreGeneratorContinuation`) where V8 uses
-  LoadTaggedField/StoreTaggedFieldNoWriteBarrier by offset. Inlining a
-  generator function (V8 inlines its initialization part) is not done.
+  LoadTaggedField/StoreTaggedFieldNoWriteBarrier by offset.
 - Deprecated feedback maps: V8 replaces them by their updated map and
   computes the access from it; V8Sharp's accesses come from the IC handlers,
   so the updated map keeps the deprecated map's handler only for named loads

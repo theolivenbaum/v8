@@ -489,7 +489,6 @@ public sealed partial class MaglevGraphBuilder
         if (target.RawFeedbackCell.Value is not FeedbackVector) return "no feedback vector";
         if (!isConstruct && shared.IsClassConstructor) return "class constructor";
         if (isConstruct && Globals.IsDerivedConstructor(shared.Kind)) return "derived constructor";
-        if (Globals.IsResumableFunction(shared.Kind)) return "resumable";
         if (UnsupportedReason(shared, bytecode) is { } reason) return reason;
         if (!InlineableBytecodes(bytecode)) return "frame-reading bytecode";
         // V8Sharp: the IL backend's catch blocks are in the outermost function

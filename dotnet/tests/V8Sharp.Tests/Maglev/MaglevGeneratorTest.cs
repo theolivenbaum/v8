@@ -103,6 +103,27 @@ public class MaglevGeneratorTest
     }
 
     [Fact]
+    public void GeneratorCreationIsInlined()
+    {
+        // VisitSwitchOnGeneratorState / VisitSuspendGenerator of an inlined
+        // generator: only the initialization runs inlined, the resumes do not.
+        Assert.Equal("1,2,3,4|5,6,7,8|8", MaglevCompilerTest.Run("--maglev --max-maglev-inlined-bytecode-size=1000", """
+            function* g(a, b) { let s = a; for (let i = 0; i < b; i++) s += yield s; return s; }
+            function f(k) {
+              let it = g(k, 3), r = [], x = it.next();
+              while (!x.done) { r.push(x.value); x = it.next(1); }
+              r.push(x.value);
+              return r.join();
+            }
+            %PrepareFunctionForOptimization(f);
+            %PrepareFunctionForOptimization(g);
+            f(1); f(2);
+            %OptimizeFunctionOnNextCall(f);
+            [f(1), f(5), %GetOptimizationStatus(f) & 8].join('|');
+            """));
+    }
+
+    [Fact]
     public void AsyncFunctionsAreOptimized()
     {
         Assert.Equal("1007,8", MaglevCompilerTest.Run("--maglev", """
