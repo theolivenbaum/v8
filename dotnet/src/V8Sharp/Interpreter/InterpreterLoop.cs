@@ -59,9 +59,18 @@ public static partial class InterpreterExecution
         goto start;
     reload:
         acc = st.Accumulator;
-    reloadFrame:
         fpSlot = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(st.Isolate.RegisterStack), st.Fp);
         ip = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(InterpreterRuntime.FrameBytecode(ref fpSlot).Bytecodes), st.Pc);
+        goto start;
+    // A call entered its callee, or a return resumed its caller, in this loop
+    // (InterpreterInlineCalls): the frame and bytecode are in st.ResumeFp and
+    // st.ResumeIp. A callee starts with an undefined accumulator; a return
+    // keeps the accumulator as the result unless it said otherwise.
+    entered:
+        acc = default;
+    resumed:
+        fpSlot = ref st.ResumeFp;
+        ip = ref st.ResumeIp;
     start:
 
         while (true)
@@ -337,7 +346,7 @@ public static partial class InterpreterExecution
                             }
                         }
                     }
-                    if (GetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto reload;
+                    if (GetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
                     acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
@@ -414,7 +423,7 @@ public static partial class InterpreterExecution
                     }
                     if ((Bytecode)ip == Bytecode.SetNamedProperty)
                     {
-                        if (SetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) goto reload;
+                        if (SetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) goto entered;
                     }
                     else DefineNamedOwnProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
@@ -647,8 +656,12 @@ public static partial class InterpreterExecution
                         // the accumulator is the result, unless a construct frame
                         // returned its receiver instead.
                         int returned = InterpreterInlineCalls.ReturnInline(st.Isolate, ref st, acc);
-                        if (returned == InterpreterInlineCalls.kReturnedAccumulator) goto reloadFrame;
-                        if (returned != InterpreterInlineCalls.kReturnNotInline) goto reload;
+                        if (returned == InterpreterInlineCalls.kReturnedAccumulator) goto resumed;
+                        if (returned != InterpreterInlineCalls.kReturnNotInline)
+                        {
+                            acc = st.Accumulator;
+                            goto resumed;
+                        }
                     }
                     return acc;
                 }
@@ -658,42 +671,42 @@ public static partial class InterpreterExecution
                 // returns false with the result in st.Accumulator.
                 case Bytecode.CallAnyReceiver:
                 case Bytecode.CallProperty:
-                    if (CallProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto reload;
+                    if (CallProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
                     acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
                     continue;
                 case Bytecode.CallProperty0:
-                    if (CallProperty0<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto reload;
+                    if (CallProperty0<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
                     acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
                 case Bytecode.CallProperty1:
-                    if (CallProperty1<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto reload;
+                    if (CallProperty1<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
                     acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
                     continue;
                 case Bytecode.CallProperty2:
-                    if (CallProperty2<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto reload;
+                    if (CallProperty2<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
                     acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 5 * S);
                     continue;
                 case Bytecode.CallUndefinedReceiver:
-                    if (CallUndefinedReceiver<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto reload;
+                    if (CallUndefinedReceiver<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
                     acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
                     continue;
                 case Bytecode.CallUndefinedReceiver0:
-                    if (CallUndefinedReceiver0<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto reload;
+                    if (CallUndefinedReceiver0<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
                     acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 2 * S);
                     continue;
                 case Bytecode.CallUndefinedReceiver1:
-                    if (CallUndefinedReceiver1<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto reload;
+                    if (CallUndefinedReceiver1<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
                     acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
                 case Bytecode.CallUndefinedReceiver2:
-                    if (CallUndefinedReceiver2<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto reload;
+                    if (CallUndefinedReceiver2<TS>(st.Isolate, ref st, ref fpSlot, ref ip)) goto entered;
                     acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
                     continue;
@@ -708,7 +721,7 @@ public static partial class InterpreterExecution
 
                 // ---- Construct ----------------------------------------------------------------------------------------
                 case Bytecode.Construct:
-                    if (Construct<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) goto reload;
+                    if (Construct<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) goto entered;
                     acc = st.Accumulator;
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
                     continue;

@@ -194,6 +194,8 @@ internal static class InterpreterInlineCalls
         st.Pc = 0;
         st.Fp = fp;
         st.FrameIndex = depth;
+        st.ResumeFp = ref fpRef;
+        st.ResumeIp = ref MemoryMarshal.GetArrayDataReference(bytecode.Bytecodes);
     }
 
     /// <summary>
@@ -276,6 +278,8 @@ internal static class InterpreterInlineCalls
 
         ref JSValue stack0 = ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack);
         ref JSValue fpRef = ref Unsafe.Add(ref stack0, fp);
+        st.ResumeFp = ref fpRef;
+        st.ResumeIp = ref MemoryMarshal.GetArrayDataReference(bytecode.Bytecodes);
         int dirtyEnd = isolate.RegisterStackDirtyEnd;
         if (fp < dirtyEnd)
         {
@@ -540,8 +544,9 @@ internal static class InterpreterInlineCalls
     /// The Return bytecode in a frame this loop entered inline: pops it like
     /// <see cref="Return"/>, but leaves the returned value to the
     /// loop's accumulator unless a construct frame replaces it with its
-    /// receiver (then in st.Accumulator); the context store comes last, so no
-    /// value lives across its write barrier. Returns one of the kReturn* codes.
+    /// receiver (then in st.Accumulator), and sets st.ResumeFp/ResumeIp to the
+    /// caller; the context store comes last, so no value lives across its
+    /// write barrier. Returns one of the kReturn* codes.
     /// </summary>
     public static int ReturnInline(Isolate isolate, ref InterpreterState st, JSValue result)
     {
@@ -563,10 +568,14 @@ internal static class InterpreterInlineCalls
         isolate.RegisterStackTop = frame.RegisterStart;
         ref InterpreterFrameRecord caller = ref Unsafe.Subtract(ref frame, 1);
         int fp = caller.Fp;
-        st.Pc = caller.ReturnPc;
+        int pc = caller.ReturnPc;
+        st.Pc = pc;
         st.Fp = fp;
         st.FrameIndex = index - 1;
-        Context context = InterpreterRuntime.FrameContext(ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), fp));
+        ref JSValue fpRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), fp);
+        st.ResumeFp = ref fpRef;
+        st.ResumeIp = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(InterpreterRuntime.FrameBytecode(ref fpRef).Bytecodes), pc);
+        Context context = InterpreterRuntime.FrameContext(ref fpRef);
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
         return code;
     }
