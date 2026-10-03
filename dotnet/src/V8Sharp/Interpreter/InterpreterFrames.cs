@@ -12,15 +12,18 @@
 //   fp - 8, fp - 7           (caller fp / pc in V8; unused)
 //   fp - 6                   the current context  (Register::current_context)
 //   fp - 5                   the closure          (Register::function_closure)
-//   fp - 4                   argc                 (Register::argument_count)
-//   fp - 3, fp - 2           bytecode array / offset (kept in the frame record)
+//   fp - 4                   argc, a raw int      (Register::argument_count)
+//   fp - 3                   the bytecode array   (Register::bytecode_array)
+//   fp - 2                   the bytecode offset, a raw int (Register::bytecode_offset)
 //   fp - 1                   the feedback vector  (Register::feedback_vector)
 //   fp + 0 ...               the register file r0, r1, ...
 //
-// Besides the slots, each frame has a record in Isolate.InterpreterFrames
-// (function, fp, current bytecode offset ...) that the stack walker reads; a
-// builtin called from JavaScript pushes a record too (V8's builtin exit
-// frames), so builtins appear in Error.stack as in V8.
+// Each value is held once, in its slot. A raw int slot has no object half
+// (undefined's) and the int in its payload. Besides the slots, each frame
+// has a small record in Isolate.InterpreterFrames (fp, flags, the inline
+// call's return offset) that the stack walker indexes; a builtin called
+// from JavaScript pushes a record too (V8's builtin exit frames), so
+// builtins appear in Error.stack as in V8.
 using System.Runtime.CompilerServices;
 using V8Sharp.Interpreter;
 
@@ -35,40 +38,100 @@ namespace V8Sharp
         Builtin,
     }
 
-    /// <summary>A frame record: what the stack walker needs to know about a live frame.</summary>
-    public struct InterpreterFrameRecord
+    /// <summary>The bits of <see cref="InterpreterFrameRecord.Flags"/>.</summary>
+    [Flags]
+    public enum InterpreterFrameFlags : byte
     {
-        public JSFunction Function;
-        /// <summary>The bytecode of an interpreted frame (null for builtin frames).</summary>
-        public BytecodeArray? Bytecode;
-        /// <summary>The receiver of a builtin frame (interpreted frames keep it at fp - 9).</summary>
-        public JSValue Receiver;
-        /// <summary>The frame pointer (index into the register stack) of an interpreted frame.</summary>
-        public int Fp;
-        /// <summary>The current bytecode offset of an interpreted frame.</summary>
-        public int Pc;
-        /// <summary>The actual argument count (without the receiver).</summary>
-        public int Argc;
-        public InterpreterFrameKind Kind;
+        None = 0,
+        /// <summary>A builtin frame (<see cref="InterpreterFrameKind.Builtin"/>); else an interpreted frame.</summary>
+        Builtin = 1,
         /// <summary>The frame was entered by [[Construct]].</summary>
-        public bool IsConstructor;
-        /// <summary>
-        /// An interpreted frame that runs baseline (Sparkplug) code: V8's
-        /// BaselineFrame, which has the interpreter frame's layout.
-        /// </summary>
-        public bool IsBaseline;
+        Constructor = 2,
+        /// <summary>An interpreted frame that runs baseline (Sparkplug) code: V8's BaselineFrame, which has the interpreter frame's layout.</summary>
+        Baseline = 4,
         /// <summary>An interpreted frame that runs Maglev code (V8's MaglevFrame).</summary>
-        public bool IsMaglev;
+        Maglev = 8,
         /// <summary>
         /// The frame was entered by a call from the dispatch loop of its caller
         /// without a new .NET frame (InterpreterInlineCalls); Return resumes the
         /// caller in the same loop.
         /// </summary>
-        public bool InlineCall;
-        /// <summary>An inline frame: the caller's bytecode offset to resume at.</summary>
+        InlineCall = 16,
+    }
+
+    /// <summary>
+    /// A frame record: what the stack walker needs besides the frame's fixed
+    /// slots. An interpreted frame keeps its function, context, bytecode
+    /// array, bytecode offset, argument count and feedback vector in the
+    /// fixed slots of its register stack window (V8's interpreter frame;
+    /// InterpreterRuntime.Frame*), each held once; the record has the frame
+    /// pointer, the flags and the inline-call return state. A builtin frame
+    /// has no register window and keeps its function and receiver here.
+    /// </summary>
+    public struct InterpreterFrameRecord
+    {
+        /// <summary>The frame pointer (index into the register stack) of an interpreted frame.</summary>
+        public int Fp;
+        /// <summary>The caller's bytecode offset to resume at when the frame above (entered inline) returns.</summary>
         public int ReturnPc;
         /// <summary>An inline frame: the register stack top before its arguments were pushed.</summary>
         public int RegisterStart;
+        public InterpreterFrameFlags Flags;
+        /// <summary>The function of a builtin frame (interpreted frames keep theirs at fp - 5).</summary>
+        public JSFunction? BuiltinFunction;
+        /// <summary>The receiver of a builtin frame (interpreted frames keep it at fp - 9).</summary>
+        public JSValue BuiltinReceiver;
+
+        public InterpreterFrameKind Kind
+        {
+            readonly get => (Flags & InterpreterFrameFlags.Builtin) != 0 ? InterpreterFrameKind.Builtin : InterpreterFrameKind.Interpreted;
+            set => Set(InterpreterFrameFlags.Builtin, value == InterpreterFrameKind.Builtin);
+        }
+
+        /// <summary>The frame was entered by [[Construct]].</summary>
+        public bool IsConstructor
+        {
+            readonly get => (Flags & InterpreterFrameFlags.Constructor) != 0;
+            set => Set(InterpreterFrameFlags.Constructor, value);
+        }
+
+        /// <summary>An interpreted frame that runs baseline (Sparkplug) code.</summary>
+        public bool IsBaseline
+        {
+            readonly get => (Flags & InterpreterFrameFlags.Baseline) != 0;
+            set => Set(InterpreterFrameFlags.Baseline, value);
+        }
+
+        /// <summary>An interpreted frame that runs Maglev code.</summary>
+        public bool IsMaglev
+        {
+            readonly get => (Flags & InterpreterFrameFlags.Maglev) != 0;
+            set => Set(InterpreterFrameFlags.Maglev, value);
+        }
+
+        /// <summary>The frame was entered inline from its caller's dispatch loop.</summary>
+        public bool InlineCall
+        {
+            readonly get => (Flags & InterpreterFrameFlags.InlineCall) != 0;
+            set => Set(InterpreterFrameFlags.InlineCall, value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        void Set(InterpreterFrameFlags flag, bool value) => Flags = value ? Flags | flag : Flags & ~flag;
+
+        /// <summary>The frame's function: the closure slot of an interpreted frame, the record's of a builtin frame.</summary>
+        public readonly JSFunction GetFunction(Isolate isolate) =>
+            (Flags & InterpreterFrameFlags.Builtin) != 0 ? BuiltinFunction! : InterpreterRuntime.FrameFunction(isolate, Fp);
+
+        /// <summary>The bytecode of an interpreted frame (its bytecode array slot).</summary>
+        public readonly BytecodeArray GetBytecode(Isolate isolate) => InterpreterRuntime.FrameBytecode(isolate, Fp);
+
+        /// <summary>The current bytecode offset of an interpreted frame (its bytecode offset slot); 0 for a builtin frame.</summary>
+        public readonly int GetPc(Isolate isolate) =>
+            (Flags & InterpreterFrameFlags.Builtin) != 0 ? 0 : InterpreterRuntime.FramePc(isolate, Fp);
+
+        /// <summary>The actual argument count of an interpreted frame (its argument count slot).</summary>
+        public readonly int GetArgc(Isolate isolate) => InterpreterRuntime.FrameArgc(isolate, Fp);
     }
 
     public sealed partial class Isolate
@@ -123,8 +186,9 @@ namespace V8Sharp
         }
 
         /// <summary>
-        /// Clears the records above the live frames. InterpreterInlineCalls.PopFrame
-        /// leaves Function and Bytecode in a popped record (deviations.md,
+        /// Clears the records above the live frames and the register stack
+        /// above its top. Popped inline frames leave their slots (the closure,
+        /// bytecode, feedback vector ...) above the stack top (deviations.md,
         /// Interpreter), which would keep a dead closure reachable across an
         /// explicit collection (gc(), WeakRef tests); CollectGarbage drops them.
         /// </summary>
@@ -188,7 +252,7 @@ namespace V8Sharp.Interpreter
                 arguments = [];
                 return false;
             }
-            arguments = InterpreterRuntime.GetFrameArguments(isolate, frame.Fp, frame.Argc);
+            arguments = InterpreterRuntime.GetFrameArguments(isolate, frame.Fp, frame.GetArgc(isolate));
             return true;
         }
 
@@ -197,11 +261,13 @@ namespace V8Sharp.Interpreter
             if (frame.Kind == InterpreterFrameKind.Interpreted)
             {
                 JSValue receiver = isolate.RegisterStack[frame.Fp + InterpreterRuntime.kReceiverOffset];
-                BytecodeArray bytecode = frame.Bytecode!;
-                int position = InterpreterRuntime.SourcePositionAt(isolate, frame.Function.Shared, bytecode, frame.Pc);
-                return new JavaScriptFrameSummary(receiver, frame.Function, frame.Pc, position, frame.IsConstructor);
+                BytecodeArray bytecode = frame.GetBytecode(isolate);
+                JSFunction function = frame.GetFunction(isolate);
+                int pc = frame.GetPc(isolate);
+                int position = InterpreterRuntime.SourcePositionAt(isolate, function.Shared, bytecode, pc);
+                return new JavaScriptFrameSummary(receiver, function, pc, position, frame.IsConstructor);
             }
-            return new JavaScriptFrameSummary(frame.Receiver, frame.Function, 0, 0, frame.IsConstructor);
+            return new JavaScriptFrameSummary(frame.BuiltinReceiver, frame.BuiltinFunction!, 0, 0, frame.IsConstructor);
         }
     }
 }

@@ -146,14 +146,13 @@ internal sealed class MaglevCodeGenerator
         typeof(JSObjectInObject1).GetField("_slots0", BindingFlags.NonPublic | BindingFlags.Instance)!;
     static readonly FieldInfo s_receiverMap = typeof(JSReceiver).GetField(nameof(JSReceiver.Map))!;
     static readonly FieldInfo s_instanceType = typeof(HeapObject).GetField(nameof(HeapObject.InstanceType))!;
-    static readonly FieldInfo s_stateFunction = typeof(InterpreterState).GetField(nameof(InterpreterState.Function))!;
-    static readonly FieldInfo s_stateContext = typeof(InterpreterState).GetField(nameof(InterpreterState.Context))!;
     static readonly MethodInfo s_jsValueFromObject = typeof(JSValue).GetMethod(nameof(JSValue.FromObject), [typeof(HeapObject)])!;
     static readonly FieldInfo s_interpreterFrameDepth = typeof(Isolate).GetField(nameof(Isolate.InterpreterFrameDepth))!;
     static readonly MethodInfo s_interpreterFrames = typeof(Isolate).GetProperty(nameof(Isolate.InterpreterFrames))!.GetMethod!;
     static readonly FieldInfo s_stFp = typeof(InterpreterState).GetField(nameof(InterpreterState.Fp))!;
     static readonly FieldInfo s_stFrameIndex = typeof(InterpreterState).GetField(nameof(InterpreterState.FrameIndex))!;
-    static readonly FieldInfo s_recordPc = typeof(InterpreterFrameRecord).GetField(nameof(InterpreterFrameRecord.Pc))!;
+    static readonly MethodInfo s_setFramePc = typeof(InterpreterRuntime).GetMethod(nameof(InterpreterRuntime.SetFramePc),
+        [typeof(JSValue).MakeByRefType(), typeof(int)])!;
     static readonly FieldInfo s_recordFp = typeof(InterpreterFrameRecord).GetField(nameof(InterpreterFrameRecord.Fp))!;
     static readonly FieldInfo s_markedForDeoptimization = typeof(MaglevCode).GetField(nameof(MaglevCode.MarkedForDeoptimization))!;
     static readonly FieldInfo s_deoptScratch = typeof(Isolate).GetField(nameof(Isolate.MaglevDeoptScratch))!;
@@ -498,13 +497,13 @@ internal sealed class MaglevCodeGenerator
         else _il.Emit(OpCodes.Ldloc, unit.FrameRecordLocal!);
     }
 
-    /// <summary>Records the node's bytecode offset in its frame's record (for stack traces and messages).</summary>
+    /// <summary>Records the node's bytecode offset in its frame's offset slot (for stack traces and messages).</summary>
     void StoreBytecodeOffset(NodeBase node)
     {
         if (node.BytecodeOffset < 0) return;
-        LoadFrameRecord(node.Unit);
+        LoadFrameSlotAddress(node.Unit, 0);
         _il.Emit(OpCodes.Ldc_I4, node.BytecodeOffset);
-        _il.Emit(OpCodes.Stfld, s_recordPc);
+        _il.Emit(OpCodes.Call, s_setFramePc);
     }
 
     // ---- Catch blocks --------------------------------------------------------------------------------------
@@ -1022,16 +1021,7 @@ internal sealed class MaglevCodeGenerator
         {
             // ---- Values ---------------------------------------------------------------------------
             case Opcode.InitialValue:
-                if (node.Int0 is InterpreterRuntime.kClosureOffset or InterpreterRuntime.kContextOffset)
-                {
-                    // The closure and the context come from the state (MaglevCalls
-                    // does not write their frame slots).
-                    _il.Emit(OpCodes.Ldarg_2);
-                    _il.Emit(OpCodes.Ldfld, node.Int0 == InterpreterRuntime.kClosureOffset ? s_stateFunction : s_stateContext);
-                    _il.Emit(OpCodes.Call, s_jsValueFromObject);
-                    Store(v!);
-                    return;
-                }
+                // (The closure and context included: every entry writes their slots.)
                 LoadFrameSlotAddress(null, node.Int0);
                 _il.Emit(OpCodes.Ldobj, typeof(JSValue));
                 Store(v!);

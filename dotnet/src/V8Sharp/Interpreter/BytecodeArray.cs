@@ -31,14 +31,14 @@ public interface IPrintableConstant
 }
 
 /// <summary>BytecodeArray represents a sequence of interpreter bytecodes.</summary>
-public sealed class BytecodeArray
+public sealed class BytecodeArray : HeapObject
 {
     const int kSystemPointerSize = 8;
 
     readonly byte[] _bytecodes;
 
     public BytecodeArray(byte[] bytecodes, int frameSize, ushort parameterCount, ushort maxArguments,
-                         object[] constantPool, byte[] handlerTable)
+                         object[] constantPool, byte[] handlerTable) : base(InstanceType.BytecodeArrayType)
     {
         _bytecodes = bytecodes;
         FrameSize = frameSize;

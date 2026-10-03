@@ -94,8 +94,8 @@ public static class Deoptimizer
                     {
                         var frameContext = stack[fp + InterpreterRuntime.kContextOffset].As<Context>();
                         materialized = materialize[k] == ArgumentsObjectKind.Mapped
-                            ? InterpreterArguments.NewSloppyArguments(isolate, f.Function, frameContext, fp, record.Argc)
-                            : InterpreterArguments.NewStrictArguments(isolate, f.Function, fp, record.Argc);
+                            ? InterpreterArguments.NewSloppyArguments(isolate, f.Function, frameContext, fp, InterpreterRuntime.FrameArgc(isolate, fp))
+                            : InterpreterArguments.NewStrictArguments(isolate, f.Function, fp, InterpreterRuntime.FrameArgc(isolate, fp));
                     }
                     scratch[f.ScratchStart + k] = materialized;
                 }
@@ -119,16 +119,18 @@ public static class Deoptimizer
                 }
             }
             context ??= stack[fp + InterpreterRuntime.kContextOffset].As<Context>();
-            // MaglevCalls.EnterFrame leaves these slots unwritten.
+            // The fixed slots of the interpreter frame (the entries wrote them;
+            // the frame now runs this translation's function and bytecode).
             stack[fp + InterpreterRuntime.kClosureOffset] = f.Function;
             stack[fp + InterpreterRuntime.kFeedbackVectorOffset] = f.FeedbackVector is null ? JSValue.Undefined : f.FeedbackVector;
+            stack[fp + InterpreterRuntime.kBytecodeArrayOffset] = f.Bytecode;
             record.IsBaseline = false;
             if (i > 0) record.InlineCall = true;
             if (!top)
             {
                 // A caller of an inlined function: it is at its call bytecode and
                 // continues after it with the callee's result.
-                record.Pc = CursorOf(f.Bytecode, f.BytecodeOffset);
+                InterpreterRuntime.SetFramePc(isolate, fp, CursorOf(f.Bytecode, f.BytecodeOffset));
                 record.ReturnPc = f.NextOffset;
                 continue;
             }
@@ -144,16 +146,11 @@ public static class Deoptimizer
                     else stack[fp + point.ResultLocation.Index] = result;
                 }
             }
-            record.Pc = CursorOf(f.Bytecode, pc);
-            state.Function = f.Function;
-            state.Bytecode = f.Bytecode;
-            state.FeedbackVector = f.FeedbackVector;
-            state.Context = context;
+            InterpreterRuntime.SetFramePc(isolate, fp, CursorOf(f.Bytecode, pc));
             state.Accumulator = accumulator;
             state.Pc = pc;
             state.Fp = fp;
             state.FrameIndex = recordIndex;
-            state.Argc = record.Argc;
             isolate.Context = context;
             if (f.Bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, f.Bytecode);
         }

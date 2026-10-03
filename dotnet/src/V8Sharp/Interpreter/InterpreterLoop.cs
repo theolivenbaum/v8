@@ -51,7 +51,7 @@ public static partial class InterpreterExecution
         // {st}: a small set of locals lets the JIT keep them in registers
         // across the dispatch switch.
         ref JSValue fpSlot = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), st.Fp);
-        ref byte ip = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(st.Bytecode.Bytecodes), st.Pc);
+        ref byte ip = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(InterpreterRuntime.FrameBytecode(ref fpSlot).Bytecodes), st.Pc);
         JSValue acc = st.Accumulator;
         bool stepped = false;
         // A call or return run in this loop (InterpreterInlineCalls) switches
@@ -59,7 +59,7 @@ public static partial class InterpreterExecution
         goto start;
     reload:
         fpSlot = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(st.Isolate.RegisterStack), st.Fp);
-        ip = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(st.Bytecode.Bytecodes), st.Pc);
+        ip = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(InterpreterRuntime.FrameBytecode(ref fpSlot).Bytecodes), st.Pc);
         acc = st.Accumulator;
     start:
 
@@ -69,7 +69,7 @@ public static partial class InterpreterExecution
             {
                 if (stepped)
                 {
-                    st.Pc = PcOf(ref st, ref ip);
+                    st.Pc = PcOf(ref fpSlot, ref ip);
                     st.Accumulator = acc;
                     return default;
                 }
@@ -118,7 +118,7 @@ public static partial class InterpreterExecution
                     ip = ref Unsafe.Add(ref ip, 1);
                     continue;
                 case Bytecode.LdaConstant:
-                    acc = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1)];
+                    acc = InterpreterRuntime.FrameBytecode(ref fpSlot).ConstantPoolValues![Unsigned<TS>(ref ip, 1)];
                     ip = ref Unsafe.Add(ref ip, 1 + S);
                     continue;
 
@@ -139,7 +139,7 @@ public static partial class InterpreterExecution
                 case Bytecode.LdaCurrentContextSlotNoCell:
                 case Bytecode.LdaCurrentContextSlot:
                 case Bytecode.LdaImmutableCurrentContextSlot:
-                    acc = st.Context.Slots[Unsigned<TS>(ref ip, 1)];
+                    acc = InterpreterRuntime.FrameContext(ref fpSlot).Slots[Unsigned<TS>(ref ip, 1)];
                     ip = ref Unsafe.Add(ref ip, 1 + S);
                     continue;
 
@@ -260,7 +260,7 @@ public static partial class InterpreterExecution
                 case Bytecode.LdaGlobalInsideTypeof:
                 {
                     // LoadGlobalIC.Load's hit on a global object PropertyCell.
-                    FeedbackVector? fv = st.FeedbackVector;
+                    FeedbackVector? fv = InterpreterRuntime.FrameFeedbackVector(ref fpSlot);
                     if (fv is not null && fv.Slots[Unsigned<TS>(ref ip, 1 + S)]._obj is PropertyCell cell)
                     {
                         JSValue value = cell.Value;
@@ -294,7 +294,7 @@ public static partial class InterpreterExecution
                 }
                 case Bytecode.StaCurrentContextSlotNoCell:
                 case Bytecode.StaCurrentContextSlot:
-                    st.Context.Slots[Unsigned<TS>(ref ip, 1)] = acc;
+                    InterpreterRuntime.FrameContext(ref fpSlot).Slots[Unsigned<TS>(ref ip, 1)] = acc;
                     ip = ref Unsafe.Add(ref ip, 1 + S);
                     continue;
 
@@ -307,7 +307,7 @@ public static partial class InterpreterExecution
                     // LoadIC.LoadNamed's: a call here would keep {o} live across it,
                     // and the JIT would spill it on the monomorphic path too.
                     HeapObject? o = RegAt(ref fpSlot, Signed<TS>(ref ip, 1))._obj;
-                    FeedbackVector? fv = st.FeedbackVector;
+                    FeedbackVector? fv = InterpreterRuntime.FrameFeedbackVector(ref fpSlot);
                     if (fv is not null && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
                     {
                         JSValue[] slots = fv.Slots;
@@ -347,7 +347,7 @@ public static partial class InterpreterExecution
                     // as KeyedLoadIC.LoadSlow): an in-bounds, non-hole element of a
                     // fast elements kind.
                     HeapObject? o = RegAt(ref fpSlot, Signed<TS>(ref ip, 1))._obj;
-                    FeedbackVector? fv = st.FeedbackVector;
+                    FeedbackVector? fv = InterpreterRuntime.FrameFeedbackVector(ref fpSlot);
                     if (fv is not null && acc._obj == NumberTag.Instance && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
                     {
                         JSValue[] slots = fv.Slots;
@@ -392,11 +392,13 @@ public static partial class InterpreterExecution
 
                 // ---- Property stores ------------------------------------------------------------------------
                 case Bytecode.SetNamedProperty:
+                case Bytecode.DefineNamedOwnProperty:
                 {
-                    // The monomorphic hits of StoreIC.StoreNamed: a store to an own
-                    // field, or a transition that adds one.
+                    // The monomorphic hits of StoreIC.StoreNamed and
+                    // StoreIC.DefineNamedOwn: a store to an own field, or a
+                    // transition that adds one (the same handlers).
                     HeapObject? o = RegAt(ref fpSlot, Signed<TS>(ref ip, 1))._obj;
-                    FeedbackVector? fv = st.FeedbackVector;
+                    FeedbackVector? fv = InterpreterRuntime.FrameFeedbackVector(ref fpSlot);
                     if (fv is not null && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
                     {
                         JSValue[] slots = fv.Slots;
@@ -409,20 +411,20 @@ public static partial class InterpreterExecution
                             continue;
                         }
                     }
-                    if (SetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) goto reload;
+                    if ((Bytecode)ip == Bytecode.SetNamedProperty)
+                    {
+                        if (SetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) goto reload;
+                    }
+                    else DefineNamedOwnProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
                 }
-                case Bytecode.DefineNamedOwnProperty:
-                    DefineNamedOwnProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
-                    ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
-                    continue;
                 case Bytecode.SetKeyedProperty:
                 {
                     // KeyedStoreIC.Store's monomorphic in-bounds element store.
                     HeapObject? o = RegAt(ref fpSlot, Signed<TS>(ref ip, 1))._obj;
                     JSValue key = RegAt(ref fpSlot, Signed<TS>(ref ip, 1 + S));
-                    FeedbackVector? fv = st.FeedbackVector;
+                    FeedbackVector? fv = InterpreterRuntime.FrameFeedbackVector(ref fpSlot);
                     if (fv is not null && key._obj == NumberTag.Instance && o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
                     {
                         JSValue[] slots = fv.Slots;
@@ -512,7 +514,7 @@ public static partial class InterpreterExecution
                 case Bytecode.ToNumeric:
                     if (acc._obj == NumberTag.Instance)
                     {
-                        InterpreterOps.ToNumberFeedbackForNumber(st.FeedbackVector, Unsigned<TS>(ref ip, 1), acc._num);
+                        InterpreterOps.ToNumberFeedbackForNumber(InterpreterRuntime.FrameFeedbackVector(ref fpSlot), Unsigned<TS>(ref ip, 1), acc._num);
                     }
                     else
                     {
@@ -531,10 +533,10 @@ public static partial class InterpreterExecution
                     acc = default(JSValue);
                     // The budget interrupt (V8: UpdateInterruptBudget on the backward
                     // jump, with the stack/interrupt check folded in).
-                    FeedbackCell cell = st.Function.RawFeedbackCell;
+                    FeedbackCell cell = InterpreterRuntime.FrameFunction(ref fpSlot).RawFeedbackCell;
                     if ((cell.InterruptBudget -= relative) < 0 || st.Isolate.StackGuard.HasPendingInterrupts)
                     {
-                        int loopPc = PcOf(ref st, ref ip);
+                        int loopPc = PcOf(ref fpSlot, ref ip);
                         if (JumpLoopInterrupt(st.Isolate, ref st, ref fpSlot, loopPc, osr: typeof(TS) == typeof(SingleScale)))
                         {
                             // OSR to Maglev code at the loop header (Run continues there).
@@ -550,13 +552,12 @@ public static partial class InterpreterExecution
                     // case 3): Run continues the frame in it at the loop header.
                     // (JumpLoop reloads the feedback vector from the closure when the
                     // frame's cache is empty.)
-                    if (st.Isolate.MayHaveBaselineCode && st.Function.Shared.BaselineCode is not null &&
-                        (st.FeedbackVector ?? st.Function.RawFeedbackCell.Value as FeedbackVector) is { } osrVector)
+                    if (st.Isolate.MayHaveBaselineCode && InterpreterRuntime.FrameFunction(ref fpSlot).Shared.BaselineCode is not null &&
+                        (InterpreterRuntime.FrameFeedbackVector(ref fpSlot) ?? InterpreterRuntime.FrameFunction(ref fpSlot).RawFeedbackCell.Value as FeedbackVector) is { } osrVector)
                     {
                         Unsafe.Add(ref fpSlot, InterpreterRuntime.kFeedbackVectorOffset) = osrVector;
-                        st.Pc = PcOf(ref st, ref ip);
+                        st.Pc = PcOf(ref fpSlot, ref ip);
                         st.Accumulator = acc;
-                        st.FeedbackVector = osrVector;
                         st.OsrToBaseline = true;
                         if (typeof(TS) != typeof(SingleScale)) st.Done = true;
                         return acc;
@@ -612,7 +613,7 @@ public static partial class InterpreterExecution
                     int caseValue = (int)acc._num - caseValueBase;
                     if (caseValue >= 0 && caseValue < tableLength)
                     {
-                        ip = ref Unsafe.Add(ref ip, (int)st.Bytecode.ConstantPoolValues![tableStart + caseValue]._num);
+                        ip = ref Unsafe.Add(ref ip, (int)InterpreterRuntime.FrameBytecode(ref fpSlot).ConstantPoolValues![tableStart + caseValue]._num);
                     }
                     else
                     {
@@ -625,15 +626,15 @@ public static partial class InterpreterExecution
                     // Runtime_Throw: Isolate::Throw creates the message, then the
                     // exception unwinds to the handler of this frame (dispatched
                     // directly when there is one) or leaves the frame.
-                    ThrowAccumulator(st.Isolate, ref st, PcOf(ref st, ref ip), acc);
+                    ThrowAccumulator(st.Isolate, ref st, PcOf(ref fpSlot, ref ip), acc);
                     ip = ref IpAt(st.Bytecode, st.Pc);
                     acc = st.Accumulator;
                     continue;
                 case Bytecode.Return:
                 {
                     // UpdateInterruptBudgetOnReturn: the weight is the current bytecode offset.
-                    FeedbackCell cell = st.Function.RawFeedbackCell;
-                    if ((cell.InterruptBudget -= PcOf(ref st, ref ip) + 1) < 0) InterpreterTiering.OnBudgetInterrupt(st.Isolate, st.Function, withStackCheck: false);
+                    FeedbackCell cell = InterpreterRuntime.FrameFunction(ref fpSlot).RawFeedbackCell;
+                    if ((cell.InterruptBudget -= PcOf(ref fpSlot, ref ip) + 1) < 0) InterpreterTiering.OnBudgetInterrupt(st.Isolate, InterpreterRuntime.FrameFunction(ref fpSlot), withStackCheck: false);
                     if ((typeof(TS) != typeof(SingleScale)))
                     {
                         st.Done = true;
@@ -756,7 +757,7 @@ public static partial class InterpreterExecution
                     ip = ref Unsafe.Add(ref ip, 1);
                     continue;
                 case Bytecode.TypeOf:
-                    acc = InterpreterOps.TypeOf(st.Isolate, acc, st.FeedbackVector, Unsigned<TS>(ref ip, 1));
+                    acc = InterpreterOps.TypeOf(st.Isolate, acc, InterpreterRuntime.FrameFeedbackVector(ref fpSlot), Unsigned<TS>(ref ip, 1));
                     ip = ref Unsafe.Add(ref ip, 1 + S);
                     continue;
 
@@ -991,7 +992,7 @@ public static partial class InterpreterExecution
                             continue;
                         }
                     }
-                    st.Pc = PcOf(ref st, ref ip) + 1;
+                    st.Pc = PcOf(ref fpSlot, ref ip) + 1;
                     st.Accumulator = acc;
                     if (RunPrefixed(st.Isolate, ref st)) return st.Accumulator;
                     ip = ref IpAt(st.Bytecode, st.Pc);
@@ -1004,7 +1005,7 @@ public static partial class InterpreterExecution
                     // The rare bytecodes (LoopCold): they are out of this method so the
                     // JIT's inlining budget goes to the frequent handlers.
                     st.Accumulator = acc;
-                    int next = LoopCold<TS>(st.Isolate, ref st, PcOf(ref st, ref ip));
+                    int next = LoopCold<TS>(st.Isolate, ref st, PcOf(ref fpSlot, ref ip));
                     acc = st.Accumulator;
                     if (next >= 0)
                     {
@@ -1032,8 +1033,7 @@ public static partial class InterpreterExecution
         int S = typeof(TS) == typeof(SingleScale) ? 1 : typeof(TS) == typeof(DoubleScale) ? 2 : 4;
         ref JSValue fpSlot = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), st.Fp);
         ref byte code = ref MemoryMarshal.GetArrayDataReference(st.Bytecode.Bytecodes);
-        ref InterpreterFrameRecord frame = ref isolate.InterpreterFrames[st.FrameIndex];
-        frame.Pc = pc;
+        InterpreterRuntime.SetFramePc(ref fpSlot, pc);
         JSValue acc = st.Accumulator;
         switch ((Bytecode)Unsafe.Add(ref code, pc))
         {
@@ -1472,7 +1472,6 @@ public static partial class InterpreterExecution
                 int state = generator.ContinuationValue;
                 generator.ContinuationValue = JSGeneratorObject.kGeneratorExecuting;
                 st.Context = generator.Context;
-                Unsafe.Add(ref fpSlot, InterpreterRuntime.kContextOffset) = st.Context;
                 isolate.Context = st.Context;
                 int tableStart = Unsigned<TS>(ref code, pc + 1 + S);
                 int tableLength = Unsigned<TS>(ref code, pc + 1 + 2 * S);

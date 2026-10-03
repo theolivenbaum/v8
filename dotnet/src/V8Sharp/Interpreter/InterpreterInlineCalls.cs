@@ -115,7 +115,14 @@ internal static class InterpreterInlineCalls
     public static void EnterInline<TArgs>(Isolate isolate, ref InterpreterState st, JSFunction function, int mode,
         JSValue receiver, TArgs args, int returnPc) where TArgs : struct, Baseline.BaselineCalls.ICallArguments
     {
-        if (mode == kCallModeInlineSloppy && !receiver.IsJSReceiver) receiver = InterpreterCalls.ConvertReceiver(isolate, function, receiver);
+        if (mode == kCallModeInlineSloppy && !receiver.IsJSReceiver)
+        {
+            // CallFunction's receiver conversion: the global proxy for
+            // null and undefined (inline), ToObject otherwise.
+            receiver = receiver.IsNullOrUndefined
+                ? function.Context.NativeContext.Slots[(int)Context.Field.GLOBAL_PROXY_INDEX]
+                : InterpreterCalls.ConvertReceiver(isolate, function, receiver);
+        }
         EnterInlineCore(isolate, ref st, function, receiver, args, returnPc, -1, false, default);
     }
 
@@ -160,7 +167,7 @@ internal static class InterpreterInlineCalls
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
         StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset), context);
         StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset), function);
-        // The argument count slot (fp - 4) is not written : frames keep the count in their record.
+        InterpreterRuntime.InitializeFrameSlots(ref fpRef, bytecode, argc);
         if (isConstruct)
         {
             Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
@@ -177,29 +184,15 @@ internal static class InterpreterInlineCalls
         // The caller is the frame below (the loop runs the innermost frame).
         Debug.Assert(st.FrameIndex == depth - 1);
         Unsafe.Subtract(ref frame, 1).ReturnPc = returnPc;
-        // PopFrame leaves Function and Bytecode in the record.
-        if (!ReferenceEquals(frame.Function, function)) frame.Function = function;
-        if (!ReferenceEquals(frame.Bytecode, bytecode)) frame.Bytecode = bytecode;
         frame.Fp = fp;
-        frame.Pc = 0;
-        frame.Argc = argc;
-        frame.Kind = InterpreterFrameKind.Interpreted;
-        frame.IsConstructor = isConstruct;
-        frame.IsBaseline = false;
-        frame.IsMaglev = false;
-        frame.InlineCall = true;
+        frame.Flags = isConstruct ? InterpreterFrameFlags.InlineCall | InterpreterFrameFlags.Constructor : InterpreterFrameFlags.InlineCall;
         frame.RegisterStart = registerStart >= 0 ? registerStart : start;
 
-        st.Function = function;
-        st.Bytecode = bytecode;
         if (bytecode.ConstantPoolValues is null) InterpreterRuntime.MaterializeConstantPool(isolate, bytecode);
-        st.FeedbackVector = feedbackVector;
-        st.Context = context;
         st.Accumulator = default;
         st.Pc = 0;
         st.Fp = fp;
         st.FrameIndex = depth;
-        st.Argc = argc;
     }
 
     /// <summary>
@@ -273,51 +266,84 @@ internal static class InterpreterInlineCalls
     /// (JSConstructStubGeneric) and enters the constructor like
     /// <see cref="EnterInline"/>. False, with nothing done, for other constructors.
     /// </summary>
-    public static bool TryPushConstructFrame(Isolate isolate, ref InterpreterState st, int slot, JSValue constructor,
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryPushConstructFrame(Isolate isolate, ref InterpreterState st, FeedbackVector? feedbackVector, int slot, JSValue constructor,
         JSValue newTarget, int argsStart, int argc, int returnPc)
     {
-        if (constructor._obj is not JSFunction function || !function.Map.IsConstructor ||
-            newTarget._obj is not JSReceiver newTargetReceiver)
+        if (constructor._obj is not JSFunction function) return false;
+        // The construct mode, cached on the SharedFunctionInfo like the call
+        // mode (V8 decides by the constructor's code: JSConstructStubGeneric
+        // with the interpreter entry trampoline).
+        int mode = function.Shared.InterpreterConstructMode;
+        if (mode != kCallModeInline)
+        {
+            if (mode == 0) mode = ComputeInlineConstructMode(function.Shared);
+            if (mode != kCallModeInline && (mode != kCallModeCheckClosure || CheckClosure(function) == 0)) return false;
+        }
+        HeapObject? newTargetObject = newTarget._obj;
+        if (!function.Map.IsConstructor || newTargetObject is null || newTargetObject.InstanceType < InstanceTypeChecks.FirstJSReceiver)
         {
             return false;
         }
-        SharedFunctionInfo shared = function.Shared;
-        if (shared.FunctionData is not BytecodeArray || shared.HasBuiltinId || Globals.IsDerivedConstructor(shared.Kind) ||
-            Globals.IsResumableFunction(shared.Kind) || shared.BaselineCode is not null ||
-            shared.MayHaveMaglevCode && function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: not null })
-        {
-            return false;
-        }
-        InterpreterCalls.CollectConstructFeedback(isolate, st.FeedbackVector, slot, constructor, newTarget);
 
-        JSValue implicitReceiver;
-        if (ReferenceEquals(newTargetReceiver, function) && function.PrototypeOrInitialMap is Map initialMap &&
-            !initialMap.IsDictionaryMap)
+        // CollectConstructFeedback: the call count and the monomorphic hit
+        // inline, everything else in the runtime function.
+        if (feedbackVector is { } fv)
         {
-            // FastNewObject: new.target is the constructor and its initial map
-            // exists, so the allocation needs nothing from the context.
-            implicitReceiver = isolate.Factory.NewJSObjectFromMap(initialMap);
-        }
-        else
-        {
-            // Allocate the new receiver object in the constructor's context.
-            Context? saved = isolate.Context;
-            isolate.Context = function.Context;
-            try
+            JSValue[] slots = fv.Slots;
+            if (ReferenceEquals(slots[slot]._obj, newTargetObject))
             {
-                implicitReceiver = JSObject.New(isolate, function, newTargetReceiver, null);
+                ref JSValue count = ref slots[slot + 1];
+                Unsafe.AsRef(in count._bits) = BitConverter.DoubleToInt64Bits(count._num + InterpreterCalls.kCallCountIncrement);
             }
-            finally
+            else
             {
-                isolate.Context = saved;
+                InterpreterCalls.CollectConstructFeedback(isolate, fv, slot, constructor, newTarget);
             }
         }
+
+        // JSConstructStubGeneric: FastNewObject when new.target is the
+        // constructor and its initial map exists (the allocation needs nothing
+        // from the context), the runtime otherwise.
+        JSObject implicitReceiver = ReferenceEquals(newTargetObject, function) && function.PrototypeOrInitialMap is Map initialMap &&
+            !initialMap.IsDictionaryMap
+            ? isolate.Factory.FastNewObject(initialMap)
+            : NewImplicitReceiver(isolate, function, Unsafe.As<JSReceiver>(newTargetObject));
 
         // The construct stub's frame (see InterpreterCalls.ConstructInterpreted).
         int stubStart = isolate.AllocateRegisters(InterpreterCalls.kConstructStubFrameSlots);
         EnterInlineCore(isolate, ref st, function, implicitReceiver, new Baseline.BaselineCalls.RegisterArguments(argsStart, argc),
             returnPc, stubStart, true, newTarget);
         return true;
+    }
+
+    /// <summary>The implicit receiver of a construct call allocated in the constructor's context (JSObject::New).</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSObject NewImplicitReceiver(Isolate isolate, JSFunction function, JSReceiver newTarget)
+    {
+        Context? saved = isolate.Context;
+        isolate.Context = function.Context;
+        try
+        {
+            return JSObject.New(isolate, function, newTarget, null);
+        }
+        finally
+        {
+            isolate.Context = saved;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int ComputeInlineConstructMode(SharedFunctionInfo shared)
+    {
+        byte mode = kCallModeNotInline;
+        if (shared.FunctionData is BytecodeArray && !shared.HasBuiltinId && !Globals.IsDerivedConstructor(shared.Kind) &&
+            !Globals.IsResumableFunction(shared.Kind) && shared.BaselineCode is null)
+        {
+            mode = shared.MayHaveMaglevCode ? kCallModeCheckClosure : kCallModeInline;
+        }
+        shared.InterpreterConstructMode = mode;
+        return mode;
     }
 
     /// <summary>
@@ -359,7 +385,7 @@ internal static class InterpreterInlineCalls
         // If the result is an object (in the ECMA sense), we should get rid
         // of the receiver and use the result; see ECMA-262 section 13.2.2-7
         // on page 74.
-        if (frame.IsConstructor && !result.IsJSReceiver)
+        if ((frame.Flags & InterpreterFrameFlags.Constructor) != 0 && !result.IsJSReceiver)
         {
             result = isolate.RegisterStack[frame.Fp + InterpreterRuntime.kReceiverOffset];
         }
@@ -381,8 +407,9 @@ internal static class InterpreterInlineCalls
     {
         InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
         ref InterpreterFrameRecord frame = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(frames), st.FrameIndex);
-        if (!frame.InlineCall) return false;
-        if (frame.IsConstructor && !result.IsJSReceiver)
+        InterpreterFrameFlags flags = frame.Flags;
+        if ((flags & InterpreterFrameFlags.InlineCall) == 0) return false;
+        if ((flags & InterpreterFrameFlags.Constructor) != 0 && !result.IsJSReceiver)
         {
             result = isolate.RegisterStack[frame.Fp + InterpreterRuntime.kReceiverOffset];
         }
@@ -401,11 +428,7 @@ internal static class InterpreterInlineCalls
     static void PopFrame(Isolate isolate, ref InterpreterState st, InterpreterFrameRecord[] frames, ref InterpreterFrameRecord record)
     {
         int start = record.RegisterStart;
-        // The record is left as it is: every push sets all of its fields but
-        // Function and Bytecode, which it compares first (functions and their
-        // bytecode are long-lived; keeping them lets the next call at this depth
-        // skip the reference stores), and Receiver, which only builtin frames
-        // set and clear.
+        // The record is left as it is: every push sets the fields it reads.
         isolate.InterpreterFrameDepth = st.FrameIndex;
         // The frame's slots are not cleared: they stay below
         // RegisterStackDirtyEnd for the next call at this depth (EnterInlineCore).
@@ -415,21 +438,14 @@ internal static class InterpreterInlineCalls
         int callerIndex = st.FrameIndex - 1;
         // The record below a frame entered inline is its caller's.
         ref InterpreterFrameRecord caller = ref Unsafe.Subtract(ref record, 1);
-        BytecodeArray bytecode = caller.Bytecode!;
         int fp = caller.Fp;
         ref JSValue fpRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), fp);
-        Context context = Unsafe.As<Context>(Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset)._obj!);
+        Context context = InterpreterRuntime.FrameContext(ref fpRef);
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
 
-        st.Function = caller.Function;
-        st.Bytecode = bytecode;
-        // The slot holds the frame's FeedbackVector or undefined.
-        st.FeedbackVector = Unsafe.As<FeedbackVector?>(Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset)._obj);
-        if (!ReferenceEquals(st.Context, context)) st.Context = context;
         st.Pc = caller.ReturnPc;
         st.Fp = fp;
         st.FrameIndex = callerIndex;
-        st.Argc = caller.Argc;
     }
 
     /// <summary>Whether some frame of this loop, from the innermost inline one down, handles the current offset.</summary>
@@ -439,8 +455,8 @@ internal static class InterpreterInlineCalls
         for (int index = st.FrameIndex; index >= st.BaseFrameIndex; index--)
         {
             ref InterpreterFrameRecord frame = ref frames[index];
-            byte[] handlerTableBytes = frame.Bytecode!.HandlerTable;
-            if (handlerTableBytes.Length != 0 && new HandlerTable(handlerTableBytes).LookupHandlerIndexForRange(frame.Pc) >= 0)
+            byte[] handlerTableBytes = frame.GetBytecode(isolate).HandlerTable;
+            if (handlerTableBytes.Length != 0 && new HandlerTable(handlerTableBytes).LookupHandlerIndexForRange(frame.GetPc(isolate)) >= 0)
             {
                 return true;
             }
@@ -459,7 +475,7 @@ internal static class InterpreterInlineCalls
         {
             PopFrame(isolate, ref st);
             // The caller's offset is its call bytecode, where the exception now is.
-            st.Pc = isolate.InterpreterFrames[st.FrameIndex].Pc;
+            st.Pc = InterpreterRuntime.FramePc(isolate, st.Fp);
         }
     }
 }

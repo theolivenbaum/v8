@@ -682,21 +682,13 @@ public static class MaglevBuiltins
         stack[fp + InterpreterRuntime.kContextOffset] = context;
         stack[fp + InterpreterRuntime.kClosureOffset] = function;
         stack[fp + InterpreterRuntime.kFeedbackVectorOffset] = JSValue.FromObject(function.RawFeedbackCell.Value as FeedbackVector);
+        InterpreterRuntime.InitializeFrameSlots(ref stack[fp], bytecode, argc);
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
-        frame.Function = function;
-        frame.Bytecode = bytecode;
         frame.Fp = fp;
-        frame.Pc = 0;
-        frame.Argc = argc;
-        frame.Kind = InterpreterFrameKind.Interpreted;
-        frame.IsConstructor = isConstruct;
-        frame.IsBaseline = false;
-        frame.IsMaglev = true;
-        frame.InlineCall = false;
+        frame.Flags = isConstruct ? InterpreterFrameFlags.Maglev | InterpreterFrameFlags.Constructor : InterpreterFrameFlags.Maglev;
         frame.ReturnPc = 0;
         frame.RegisterStart = start;
-        frame.Receiver = default;
         return fp;
     }
 

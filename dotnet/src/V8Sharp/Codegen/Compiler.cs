@@ -490,8 +490,8 @@ namespace V8Sharp.Codegen
                 for (int i = isolate.InterpreterFrameDepth - 1; i >= 0; i--)
                 {
                     if (frames[i].Kind != InterpreterFrameKind.Interpreted) continue;
-                    script.EvalFromShared = frames[i].Function.Shared;
-                    evalPosition = -frames[i].Pc;
+                    script.EvalFromShared = frames[i].GetFunction(isolate).Shared;
+                    evalPosition = -frames[i].GetPc(isolate);
                     break;
                 }
             }

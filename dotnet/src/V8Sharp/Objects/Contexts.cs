@@ -97,7 +97,15 @@ public partial class Context : HeapObject
         set => Slots[(int)Field.EXTENSION_INDEX] = value;
     }
 
-    public NativeContext NativeContext => _nativeContext ?? (NativeContext)this;
+    /// <summary>
+    /// The native context (a native context's own field is null: it is its
+    /// own native context, which the setter guarantees).
+    /// </summary>
+    public NativeContext NativeContext
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _nativeContext ?? Unsafe.As<NativeContext>(this);
+    }
 
     internal void SetNativeContext(NativeContext nativeContext) => _nativeContext = nativeContext;
 

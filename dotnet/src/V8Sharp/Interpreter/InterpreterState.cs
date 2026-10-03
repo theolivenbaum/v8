@@ -39,15 +39,18 @@ public struct QuadrupleScale : IOperandScale
     public static bool SingleStep => true;
 }
 
-/// <summary>The live state of an interpreter frame, spilled while a prefixed bytecode runs and after an exception.</summary>
+/// <summary>
+/// The live state of an executing interpreter frame, spilled while a
+/// prefixed bytecode runs and after an exception: the accumulator, the
+/// current offset and which frame runs. Everything else about the frame
+/// (function, bytecode, feedback vector, context, argument count) is in its
+/// fixed slots (InterpreterFrames.cs), held once; the properties below read
+/// and write them.
+/// </summary>
 public ref struct InterpreterState
 {
     /// <summary>The isolate (kept here so the dispatch loop need not hold it in a register).</summary>
     public Isolate Isolate;
-    public JSFunction Function;
-    public BytecodeArray Bytecode;
-    public FeedbackVector? FeedbackVector;
-    public Context Context;
     public JSValue Accumulator;
     /// <summary>The offset of the current bytecode (after any prefix).</summary>
     public int Pc;
@@ -55,8 +58,6 @@ public ref struct InterpreterState
     public int Fp;
     /// <summary>The index of this frame's record in Isolate.InterpreterFrames.</summary>
     public int FrameIndex;
-    /// <summary>The actual argument count.</summary>
-    public int Argc;
     /// <summary>Set when the frame returned (Return / SuspendGenerator) during a single step.</summary>
     public bool Done;
     /// <summary>
@@ -76,6 +77,50 @@ public ref struct InterpreterState
     /// above describe the innermost one).
     /// </summary>
     public int BaseFrameIndex;
+
+    /// <summary>The frame's fixed slots (the slot at <see cref="Fp"/>).</summary>
+    public readonly ref JSValue FpRef
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => ref InterpreterRuntime.FrameRef(Isolate, Fp);
+    }
+
+    /// <summary>The frame's closure (fp - 5).</summary>
+    public readonly JSFunction Function
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => InterpreterRuntime.FrameFunction(ref FpRef);
+    }
+
+    /// <summary>The frame's bytecode array (fp - 3).</summary>
+    public readonly BytecodeArray Bytecode
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => InterpreterRuntime.FrameBytecode(ref FpRef);
+    }
+
+    /// <summary>The frame's feedback vector (fp - 1), or null.</summary>
+    public readonly FeedbackVector? FeedbackVector
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => InterpreterRuntime.FrameFeedbackVector(ref FpRef);
+        set => Unsafe.Add(ref FpRef, InterpreterRuntime.kFeedbackVectorOffset) = value is null ? default(JSValue) : value;
+    }
+
+    /// <summary>The frame's current context (fp - 6, Register::current_context).</summary>
+    public readonly Context Context
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => InterpreterRuntime.FrameContext(ref FpRef);
+        set => Unsafe.Add(ref FpRef, InterpreterRuntime.kContextOffset) = value;
+    }
+
+    /// <summary>The actual argument count (fp - 4).</summary>
+    public readonly int Argc
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => InterpreterRuntime.FrameArgc(ref FpRef);
+    }
 }
 
 /// <summary>Operand decoding (little-endian, unaligned, as V8's BytecodeOperandReadUnaligned).</summary>

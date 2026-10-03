@@ -273,12 +273,12 @@ public sealed partial class BaselineCompiler
     static readonly MethodInfo s_interpreterFrames = typeof(V8Sharp.Isolate).GetProperty(nameof(V8Sharp.Isolate.InterpreterFrames))!.GetMethod!;
     static readonly FieldInfo s_stFp = typeof(InterpreterState).GetField(nameof(InterpreterState.Fp))!;
     static readonly FieldInfo s_stFrameIndex = typeof(InterpreterState).GetField(nameof(InterpreterState.FrameIndex))!;
-    static readonly FieldInfo s_stFunction = typeof(InterpreterState).GetField(nameof(InterpreterState.Function))!;
+    static readonly MethodInfo s_stFunction = typeof(InterpreterState).GetProperty(nameof(InterpreterState.Function))!.GetMethod!;
     static readonly FieldInfo s_constantPoolValues = typeof(BytecodeArray).GetField(nameof(BytecodeArray.ConstantPoolValues))!;
-    static readonly FieldInfo s_stBytecode = typeof(InterpreterState).GetField(nameof(InterpreterState.Bytecode))!;
+    static readonly MethodInfo s_stBytecode = typeof(InterpreterState).GetProperty(nameof(InterpreterState.Bytecode))!.GetMethod!;
     static readonly FieldInfo s_stAccumulator = typeof(InterpreterState).GetField(nameof(InterpreterState.Accumulator))!;
-    static readonly FieldInfo s_stContext = typeof(InterpreterState).GetField(nameof(InterpreterState.Context))!;
-    static readonly FieldInfo s_stFeedbackVector = typeof(InterpreterState).GetField(nameof(InterpreterState.FeedbackVector))!;
+    static readonly MethodInfo s_stContext = typeof(InterpreterState).GetProperty(nameof(InterpreterState.Context))!.GetMethod!;
+    static readonly MethodInfo s_stFeedbackVector = typeof(InterpreterState).GetProperty(nameof(InterpreterState.FeedbackVector))!.GetMethod!;
     static readonly FieldInfo s_stPc = typeof(InterpreterState).GetField(nameof(InterpreterState.Pc))!;
     static readonly MethodInfo s_bytecodes = typeof(BytecodeArray).GetProperty(nameof(BytecodeArray.Bytecodes))!.GetMethod!;
 
@@ -309,15 +309,15 @@ public sealed partial class BaselineCompiler
         il.Emit(OpCodes.Ldelema, typeof(InterpreterFrameRecord));
         il.Emit(OpCodes.Stloc, _masm.Frame);
         il.Emit(OpCodes.Ldarg_2);
-        il.Emit(OpCodes.Ldfld, s_stFunction);
+        il.Emit(OpCodes.Call, s_stFunction);
         il.Emit(OpCodes.Stloc, _masm.Function);
         // (The entry materialized the constant pool.)
         il.Emit(OpCodes.Ldarg_2);
-        il.Emit(OpCodes.Ldfld, s_stBytecode);
+        il.Emit(OpCodes.Call, s_stBytecode);
         il.Emit(OpCodes.Ldfld, s_constantPoolValues);
         il.Emit(OpCodes.Stloc, _masm.Constants);
         il.Emit(OpCodes.Ldarg_2);
-        il.Emit(OpCodes.Ldfld, s_stBytecode);
+        il.Emit(OpCodes.Call, s_stBytecode);
         il.Emit(OpCodes.Callvirt, s_bytecodes);
         il.Emit(OpCodes.Stloc, _masm.Code);
 
@@ -329,10 +329,10 @@ public sealed partial class BaselineCompiler
         il.Emit(OpCodes.Ldfld, s_stAccumulator);
         il.Emit(OpCodes.Stloc, _masm.Acc);
         il.Emit(OpCodes.Ldarg_2);
-        il.Emit(OpCodes.Ldfld, s_stContext);
+        il.Emit(OpCodes.Call, s_stContext);
         il.Emit(OpCodes.Stloc, _masm.Context);
         il.Emit(OpCodes.Ldarg_2);
-        il.Emit(OpCodes.Ldfld, s_stFeedbackVector);
+        il.Emit(OpCodes.Call, s_stFeedbackVector);
         il.Emit(OpCodes.Stloc, _masm.Fv);
         // Baseline frames always have a feedback vector (Runtime_InstallBaselineCode).
         il.Emit(OpCodes.Ldloc, _masm.Fv);

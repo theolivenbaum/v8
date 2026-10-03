@@ -20,17 +20,27 @@ public static partial class InterpreterExecution
 
     /// <summary>
     /// SaveBytecodeOffset: records the offset of the current bytecode in the
-    /// frame record before a handler calls out, for the stack walker (source
-    /// positions, Error.stack) and for the exception handler lookup. The loop
-    /// does not store it per bytecode, as V8's handlers do not.
+    /// frame's bytecode offset slot before a handler calls out, for the stack
+    /// walker (source positions, Error.stack) and for the exception handler
+    /// lookup. The loop does not store it per bytecode, as V8's handlers do not.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void SavePc(Isolate isolate, ref InterpreterState st, int pc) => isolate.InterpreterFrames[st.FrameIndex].Pc = pc;
+    internal static void SavePc(Isolate isolate, ref InterpreterState st, int pc) => InterpreterRuntime.SetFramePc(ref st.FpRef, pc);
 
     /// <summary><see cref="SavePc(Isolate, ref InterpreterState, int)"/> for the bytecode at <paramref name="ip"/>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static void SavePc(Isolate isolate, ref InterpreterState st, ref byte ip) =>
-        isolate.InterpreterFrames[st.FrameIndex].Pc = PcOf(ref st, ref ip);
+        InterpreterRuntime.SetFramePc(ref st.FpRef, PcOf(ref st, ref ip));
+
+    /// <summary>SaveBytecodeOffset with the frame's slots at hand: one store.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void SavePc(ref JSValue fp, ref byte ip) =>
+        InterpreterRuntime.SetFramePc(ref fp, PcOf(ref fp, ref ip));
+
+    /// <summary>The bytecode offset of <paramref name="ip"/> in the bytecode of the frame at <paramref name="fp"/>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int PcOf(ref JSValue fp, ref byte ip) =>
+        (int)Unsafe.ByteOffset(ref MemoryMarshal.GetArrayDataReference(InterpreterRuntime.FrameBytecode(ref fp).Bytecodes), ref ip);
 
     /// <summary>
     /// The bytecode offset of <paramref name="ip"/>, a reference into the
@@ -204,10 +214,9 @@ public static partial class InterpreterExecution
     {
         // Saves the current context in <context>, and pushes the accumulator
         // as the new current context.
-        Reg<TS>(ref fp, ref ip, 1) = st.Context;
+        Reg<TS>(ref fp, ref ip, 1) = InterpreterRuntime.FrameContext(ref fp);
         st.Context = acc.UncheckedAs<Context>();
-        Unsafe.Add(ref fp, InterpreterRuntime.kContextOffset) = st.Context;
-        isolate.Context = st.Context;
+        isolate.Context = InterpreterRuntime.FrameContext(ref fp);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -215,8 +224,7 @@ public static partial class InterpreterExecution
         where TS : struct, IOperandScale
     {
         st.Context = Reg<TS>(ref fp, ref ip, 1).UncheckedAs<Context>();
-        Unsafe.Add(ref fp, InterpreterRuntime.kContextOffset) = st.Context;
-        isolate.Context = st.Context;
+        isolate.Context = InterpreterRuntime.FrameContext(ref fp);
     }
 
     // ---- Globals -----------------------------------------------------------------
@@ -225,23 +233,23 @@ public static partial class InterpreterExecution
     static JSValue LdaGlobal<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
-        var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1)].UncheckedAs<Name>();
+        var name = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1)].UncheckedAs<Name>();
         int slot = Unsigned<TS>(ref ip, 1 + S);
         TypeofMode mode = (Bytecode)ip == Bytecode.LdaGlobal ? TypeofMode.NotInside : TypeofMode.Inside;
-        return LoadGlobalIC.Load(isolate, st.FeedbackVector, slot, st.Context, name, mode);
+        return LoadGlobalIC.Load(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, InterpreterRuntime.FrameContext(ref fp), name, mode);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void StaGlobal<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
-        var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1)].UncheckedAs<Name>();
+        var name = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1)].UncheckedAs<Name>();
         int slot = Unsigned<TS>(ref ip, 1 + S);
-        StoreGlobalIC.Store(isolate, st.FeedbackVector, slot, st.Context, name, acc);
+        StoreGlobalIC.Store(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, InterpreterRuntime.FrameContext(ref fp), name, acc);
     }
 
     // ---- Property loads and stores --------------------------------------------------
@@ -250,12 +258,12 @@ public static partial class InterpreterExecution
     static bool GetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue receiver = Reg<TS>(ref fp, ref ip, 1);
-        var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
+        var name = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
-        JSValue result = LoadIC.LoadNamedOrGetter(isolate, st.FeedbackVector, slot, receiver, name, out JSFunction? getter);
+        JSValue result = LoadIC.LoadNamedOrGetter(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, receiver, name, out JSFunction? getter);
         if (getter is not null)
         {
             // A JavaScript getter from the feedback (LoadHandler accessor
@@ -277,23 +285,23 @@ public static partial class InterpreterExecution
     static JSValue GetKeyedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue obj = Reg<TS>(ref fp, ref ip, 1);
         int slot = Unsigned<TS>(ref ip, 1 + S);
-        return KeyedLoadIC.Load(isolate, st.FeedbackVector, slot, obj, acc);
+        return KeyedLoadIC.Load(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, obj, acc);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static bool SetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue obj = Reg<TS>(ref fp, ref ip, 1);
-        var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
+        var name = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
-        JSFunction? setter = StoreIC.StoreNamedOrSetter(isolate, st.FeedbackVector, slot, obj, name, acc);
+        JSFunction? setter = StoreIC.StoreNamedOrSetter(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, obj, name, acc);
         if (setter is null) return false;
         // A JavaScript setter from the feedback (StoreHandler accessor cases):
         // called like a CallProperty1 with the receiver and the value, in this
@@ -314,36 +322,36 @@ public static partial class InterpreterExecution
     static void DefineNamedOwnProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue obj = Reg<TS>(ref fp, ref ip, 1);
-        var name = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
+        var name = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
-        StoreIC.DefineNamedOwn(isolate, st.FeedbackVector, slot, obj, name, acc);
+        StoreIC.DefineNamedOwn(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, obj, name, acc);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void SetKeyedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue obj = Reg<TS>(ref fp, ref ip, 1);
         JSValue key = Reg<TS>(ref fp, ref ip, 1 + S);
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
-        KeyedStoreIC.Store(isolate, st.FeedbackVector, slot, obj, key, acc);
+        KeyedStoreIC.Store(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, obj, key, acc);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void StaInArrayLiteral<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue array = Reg<TS>(ref fp, ref ip, 1);
         JSValue index = Reg<TS>(ref fp, ref ip, 1 + S);
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
-        KeyedStoreIC.StoreInArrayLiteral(isolate, st.FeedbackVector, slot, array, index, acc);
+        KeyedStoreIC.StoreInArrayLiteral(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, array, index, acc);
     }
 
     // ---- Binary operators ----------------------------------------------------------
@@ -353,7 +361,7 @@ public static partial class InterpreterExecution
     static JSValue AddSlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue lhs = Reg<TS>(ref fp, ref ip, 1);
         // Two numbers whose feedback changes (the loop adds the others inline).
@@ -369,7 +377,7 @@ public static partial class InterpreterExecution
     static JSValue BinaryOp<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue lhs = Reg<TS>(ref fp, ref ip, 1);
         ref byte feedback = ref Unsafe.Add(ref ip, 1 + S);
@@ -412,7 +420,7 @@ public static partial class InterpreterExecution
     static JSValue BinarySmiOp<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         int imm = Signed<TS>(ref ip, 1);
         ref byte feedback = ref Unsafe.Add(ref ip, 1 + S);
@@ -451,7 +459,7 @@ public static partial class InterpreterExecution
     static JSValue UnaryOp<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         ref byte feedback = ref Unsafe.Add(ref ip, 1);
         return (Bytecode)ip switch
         {
@@ -466,8 +474,8 @@ public static partial class InterpreterExecution
     static JSValue ToNumberOrNumeric<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
-        return InterpreterOps.ToNumberOrNumeric(isolate, acc, st.FeedbackVector, Unsigned<TS>(ref ip, 1),
+        SavePc(ref fp, ref ip);
+        return InterpreterOps.ToNumberOrNumeric(isolate, acc, InterpreterRuntime.FrameFeedbackVector(ref fp), Unsigned<TS>(ref ip, 1),
             numeric: (Bytecode)ip == Bytecode.ToNumeric);
     }
 
@@ -477,7 +485,7 @@ public static partial class InterpreterExecution
     static JSValue TestEqual<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         return InterpreterOps.Equal(isolate, Reg<TS>(ref fp, ref ip, 1), acc, ref Unsafe.Add(ref ip, 1 + S));
     }
@@ -487,7 +495,7 @@ public static partial class InterpreterExecution
     static JSValue Relational<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         Operation op = (Bytecode)ip switch
         {
@@ -507,22 +515,22 @@ public static partial class InterpreterExecution
     static JSValue TestInstanceOf<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue obj = Reg<TS>(ref fp, ref ip, 1);
         int slot = Unsigned<TS>(ref ip, 1 + S);
-        return InterpreterOps.InstanceOf(isolate, st.FeedbackVector, slot, obj, acc);
+        return InterpreterOps.InstanceOf(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, obj, acc);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static JSValue TestIn<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue name = Reg<TS>(ref fp, ref ip, 1);
         int slot = Unsigned<TS>(ref ip, 1 + S);
-        return KeyedHasIC.Has(isolate, st.FeedbackVector, slot, acc, name);
+        return KeyedHasIC.Has(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, acc, name);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -539,17 +547,17 @@ public static partial class InterpreterExecution
     static JSValue CreateArrayLiteral<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
-        JSValue description = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1)];
+        JSValue description = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1)];
         int slot = Unsigned<TS>(ref ip, 1 + S);
         int flags = Byte(ref ip, 1 + 2 * S);
-        if (st.FeedbackVector is { } fv && CreateArrayLiteralFlags.DecodeFastCloneSupported((byte)flags) &&
+        if (InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv && CreateArrayLiteralFlags.DecodeFastCloneSupported((byte)flags) &&
             RuntimeLiterals.TryCreateShallowLiteral(isolate, fv, slot, CreateArrayLiteralFlags.DecodeFlags((byte)flags)) is { } shallow)
         {
             return shallow;
         }
-        return RuntimeLiterals.CreateArrayLiteral(isolate, st.FeedbackVector, slot, description.UncheckedAs<ArrayBoilerplateDescription>(),
+        return RuntimeLiterals.CreateArrayLiteral(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, description.UncheckedAs<ArrayBoilerplateDescription>(),
             CreateArrayLiteralFlags.DecodeFlags((byte)flags));
     }
 
@@ -557,25 +565,30 @@ public static partial class InterpreterExecution
     static JSValue CreateEmptyArrayLiteral<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
-        return RuntimeLiterals.CreateEmptyArrayLiteral(isolate, st.FeedbackVector, Unsigned<TS>(ref ip, 1));
+        SavePc(ref fp, ref ip);
+        return RuntimeLiterals.CreateEmptyArrayLiteral(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), Unsigned<TS>(ref ip, 1));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static JSValue CreateObjectLiteral<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
         int S = Scale<TS>();
-        JSValue description = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1)];
         int slot = Unsigned<TS>(ref ip, 1 + S);
         int flags = Byte(ref ip, 1 + 2 * S);
-        if (st.FeedbackVector is { } fv && CreateObjectLiteralFlags.DecodeFastCloneSupported((byte)flags) &&
-            RuntimeLiterals.TryCreateShallowLiteral(isolate, fv, slot, CreateObjectLiteralFlags.DecodeFlags((byte)flags)) is { } shallow)
+        if (InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv && CreateObjectLiteralFlags.DecodeFastCloneSupported((byte)flags))
         {
-            return shallow;
+            // CreateShallowObjectLiteral: an allocation, so no SavePc.
+            if (RuntimeLiterals.TryCreateShallowObjectLiteral(fv, slot) is { } fast) return fast;
+            SavePc(ref fp, ref ip);
+            if (RuntimeLiterals.TryCreateShallowLiteral(isolate, fv, slot, CreateObjectLiteralFlags.DecodeFlags((byte)flags)) is { } shallow)
+            {
+                return shallow;
+            }
         }
-        return RuntimeLiterals.CreateObjectLiteral(isolate, st.FeedbackVector, slot, description.UncheckedAs<ObjectBoilerplateDescription>(),
+        SavePc(ref fp, ref ip);
+        JSValue description = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1)];
+        return RuntimeLiterals.CreateObjectLiteral(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, description.UncheckedAs<ObjectBoilerplateDescription>(),
             CreateObjectLiteralFlags.DecodeFlags((byte)flags));
     }
 
@@ -587,21 +600,23 @@ public static partial class InterpreterExecution
     static JSValue CreateClosure<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        // FastNewClosure: an allocation, which cannot throw, so no SavePc.
         int S = Scale<TS>();
-        var shared = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1)].UncheckedAs<SharedFunctionInfo>();
+        var shared = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1)].UncheckedAs<SharedFunctionInfo>();
         int slot = Unsigned<TS>(ref ip, 1 + S);
-        FeedbackCell cell = JSFunctionFeedback.GetClosureFeedbackCellArray(st.Function).Get(slot);
-        return RuntimeClosures.NewClosure(isolate, shared, st.Context, cell);
+        // LoadClosureFeedbackArray: the feedback vector's, or the cell's own array.
+        ClosureFeedbackCellArray cells = InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv ? fv.ClosureFeedbackCellArray
+            : JSFunctionFeedback.GetClosureFeedbackCellArray(InterpreterRuntime.FrameFunction(ref fp));
+        return Factory.FastNewClosure(shared, InterpreterRuntime.FrameContext(ref fp), cells.Get(slot));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static JSValue CreateFunctionContext<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
-        var scopeInfo = st.Bytecode.ConstantPoolValues![Unsigned<TS>(ref ip, 1)].UncheckedAs<ScopeInfo>();
-        return RuntimeScopes.NewFunctionContext(isolate, st.Context, scopeInfo,
+        SavePc(ref fp, ref ip);
+        var scopeInfo = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1)].UncheckedAs<ScopeInfo>();
+        return RuntimeScopes.NewFunctionContext(isolate, InterpreterRuntime.FrameContext(ref fp), scopeInfo,
             (Bytecode)ip == Bytecode.CreateEvalContext);
     }
 
@@ -620,13 +635,12 @@ public static partial class InterpreterExecution
     static bool JumpLoopInterrupt(Isolate isolate, ref InterpreterState st, ref JSValue fp, int pc, bool osr)
     {
         SavePc(isolate, ref st, pc);
-        st.FeedbackVector = InterpreterTiering.OnBudgetInterrupt(isolate, st.Function, withStackCheck: true);
-        Unsafe.Add(ref fp, InterpreterRuntime.kFeedbackVectorOffset) = st.FeedbackVector is null ? default(JSValue) : st.FeedbackVector;
+        st.FeedbackVector = InterpreterTiering.OnBudgetInterrupt(isolate, InterpreterRuntime.FrameFunction(ref fp), withStackCheck: true);
         // OnStackReplacement (OSR into Maglev code): checked at the budget
         // interrupt rather than on every back edge (deviations.md, Maglev).
         // Only from unprefixed JumpLoops: a Wide JumpLoop runs in a nested scaled dispatch.
-        if (osr && isolate.UseOptimizer && st.FeedbackVector is { } vector &&
-            Maglev.MaglevExecution.TryGetOsrCode(isolate, st.Function, vector, st.Bytecode, pc) is { } osrCode)
+        if (osr && isolate.UseOptimizer && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } vector &&
+            Maglev.MaglevExecution.TryGetOsrCode(isolate, InterpreterRuntime.FrameFunction(ref fp), vector, InterpreterRuntime.FrameBytecode(ref fp), pc) is { } osrCode)
         {
             st.OsrCode = osrCode;
             return true;
@@ -654,7 +668,7 @@ public static partial class InterpreterExecution
     static JSValue ForInEnumerate<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         return RuntimeForIn.ForInEnumerate(isolate, Reg<TS>(ref fp, ref ip, 1).As<JSReceiver>());
     }
 
@@ -662,11 +676,11 @@ public static partial class InterpreterExecution
     static void ForInPrepare<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         int output = Signed<TS>(ref ip, 1);
         int slot = Unsigned<TS>(ref ip, 1 + S);
-        RuntimeForIn.ForInPrepare(isolate, acc.Object, st.FeedbackVector, slot, out JSValue cacheArray, out int cacheLength);
+        RuntimeForIn.ForInPrepare(isolate, acc.Object, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, out JSValue cacheArray, out int cacheLength);
         Unsafe.Subtract(ref fp, kRegBase + output) = acc;
         Unsafe.Subtract(ref fp, kRegBase + output - 1) = cacheArray;
         Unsafe.Subtract(ref fp, kRegBase + output - 2) = JSValue.FromInt(cacheLength);
@@ -676,7 +690,7 @@ public static partial class InterpreterExecution
     static JSValue ForInNext<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue receiver = Reg<TS>(ref fp, ref ip, 1);
         int index = (int)Reg<TS>(ref fp, ref ip, 1 + S)._num;
@@ -690,7 +704,7 @@ public static partial class InterpreterExecution
             // Enum cache in use for {receiver}, the {key} is definitely valid.
             return key;
         }
-        return RuntimeForIn.ForInNextSlow(isolate, st.FeedbackVector, slot, receiver, key, cacheType);
+        return RuntimeForIn.ForInNextSlow(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, receiver, key, cacheType);
     }
 
     // ---- Calls --------------------------------------------------------------------
@@ -699,26 +713,26 @@ public static partial class InterpreterExecution
     static bool CallProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue callee = Reg<TS>(ref fp, ref ip, 1);
         int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref ip, 1 + S);
         int count = Unsigned<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
         JSValue receiver = Unsafe.Add(ref fp, first);
-        InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
+        InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee, receiver);
         if (typeof(TS) == typeof(SingleScale))
         {
             if (InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
             {
                 InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
-                    new Baseline.BaselineCalls.RegisterArguments(st.Fp + first + 1, count - 1), PcOf(ref st, ref ip) + 1 + 4 * S);
+                    new Baseline.BaselineCalls.RegisterArguments(st.Fp + first + 1, count - 1), PcOf(ref fp, ref ip) + 1 + 4 * S);
                 return true;
             }
             // f.call(thisArg, ...args).
             if (IsFunctionPrototypeCall(callee) &&
                 InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, count > 1 ? Unsafe.Add(ref fp, first + 1) : default,
-                    st.Fp + first + 2, count > 1 ? count - 2 : 0, PcOf(ref st, ref ip) + 1 + 4 * S))
+                    st.Fp + first + 2, count > 1 ? count - 2 : 0, PcOf(ref fp, ref ip) + 1 + 4 * S))
             {
                 return true;
             }
@@ -734,16 +748,16 @@ public static partial class InterpreterExecution
     static bool CallProperty0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue callee = Reg<TS>(ref fp, ref ip, 1);
         JSValue receiver = Reg<TS>(ref fp, ref ip, 1 + S);
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
-        InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
+        InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee, receiver);
         if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver, new Baseline.BaselineCalls.NoArguments(),
-                PcOf(ref st, ref ip) + 1 + 3 * S);
+                PcOf(ref fp, ref ip) + 1 + 3 * S);
             return true;
         }
         // a.pop(), a.shift(), n.toString(): the builtins' CSA fast paths.
@@ -760,25 +774,25 @@ public static partial class InterpreterExecution
     static bool CallProperty1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue callee = Reg<TS>(ref fp, ref ip, 1);
         JSValue receiver = Reg<TS>(ref fp, ref ip, 1 + S);
         int argOperand = Signed<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
-        InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
+        InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee, receiver);
         if (typeof(TS) == typeof(SingleScale))
         {
             if (InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
             {
                 InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
-                    new Baseline.BaselineCalls.OneArgument(Unsafe.Subtract(ref fp, kRegBase + argOperand)), PcOf(ref st, ref ip) + 1 + 4 * S);
+                    new Baseline.BaselineCalls.OneArgument(Unsafe.Subtract(ref fp, kRegBase + argOperand)), PcOf(ref fp, ref ip) + 1 + 4 * S);
                 return true;
             }
             // f.call(thisArg).
             if (IsFunctionPrototypeCall(callee) &&
                 InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, Reg<TS>(ref fp, ref ip, 1 + 2 * S), 0, 0,
-                    PcOf(ref st, ref ip) + 1 + 4 * S))
+                    PcOf(ref fp, ref ip) + 1 + 4 * S))
             {
                 return true;
             }
@@ -798,34 +812,34 @@ public static partial class InterpreterExecution
     static bool CallProperty2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue callee = Reg<TS>(ref fp, ref ip, 1);
         JSValue receiver = Reg<TS>(ref fp, ref ip, 1 + S);
         int arg0 = Signed<TS>(ref ip, 1 + 2 * S);
         int arg1 = Signed<TS>(ref ip, 1 + 3 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 4 * S);
-        InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee, receiver);
+        InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee, receiver);
         if (typeof(TS) == typeof(SingleScale))
         {
             if (InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
             {
                 InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
                     new Baseline.BaselineCalls.TwoArguments(Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1)),
-                    PcOf(ref st, ref ip) + 1 + 5 * S);
+                    PcOf(ref fp, ref ip) + 1 + 5 * S);
                 return true;
             }
             // f.call(thisArg, arg).
             if (IsFunctionPrototypeCall(callee) &&
                 InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
-                    st.Fp + InterpreterRuntime.kRegisterOperandBase - arg1, 1, PcOf(ref st, ref ip) + 1 + 5 * S))
+                    st.Fp + InterpreterRuntime.kRegisterOperandBase - arg1, 1, PcOf(ref fp, ref ip) + 1 + 5 * S))
             {
                 return true;
             }
             // f.apply(thisArg, arguments) (Class.create-style constructors).
-            if (ReferenceEquals(callee._obj, st.Context.NativeContext.FunctionPrototypeApply) &&
+            if (ReferenceEquals(callee._obj, InterpreterRuntime.FrameContext(ref fp).NativeContext.FunctionPrototypeApply) &&
                 InterpreterInlineCalls.TryPushApplyFrame(isolate, ref st, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
-                    Unsafe.Subtract(ref fp, kRegBase + arg1), PcOf(ref st, ref ip) + 1 + 5 * S))
+                    Unsafe.Subtract(ref fp, kRegBase + arg1), PcOf(ref fp, ref ip) + 1 + 5 * S))
             {
                 return true;
             }
@@ -847,17 +861,17 @@ public static partial class InterpreterExecution
     static bool CallUndefinedReceiver<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue callee = Reg<TS>(ref fp, ref ip, 1);
         int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref ip, 1 + S);
         int count = Unsigned<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
-        InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
+        InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee);
         if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
-                new Baseline.BaselineCalls.RegisterArguments(st.Fp + first, count), PcOf(ref st, ref ip) + 1 + 4 * S);
+                new Baseline.BaselineCalls.RegisterArguments(st.Fp + first, count), PcOf(ref fp, ref ip) + 1 + 4 * S);
             return true;
         }
         st.Accumulator = InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + first, count, ConvertReceiverMode.NullOrUndefined);
@@ -868,15 +882,15 @@ public static partial class InterpreterExecution
     static bool CallUndefinedReceiver0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue callee = Reg<TS>(ref fp, ref ip, 1);
         int slot = Unsigned<TS>(ref ip, 1 + S);
-        InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
+        InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee);
         if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue), new Baseline.BaselineCalls.NoArguments(),
-                PcOf(ref st, ref ip) + 1 + 2 * S);
+                PcOf(ref fp, ref ip) + 1 + 2 * S);
             return true;
         }
         st.Accumulator = InterpreterCalls.Call(isolate, callee, default(JSValue), 0, 0, ConvertReceiverMode.NullOrUndefined);
@@ -887,16 +901,16 @@ public static partial class InterpreterExecution
     static bool CallUndefinedReceiver1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue callee = Reg<TS>(ref fp, ref ip, 1);
         int argOperand = Signed<TS>(ref ip, 1 + S);
         int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
-        InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
+        InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee);
         if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
-                new Baseline.BaselineCalls.OneArgument(Unsafe.Subtract(ref fp, kRegBase + argOperand)), PcOf(ref st, ref ip) + 1 + 3 * S);
+                new Baseline.BaselineCalls.OneArgument(Unsafe.Subtract(ref fp, kRegBase + argOperand)), PcOf(ref fp, ref ip) + 1 + 3 * S);
             return true;
         }
         if (BuiltinFastPaths.TryCall1(isolate, callee, default(JSValue), Unsafe.Subtract(ref fp, kRegBase + argOperand), out JSValue fastResult))
@@ -913,18 +927,18 @@ public static partial class InterpreterExecution
     static bool CallUndefinedReceiver2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue callee = Reg<TS>(ref fp, ref ip, 1);
         int arg0 = Signed<TS>(ref ip, 1 + S);
         int arg1 = Signed<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
-        InterpreterCalls.CollectCallFeedback(isolate, st.FeedbackVector, slot, callee);
+        InterpreterCalls.CollectCallFeedback(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, callee);
         if (typeof(TS) == typeof(SingleScale) && InterpreterInlineCalls.TryGetInlineMode(callee, out JSFunction target, out int mode))
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
                 new Baseline.BaselineCalls.TwoArguments(Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1)),
-                PcOf(ref st, ref ip) + 1 + 4 * S);
+                PcOf(ref fp, ref ip) + 1 + 4 * S);
             return true;
         }
         if (BuiltinFastPaths.TryCall2(callee, Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1),
@@ -943,7 +957,7 @@ public static partial class InterpreterExecution
     static JSValue CallRuntime<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         int id = Short(ref ip, 1);
         int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref ip, 3);
@@ -955,7 +969,7 @@ public static partial class InterpreterExecution
     static JSValue InvokeIntrinsic<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         int id = Byte(ref ip, 1);
         int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref ip, 2);
@@ -967,18 +981,18 @@ public static partial class InterpreterExecution
     static bool Construct<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
-        SavePc(isolate, ref st, ref ip);
+        SavePc(ref fp, ref ip);
         int S = Scale<TS>();
         JSValue constructor = Reg<TS>(ref fp, ref ip, 1);
         int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref ip, 1 + S);
         int count = Unsigned<TS>(ref ip, 1 + 2 * S);
         int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
         if (typeof(TS) == typeof(SingleScale) &&
-            InterpreterInlineCalls.TryPushConstructFrame(isolate, ref st, slot, constructor, acc, st.Fp + first, count, PcOf(ref st, ref ip) + 1 + 4 * S))
+            InterpreterInlineCalls.TryPushConstructFrame(isolate, ref st, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, constructor, acc, st.Fp + first, count, PcOf(ref fp, ref ip) + 1 + 4 * S))
         {
             return true;
         }
-        st.Accumulator = InterpreterCalls.Construct(isolate, st.FeedbackVector, slot, constructor, acc, st.Fp + first, count);
+        st.Accumulator = InterpreterCalls.Construct(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, constructor, acc, st.Fp + first, count);
         return false;
     }
 }

@@ -10,8 +10,8 @@
 //   the current context            ->  IL local `context` (+ its frame slot)
 //   the feedback vector            ->  IL local `fv`
 //   the constant pool              ->  IL local `constants` (JSValue[])
-//   the bytecode offset            ->  InterpreterFrameRecord.Pc (V8 derives it
-//                                      from the pc through the offset table)
+//   the bytecode offset            ->  the frame's bytecode offset slot (V8
+//                                      derives it from the pc through the offset table)
 //
 // Every value crossing a bytecode boundary lives in the frame or in these
 // locals, so the IL evaluation stack is empty at every bytecode, as V8's
@@ -165,14 +165,15 @@ internal sealed class BaselineAssembler
 
     // ---- The bytecode offset --------------------------------------------------------------------------
 
-    static readonly FieldInfo s_framePc = typeof(InterpreterFrameRecord).GetField(nameof(InterpreterFrameRecord.Pc))!;
+    static readonly MethodInfo s_setFramePc = typeof(InterpreterRuntime).GetMethod(nameof(InterpreterRuntime.SetFramePc),
+        [typeof(JSValue).MakeByRefType(), typeof(int)])!;
 
-    /// <summary>Records the current bytecode offset in the frame (for handler lookup and stack traces).</summary>
+    /// <summary>Records the current bytecode offset in the frame's offset slot (for handler lookup and stack traces).</summary>
     public void StoreBytecodeOffset(int offset)
     {
-        _il.Emit(OpCodes.Ldloc, Frame);
+        _il.Emit(OpCodes.Ldloc, FpRef);
         _il.Emit(OpCodes.Ldc_I4, offset);
-        _il.Emit(OpCodes.Stfld, s_framePc);
+        _il.Emit(OpCodes.Call, s_setFramePc);
     }
 
     // ---- Calls ------------------------------------------------------------------------------------------
