@@ -222,7 +222,8 @@ internal static class InterpreterInlineCalls
     // store: nothing computed early lives across a barrier.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool TryEnterFast<TArgs>(Isolate isolate, ref InterpreterState st, ref JSValue callerFp, int pc, int returnPc,
-        ref JSValue callCount, JSFunction function, JSValue receiver, TArgs args) where TArgs : struct, Baseline.BaselineCalls.ICallArguments
+        ref JSValue callCount, JSFunction function, JSValue receiver, TArgs args, int reservedBelow = 0)
+        where TArgs : struct, Baseline.BaselineCalls.ICallArguments
     {
         SharedFunctionInfo shared = function.Shared;
         int mode = shared.InterpreterCallMode;
@@ -246,7 +247,9 @@ internal static class InterpreterInlineCalls
         if (bytecode.ConstantPoolValues is null) return false;
         int argc = args.Count;
         int formal = bytecode.ParameterCount - 1;
-        int start = isolate.RegisterStackTop;
+        // Slots reserved below the frame (an apply's arguments window) are released with it.
+        int registerStart = isolate.RegisterStackTop;
+        int start = registerStart + reservedBelow;
         int fp = start + (argc > formal ? argc : formal) + InterpreterRuntime.kFixedSlotsAboveParams;
         int end = fp + bytecode.RegisterCount;
         if ((uint)end > (uint)isolate.RegisterStackInterruptLimit) return false;
@@ -268,7 +271,7 @@ internal static class InterpreterInlineCalls
         Unsafe.Subtract(ref frame, 1).ReturnPc = returnPc;
         frame.Fp = fp;
         frame.Flags = InterpreterFrameFlags.InlineCall;
-        frame.RegisterStart = start;
+        frame.RegisterStart = registerStart;
         st.Accumulator = default;
         st.Pc = 0;
         st.Fp = fp;
@@ -351,6 +354,78 @@ internal static class InterpreterInlineCalls
     }
 
     /// <summary>
+    /// CallProperty2 of Function.prototype.apply (<paramref name="apply"/>),
+    /// `target.apply(thisArg, argumentsList)`, in the common case: call
+    /// feedback that needs only its count bumped (CollectCallFeedback's early
+    /// exits, the receiver case included), a target that runs in this loop
+    /// and an argument list that is an unmodified arguments object or a fast
+    /// array: the elements go into a window above the stack top, reserved
+    /// below the target's frame, and the target is entered through
+    /// <see cref="TryEnterFast"/>. False, with nothing done but the window
+    /// written above the top, for anything else (the general handler then
+    /// takes it, through <see cref="TryPushApplyFrame"/>).
+    /// </summary>
+    // Out of the CallProperty2 handlers: in the general one (which inlines the
+    // call, apply and builtin paths) every apply paid its 664-byte frame.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static bool TryApplyFast(Isolate isolate, ref InterpreterState st, ref JSValue callerFp, ref byte ip, JSFunction apply,
+        JSValue[] slots, int slot)
+    {
+        // CallProperty2 <apply> <target> <thisArg> <argumentsList> <slot>, single scale.
+        ref JSValue regBase = ref Unsafe.Subtract(ref callerFp, -InterpreterRuntime.kRegisterOperandBase);
+        JSValue target = Unsafe.Subtract(ref regBase, (sbyte)Unsafe.Add(ref ip, 2));
+        if (target._obj is not JSFunction function) return false;
+        HeapObject? recorded = slots[slot]._obj;
+        if (!FeedbackCovers(slots, slot, apply) &&
+            !(ReferenceEquals(recorded, function) && InterpreterCalls.FeedbackValueIsReceiver(slots, slot)))
+        {
+            return false;
+        }
+        JSValue thisArg = Unsafe.Subtract(ref regBase, (sbyte)Unsafe.Add(ref ip, 3));
+        JSValue argumentsList = Unsafe.Subtract(ref regBase, (sbyte)Unsafe.Add(ref ip, 4));
+        FixedArrayBase? elements = null;
+        int length = 0;
+        if (!argumentsList.IsNullOrUndefined &&
+            !Builtins.BuiltinsFunction.TryGetFastElements(isolate, argumentsList, out elements, out length))
+        {
+            return false;
+        }
+        int windowStart = isolate.RegisterStackTop;
+        if (windowStart + length + 64 > isolate.RegisterStackLimit) return false;
+        CopyToWindow(ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), windowStart), elements, length);
+        int pc = (int)Unsafe.ByteOffset(ref MemoryMarshal.GetArrayDataReference(InterpreterRuntime.FrameBytecode(ref callerFp).Bytecodes), ref ip);
+        return TryEnterFast(isolate, ref st, ref callerFp, pc, pc + kCallProperty2Size, ref slots[slot + 1], function, thisArg,
+            new Baseline.BaselineCalls.RegisterArguments(windowStart, length), reservedBelow: length);
+    }
+
+    /// <summary>The size of a CallProperty2 bytecode (single operand scale).</summary>
+    const int kCallProperty2Size = 6;
+
+    /// <summary>
+    /// The elements of a fast arguments list into an argument window; holes
+    /// (holey arrays with intact protectors) read as undefined.
+    /// </summary>
+    static void CopyToWindow(ref JSValue window, FixedArrayBase? elements, int length)
+    {
+        if (elements is FixedArray fixedArray)
+        {
+            JSValue[] data = fixedArray.Data;
+            for (int i = 0; i < length; i++)
+            {
+                JSValue value = data[i];
+                Unsafe.Add(ref window, i) = ReferenceEquals(value._obj, Oddball.TheHole) ? default : value;
+            }
+        }
+        else if (elements is FixedDoubleArray doubles)
+        {
+            for (int i = 0; i < length; i++)
+            {
+                Unsafe.Add(ref window, i) = doubles.IsTheHole(i) ? default : JSValue.FromNumber(doubles.GetScalar(i));
+            }
+        }
+    }
+
+    /// <summary>
     /// A call of Function.prototype.apply (<paramref name="applyTarget"/> is its
     /// receiver) whose target can run in this loop and whose argument list is
     /// an unmodified arguments object or a fast array (CallWithArrayLike's fast
@@ -374,24 +449,7 @@ internal static class InterpreterInlineCalls
         // (released with it), as V8 pushes them onto the machine stack.
         int windowStart = isolate.RegisterStackTop;
         if (windowStart + length + 64 > isolate.RegisterStackLimit) return false;
-        ref JSValue window = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), windowStart);
-        if (elements is FixedArray fixedArray)
-        {
-            JSValue[] data = fixedArray.Data;
-            for (int i = 0; i < length; i++)
-            {
-                // Holes (holey arrays with intact protectors) read as undefined.
-                JSValue value = data[i];
-                Unsafe.Add(ref window, i) = ReferenceEquals(value._obj, Oddball.TheHole) ? default : value;
-            }
-        }
-        else if (elements is FixedDoubleArray doubles)
-        {
-            for (int i = 0; i < length; i++)
-            {
-                Unsafe.Add(ref window, i) = doubles.IsTheHole(i) ? default : JSValue.FromNumber(doubles.GetScalar(i));
-            }
-        }
+        CopyToWindow(ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), windowStart), elements, length);
         isolate.RegisterStackTop = windowStart + length;
 
         if (mode == kCallModeInlineSloppy && !thisArg.IsJSReceiver) thisArg = InterpreterCalls.ConvertReceiver(isolate, function, thisArg);

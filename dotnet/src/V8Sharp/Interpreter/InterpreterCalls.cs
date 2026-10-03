@@ -46,8 +46,11 @@ public static class InterpreterCalls
     static bool IsPrototypeApplyFunction(Isolate isolate, JSValue target) =>
         isolate.Context is { } context && ReferenceEquals(target.HeapObjectOrNull, context.NativeContext.FunctionPrototypeApply);
 
-    static bool FeedbackValueIsReceiver(FeedbackVector fv, int slot) =>
-        ((((int)fv.Slots[slot + 1].Number) >> FeedbackNexus.kCallFeedbackContentShift) & 1) ==
+    static bool FeedbackValueIsReceiver(FeedbackVector fv, int slot) => FeedbackValueIsReceiver(fv.Slots, slot);
+
+    /// <summary>Whether the call feedback at <paramref name="slot"/> records the receiver (a Function.prototype.apply site).</summary>
+    internal static bool FeedbackValueIsReceiver(JSValue[] slots, int slot) =>
+        ((((int)slots[slot + 1].Number) >> FeedbackNexus.kCallFeedbackContentShift) & 1) ==
         (int)CallFeedbackContent.kReceiver;
 
     static void SetCallFeedbackContent(FeedbackVector fv, int slot, CallFeedbackContent content)

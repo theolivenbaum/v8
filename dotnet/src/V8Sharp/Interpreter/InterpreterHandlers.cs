@@ -1167,6 +1167,13 @@ public static partial class InterpreterExecution
                     return InterpreterInlineCalls.FrameEntered;
                 }
             }
+            // target.apply(thisArg, arguments) (Class.create-style constructors).
+            if ((uint)(slot + 1) < (uint)slots.Length &&
+                ReferenceEquals(function, InterpreterRuntime.FrameContext(ref fp).NativeContext.FunctionPrototypeApply) &&
+                InterpreterInlineCalls.TryApplyFast(isolate, ref st, ref fp, ref ip, function, slots, slot))
+            {
+                return InterpreterInlineCalls.FrameEntered;
+            }
         }
         return CallProperty2Slow<TS>(isolate, ref st, ref fp, ref ip);
     }
