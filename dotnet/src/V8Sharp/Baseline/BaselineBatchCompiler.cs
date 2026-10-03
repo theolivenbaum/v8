@@ -310,34 +310,54 @@ internal sealed class BaselineCompilerTask
 /// <summary>The process-wide background thread of the concurrent baseline compiler.</summary>
 internal static class BaselineCompileThread
 {
-    static readonly BlockingCollection<Action> s_work = [];
-    static Thread? s_thread;
-    static readonly Lock s_lock = new();
+    static readonly CompileThread s_thread = new("V8Sharp concurrent Sparkplug");
 
-    public static void Post(Action work)
+    public static void Post(Action work) => s_thread.Post(work);
+}
+
+/// <summary>
+/// The process-wide background thread of the concurrent Maglev compiler (V8
+/// posts Maglev jobs to the platform's workers, apart from the Sparkplug
+/// batches): a function's optimized code does not wait behind baseline batches.
+/// </summary>
+internal static class MaglevCompileThread
+{
+    static readonly CompileThread s_thread = new("V8Sharp concurrent Maglev");
+
+    public static void Post(Action work) => s_thread.Post(work);
+}
+
+/// <summary>A background thread that runs compile jobs in order (started on first use).</summary>
+internal sealed class CompileThread(string name)
+{
+    readonly BlockingCollection<Action> _work = [];
+    Thread? _thread;
+    readonly Lock _lock = new();
+
+    public void Post(Action work)
     {
-        if (s_thread is null)
+        if (_thread is null)
         {
-            lock (s_lock)
+            lock (_lock)
             {
-                if (s_thread is null)
+                if (_thread is null)
                 {
                     var thread = new Thread(Run, 16 * 1024 * 1024)
                     {
                         IsBackground = true,
-                        Name = "V8Sharp concurrent Sparkplug",
+                        Name = name,
                         Priority = ThreadPriority.BelowNormal,
                     };
                     thread.Start();
-                    s_thread = thread;
+                    _thread = thread;
                 }
             }
         }
-        s_work.Add(work);
+        _work.Add(work);
     }
 
-    static void Run()
+    void Run()
     {
-        foreach (Action work in s_work.GetConsumingEnumerable()) work();
+        foreach (Action work in _work.GetConsumingEnumerable()) work();
     }
 }

@@ -167,8 +167,8 @@ public static class MaglevCompiler
     /// MaglevConcurrentDispatcher::EnqueueJob for a tiering request: the graph
     /// is built on the main thread (it reads the heap and the feedback); the
     /// IL is generated and RyuJIT compiles it fully optimized on the
-    /// background compile thread (BaselineCompileThread, which also serializes
-    /// it with baseline code generation); the code is installed at the next
+    /// Maglev compile thread (MaglevCompileThread, beside the baseline
+    /// tier's); the code is installed at the next
     /// INSTALL_MAGLEV_CODE interrupt. The dependencies are registered when the
     /// graph is built, so one invalidated before the install marks the code
     /// and the install drops it (V8 checks them at commit). False when the
@@ -220,7 +220,7 @@ public static class MaglevCompiler
         if (osrOffset < 0) state.CompileInProgress = true;
         else (state.OsrInProgress ??= []).Add(osrOffset);
         Interlocked.Increment(ref isolate.MaglevJobsInFlight);
-        Baseline.BaselineCompileThread.Post(() =>
+        Baseline.MaglevCompileThread.Post(() =>
         {
             long jobStart = System.Diagnostics.Stopwatch.GetTimestamp();
             try
