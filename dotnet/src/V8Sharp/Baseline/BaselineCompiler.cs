@@ -58,11 +58,13 @@ public sealed partial class BaselineCompiler
     readonly bool _compact;
 
     /// <summary>
-    /// The number paths' feedback checks call BaselineBuiltins.BinaryFeedbackUnchanged
-    /// and CompareFeedbackUnchanged instead of emitting them: for a function
-    /// whose full code would exceed RyuJIT's limits. RyuJIT counts a method's
-    /// own IL, not what it inlines, so the checks still compile inline where
-    /// RyuJIT inlines them; inline IL measured faster in small loops.
+    /// The form for a function whose full code would exceed RyuJIT's limits:
+    /// the number paths' feedback checks call BaselineBuiltins.BinaryFeedbackUnchanged
+    /// and CompareFeedbackUnchanged instead of emitting them (RyuJIT counts a
+    /// method's own IL, not what it inlines, so the checks still compile inline
+    /// where RyuJIT inlines them; inline IL measured faster in small loops),
+    /// and IC sites whose feedback is still empty get no inline path
+    /// (SlotFeedbackUnknown).
     /// </summary>
     readonly bool _outOfLineChecks;
 

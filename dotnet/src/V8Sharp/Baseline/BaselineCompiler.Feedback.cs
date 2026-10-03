@@ -107,8 +107,11 @@ public sealed partial class BaselineCompiler
     {
         if (FeedbackUnknown) return true;
         HeapObject? feedback = CompileTimeFeedback(slot);
-        return feedback is null || ReferenceEquals(feedback, ReadOnlyRoots.uninitialized_symbol) ||
-               ReferenceEquals(feedback, FeedbackVector.ClearedValue);
+        bool empty = feedback is null || ReferenceEquals(feedback, ReadOnlyRoots.uninitialized_symbol) ||
+                     ReferenceEquals(feedback, FeedbackVector.ClearedValue);
+        // A function over RyuJIT's limits (the out-of-line form) spends its IL
+        // on the operations that ran: an empty slot gets the builtin call only.
+        return empty && !_outOfLineChecks;
     }
 
     /// <summary>The kinds of GetNamedProperty hit inlined.</summary>
