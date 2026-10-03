@@ -68,7 +68,7 @@ public sealed partial class BaselineCompiler
     static readonly FieldInfo s_feedbackSlots = typeof(FeedbackVector).GetField(nameof(FeedbackVector.Slots))!;
     static readonly FieldInfo s_cellValue = typeof(PropertyCell).GetField(nameof(PropertyCell.Value))!;
     static readonly FieldInfo s_cellDetails = typeof(PropertyCell).GetField(nameof(PropertyCell.PropertyDetails))!;
-    static readonly MethodInfo s_detailsKind = typeof(PropertyDetails).GetProperty(nameof(PropertyDetails.Kind))!.GetMethod!;
+    static readonly FieldInfo s_detailsValue = typeof(PropertyDetails).GetField("_value", kAnyInstance)!;
     static readonly FieldInfo s_lhOwnFieldIndex = typeof(LoadHandler).GetField(nameof(LoadHandler.OwnFieldIndex))!;
     static readonly FieldInfo s_lhIsPrototypeConstant = typeof(LoadHandler).GetField(nameof(LoadHandler.IsPrototypeConstant))!;
     static readonly FieldInfo s_lhData = typeof(LoadHandler).GetField(nameof(LoadHandler.Data))!;
@@ -91,7 +91,9 @@ public sealed partial class BaselineCompiler
     static readonly FieldInfo s_stackGuard = typeof(V8Sharp.Isolate).GetField(nameof(V8Sharp.Isolate.StackGuard))!;
     static readonly MethodInfo s_hasPendingInterrupts =
         typeof(StackGuard).GetProperty(nameof(StackGuard.HasPendingInterrupts))!.GetMethod!;
-    static readonly MethodInfo s_truncate = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.TruncateToInt32))!;
+    // double.ConvertToIntegerNative<int> (cvttsd2si) itself: a JIT intrinsic,
+    // expanded even where RyuJIT's inlining limits leave a wrapper called.
+    static readonly MethodInfo s_truncate = typeof(double).GetMethod(nameof(double.ConvertToIntegerNative))!.MakeGenericMethod(typeof(int));
     static readonly MethodInfo s_binaryFeedbackUnchanged = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.BinaryFeedbackUnchanged))!;
     static readonly MethodInfo s_binaryFeedbackUnchangedSmiRhs =
         typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.BinaryFeedbackUnchangedSmiRhs))!;
@@ -109,6 +111,8 @@ public sealed partial class BaselineCompiler
     LocalBuilder TValueRef => _tValueRef ??= _il.DeclareLocal(typeof(JSValue).MakeByRefType());
     LocalBuilder TVal => _tVal ??= _il.DeclareLocal(typeof(JSValue));
     LocalBuilder TInt => _tInt ??= _il.DeclareLocal(typeof(int));
+    LocalBuilder? _tLong;
+    LocalBuilder TLong => _tLong ??= _il.DeclareLocal(typeof(long));
     LocalBuilder TInt2 => _tInt2 ??= _il.DeclareLocal(typeof(int));
     LocalBuilder TDouble => _tDouble ??= _il.DeclareLocal(typeof(double));
     LocalBuilder TLoadHandler => _tLoadHandler ??= _il.DeclareLocal(typeof(LoadHandler));
@@ -1009,9 +1013,13 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Ldsfld, s_propertyCellHole);
         Emit(OpCodes.Beq, slow);
         Emit(OpCodes.Ldloc, TCell);
+        // PropertyDetails' KindField (bit 0; PropertyKind.Data is 0), read
+        // directly: the Kind getter is a call where RyuJIT stops inlining.
         Emit(OpCodes.Ldflda, s_cellDetails);
-        Emit(OpCodes.Call, s_detailsKind);
-        Emit(OpCodes.Brtrue, slow); // PropertyKind.Data is 0.
+        Emit(OpCodes.Ldfld, s_detailsValue);
+        Emit(OpCodes.Ldc_I4_1);
+        Emit(OpCodes.And);
+        Emit(OpCodes.Brtrue, slow);
         Emit(OpCodes.Ldloc, TVal);
         SetAcc();
         Emit(OpCodes.Br, done);
@@ -1364,6 +1372,11 @@ public sealed partial class BaselineCompiler
         Label slow = _il.DefineLabel(), done = _il.DefineLabel(), doubles = _il.DefineLabel(), elements = _il.DefineLabel();
         Register receiver = RegisterOperand(0);
         int slot = FeedbackSlot(1);
+        if (CompileTimeTypedArrayKind(slot) is ElementsKind typedKind)
+        {
+            VisitGetKeyedPropertyTyped(receiver, slot, typedKind);
+            return;
+        }
         // The key: an int32 index >= 0 (TInt2).
         AccObj();
         Emit(OpCodes.Ldsfld, s_numberTag);
@@ -1472,6 +1485,102 @@ public sealed partial class BaselineCompiler
         _il.MarkLabel(done);
     }
 
+    /// <summary>
+    /// The elements kind of a monomorphic keyed access whose feedback map was a
+    /// typed array of a Number kind when the function was compiled.
+    /// </summary>
+    ElementsKind? CompileTimeTypedArrayKind(int slot)
+    {
+        if (_compact || FeedbackUnknown || CompileTimeFeedback(slot) is not Map map) return null;
+        ElementsKind kind = map.ElementsKind;
+        return ElementsKinds.IsTypedArrayElementsKind(kind) && !ElementsKinds.IsBigIntTypedArrayElementsKind(kind) &&
+               kind != ElementsKind.FLOAT16_ELEMENTS
+            ? kind
+            : null;
+    }
+
+    static readonly MethodInfo s_loadTypedElementBits = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.LoadTypedElementBits))!;
+    static readonly MethodInfo s_tryStoreTypedElement = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.TryStoreTypedElement))!;
+
+    /// <summary>
+    /// Pushes the key in TInt2 when the accumulator (or <paramref name="key"/>)
+    /// holds an int32 number, else branches to <paramref name="slow"/>.
+    /// </summary>
+    void EmitInt32Key(Register? key, Label slow)
+    {
+        Action push = key is { } k ? () => RegNum(k) : AccNum;
+        if (key is { } r) RegObj(r);
+        else AccObj();
+        Emit(OpCodes.Ldsfld, s_numberTag);
+        Emit(OpCodes.Bne_Un, slow);
+        push();
+        Emit(OpCodes.Call, s_truncate);
+        Emit(OpCodes.Stloc, TInt2);
+        Emit(OpCodes.Ldloc, TInt2);
+        Emit(OpCodes.Conv_R8);
+        push();
+        Emit(OpCodes.Bne_Un, slow);
+    }
+
+    /// <summary>GetKeyedProperty on a typed array of the kind the compile-time feedback named.</summary>
+    void VisitGetKeyedPropertyTyped(Register receiver, int slot, ElementsKind kind)
+    {
+        Label slow = _il.DefineLabel(), done = _il.DefineLabel();
+        EmitInt32Key(null, slow);
+        EmitMonomorphicMapCheck(receiver, slot, slow);
+        Isolate();
+        FeedbackSlotObj(slot + 1);
+        Emit(OpCodes.Ldloc, TObj);
+        Emit(OpCodes.Ldloc, TInt2);
+        I((int)kind);
+        Emit(OpCodes.Call, s_loadTypedElementBits);
+        Emit(OpCodes.Stloc, TLong);
+        Emit(OpCodes.Ldloc, TLong);
+        Emit(OpCodes.Ldc_I8, BaselineBuiltins.kTypedMissBits);
+        Emit(OpCodes.Beq, slow);
+        Emit(OpCodes.Ldloca, _masm.Acc);
+        Emit(OpCodes.Ldsfld, s_numberTag);
+        Emit(OpCodes.Stfld, s_obj);
+        Emit(OpCodes.Ldloca, _masm.Acc);
+        Emit(OpCodes.Ldloc, TLong);
+        Emit(OpCodes.Stfld, s_bits);
+        Emit(OpCodes.Br, done);
+        _il.MarkLabel(slow);
+        Isolate();
+        Fv();
+        I(slot);
+        Reg(receiver);
+        Acc();
+        CallBuiltin("GetKeyedPropertySlow");
+        SetAcc();
+        _il.MarkLabel(done);
+    }
+
+    /// <summary>SetKeyedProperty on a typed array of the kind the compile-time feedback named.</summary>
+    void VisitSetKeyedPropertyTyped(Register receiver, Register key, int slot, ElementsKind kind)
+    {
+        Label slow = _il.DefineLabel(), done = _il.DefineLabel();
+        EmitInt32Key(key, slow);
+        EmitMonomorphicMapCheck(receiver, slot, slow);
+        Isolate();
+        FeedbackSlotObj(slot + 1);
+        Emit(OpCodes.Ldloc, TObj);
+        Emit(OpCodes.Ldloc, TInt2);
+        Acc();
+        I((int)kind);
+        Emit(OpCodes.Call, s_tryStoreTypedElement);
+        Emit(OpCodes.Brtrue, done);
+        _il.MarkLabel(slow);
+        Isolate();
+        Fv();
+        I(slot);
+        Reg(receiver);
+        Reg(key);
+        Acc();
+        CallBuiltin("SetKeyedPropertySlow");
+        _il.MarkLabel(done);
+    }
+
     /// <summary>SetKeyedProperty: KeyedStoreIC's monomorphic in-bounds element store.</summary>
     void VisitSetKeyedProperty()
     {
@@ -1479,6 +1588,11 @@ public sealed partial class BaselineCompiler
         Register receiver = RegisterOperand(0);
         Register key = RegisterOperand(1);
         int slot = FeedbackSlot(2);
+        if (CompileTimeTypedArrayKind(slot) is ElementsKind typedKind)
+        {
+            VisitSetKeyedPropertyTyped(receiver, key, slot, typedKind);
+            return;
+        }
         RegObj(key);
         Emit(OpCodes.Ldsfld, s_numberTag);
         Emit(OpCodes.Bne_Un, slow);

@@ -9,6 +9,7 @@
 // baseline method that calls them, where RyuJIT's inlining and local
 // budgets are better spent on the fast paths.
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using V8Sharp.IC;
 using V8Sharp.Interpreter;
 
@@ -18,6 +19,11 @@ public static partial class BaselineBuiltins
 {
     // Full optimization on first use (no RyuJIT tier 0), as BaselineCalls.
     const MethodImplOptions Outline = MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization;
+
+    // The helpers baseline IL calls in place of emitting a check: inlined
+    // where RyuJIT inlines (not in big methods, past its inlining limits), and
+    // compiled fully optimized for the calls that remain.
+    const MethodImplOptions Helper = MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization;
 
     // ---- Arithmetic --------------------------------------------------------------------------------
 
@@ -38,6 +44,92 @@ public static partial class BaselineBuiltins
     public static JSValue BitwiseSmiSlow(Isolate isolate, int operation, JSValue lhs, int rhs, ref byte feedback) =>
         InterpreterOps.Bitwise(isolate, (Operation)operation, lhs, JSValue.FromInt(rhs), ref feedback);
 
+    // ---- Typed array elements -----------------------------------------------------------------------
+
+    /// <summary>
+    /// The result of <see cref="LoadTypedElementBits"/> when the element is not
+    /// loaded here: a signaling NaN (an element that holds this pattern takes
+    /// the IC, which reads it the same).
+    /// </summary>
+    public const long kTypedMissBits = 0x7FF0000000000001;
+
+    /// <summary>
+    /// GetKeyedProperty's monomorphic typed array hit (KeyedLoadIC.Load's typed
+    /// array case: EmitElementLoad for the kind the map check established): the
+    /// element's number as bits, or <see cref="kTypedMissBits"/>. The compiler
+    /// passes the kind as a constant, so the switch folds where this is inlined.
+    /// </summary>
+    [MethodImpl(Helper)]
+    public static long LoadTypedElementBits(Isolate isolate, HeapObject? handler, HeapObject receiver, int index, int kind)
+    {
+        if (handler is not LoadHandler { HandlerKind: LoadHandler.Kind.kElement }) return kTypedMissBits;
+        var array = Unsafe.As<JSTypedArray>(receiver);
+        byte[]? data = array.FastData;
+        if (data is null || (uint)index >= (uint)array.FastLength ||
+            !Protectors.IsArrayBufferDetachingIntact(isolate) && array.Buffer.WasDetached)
+        {
+            return kTypedMissBits;
+        }
+        ReadOnlySpan<byte> bytes = data.AsSpan(array.FastByteOffset);
+        double value;
+        switch ((ElementsKind)kind)
+        {
+            case ElementsKind.UINT8_ELEMENTS:
+            case ElementsKind.UINT8_CLAMPED_ELEMENTS:
+                value = bytes[index];
+                break;
+            case ElementsKind.INT8_ELEMENTS:
+                value = (sbyte)bytes[index];
+                break;
+            case ElementsKind.UINT16_ELEMENTS:
+                value = MemoryMarshal.Read<ushort>(bytes.Slice(index * 2));
+                break;
+            case ElementsKind.INT16_ELEMENTS:
+                value = MemoryMarshal.Read<short>(bytes.Slice(index * 2));
+                break;
+            case ElementsKind.INT32_ELEMENTS:
+                value = MemoryMarshal.Read<int>(bytes.Slice(index * 4));
+                break;
+            case ElementsKind.UINT32_ELEMENTS:
+                value = MemoryMarshal.Read<uint>(bytes.Slice(index * 4));
+                break;
+            case ElementsKind.FLOAT32_ELEMENTS:
+                value = MemoryMarshal.Read<float>(bytes.Slice(index * 4));
+                break;
+            case ElementsKind.FLOAT64_ELEMENTS:
+                value = MemoryMarshal.Read<double>(bytes.Slice(index * 8));
+                break;
+            default:
+                return kTypedMissBits;
+        }
+        return BitConverter.DoubleToInt64Bits(value);
+    }
+
+    /// <summary>
+    /// SetKeyedProperty's monomorphic typed array hit (KeyedStoreIC.Store's typed
+    /// array case): a Number into an in-bounds element of a Number kind; false
+    /// when the IC has to do it.
+    /// </summary>
+    [MethodImpl(Helper)]
+    public static bool TryStoreTypedElement(Isolate isolate, HeapObject? handler, HeapObject receiver, int index, JSValue value, int kind)
+    {
+        if (handler is not StoreHandler { HandlerKind: StoreHandler.Kind.kElement, ElementsTransitionMap: null } storeHandler ||
+            !ReferenceEquals(value._obj, NumberTag.Instance))
+        {
+            return false;
+        }
+        var array = Unsafe.As<JSTypedArray>(receiver);
+        byte[]? data = array.FastData;
+        if (data is null || (uint)index >= (uint)array.FastLength || !storeHandler.IsValid ||
+            !Protectors.IsArrayBufferDetachingIntact(isolate) && array.Buffer.WasDetached ||
+            !Protectors.IsArrayBufferMutableIntact(isolate) && array.Buffer.IsImmutable)
+        {
+            return false;
+        }
+        TypedArrayElementsOps.StoreElement(data, array.FastByteOffset, (ElementsKind)kind, index, value._num);
+        return true;
+    }
+
     // ---- The feedback checks of the inline number paths ------------------------------------------
     //
     // Called from the IL of the inline paths (BaselineCompiler.Inline.cs) rather
@@ -52,7 +144,7 @@ public static partial class BaselineBuiltins
     /// (Number, NumberOrOddball, Any; InterpreterOps.IsNumberFeedbackSaturated),
     /// or SignedSmall with Smi operands and a Smi result.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(Helper)]
     public static bool BinaryFeedbackUnchanged(int feedback, double lhs, double rhs, double result)
     {
         if ((uint)(feedback - (int)BinaryOperationFeedback.TypeIndex.Number) <= 1u ||
@@ -69,7 +161,7 @@ public static partial class BaselineBuiltins
     /// forms' immediate, Inc's and Dec's 1): only the left operand and the
     /// result are checked (RyuJIT does not fold the conversion of a constant).
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(Helper)]
     public static bool BinaryFeedbackUnchangedSmiRhs(int feedback, double lhs, double result)
     {
         if ((uint)(feedback - (int)BinaryOperationFeedback.TypeIndex.Number) <= 1u ||
@@ -85,7 +177,7 @@ public static partial class BaselineBuiltins
     /// (Number, NumberOrBoolean, NumberOrOddball, Any; or SignedSmall with two
     /// Smis), else InterpreterOps.UpdateCompareFeedbackForNumbers records it.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(Helper)]
     public static bool CompareFeedbackUnchanged(int feedback, double lhs, double rhs)
     {
         if ((uint)(feedback - (int)CompareOperationFeedback.TypeIndex.Number) <= 2u ||
@@ -97,7 +189,7 @@ public static partial class BaselineBuiltins
     }
 
     /// <summary>Whether a number is a Smi: integral, in the 31-bit range, not -0 (JSValue.IsSmi).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(Helper)]
     public static bool IsSmiNumber(double value)
     {
         int i = double.ConvertToIntegerNative<int>(value);
