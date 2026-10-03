@@ -24,7 +24,7 @@ internal static class MaglevPhiRepresentationSelector
         Tagged,
     }
 
-    public static void Run(Graph graph)
+    public static void Run(Graph graph, bool speculativeEntryUntagging = false)
     {
         var phis = new List<Phi>();
         foreach (BasicBlock block in graph.Blocks)
@@ -45,9 +45,9 @@ internal static class MaglevPhiRepresentationSelector
             foreach (Phi phi in phis)
             {
                 Hint hint = Hint.Int32;
-                foreach (ValueNode input in phi.Inputs)
+                for (int i = 0; i < phi.Inputs.Length; i++)
                 {
-                    Hint inputHint = InputHint(input, hints);
+                    Hint inputHint = InputHint(phi, i, hints, speculativeEntryUntagging);
                     if (inputHint > hint) hint = inputHint;
                     if (hint == Hint.Tagged) break;
                 }
@@ -78,9 +78,10 @@ internal static class MaglevPhiRepresentationSelector
             foreach (Phi phi in phis)
             {
                 if (hints[phi] == Hint.Tagged) continue;
-                foreach (ValueNode input in phi.Inputs)
+                for (int i = 0; i < phi.Inputs.Length; i++)
                 {
-                    if (input is Phi p && hints[p] == Hint.Tagged || InputHint(input, hints) > hints[phi])
+                    ValueNode input = phi.Inputs[i];
+                    if (input is Phi p && hints[p] == Hint.Tagged || InputHint(phi, i, hints, speculativeEntryUntagging) > hints[phi])
                     {
                         hints[phi] = Hint.Tagged;
                         changed = true;
@@ -109,6 +110,10 @@ internal static class MaglevPhiRepresentationSelector
                         ? graph.GetInt32Constant(c)
                         : graph.GetFloat64Constant(input.ConstantValue().Number);
                 }
+                else if (input.Representation == ValueRepresentation.kTagged && input is not Phi)
+                {
+                    phi.Inputs[i] = UntagInputInPredecessor(graph, phi, i, input, hint == Hint.Int32);
+                }
             }
             phi.InputList.Clear();
             phi.InputList.AddRange(phi.Inputs);
@@ -127,6 +132,7 @@ internal static class MaglevPhiRepresentationSelector
                 {
                     case Opcode.CheckedSmiUntag:
                     case Opcode.CheckedNumberToInt32:
+                    case Opcode.CheckedObjectToIndex:
                         if (isInt32) MakeIdentity(node);
                         else Retype(node, Opcode.CheckedFloat64ToInt32);
                         break;
@@ -173,8 +179,9 @@ internal static class MaglevPhiRepresentationSelector
         }
     }
 
-    static Hint InputHint(ValueNode input, Dictionary<Phi, Hint> hints)
+    static Hint InputHint(Phi phi, int index, Dictionary<Phi, Hint> hints, bool speculativeEntryUntagging)
     {
+        ValueNode input = phi.Inputs[index];
         if (input is Phi p) return hints.TryGetValue(p, out Hint h) ? h : Hint.Tagged;
         switch (input.Representation)
         {
@@ -201,7 +208,87 @@ internal static class MaglevPhiRepresentationSelector
             case Opcode.Constant when input.Value0.IsNumber:
                 return input.TryGetInt32Constant(out _) ? Hint.Int32 : Hint.Float64;
         }
+        if (input.IsConstant) return Hint.Tagged;
+        // A tagged value of a known static type is untagged in the predecessor
+        // (UntaggingKind::kKnownSmi / kKnownNumber).
+        if (NodeTypes.Is(input.Type, NodeType.kSmi)) return Hint.Int32;
+        if (NodeTypes.Is(input.Type, NodeType.kNumber)) return Hint.Float64;
+        // Loop entry values are untagged speculatively before the loop
+        // (kSpeculativeOSRValue, kSpeculativeAny): they do not constrain the
+        // phi's representation.
+        if (speculativeEntryUntagging && CanUntagSpeculatively(phi, index)) return Hint.Int32;
         return Hint.Tagged;
+    }
+
+    /// <summary>
+    /// Whether the entry input of a loop phi can be untagged with a check at
+    /// the end of the loop's entry predecessor (CanHoistUntaggingTo: the
+    /// predecessor only jumps to the header, the loop is not resumable).
+    /// </summary>
+    static bool CanUntagSpeculatively(Phi phi, int index)
+    {
+        if (index != 0 || phi.Block is not { IsLoopHeader: true } header) return false;
+        if (header.State is not { LoopEntryDeoptFrame: not null, IsResumableLoop: false }) return false;
+        if (header.Predecessors.Count == 0) return false;
+        BasicBlock pred = header.Predecessors[0];
+        return pred.Control is { Opcode: Opcode.Jump } jump && ReferenceEquals(jump.Target, header);
+    }
+
+    /// <summary>
+    /// UntagInputWithHoistedUntagging: the untagged value of a tagged phi
+    /// input, converted at the end of its predecessor: known Smis and numbers
+    /// without a check, other loop entry values with a check that deoptimizes
+    /// to the loop header.
+    /// </summary>
+    /// <remarks>
+    /// Deviation: V8 hoists the untagging of loop entry values only for OSR
+    /// values (maglev_hoist_osr_value_phi_untagging);
+    /// maglev_speculative_hoist_phi_untagging, which does it for any entry
+    /// value, is an experimental V8 flag because of deopt loops. V8Sharp
+    /// does it by default with a back-off (a failed check disables it for the
+    /// function, MaglevCompiler.DisableSpeculativeUntagging): a tagged int32
+    /// costs a check and a conversion at each use in V8Sharp (its numbers are
+    /// boxed doubles in the JSValue, not Smis), so loops whose counters come
+    /// from parameters would otherwise retag and recheck them every iteration.
+    /// </remarks>
+    static ValueNode UntagInputInPredecessor(Graph graph, Phi phi, int index, ValueNode input, bool toInt32)
+    {
+        BasicBlock pred = phi.Block!.Predecessors[index];
+        bool knownSmi = NodeTypes.Is(input.Type, NodeType.kSmi);
+        bool knownNumber = NodeTypes.Is(input.Type, NodeType.kNumber);
+        ValueNode untagged;
+        if (toInt32)
+        {
+            untagged = knownSmi
+                ? new ValueNode(Opcode.UnsafeSmiUntag, ValueRepresentation.kInt32) { Type = NodeType.kSmi }
+                : new ValueNode(Opcode.CheckedSmiUntag, ValueRepresentation.kInt32) { Type = NodeType.kSmi, Properties = OpProperties.kEagerDeopt };
+        }
+        else if (knownNumber)
+        {
+            untagged = new ValueNode(Opcode.UnsafeNumberToFloat64, ValueRepresentation.kFloat64) { Type = NodeType.kNumber };
+        }
+        else
+        {
+            untagged = new ValueNode(Opcode.CheckedNumberOrOddballToFloat64, ValueRepresentation.kFloat64)
+            {
+                Type = NodeType.kNumber,
+                Int0 = (int)NodeType.kNumber,
+                Properties = OpProperties.kEagerDeopt,
+            };
+        }
+        untagged.Inputs = [input];
+        untagged.Id = graph.NewNodeId();
+        untagged.Unit = phi.Block.State?.Unit ?? phi.Unit;
+        if (untagged.CanEagerDeopt)
+        {
+            untagged.EagerDeoptInfo = new EagerDeoptInfo(phi.Block.State!.LoopEntryDeoptFrame!,
+                toInt32 ? Deoptimizer.DeoptimizeReason.kNotASmi : Deoptimizer.DeoptimizeReason.kNotANumber)
+            {
+                HoistedUntagging = true,
+            };
+        }
+        pred.Nodes.Add(untagged);
+        return untagged;
     }
 
     static Dictionary<ValueNode, List<Node>> CollectUses(Graph graph)
@@ -235,6 +322,7 @@ internal static class MaglevPhiRepresentationSelector
             {
                 case Opcode.CheckedSmiUntag:
                 case Opcode.CheckedNumberToInt32:
+                case Opcode.CheckedObjectToIndex:
                 case Opcode.UnsafeSmiUntag:
                 case Opcode.TruncateCheckedNumberOrOddballToInt32:
                 case Opcode.CheckedNumberOrOddballToFloat64:

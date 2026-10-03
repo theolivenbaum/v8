@@ -1041,7 +1041,11 @@ internal sealed class MaglevCodeGenerator
     {
         // The stub passes the reason and, in its high bits, the speculation feedback to update.
         int feedback = 0;
-        if (info.FeedbackToUpdate is { } vector)
+        if (info.HoistedUntagging)
+        {
+            feedback = Deoptimizer.Deoptimizer.kHoistedUntaggingFeedback;
+        }
+        else if (info.FeedbackToUpdate is { } vector)
         {
             int i = _speculationFeedback.IndexOf((vector, info.FeedbackSlotToUpdate));
             if (i < 0)
@@ -1503,7 +1507,7 @@ internal sealed class MaglevCodeGenerator
             case Opcode.UnsafeSmiUntag:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 EmitLoadNumber();
-                _il.Emit(OpCodes.Conv_I4);
+                EmitTruncateToInt32();
                 Store(v!);
                 return;
             case Opcode.CheckedNumberOrOddballToFloat64:
@@ -1560,10 +1564,26 @@ internal sealed class MaglevCodeGenerator
                 Store(v!);
                 return;
             case Opcode.TruncateFloat64ToInt32:
+            {
+                // DoubleToInt32: cvttsd2si, and the modular conversion only when
+                // it reports NaN or out of range (int.MinValue).
+                Label done = _il.DefineLabel();
                 Load(node.Inputs[0], ValueRepresentation.kFloat64);
+                _il.Emit(OpCodes.Stloc, _tmpDouble);
+                _il.Emit(OpCodes.Ldloc, _tmpDouble);
+                EmitTruncateToInt32();
+                _il.Emit(OpCodes.Stloc, _tmpInt);
+                _il.Emit(OpCodes.Ldloc, _tmpInt);
+                _il.Emit(OpCodes.Ldc_I4, int.MinValue);
+                _il.Emit(OpCodes.Bne_Un, done);
+                _il.Emit(OpCodes.Ldloc, _tmpDouble);
                 Call(nameof(MaglevBuiltins.TruncateFloat64ToInt32));
+                _il.Emit(OpCodes.Stloc, _tmpInt);
+                _il.MarkLabel(done);
+                _il.Emit(OpCodes.Ldloc, _tmpInt);
                 Store(v!);
                 return;
+            }
             case Opcode.TruncateCheckedNumberOrOddballToInt32:
             {
                 bool allowOddball = NodeTypes.CanBe((NodeType)node.Int0, NodeType.kOddball);
@@ -1680,6 +1700,29 @@ internal sealed class MaglevCodeGenerator
                 }
                 Call(TypedStoreHelper(kind, isFloat));
                 _il.MarkLabel(skip);
+                return;
+            }
+            case Opcode.TransitionElementsKind when node.Obj1 is Map[] sources:
+            {
+                // V8's TransitionElementsKind node: an object with one of the
+                // source maps transitions to the target; others are unchanged.
+                Label done = _il.DefineLabel(), transition = _il.DefineLabel();
+                EmitLoadMapOrBranch(node.Inputs[0], done);
+                _il.Emit(OpCodes.Stloc, _tmpMap);
+                foreach (Map source in sources)
+                {
+                    _il.Emit(OpCodes.Ldloc, _tmpMap);
+                    LoadConstantObject(source, typeof(Map));
+                    _il.Emit(OpCodes.Beq, transition);
+                }
+                _il.Emit(OpCodes.Br, done);
+                _il.MarkLabel(transition);
+                _il.Emit(OpCodes.Ldarg_1);
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                LoadConstantObject(node.Obj0, typeof(Map));
+                Call(nameof(MaglevBuiltins.TransitionElementsKind));
+                _il.Emit(OpCodes.Pop);
+                _il.MarkLabel(done);
                 return;
             }
             case Opcode.TransitionElementsKind:
@@ -2094,9 +2137,9 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldsfld, s_numberTag);
         _il.Emit(OpCodes.Bne_Un, exit);
         Load(node.Inputs[0], ValueRepresentation.kTagged);
-        EmitLoadNumber();
-        _il.Emit(OpCodes.Stloc, _tmpDouble);
-        EmitCheckedFloat64ToInt32(node);
+        _il.Emit(OpCodes.Ldfld, s_bits);
+        _il.Emit(OpCodes.Stloc, _tmpLong);
+        EmitCheckedBitsToInt32(exit);
         Store((ValueNode)node);
     }
 
@@ -2105,20 +2148,56 @@ internal sealed class MaglevCodeGenerator
     {
         Label exit = EagerExit(node.EagerDeoptInfo!);
         _il.Emit(OpCodes.Ldloc, _tmpDouble);
-        _il.Emit(OpCodes.Conv_I4);
+        _il.Emit(OpCodes.Call, s_doubleToInt64Bits);
+        _il.Emit(OpCodes.Stloc, _tmpLong);
+        EmitCheckedBitsToInt32(exit);
+    }
+
+    /// <summary>
+    /// The int32 of the double whose bits are in _tmpLong, branching to
+    /// <paramref name="exit"/> unless the double is that int32 exactly: the
+    /// truncation's round trip has the same bits only for an integral double
+    /// in range that is not -0 (NaN and out of range truncate to int.MinValue,
+    /// whose double differs), one integer compare (JSValue.IsSmiDouble).
+    /// Leaves the int on the stack.
+    /// </summary>
+    void EmitCheckedBitsToInt32(Label exit)
+    {
+        _il.Emit(OpCodes.Ldloc, _tmpLong);
+        _il.Emit(OpCodes.Call, s_int64BitsToDouble);
+        EmitTruncateToInt32();
         _il.Emit(OpCodes.Stloc, _tmpInt);
         _il.Emit(OpCodes.Ldloc, _tmpInt);
         _il.Emit(OpCodes.Conv_R8);
-        _il.Emit(OpCodes.Ldloc, _tmpDouble);
-        _il.Emit(OpCodes.Bne_Un, exit);
-        Label ok = _il.DefineLabel();
-        _il.Emit(OpCodes.Ldloc, _tmpInt);
-        _il.Emit(OpCodes.Brtrue, ok);
-        _il.Emit(OpCodes.Ldloc, _tmpDouble);
         _il.Emit(OpCodes.Call, s_doubleToInt64Bits);
-        _il.Emit(OpCodes.Brtrue, exit);
-        _il.MarkLabel(ok);
+        _il.Emit(OpCodes.Ldloc, _tmpLong);
+        _il.Emit(OpCodes.Bne_Un, exit);
         _il.Emit(OpCodes.Ldloc, _tmpInt);
+    }
+
+    static readonly MethodInfo? s_createScalarUnsafe = System.Runtime.Intrinsics.X86.Sse2.IsSupported
+        ? typeof(System.Runtime.Intrinsics.Vector128).GetMethod(nameof(System.Runtime.Intrinsics.Vector128.CreateScalarUnsafe), [typeof(double)])
+        : null;
+    static readonly MethodInfo? s_cvttsd2si = System.Runtime.Intrinsics.X86.Sse2.IsSupported
+        ? typeof(System.Runtime.Intrinsics.X86.Sse2).GetMethod(nameof(System.Runtime.Intrinsics.X86.Sse2.ConvertToInt32WithTruncation),
+            [typeof(System.Runtime.Intrinsics.Vector128<double>)])
+        : null;
+
+    /// <summary>
+    /// The double on the stack truncated to an int32, int.MinValue for NaN and
+    /// out of range (cvttsd2si; JSValue.TruncateToInt32). IL's conv.i4
+    /// saturates, which costs a NaN mask and a range compare; the callers
+    /// check the result's round trip or range themselves.
+    /// </summary>
+    void EmitTruncateToInt32()
+    {
+        if (s_cvttsd2si is null)
+        {
+            _il.Emit(OpCodes.Conv_I4);
+            return;
+        }
+        _il.Emit(OpCodes.Call, s_createScalarUnsafe!);
+        _il.Emit(OpCodes.Call, s_cvttsd2si);
     }
 
     /// <summary>

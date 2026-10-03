@@ -595,6 +595,12 @@ public sealed class EagerDeoptInfo(DeoptFrame topFrame, DeoptimizeReason reason)
     /// </summary>
     public FeedbackVector? FeedbackToUpdate;
     public int FeedbackSlotToUpdate = -1;
+    /// <summary>
+    /// V8Sharp: the check untags a loop entry value speculatively
+    /// (MaglevPhiRepresentationSelector); its deopt disables that speculation
+    /// for the function.
+    /// </summary>
+    public bool HoistedUntagging;
 }
 
 /// <summary>LazyDeoptInfo: the result of the call goes to ResultLocation (the accumulator or a register).</summary>

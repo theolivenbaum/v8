@@ -528,6 +528,15 @@ public sealed partial class MaglevGraphBuilder
             _analysis.GetInLivenessFor(offset), loop);
         _mergeStates[offset] = state;
         state.InitializeLoop(this, _frame, entryPredecessor, _loopChangesContext[offset], IsResumableLoop(loop));
+        // The frame at the loop entry (deopt frame of hoisted untagging checks).
+        var entryValues = new List<(Register, ValueNode)>();
+        for (int slot = 0; slot < _frame.Values.Length; slot++)
+        {
+            if (!InterpreterFrameState.IsLive(_unit, state.Liveness, slot)) continue;
+            if (_frame.Values[slot] is not { } v) continue;
+            entryValues.Add((InterpreterFrameState.RegisterOf(_unit, slot), v));
+        }
+        state.LoopEntryDeoptFrame = new InterpretedDeoptFrame(_unit, offset, offset, entryValues.ToArray(), ClosureNode, _callerDeoptFrame);
         BasicBlock header = _graph.NewBlock();
         header.IsLoopHeader = true;
         header.Offset = offset;
@@ -622,6 +631,7 @@ public sealed partial class MaglevGraphBuilder
             var copy = new InterpreterFrameState(_unit);
             Array.Copy(_frame.Values, copy.Values, copy.Values.Length);
             copy.Known = _frame.Known.Clone();
+            copy.DirtyParameters = _frame.DirtyParameters;
             _pendingFallthrough = copy;
             _pendingFallthroughPredecessor = block;
             _pendingFallthroughOffset = next;
@@ -708,6 +718,7 @@ public sealed partial class MaglevGraphBuilder
     /// </summary>
     T AddNewNode<T>(T node, DeoptimizeReason reason = DeoptimizeReason.kUnknown) where T : Node
     {
+        if (_frame.DirtyParameters != 0 && ObservesFrameParameters(node)) FlushDirtyParameters();
         node.Id = _graph.NewNodeId();
         node.Unit = _unit;
         if (!_it.Done()) node.BytecodeOffset = Cursor;
@@ -873,7 +884,53 @@ public sealed partial class MaglevGraphBuilder
         {
             // A parameter assignment also goes to the frame: function.arguments
             // reads the frame's parameters (V8 reads them from the optimized
-            // frame through the deopt translation).
+            // frame through the deopt translation). The store is sunk to the
+            // next node that can observe the frame (FlushDirtyParameters).
+            int index = r.ToParameterIndex();
+            if (index < 64)
+            {
+                _frame.DirtyParameters |= 1UL << index;
+                return;
+            }
+            AddNewNode(new Node(Opcode.StoreRegister) { Inputs = [GetTaggedValue(value)], Int0 = r.Index });
+        }
+    }
+
+    /// <summary>
+    /// Whether a node can observe the frame's parameter slots: it calls out
+    /// (function.arguments of this frame, a stack walk), throws, or reads the
+    /// frame (arguments objects, builtins that take registers).
+    /// </summary>
+    /// <remarks>
+    /// The loop interrupt check (HandleNoHeapWritesInterrupt) does not count:
+    /// the interrupts it serves (termination, code installation) run no
+    /// JavaScript.
+    /// </remarks>
+    static bool ObservesFrameParameters(Node node) =>
+        node.Opcode is Opcode.CallBuiltin or Opcode.LoadRegister or Opcode.EnterInlinedFrame or Opcode.GeneratorStore ||
+        node.Opcode is not (Opcode.StoreRegister or Opcode.HandleNoHeapWritesInterrupt) &&
+        (node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0;
+
+    /// <summary>
+    /// V8Sharp: writes the parameters assigned since the last write into the
+    /// frame's parameter slots (StoreRegister). Deviation: V8 keeps assigned
+    /// parameters only in the optimized frame and reads them for
+    /// function.arguments through the deopt translation; V8Sharp's stack
+    /// walker reads the interpreter frame, so an assignment is written there
+    /// before the next node that can observe it, rather than at every
+    /// assignment (a loop that assigns a parameter and calls nothing keeps it
+    /// in an IL local).
+    /// </summary>
+    void FlushDirtyParameters()
+    {
+        ulong dirty = _frame.DirtyParameters;
+        _frame.DirtyParameters = 0;
+        for (int i = 0; dirty != 0; i++, dirty >>= 1)
+        {
+            if ((dirty & 1) == 0) continue;
+            Register r = Register.FromParameterIndex(i);
+            ValueNode? value = _frame.TryGet(r);
+            if (value is null) continue;
             AddNewNode(new Node(Opcode.StoreRegister) { Inputs = [GetTaggedValue(value)], Int0 = r.Index });
         }
     }
@@ -1001,6 +1058,8 @@ public sealed partial class MaglevGraphBuilder
     /// </summary>
     ValueNode Select(ControlNode branch, Func<ValueNode> ifTrue, Func<ValueNode> ifFalse)
     {
+        // (The branches share the frame: no parameter stays dirty in one of them only.)
+        FlushDirtyParameters();
         BasicBlock predecessor = _currentBlock!;
         KnownNodeAspects known = _frame.Known.Clone();
         FinishBlock(branch);

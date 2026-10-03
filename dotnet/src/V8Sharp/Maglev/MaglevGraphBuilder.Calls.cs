@@ -562,6 +562,8 @@ public sealed partial class MaglevGraphBuilder
             }
         }
         var vector = (FeedbackVector)target.RawFeedbackCell.Value!;
+        // The inlined code's calls can observe this frame's parameters.
+        FlushDirtyParameters();
         var unit = new MaglevCompilationUnit(_info, target, shared, vector, _unit, _unit.InliningDepth + 1);
         try
         {

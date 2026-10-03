@@ -155,6 +155,11 @@ public sealed class InterpreterFrameState
     public readonly MaglevCompilationUnit Unit;
     public readonly ValueNode?[] Values;
     public KnownNodeAspects Known;
+    /// <summary>
+    /// V8Sharp: the parameters (bit i: parameter i) assigned since the frame's
+    /// parameter slots were last written (MaglevGraphBuilder.FlushDirtyParameters).
+    /// </summary>
+    public ulong DirtyParameters;
 
     public InterpreterFrameState(MaglevCompilationUnit unit)
     {
@@ -241,6 +246,7 @@ public sealed class InterpreterFrameState
     {
         Array.Copy(merge.Values, Values, Values.Length);
         Known = merge.Known!.Clone();
+        DirtyParameters = merge.DirtyParameters;
     }
 }
 
@@ -258,6 +264,14 @@ public sealed class MergePointInterpreterFrameState
     public readonly BytecodeLivenessState Liveness;
     public readonly LoopInfo? Loop;
     public BasicBlock? Block;
+    /// <summary>
+    /// A loop header's frame on entry to the loop (the entry values, the
+    /// header's bytecode): the deopt frame of the untagging checks the phi
+    /// representation selector hoists out of the loop.
+    /// </summary>
+    public DeoptFrame? LoopEntryDeoptFrame;
+    /// <summary>The union of the predecessors' InterpreterFrameState.DirtyParameters.</summary>
+    public ulong DirtyParameters;
     /// <summary>A loop entered by generator resume edges too (is_resumable_loop).</summary>
     public bool IsResumableLoop;
     /// <summary>The loop's back edge has been merged.</summary>
@@ -336,6 +350,7 @@ public sealed class MergePointInterpreterFrameState
             }
             Known!.Merge(unmerged.Known);
         }
+        DirtyParameters |= unmerged.DirtyParameters;
         Predecessors.Add(predecessor);
         PredecessorsSoFar++;
     }
@@ -416,6 +431,7 @@ public sealed class MergePointInterpreterFrameState
         }
         if (Known is null) Known = known.Clone();
         else Known.Merge(known);
+        DirtyParameters |= frame.DirtyParameters;
         PredecessorsSoFar++;
     }
 
@@ -437,6 +453,12 @@ public sealed class MergePointInterpreterFrameState
         LoopInfo loop = Loop!;
         int accumulatorSlot = InterpreterFrameState.AccumulatorSlot(Unit);
         int contextSlot = InterpreterFrameState.ContextSlot(Unit);
+        // The back edge brings the parameters the loop assigns.
+        DirtyParameters = unmerged.DirtyParameters;
+        for (int p = 0; p < Unit.ParameterCount && p < 64; p++)
+        {
+            if (resumable || loop.Assignments.ContainsParameter(p)) DirtyParameters |= 1UL << p;
+        }
         for (int slot = 0; slot < Values.Length; slot++)
         {
             if (!InterpreterFrameState.IsLive(Unit, Liveness, slot))

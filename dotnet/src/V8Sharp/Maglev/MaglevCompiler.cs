@@ -49,7 +49,15 @@ public static class MaglevCompiler
         public bool CompileInProgress;
         /// <summary>The JumpLoop offsets with a concurrent OSR job in flight (V8: the OSR cache's in-progress entries).</summary>
         public HashSet<int>? OsrInProgress;
+        /// <summary>V8Sharp: a hoisted untagging check deoptimized (MaglevPhiRepresentationSelector).</summary>
+        public bool NoSpeculativeUntagging;
     }
+
+    /// <summary>V8Sharp: a speculatively hoisted loop entry untagging failed; later compiles do not hoist.</summary>
+    public static void DisableSpeculativeUntagging(SharedFunctionInfo shared) => StateOf(shared).NoSpeculativeUntagging = true;
+
+    static bool SpeculativeUntaggingDisabled(SharedFunctionInfo shared) =>
+        s_sharedState.TryGetValue(shared, out SharedState? state) && state.NoSpeculativeUntagging;
 
     static readonly ConditionalWeakTable<SharedFunctionInfo, SharedState> s_sharedState = new();
 
@@ -113,7 +121,7 @@ public static class MaglevCompiler
             var builder = new MaglevGraphBuilder(info, info.Toplevel);
             builder.Build();
             FinalizeGraph(info.Graph);
-            if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph);
+            if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph, !SpeculativeUntaggingDisabled(shared));
             if (isolate.Flags.maglev_truncation) MaglevTruncation.Run(info.Graph);
             ComputeUseCounts(info.Graph);
             ElideArgumentsObjects(info.Graph);
@@ -195,7 +203,7 @@ public static class MaglevCompiler
             var builder = new MaglevGraphBuilder(info, info.Toplevel);
             builder.Build();
             FinalizeGraph(info.Graph);
-            if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph);
+            if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph, !SpeculativeUntaggingDisabled(shared));
             if (isolate.Flags.maglev_truncation) MaglevTruncation.Run(info.Graph);
             ComputeUseCounts(info.Graph);
             ElideArgumentsObjects(info.Graph);
