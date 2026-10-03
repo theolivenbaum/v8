@@ -1066,6 +1066,21 @@ public static partial class InterpreterExecution
                                 }
                                 ip = ref Unsafe.Add(ref ip, 2 + 3 * 2);
                                 continue;
+                            // A named load with a wide feedback slot (large functions,
+                            // TypeScript): the fast handler, then the general one.
+                            case Bytecode.GetNamedProperty when isWide:
+                            {
+                                JSValue loaded = GetNamedProperty<DoubleScale>(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1));
+                                if (ReferenceEquals(loaded._obj, InterpreterInlineCalls.NotHandledMarker))
+                                {
+                                    loaded = GetNamedPropertySlow<DoubleScale>(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1))
+                                        ? InterpreterInlineCalls.FrameEntered : st.Accumulator;
+                                }
+                                if (ReferenceEquals(loaded._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                                acc = loaded;
+                                ip = ref Unsafe.Add(ref ip, 2 + 3 * 2);
+                                continue;
+                            }
                             case Bytecode.JumpLoop when isWide:
                             {
                                 // JumpLoop without its interrupt and OSR cases (those
