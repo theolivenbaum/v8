@@ -863,7 +863,9 @@ through ExInfo); it can time out at 60 s under load in both.
 Eighth interpreter performance pass: dispatch of prefixed and paired
 bytecodes, the loop's compile-time state (2026-10-03; "before" is b1fa1fae,
 main with no engine change; all V8Sharp numbers are `v8sharp:jitless`, the
-interpreter alone, since the baseline tier is on by default now).
+interpreter alone, with V8's --jitless regexp interpreter; the baseline tier
+is still off by default on this branch, its default-on change is on the
+unmerged tier-performance branch).
 
 Parity publishes (ReadyToRun composite, self-contained), `bench-session.sh`,
 octane-steady in two sessions (session A: Richards .. NavierStokes plus
@@ -1386,8 +1388,8 @@ same session). See "Seventh interpreter performance pass" above.
 After the eighth interpreter performance pass (98e54502, parity publish,
 two sessions, 3 runs): **55.6%** of V8 --jitless (284.4 / 511.4; its base,
 b1fa1fae, measured 52.4% in the same sessions). These and later numbers
-are `v8sharp:jitless`: the baseline tier is on by default since 2b647a54,
-and V8Sharp's --jitless also runs regular expressions in the bytecode
+are `v8sharp:jitless` (the interpreter alone, as V8 --jitless; the baseline
+tier will be on by default once 2b647a54 is merged), and V8Sharp's --jitless also runs regular expressions in the bytecode
 interpreter, as V8's does (RegExp 201 here against 278 with compiled
 regular expressions in the seventh pass's sessions). See "Eighth
 interpreter performance pass" above.
