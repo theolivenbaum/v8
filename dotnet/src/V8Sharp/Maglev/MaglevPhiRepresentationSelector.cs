@@ -216,7 +216,9 @@ internal static class MaglevPhiRepresentationSelector
         // Loop entry values are untagged speculatively before the loop
         // (kSpeculativeOSRValue, kSpeculativeAny): they do not constrain the
         // phi's representation.
-        if (speculativeEntryUntagging && CanUntagSpeculatively(phi, index)) return Hint.Int32;
+        // (Only parameters and OSR values: V8's kSpeculativeOSRValue inputs.
+        // Other loaded values, e.g. holes read as undefined, are not speculated on.)
+        if (speculativeEntryUntagging && input.Opcode == Opcode.InitialValue && CanUntagSpeculatively(phi, index)) return Hint.Int32;
         return Hint.Tagged;
     }
 
