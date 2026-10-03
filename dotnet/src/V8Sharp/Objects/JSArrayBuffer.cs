@@ -27,6 +27,9 @@ public sealed class BackingStore
     // array, whose length is bounded by Array.MaxLength (deviations.md).
     static readonly ulong s_maxManagedLength = (ulong)Array.MaxLength;
 
+    const ulong kMockAllocationLimit = 10 * 1024 * 1024;
+    const int kMockPageSize = 4096;
+
     byte[] _buffer;
     long _byteLength;
 
@@ -64,7 +67,7 @@ public sealed class BackingStore
     {
         // initialized == false is only an optimisation in V8 (uninitialized
         // memory); managed arrays are always zeroed.
-        byte[]? buffer = TryAllocate(byteLength);
+        byte[]? buffer = TryAllocate(isolate, byteLength);
         if (buffer is null) return null;
         return new BackingStore(buffer, byteLength, byteLength, shared, resizable: false);
     }
@@ -80,14 +83,18 @@ public sealed class BackingStore
         // ArrayBuffers (a resize replaces the array) and the maximum length up
         // front for growable SharedArrayBuffers, whose memory other agents may
         // be using concurrently and therefore cannot move (deviations.md).
-        byte[]? buffer = TryAllocate(shared ? maxByteLength : byteLength);
+        byte[]? buffer = TryAllocate(isolate, shared ? maxByteLength : byteLength);
         if (buffer is null) return null;
         return new BackingStore(buffer, byteLength, maxByteLength, shared, resizable: true);
     }
 
-    static byte[]? TryAllocate(ulong length)
+    static byte[]? TryAllocate(Isolate? isolate, ulong length)
     {
         if (length == 0) return [];
+        // d8's MockArrayBufferAllocator (--mock-arraybuffer-allocator): an
+        // allocation above 10 MB gets one page of memory, so that tests can
+        // create huge buffers they do not access (MockArrayBufferAllocator::Adjust).
+        if (isolate is not null && isolate.Flags.mock_arraybuffer_allocator && length > kMockAllocationLimit) return new byte[kMockPageSize];
         if (length > s_maxManagedLength) return null;
         try
         {
@@ -123,7 +130,7 @@ public sealed class BackingStore
             // Grow the managed array geometrically (bounded by the maximum), so
             // that a sequence of small resizes is amortized.
             ulong capacity = Math.Max(newByteLength, Math.Min(MaxByteLength, (ulong)_buffer.Length * 2));
-            byte[]? grown = TryAllocate(capacity) ?? TryAllocate(newByteLength);
+            byte[]? grown = TryAllocate(isolate, capacity) ?? TryAllocate(isolate, newByteLength);
             if (grown is null) return ResizeOrGrowResult.kFailure;
             _buffer.AsSpan(0, (int)byteLength).CopyTo(grown);
             _buffer = grown;
