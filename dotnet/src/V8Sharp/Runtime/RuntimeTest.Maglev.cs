@@ -73,6 +73,7 @@ public static partial class RuntimeTest
         if (function is null || MaglevCompiler.CompilationDisabled(function.Shared)) return JSValue.Undefined;
         FeedbackVector vector = JSFunctionFeedback.EnsureFeedbackVector(isolate, function);
         vector.RequestOsrAtNextOpportunity();
+        vector.OsrRequestedByNatives = true;
         function.RawFeedbackCell.InterruptBudget = 0;
         return JSValue.Undefined;
     }
