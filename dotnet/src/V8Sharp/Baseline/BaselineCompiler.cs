@@ -302,6 +302,7 @@ public sealed partial class BaselineCompiler
         il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stFp);
         il.Emit(OpCodes.Stloc, _masm.Fp);
+        _masm.InitializePcRef();
         // The closure, from its frame slot; the constant pool and the bytecodes
         // from the code object (the method's first argument), which holds them
         // for the bytecode it was compiled from.
@@ -309,10 +310,10 @@ public sealed partial class BaselineCompiler
         il.Emit(OpCodes.Stloc, _masm.Function);
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldfld, s_codeConstants);
-        il.Emit(OpCodes.Stloc, _masm.Constants);
+        _masm.StoreArrayDataReference(_masm.Constants);
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldfld, s_codeBytecodes);
-        il.Emit(OpCodes.Stloc, _masm.Code);
+        _masm.StoreArrayDataReference(_masm.Code, bytes: true);
 
         // Re-entry (after a Throw dispatched to a handler of this frame): the
         // accumulator, context and target offset come from the state.
@@ -328,7 +329,7 @@ public sealed partial class BaselineCompiler
         // Baseline frames always have a feedback vector (Runtime_InstallBaselineCode).
         il.Emit(OpCodes.Ldloc, _masm.Fv);
         il.Emit(OpCodes.Ldfld, s_feedbackSlots);
-        il.Emit(OpCodes.Stloc, _masm.FeedbackSlots);
+        _masm.StoreArrayDataReference(_masm.FeedbackSlots);
         il.Emit(OpCodes.Ldarg_2);
         il.Emit(OpCodes.Ldfld, s_stPc);
         il.Emit(OpCodes.Stloc, _masm.Scratch);

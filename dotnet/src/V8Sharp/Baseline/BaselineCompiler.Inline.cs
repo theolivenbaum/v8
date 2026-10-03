@@ -976,9 +976,7 @@ public sealed partial class BaselineCompiler
     /// <summary>Pushes the heap object part of feedback slot <paramref name="slot"/>.</summary>
     void FeedbackSlotObj(int slot)
     {
-        Emit(OpCodes.Ldloc, _masm.FeedbackSlots);
-        Emit(OpCodes.Ldc_I4, slot);
-        Emit(OpCodes.Ldelema, typeof(JSValue));
+        _masm.LoadFeedbackSlotAddress(slot);
         Emit(OpCodes.Ldfld, s_obj);
     }
 
