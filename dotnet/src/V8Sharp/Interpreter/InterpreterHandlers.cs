@@ -114,7 +114,15 @@ public static partial class InterpreterExecution
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool ToBooleanSlow(JSValue value) => ObjectOps.BooleanValue(value);
+    static bool ToBooleanSlow(JSValue value)
+    {
+        // `if (node)` on objects and strings without a second call (ObjectOps.BooleanValue).
+        HeapObject o = value._obj!;
+        InstanceType type = o.InstanceType;
+        if (type >= InstanceTypeChecks.FirstJSReceiver) return !Unsafe.As<JSReceiver>(o).Map.IsUndetectable;
+        if (type <= InstanceTypeChecks.LastString) return Unsafe.As<JSString>(o).Length != 0;
+        return ObjectOps.BooleanValue(value);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static bool IsUndetectableReceiver(HeapObject o) =>
