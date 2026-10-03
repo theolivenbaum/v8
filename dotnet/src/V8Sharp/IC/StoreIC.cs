@@ -120,6 +120,54 @@ public sealed class StoreIC : IC
         }
     }
 
+    /// <summary>
+    /// A field store handler as a feedback slot payload
+    /// (FeedbackNexus.EncodeHandler): the field index + 1 in the low half, the
+    /// representation kind in the high half; 0 for a handler whose store
+    /// needs more than a representation test (a class field type, none).
+    /// </summary>
+    internal static long EncodeFieldStore(StoreHandler handler)
+    {
+        if (handler.HandlerKind != StoreHandler.Kind.kField) return 0;
+        Representation.Kind kind = handler.Representation.kind;
+        bool simple = kind is Representation.Kind.Tagged or Representation.Kind.Smi or Representation.Kind.Double ||
+                      kind == Representation.Kind.HeapObject && handler.FieldTypeClass is null;
+        return simple ? (long)(uint)(handler.FieldIndex + 1) | (long)kind << 32 : 0;
+    }
+
+    /// <summary>
+    /// <see cref="TryStoreOwnField"/> for a handler encoded by
+    /// <see cref="EncodeFieldStore"/> (<paramref name="encoded"/> != 0): the
+    /// representation test (FitsField) and the store.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool TryStoreEncodedField(JSObject obj, long encoded, JSValue value)
+    {
+        var kind = (Representation.Kind)(encoded >> 32);
+        bool fits = kind switch
+        {
+            Representation.Kind.Tagged => true,
+            Representation.Kind.Smi => value.IsSmi,
+            Representation.Kind.Double => value.IsNumber,
+            _ => !value.IsNumber,
+        };
+        if (!fits) return false;
+        JSValue.StoreSlot(ref obj.FieldAt((int)encoded - 1), kind == Representation.Kind.Double ? CanonicalizeDouble(value) : value);
+        return true;
+    }
+
+    /// <summary>
+    /// The field store case of <see cref="TryStoreOwnField"/> alone (no
+    /// transition, so nothing that calls out).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool TryStoreField(JSObject obj, StoreHandler handler, JSValue value)
+    {
+        if (handler.HandlerKind != StoreHandler.Kind.kField || !FitsField(handler, value)) return false;
+        JSValue.StoreSlot(ref obj.FieldAt(handler.FieldIndex), handler.Representation.IsDouble ? CanonicalizeDouble(value) : value);
+        return true;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static bool FitsField(StoreHandler handler, in JSValue value)
     {
@@ -142,8 +190,11 @@ public sealed class StoreIC : IC
         Map? fieldClass = handler.FieldTypeClass;
         if (fieldClass is not null)
         {
-            // A field with a class field type accepts only objects with that map.
-            return value._obj is JSReceiver r && ReferenceEquals(r.Map, fieldClass);
+            // A field with a class field type accepts only objects with that map
+            // (the receiver test by instance type: a type test of the class is
+            // a call to the cast helper).
+            HeapObject? o = value._obj;
+            return o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver && ReferenceEquals(Unsafe.As<JSReceiver>(o).Map, fieldClass);
         }
         return true;
     }

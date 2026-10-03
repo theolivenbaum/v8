@@ -184,7 +184,10 @@ public static partial class InterpreterExecution
                 st.Pc += 1 + 2 * 2;
                 return true;
             case Bytecode.SetKeyedProperty:
-                SetKeyedProperty<DoubleScale>(isolate, ref st, ref fp, ref ip, st.Accumulator);
+                if (!SetKeyedProperty<DoubleScale>(isolate, ref st, ref fp, ref ip, st.Accumulator))
+                {
+                    SetKeyedPropertySlow<DoubleScale>(isolate, ref st, ref fp, ref ip, st.Accumulator);
+                }
                 st.Pc += 1 + 3 * 2;
                 return true;
             case Bytecode.JumpLoop:
@@ -252,10 +255,163 @@ public static partial class InterpreterExecution
         StoreGlobalIC.Store(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, InterpreterRuntime.FrameContext(ref fp), name, acc);
     }
 
+    /// <summary>
+    /// Whether a call of <paramref name="callee"/> can take the fast call
+    /// handler (InterpreterInlineCalls.TryEnterFast): a JSFunction whose
+    /// cached call mode runs it in this loop. The loop calls the general
+    /// handler directly otherwise, so a call of a builtin does not pass
+    /// through the fast handler's frame and checks first.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsInlineCallee(in JSValue callee) =>
+        callee._obj is JSFunction function &&
+        (uint)(function.Shared.InterpreterCallMode - InterpreterInlineCalls.kCallModeInline) <=
+        InterpreterInlineCalls.kCallModeInlineSloppy - InterpreterInlineCalls.kCallModeInline;
+
     // ---- Property loads and stores --------------------------------------------------
 
+    /// <summary>
+    /// GetNamedProperty after the loop's inline monomorphic hits: the
+    /// handler cases of AccessorAssembler::HandleLoadICHandlerCase that need
+    /// no call (monomorphic or polymorphic field and prototype constant hits),
+    /// and JavaScript getters on the prototype chain or own accessor pairs
+    /// entered in this loop (InterpreterInlineCalls.TryEnterFast); everything
+    /// else is <see cref="GetNamedPropertySlow"/>. Returns the value,
+    /// InterpreterInlineCalls.FrameEntered when a getter's frame was entered
+    /// (returning the value in registers, rather than storing it in
+    /// st.Accumulator for the loop to load again), or
+    /// InterpreterInlineCalls.NotHandled, and the loop calls the slow handler
+    /// itself (no second call layer for dictionary-mode and other loads).
+    /// </summary>
+    // A separate method so that this path has no calls: the slow path's
+    // inlined EnterInline and IC dispatch made RyuJIT save six registers and
+    // spill on every polymorphic field load (13% of Octane Gameboy).
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool GetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue GetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+        where TS : struct, IOperandScale
+    {
+        int S = Scale<TS>();
+        HeapObject? o = Reg<TS>(ref fp, ref ip, 1)._obj;
+        if (o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
+            if ((uint)(slot + 1) < (uint)slots.Length)
+            {
+                Map map = Unsafe.As<JSReceiver>(o).Map;
+                HeapObject? feedback = slots[slot]._obj;
+                HeapObject? found = null;
+                if (ReferenceEquals(feedback, map)) found = slots[slot + 1]._obj;
+                else if (feedback is FixedArray polymorphic)
+                {
+                    // AccessorAssembler::HandlePolymorphicCase: the (map, handler) pairs.
+                    JSValue[] data = polymorphic._data;
+                    for (int i = 0; i + 1 < data.Length; i += 2)
+                    {
+                        if (ReferenceEquals(data[i]._obj, map))
+                        {
+                            // An own field encoded in the pair (FeedbackNexus.EncodeHandler).
+                            int field = FeedbackNexus.DecodeOwnField(data[i + 1]);
+                            if (field >= 0) return Unsafe.As<JSObject>(o).FieldAt(field);
+                            found = data[i + 1]._obj;
+                            break;
+                        }
+                    }
+                }
+                else if (ReferenceEquals(feedback, ReadOnlyRoots.megamorphic_symbol) && isolate.ICState is { } icState)
+                {
+                    // LoadIC_Megamorphic: TryProbeStubCache.
+                    var name = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
+                    found = icState.LoadStubCache.Get(name, map);
+                }
+                if (found is LoadHandler handler)
+                {
+                    if (handler.OwnFieldIndex >= 0)
+                    {
+                        return Unsafe.As<JSObject>(o).FieldAt(handler.OwnFieldIndex);
+                    }
+                    LoadHandler.Kind kind = handler.HandlerKind;
+                    if (handler.IsValid)
+                    {
+                        if (handler.IsPrototypeConstant)
+                        {
+                            return handler.Data;
+                        }
+                        if (handler.PrototypeFieldIndex >= 0)
+                        {
+                            JSValue value = Unsafe.As<JSObject>(handler.Holder!).FieldAt(handler.PrototypeFieldIndex);
+                            if (!ReferenceEquals(value._obj, Oddball.Uninitialized))
+                            {
+                                return value;
+                            }
+                        }
+                        if (kind == LoadHandler.Kind.kNormal)
+                        {
+                            return GetNamedPropertyNormal<TS>(isolate, ref st, ref fp, ref ip, o, map, handler);
+                        }
+                        // A JavaScript getter (a function that runs in this loop
+                        // has no builtin fast path, which LoadNamedOrGetter tries
+                        // first): called like a CallProperty0 with the receiver.
+                        JSFunction? getter =
+                            kind == LoadHandler.Kind.kAccessorFromPrototype && !map.IsDictionaryMap ? handler.Data._obj as JSFunction
+                            : kind == LoadHandler.Kind.kAccessorPair ? Unsafe.As<AccessorPair>(handler.Data._obj!).Getter._obj as JSFunction
+                            : null;
+                        if (typeof(TS) == typeof(SingleScale) && getter is not null)
+                        {
+                            int pc = PcOf(ref fp, ref ip);
+                            if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 3 * S, ref Unsafe.NullRef<JSValue>(), getter,
+                                    JSValue.FromObject(o), new Baseline.BaselineCalls.NoArguments()))
+                            {
+                                return InterpreterInlineCalls.FrameEntered;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return InterpreterInlineCalls.NotHandled;
+    }
+
+    /// <summary>
+    /// LoadHandler::LoadNormal for the fast handler: the property dictionary of
+    /// the receiver, or of the holder when the receiver is fast (the same
+    /// conditions as LoadIC.LoadNamedCore); a JavaScript getter in an accessor
+    /// pair is entered in this loop. Anything else is not handled.
+    /// </summary>
+    // Out of line so the fast handler stays call-free (object literals with
+    // accessors are dictionary-mode: their getters took the slow handler).
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue GetNamedPropertyNormal<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip,
+        HeapObject o, Map map, LoadHandler handler)
+        where TS : struct, IOperandScale
+    {
+        if ((handler.Holder is null ? map.IsDictionaryMap : !map.IsDictionaryMap) &&
+            (handler.Holder ?? o) is JSObject { HasFastProperties: false } holder && holder is not JSGlobalObject)
+        {
+            int S = Scale<TS>();
+            var name = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
+            NameDictionary dictionary = holder.PropertyDictionary;
+            InternalIndex entry = dictionary.FindEntry(name);
+            if (entry.IsFound)
+            {
+                JSValue value = dictionary.ValueAt(entry);
+                if (dictionary.DetailsAt(entry).Kind == PropertyKind.Data) return value;
+                if (typeof(TS) == typeof(SingleScale) && value._obj is AccessorPair pair && pair.Getter._obj is JSFunction getter)
+                {
+                    int pc = PcOf(ref fp, ref ip);
+                    if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 3 * S, ref Unsafe.NullRef<JSValue>(), getter,
+                            JSValue.FromObject(o), new Baseline.BaselineCalls.NoArguments()))
+                    {
+                        return InterpreterInlineCalls.FrameEntered;
+                    }
+                }
+            }
+        }
+        return InterpreterInlineCalls.NotHandled;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool GetNamedPropertySlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -281,8 +437,60 @@ public static partial class InterpreterExecution
         return false;
     }
 
+    /// <summary>
+    /// GetKeyedProperty after the loop's inline fast-elements hits: a
+    /// monomorphic in-bounds typed array element load (KeyedLoadIC.Load's
+    /// first case, V8's EmitElementLoad for the typed kinds) read here, the
+    /// rest in <see cref="GetKeyedPropertySlow"/>.
+    /// </summary>
+    // A separate method with no calls (Emscripten code reads HEAP8/HEAP32 per
+    // memory access: zlib and Mandreel spent 10-13% in the IC's handler,
+    // which called TypedArrayElementsOps.LoadElement out of line).
     [MethodImpl(MethodImplOptions.NoInlining)]
     static JSValue GetKeyedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+        where TS : struct, IOperandScale
+    {
+        int S = Scale<TS>();
+        if (Reg<TS>(ref fp, ref ip, 1)._obj is JSTypedArray array && acc._obj == NumberTag.Instance &&
+            InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + S);
+            byte[]? data = array.FastData;
+            Map map = array.Map;
+            if ((uint)(slot + 1) < (uint)slots.Length && ReferenceEquals(slots[slot]._obj, map) &&
+                slots[slot + 1]._obj is LoadHandler { HandlerKind: LoadHandler.Kind.kElement } &&
+                data is not null && JSValue.TryGetIndex(acc._num, out int index) && (uint)index < (uint)array.FastLength &&
+                (Protectors.IsArrayBufferDetachingIntact(isolate) || !array.Buffer.WasDetached))
+            {
+                int offset = array.FastByteOffset;
+                switch (map.ElementsKind)
+                {
+                    case ElementsKind.UINT8_ELEMENTS:
+                    case ElementsKind.UINT8_CLAMPED_ELEMENTS:
+                        return JSValue.FromInt(data[offset + index]);
+                    case ElementsKind.INT8_ELEMENTS:
+                        return JSValue.FromInt((sbyte)data[offset + index]);
+                    case ElementsKind.UINT16_ELEMENTS:
+                        return JSValue.FromInt(Unsafe.ReadUnaligned<ushort>(ref data[offset + index * 2]));
+                    case ElementsKind.INT16_ELEMENTS:
+                        return JSValue.FromInt(Unsafe.ReadUnaligned<short>(ref data[offset + index * 2]));
+                    case ElementsKind.INT32_ELEMENTS:
+                        return JSValue.FromInt(Unsafe.ReadUnaligned<int>(ref data[offset + index * 4]));
+                    case ElementsKind.UINT32_ELEMENTS:
+                        return JSValue.FromNumber(Unsafe.ReadUnaligned<uint>(ref data[offset + index * 4]));
+                    case ElementsKind.FLOAT32_ELEMENTS:
+                        return JSValue.FromNumber(Unsafe.ReadUnaligned<float>(ref data[offset + index * 4]));
+                    case ElementsKind.FLOAT64_ELEMENTS:
+                        return JSValue.FromNumber(Unsafe.ReadUnaligned<double>(ref data[offset + index * 8]));
+                }
+            }
+        }
+        return GetKeyedPropertySlow<TS>(isolate, ref st, ref fp, ref ip, acc);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue GetKeyedPropertySlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -292,8 +500,78 @@ public static partial class InterpreterExecution
         return KeyedLoadIC.Load(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, obj, acc);
     }
 
+    /// <summary>
+    /// SetNamedProperty after the loop's inline monomorphic hits: the cases of
+    /// HandleStoreICHandlerCase that need no call (a monomorphic or
+    /// polymorphic field store) and JavaScript setters (prototype accessors
+    /// and own accessor pairs) entered in this loop through
+    /// InterpreterInlineCalls.TryEnterFast; everything else (transitions, the
+    /// megamorphic stub cache, misses) is <see cref="SetNamedPropertySlow"/>.
+    /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     static bool SetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+        where TS : struct, IOperandScale
+    {
+        int S = Scale<TS>();
+        HeapObject? o = Reg<TS>(ref fp, ref ip, 1)._obj;
+        if (o is not null && InstanceTypeChecks.IsJSObject(o.InstanceType) && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
+            if ((uint)(slot + 1) < (uint)slots.Length)
+            {
+                var obj = Unsafe.As<JSObject>(o);
+                Map map = obj.Map;
+                HeapObject? feedback = slots[slot]._obj;
+                HeapObject? found = null;
+                if (ReferenceEquals(feedback, map)) found = slots[slot + 1]._obj;
+                else if (feedback is FixedArray polymorphic)
+                {
+                    JSValue[] data = polymorphic._data;
+                    for (int i = 0; i + 1 < data.Length; i += 2)
+                    {
+                        if (ReferenceEquals(data[i]._obj, map))
+                        {
+                            found = data[i + 1]._obj;
+                            break;
+                        }
+                    }
+                }
+                else if (ReferenceEquals(feedback, ReadOnlyRoots.megamorphic_symbol) && isolate.ICState is { } icState)
+                {
+                    // StoreIC_Megamorphic: TryProbeStubCache (SetNamedProperty is
+                    // never a DefineNamedOwn slot, so the store stub cache).
+                    var name = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
+                    found = icState.StoreStubCache.Get(name, map);
+                }
+                if (found is StoreHandler handler)
+                {
+                    if (StoreIC.TryStoreField(obj, handler, acc)) return false;
+                    // StoreNamedOrSetter's setter cases (a prototype handler
+                    // applies to fast-mode receivers only), called like a
+                    // CallProperty1 with the receiver and the value.
+                    StoreHandler.Kind kind = handler.HandlerKind;
+                    JSFunction? setter = !handler.IsValid ? null
+                        : kind == StoreHandler.Kind.kAccessorFromPrototype ? (obj.HasFastProperties ? handler.Data._obj as JSFunction : null)
+                        : kind == StoreHandler.Kind.kAccessorPair ? Unsafe.As<AccessorPair>(handler.Data._obj!).Setter._obj as JSFunction
+                        : null;
+                    if (typeof(TS) == typeof(SingleScale) && setter is not null)
+                    {
+                        int pc = PcOf(ref fp, ref ip);
+                        if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 3 * S, ref Unsafe.NullRef<JSValue>(), setter,
+                                JSValue.FromObject(obj), new Baseline.BaselineCalls.OneArgument(acc)))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return SetNamedPropertySlow<TS>(isolate, ref st, ref fp, ref ip, acc);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool SetNamedPropertySlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -330,8 +608,50 @@ public static partial class InterpreterExecution
         StoreIC.DefineNamedOwn(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, obj, name, acc);
     }
 
+    /// <summary>
+    /// SetKeyedProperty after the loop's inline fast-elements hits: a
+    /// monomorphic in-bounds store of a Number into a typed array
+    /// (KeyedStoreIC.Store's first case) written here; false for the rest,
+    /// which the loop passes to <see cref="SetKeyedPropertySlow"/>.
+    /// </summary>
+    // The loop calls the slow handler itself, so that this method adds no
+    // .NET frame to a store that calls into JavaScript (ToNumber of an object
+    // calls valueOf/toString): the runtime's exception unwinding grows faster
+    // than linearly with the frames on the stack, and a stack overflow
+    // through such stores (mjsunit regress-1236560) took 30% longer.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void SetKeyedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+    static bool SetKeyedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+        where TS : struct, IOperandScale
+    {
+        int S = Scale<TS>();
+        JSValue key = Reg<TS>(ref fp, ref ip, 1 + S);
+        if (Reg<TS>(ref fp, ref ip, 1)._obj is JSTypedArray array && key._obj == NumberTag.Instance && acc._obj == NumberTag.Instance &&
+            InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
+            byte[]? data = array.FastData;
+            Map map = array.Map;
+            if ((uint)(slot + 1) < (uint)slots.Length && ReferenceEquals(slots[slot]._obj, map) &&
+                slots[slot + 1]._obj is StoreHandler { HandlerKind: StoreHandler.Kind.kElement, ElementsTransitionMap: null } handler &&
+                handler.IsValid && data is not null && JSValue.TryGetIndex(key._num, out int index) && (uint)index < (uint)array.FastLength)
+            {
+                // ElementAccess.TryStoreTypedElementFast's conditions.
+                ElementsKind kind = map.ElementsKind;
+                if (!ElementsKinds.IsBigIntTypedArrayElementsKind(kind) &&
+                    (Protectors.IsArrayBufferDetachingIntact(isolate) || !array.Buffer.WasDetached) &&
+                    (Protectors.IsArrayBufferMutableIntact(isolate) || !array.Buffer.IsImmutable))
+                {
+                    TypedArrayElementsOps.StoreElement(data, array.FastByteOffset, kind, index, acc._num);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void SetKeyedPropertySlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -709,8 +1029,37 @@ public static partial class InterpreterExecution
 
     // ---- Calls --------------------------------------------------------------------
 
+    /// <summary>
+    /// CallProperty: a call to a function that runs in this loop, with feedback
+    /// that needs only its call count bumped, through
+    /// InterpreterInlineCalls.TryEnterFast; everything else is CallPropertySlow.
+    /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+        where TS : struct, IOperandScale
+    {
+        if (typeof(TS) == typeof(SingleScale) &&
+            Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            const int S = 1;
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
+            if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
+            {
+                int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref ip, 1 + S);
+                int pc = PcOf(ref fp, ref ip);
+                if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 4 * S, ref slots[slot + 1], function,
+                        Unsafe.Add(ref fp, first), new Baseline.BaselineCalls.RegisterArguments(st.Fp + first + 1, Unsigned<TS>(ref ip, 1 + 2 * S) - 1)))
+                {
+                    return InterpreterInlineCalls.FrameEntered;
+                }
+            }
+        }
+        return CallPropertySlow<TS>(isolate, ref st, ref fp, ref ip);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue CallPropertySlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -727,25 +1076,52 @@ public static partial class InterpreterExecution
             {
                 InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
                     new Baseline.BaselineCalls.RegisterArguments(st.Fp + first + 1, count - 1), PcOf(ref fp, ref ip) + 1 + 4 * S);
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
             // f.call(thisArg, ...args).
             if (IsFunctionPrototypeCall(callee) &&
                 InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, count > 1 ? Unsafe.Add(ref fp, first + 1) : default,
                     st.Fp + first + 2, count > 1 ? count - 2 : 0, PcOf(ref fp, ref ip) + 1 + 4 * S))
             {
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, receiver, st.Fp + first + 1, count - 1,
+        return InterpreterCalls.Call(isolate, callee, receiver, st.Fp + first + 1, count - 1,
             (Bytecode)ip == Bytecode.CallProperty
                 ? ConvertReceiverMode.NotNullOrUndefined
                 : ConvertReceiverMode.Any);
-        return false;
+    }
+
+    /// <summary>
+    /// CallProperty0: a call to a function that runs in this loop, with feedback
+    /// that needs only its call count bumped, through
+    /// InterpreterInlineCalls.TryEnterFast; everything else is CallProperty0Slow.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue CallProperty0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+        where TS : struct, IOperandScale
+    {
+        if (typeof(TS) == typeof(SingleScale) &&
+            Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            const int S = 1;
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
+            if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
+            {
+                int pc = PcOf(ref fp, ref ip);
+                if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 3 * S, ref slots[slot + 1], function,
+                        Reg<TS>(ref fp, ref ip, 1 + S), new Baseline.BaselineCalls.NoArguments()))
+                {
+                    return InterpreterInlineCalls.FrameEntered;
+                }
+            }
+        }
+        return CallProperty0Slow<TS>(isolate, ref st, ref fp, ref ip);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallProperty0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallProperty0Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -758,20 +1134,46 @@ public static partial class InterpreterExecution
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver, new Baseline.BaselineCalls.NoArguments(),
                 PcOf(ref fp, ref ip) + 1 + 3 * S);
-            return true;
+            return InterpreterInlineCalls.FrameEntered;
         }
         // a.pop(), a.shift(), n.toString(): the builtins' CSA fast paths.
         if (BuiltinFastPaths.TryCall0(isolate, callee, receiver, out JSValue fastResult))
         {
-            st.Accumulator = fastResult;
-            return false;
+            return fastResult;
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, receiver, 0, 0, ConvertReceiverMode.NotNullOrUndefined);
-        return false;
+        return InterpreterCalls.Call(isolate, callee, receiver, 0, 0, ConvertReceiverMode.NotNullOrUndefined);
+    }
+
+    /// <summary>
+    /// CallProperty1: a call to a function that runs in this loop, with feedback
+    /// that needs only its call count bumped, through
+    /// InterpreterInlineCalls.TryEnterFast; everything else is CallProperty1Slow.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue CallProperty1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+        where TS : struct, IOperandScale
+    {
+        if (typeof(TS) == typeof(SingleScale) &&
+            Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            const int S = 1;
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
+            if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
+            {
+                int pc = PcOf(ref fp, ref ip);
+                if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 4 * S, ref slots[slot + 1], function,
+                        Reg<TS>(ref fp, ref ip, 1 + S), new Baseline.BaselineCalls.OneArgument(Reg<TS>(ref fp, ref ip, 1 + 2 * S))))
+                {
+                    return InterpreterInlineCalls.FrameEntered;
+                }
+            }
+        }
+        return CallProperty1Slow<TS>(isolate, ref st, ref fp, ref ip);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallProperty1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallProperty1Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -787,29 +1189,62 @@ public static partial class InterpreterExecution
             {
                 InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
                     new Baseline.BaselineCalls.OneArgument(Unsafe.Subtract(ref fp, kRegBase + argOperand)), PcOf(ref fp, ref ip) + 1 + 4 * S);
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
             // f.call(thisArg).
             if (IsFunctionPrototypeCall(callee) &&
                 InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, Reg<TS>(ref fp, ref ip, 1 + 2 * S), 0, 0,
                     PcOf(ref fp, ref ip) + 1 + 4 * S))
             {
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
         }
         // a.push(x), Math.floor(x), s.charCodeAt(i) ...: the builtins' CSA fast paths.
         if (BuiltinFastPaths.TryCall1(isolate, callee, receiver, Reg<TS>(ref fp, ref ip, 1 + 2 * S), out JSValue fastResult))
         {
-            st.Accumulator = fastResult;
-            return false;
+            return fastResult;
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
+        return InterpreterCalls.Call(isolate, callee, receiver, st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand, 1,
             ConvertReceiverMode.NotNullOrUndefined);
-        return false;
+    }
+
+    /// <summary>
+    /// CallProperty2: a call to a function that runs in this loop, with feedback
+    /// that needs only its call count bumped, through
+    /// InterpreterInlineCalls.TryEnterFast; everything else is CallProperty2Slow.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue CallProperty2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+        where TS : struct, IOperandScale
+    {
+        if (typeof(TS) == typeof(SingleScale) &&
+            Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            const int S = 1;
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 4 * S);
+            if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
+            {
+                int pc = PcOf(ref fp, ref ip);
+                if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 5 * S, ref slots[slot + 1], function,
+                        Reg<TS>(ref fp, ref ip, 1 + S), new Baseline.BaselineCalls.TwoArguments(Reg<TS>(ref fp, ref ip, 1 + 2 * S), Reg<TS>(ref fp, ref ip, 1 + 3 * S))))
+                {
+                    return InterpreterInlineCalls.FrameEntered;
+                }
+            }
+            // target.apply(thisArg, arguments) (Class.create-style constructors).
+            if ((uint)(slot + 1) < (uint)slots.Length &&
+                ReferenceEquals(function, InterpreterRuntime.FrameContext(ref fp).NativeContext.FunctionPrototypeApply) &&
+                InterpreterInlineCalls.TryApplyFast(isolate, ref st, ref fp, ref ip, function, slots, slot))
+            {
+                return InterpreterInlineCalls.FrameEntered;
+            }
+        }
+        return CallProperty2Slow<TS>(isolate, ref st, ref fp, ref ip);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallProperty2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallProperty2Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -827,38 +1262,65 @@ public static partial class InterpreterExecution
                 InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, receiver,
                     new Baseline.BaselineCalls.TwoArguments(Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1)),
                     PcOf(ref fp, ref ip) + 1 + 5 * S);
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
             // f.call(thisArg, arg).
             if (IsFunctionPrototypeCall(callee) &&
                 InterpreterInlineCalls.TryPushFunctionCallFrame(isolate, ref st, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
                     st.Fp + InterpreterRuntime.kRegisterOperandBase - arg1, 1, PcOf(ref fp, ref ip) + 1 + 5 * S))
             {
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
             // f.apply(thisArg, arguments) (Class.create-style constructors).
             if (ReferenceEquals(callee._obj, InterpreterRuntime.FrameContext(ref fp).NativeContext.FunctionPrototypeApply) &&
                 InterpreterInlineCalls.TryPushApplyFrame(isolate, ref st, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
                     Unsafe.Subtract(ref fp, kRegBase + arg1), PcOf(ref fp, ref ip) + 1 + 5 * S))
             {
-                return true;
+                return InterpreterInlineCalls.FrameEntered;
             }
         }
         // Math.max(a, b), Math.pow(a, b) ...: the builtins' CSA fast paths.
         if (BuiltinFastPaths.TryCall2(isolate, callee, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1),
                 out JSValue fastResult))
         {
-            st.Accumulator = fastResult;
-            return false;
+            return fastResult;
         }
-        st.Accumulator = InterpreterCalls.Call2(isolate, callee, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
+        return InterpreterCalls.Call2(isolate, callee, receiver, Unsafe.Subtract(ref fp, kRegBase + arg0),
             Unsafe.Subtract(ref fp, kRegBase + arg1), st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0, arg1 == arg0 - 1,
             ConvertReceiverMode.NotNullOrUndefined);
-        return false;
+    }
+
+    /// <summary>
+    /// CallUndefinedReceiver: a call to a function that runs in this loop, with feedback
+    /// that needs only its call count bumped, through
+    /// InterpreterInlineCalls.TryEnterFast; everything else is CallUndefinedReceiverSlow.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue CallUndefinedReceiver<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+        where TS : struct, IOperandScale
+    {
+        if (typeof(TS) == typeof(SingleScale) &&
+            Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            const int S = 1;
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
+            if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
+            {
+                int first = InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref ip, 1 + S);
+                int pc = PcOf(ref fp, ref ip);
+                if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 4 * S, ref slots[slot + 1], function,
+                        default(JSValue), new Baseline.BaselineCalls.RegisterArguments(st.Fp + first, Unsigned<TS>(ref ip, 1 + 2 * S))))
+                {
+                    return InterpreterInlineCalls.FrameEntered;
+                }
+            }
+        }
+        return CallUndefinedReceiverSlow<TS>(isolate, ref st, ref fp, ref ip);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiver<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiverSlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -872,14 +1334,41 @@ public static partial class InterpreterExecution
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
                 new Baseline.BaselineCalls.RegisterArguments(st.Fp + first, count), PcOf(ref fp, ref ip) + 1 + 4 * S);
-            return true;
+            return InterpreterInlineCalls.FrameEntered;
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + first, count, ConvertReceiverMode.NullOrUndefined);
-        return false;
+        return InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + first, count, ConvertReceiverMode.NullOrUndefined);
+    }
+
+    /// <summary>
+    /// CallUndefinedReceiver0: a call to a function that runs in this loop, with feedback
+    /// that needs only its call count bumped, through
+    /// InterpreterInlineCalls.TryEnterFast; everything else is CallUndefinedReceiver0Slow.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue CallUndefinedReceiver0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+        where TS : struct, IOperandScale
+    {
+        if (typeof(TS) == typeof(SingleScale) &&
+            Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            const int S = 1;
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 1 * S);
+            if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
+            {
+                int pc = PcOf(ref fp, ref ip);
+                if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 2 * S, ref slots[slot + 1], function,
+                        default(JSValue), new Baseline.BaselineCalls.NoArguments()))
+                {
+                    return InterpreterInlineCalls.FrameEntered;
+                }
+            }
+        }
+        return CallUndefinedReceiver0Slow<TS>(isolate, ref st, ref fp, ref ip);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiver0<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiver0Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -891,14 +1380,41 @@ public static partial class InterpreterExecution
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue), new Baseline.BaselineCalls.NoArguments(),
                 PcOf(ref fp, ref ip) + 1 + 2 * S);
-            return true;
+            return InterpreterInlineCalls.FrameEntered;
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, default(JSValue), 0, 0, ConvertReceiverMode.NullOrUndefined);
-        return false;
+        return InterpreterCalls.Call(isolate, callee, default(JSValue), 0, 0, ConvertReceiverMode.NullOrUndefined);
+    }
+
+    /// <summary>
+    /// CallUndefinedReceiver1: a call to a function that runs in this loop, with feedback
+    /// that needs only its call count bumped, through
+    /// InterpreterInlineCalls.TryEnterFast; everything else is CallUndefinedReceiver1Slow.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue CallUndefinedReceiver1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+        where TS : struct, IOperandScale
+    {
+        if (typeof(TS) == typeof(SingleScale) &&
+            Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            const int S = 1;
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
+            if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
+            {
+                int pc = PcOf(ref fp, ref ip);
+                if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 3 * S, ref slots[slot + 1], function,
+                        default(JSValue), new Baseline.BaselineCalls.OneArgument(Reg<TS>(ref fp, ref ip, 1 + S))))
+                {
+                    return InterpreterInlineCalls.FrameEntered;
+                }
+            }
+        }
+        return CallUndefinedReceiver1Slow<TS>(isolate, ref st, ref fp, ref ip);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiver1<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiver1Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -911,20 +1427,46 @@ public static partial class InterpreterExecution
         {
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
                 new Baseline.BaselineCalls.OneArgument(Unsafe.Subtract(ref fp, kRegBase + argOperand)), PcOf(ref fp, ref ip) + 1 + 3 * S);
-            return true;
+            return InterpreterInlineCalls.FrameEntered;
         }
         if (BuiltinFastPaths.TryCall1(isolate, callee, default(JSValue), Unsafe.Subtract(ref fp, kRegBase + argOperand), out JSValue fastResult))
         {
-            st.Accumulator = fastResult;
-            return false;
+            return fastResult;
         }
-        st.Accumulator = InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand,
+        return InterpreterCalls.Call(isolate, callee, default(JSValue), st.Fp + InterpreterRuntime.kRegisterOperandBase - argOperand,
             1, ConvertReceiverMode.NullOrUndefined);
-        return false;
+    }
+
+    /// <summary>
+    /// CallUndefinedReceiver2: a call to a function that runs in this loop, with feedback
+    /// that needs only its call count bumped, through
+    /// InterpreterInlineCalls.TryEnterFast; everything else is CallUndefinedReceiver2Slow.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue CallUndefinedReceiver2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+        where TS : struct, IOperandScale
+    {
+        if (typeof(TS) == typeof(SingleScale) &&
+            Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            const int S = 1;
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 3 * S);
+            if (InterpreterInlineCalls.FeedbackCovers(slots, slot, function))
+            {
+                int pc = PcOf(ref fp, ref ip);
+                if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 4 * S, ref slots[slot + 1], function,
+                        default(JSValue), new Baseline.BaselineCalls.TwoArguments(Reg<TS>(ref fp, ref ip, 1 + S), Reg<TS>(ref fp, ref ip, 1 + 2 * S))))
+                {
+                    return InterpreterInlineCalls.FrameEntered;
+                }
+            }
+        }
+        return CallUndefinedReceiver2Slow<TS>(isolate, ref st, ref fp, ref ip);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool CallUndefinedReceiver2<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+    static JSValue CallUndefinedReceiver2Slow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -939,18 +1481,16 @@ public static partial class InterpreterExecution
             InterpreterInlineCalls.EnterInline(isolate, ref st, target, mode, default(JSValue),
                 new Baseline.BaselineCalls.TwoArguments(Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1)),
                 PcOf(ref fp, ref ip) + 1 + 4 * S);
-            return true;
+            return InterpreterInlineCalls.FrameEntered;
         }
         if (BuiltinFastPaths.TryCall2(callee, Unsafe.Subtract(ref fp, kRegBase + arg0), Unsafe.Subtract(ref fp, kRegBase + arg1),
                 out JSValue fastResult))
         {
-            st.Accumulator = fastResult;
-            return false;
+            return fastResult;
         }
-        st.Accumulator = InterpreterCalls.Call2(isolate, callee, default(JSValue), Unsafe.Subtract(ref fp, kRegBase + arg0),
+        return InterpreterCalls.Call2(isolate, callee, default(JSValue), Unsafe.Subtract(ref fp, kRegBase + arg0),
             Unsafe.Subtract(ref fp, kRegBase + arg1), st.Fp + InterpreterRuntime.kRegisterOperandBase - arg0, arg1 == arg0 - 1,
             ConvertReceiverMode.NullOrUndefined);
-        return false;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

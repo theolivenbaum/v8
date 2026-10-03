@@ -7,6 +7,7 @@
 // Smi (boxed), double (heap numbers), string (internalized strings) or
 // whatever the IConstantPoolMaterializer produced.
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 using V8Sharp.Codegen;
 
@@ -58,10 +59,27 @@ public sealed class BytecodeArray : HeapObject
     public void Set(int index, byte value) => _bytecodes[index] = value;
 
     /// <summary>The frame size in bytes (register_count * kSystemPointerSize), as in V8.</summary>
-    public int FrameSize { get; set; }
+    public int FrameSize
+    {
+        get => _frameSize;
+        set
+        {
+            _frameSize = value;
+            _registerCount = value / kSystemPointerSize;
+        }
+    }
+
+    int _frameSize;
+    // Kept beside the frame size: every interpreter entry reads it, and the
+    // signed division by 8 is five instructions on that path.
+    int _registerCount;
 
     /// <summary>The register count is derived from frame_size.</summary>
-    public int RegisterCount => FrameSize / kSystemPointerSize;
+    public int RegisterCount
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _registerCount;
+    }
 
     /// <summary>The parameter count includes the implicit 'this' receiver.</summary>
     public ushort ParameterCount { get; set; }

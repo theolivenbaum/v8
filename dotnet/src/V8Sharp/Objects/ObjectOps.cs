@@ -779,22 +779,24 @@ public static class ObjectOps
     /// <summary>Object::StrictEquals (===).</summary>
     public static bool StrictEquals(in JSValue obj, in JSValue that)
     {
-        if (obj.IsNumber)
+        HeapObject? a = obj._obj, b = that._obj;
+        if (ReferenceEquals(a, NumberTag.Instance))
         {
-            if (!that.IsNumber) return false;
-            return StrictNumberEquals(obj.Number, that.Number);
+            return ReferenceEquals(b, NumberTag.Instance) && StrictNumberEquals(obj._num, that._num);
         }
-        if (obj.StringOrNull is JSString s)
+        // Not a number: the same object (or both undefined) is strictly equal;
+        // otherwise only strings and BigInts compare by value. By instance type:
+        // JSString and BigInt are not sealed, and a type test of either is a
+        // call to the cast helper (1.4% of Octane EarleyBoyer).
+        if (ReferenceEquals(a, b)) return true;
+        if (a is null || b is null) return false;
+        InstanceType type = a.InstanceType;
+        if (InstanceTypeChecks.IsString(type))
         {
-            if (that.HeapObjectOrNull is not JSString t) return false;
-            return JSString.Equals(s, t);
+            return InstanceTypeChecks.IsString(b.InstanceType) && JSString.Equals(Unsafe.As<JSString>(a), Unsafe.As<JSString>(b));
         }
-        if (obj.HeapObjectOrNull is BigInt b)
-        {
-            if (that.HeapObjectOrNull is not BigInt c) return false;
-            return BigInt.EqualToBigInt(b, c);
-        }
-        return obj.IsIdenticalTo(that);
+        return type == InstanceType.BigIntType && b.InstanceType == InstanceType.BigIntType &&
+            BigInt.EqualToBigInt(Unsafe.As<BigInt>(a), Unsafe.As<BigInt>(b));
     }
 
     /// <summary>Object::SameValue.</summary>

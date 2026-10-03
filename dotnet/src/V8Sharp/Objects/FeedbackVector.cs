@@ -718,6 +718,36 @@ public readonly struct FeedbackNexus
     /// <summary>FeedbackNexus::ConfigureHandlerMode.</summary>
     public void ConfigureHandlerMode(JSValue handler) => SetFeedback(FeedbackVector.ClearedValue, handler);
 
+    /// <summary>
+    /// A handler as it is stored beside its map: a load handler for an own
+    /// field carries its field index + 1 in the value's payload
+    /// (<see cref="DecodeOwnField"/>), a field store handler its field index
+    /// and representation (StoreIC.EncodeFieldStore), so the interpreter's
+    /// monomorphic field loads and stores need not load the handler, as V8's
+    /// Smi field handlers are read from the feedback slot itself.
+    /// Any other handler, and any handler stored by another path, has a zero
+    /// payload and takes the handler's own fields.
+    /// </summary>
+    // Deviation (deviations.md, Interpreter): V8 encodes field handlers as
+    // Smis; V8Sharp's handlers are objects, and the payload of the JSValue
+    // that holds one is the cheap place for the same bits.
+    internal static JSValue EncodeHandler(JSValue handler) => handler._obj switch
+    {
+        IC.LoadHandler { OwnFieldIndex: >= 0 } loadHandler => JSValue.FromObjectWithPayload(loadHandler, loadHandler.OwnFieldIndex + 1),
+        IC.StoreHandler storeHandler when IC.StoreIC.EncodeFieldStore(storeHandler) is var encoded && encoded != 0 =>
+            JSValue.FromObjectWithPayload(storeHandler, encoded),
+        _ => handler,
+    };
+
+    /// <summary>
+    /// The own field index a handler slot's payload carries
+    /// (<see cref="EncodeHandler"/>), or -1. Only for the handler half of a
+    /// (map, handler) pair whose map matched: a handler there is an object,
+    /// whose payload is zero unless encoded.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int DecodeOwnField(in JSValue handlerSlot) => (int)handlerSlot._bits - 1;
+
     /// <summary>FeedbackNexus::ConfigureMonomorphic.</summary>
     public void ConfigureMonomorphic(Name? name, Map receiverMap, JSValue handler)
     {
@@ -727,7 +757,7 @@ public readonly struct FeedbackNexus
         }
         else if (name is null)
         {
-            SetFeedback(receiverMap, handler);
+            SetFeedback(receiverMap, EncodeHandler(handler));
         }
         else
         {
@@ -748,13 +778,13 @@ public readonly struct FeedbackNexus
         {
             if (map.IsDeprecated) continue;
             array[insertAt++] = map;
-            array[insertAt++] = handler;
+            array[insertAt++] = EncodeHandler(handler);
         }
         foreach ((Map map, JSValue handler) in mapsAndHandlers)
         {
             if (!map.IsDeprecated) continue;
             array[insertAt++] = map;
-            array[insertAt++] = handler;
+            array[insertAt++] = EncodeHandler(handler);
         }
         if (name is null) SetFeedback(array, FeedbackVector.UninitializedSentinel);
         else SetFeedback(name, array);

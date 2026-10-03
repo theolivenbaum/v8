@@ -56,6 +56,17 @@ public ref struct InterpreterState
     public int Pc;
     /// <summary>The frame pointer (index into the register stack).</summary>
     public int Fp;
+    /// <summary>
+    /// Set with <see cref="Fp"/> and <see cref="Pc"/> by the paths that switch
+    /// frames inside the dispatch loop (InterpreterInlineCalls: a call's
+    /// entry, a return): the slot at Fp and the bytecode at Pc, which those
+    /// paths have at hand, so the loop resumes with two loads instead of a
+    /// chain of seven (isolate, register stack, the frame's bytecode slot,
+    /// its bytes) ahead of the next dispatch.
+    /// </summary>
+    public ref JSValue ResumeFp;
+    /// <summary>See <see cref="ResumeFp"/>.</summary>
+    public ref byte ResumeIp;
     /// <summary>The index of this frame's record in Isolate.InterpreterFrames.</summary>
     public int FrameIndex;
     /// <summary>Set when the frame returned (Return / SuspendGenerator) during a single step.</summary>

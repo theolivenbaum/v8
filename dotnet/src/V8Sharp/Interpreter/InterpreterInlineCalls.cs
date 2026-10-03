@@ -140,6 +140,7 @@ internal static class InterpreterInlineCalls
     {
         // The interrupt check of the entry's stack check.
         if (isolate.StackGuard.HasPendingInterrupts) isolate.StackGuard.HandleInterrupts();
+        else if (isolate.RegisterStackInterruptLimit != isolate.RegisterStackLimit) isolate.StackGuard.SyncInterruptLimit();
 
         // The mode established the type.
         var bytecode = Unsafe.As<BytecodeArray>(function.Shared.FunctionData!);
@@ -193,6 +194,148 @@ internal static class InterpreterInlineCalls
         st.Pc = 0;
         st.Fp = fp;
         st.FrameIndex = depth;
+        st.ResumeFp = ref fpRef;
+        st.ResumeIp = ref MemoryMarshal.GetArrayDataReference(bytecode.Bytecodes);
+    }
+
+    /// <summary>
+    /// The common case of a call from the dispatch loop, with no call out:
+    /// <paramref name="function"/> runs in the loop (its call mode is cached),
+    /// has a feedback vector and materialized constants, its frame fits under
+    /// the interrupt limit (no interrupt pending, no overflow), and a sloppy
+    /// callee gets undefined or null (the global proxy) or an object as its
+    /// receiver. Then this does what <see cref="EnterInline"/> does, records
+    /// <paramref name="pc"/> in the caller's offset slot (SaveBytecodeOffset),
+    /// bumps <paramref name="callCount"/> (the call feedback's count slot, or a
+    /// null reference for a call without feedback such as a getter's) and
+    /// returns true; otherwise it returns false having changed nothing,
+    /// and the caller takes the general path, which handles the rest.
+    /// </summary>
+    // V8's InterpreterEntryTrampoline also has one fast path (a stack check
+    // against the interrupt limit, the invocation count, the register fill)
+    // with the rest in runtime calls. Here the split and the order of the
+    // stores matter to RyuJIT: the general path's calls (interrupts,
+    // overflow, feedback allocation, receiver conversion) made the call
+    // handlers save six registers and spill a dozen values. This path calls
+    // nothing but the write barrier helpers, which clobber the scratch
+    // registers, so it does every scalar store before the first reference
+    // store: nothing computed early lives across a barrier.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryEnterFast<TArgs>(Isolate isolate, ref InterpreterState st, ref JSValue callerFp, int pc, int returnPc,
+        ref JSValue callCount, JSFunction function, JSValue receiver, TArgs args, int reservedBelow = 0)
+        where TArgs : struct, Baseline.BaselineCalls.ICallArguments
+    {
+        SharedFunctionInfo shared = function.Shared;
+        int mode = shared.InterpreterCallMode;
+        // The receiver's halves as plain locals (a JSValue local whose
+        // properties are called can end up in memory).
+        HeapObject? receiverObject = receiver._obj;
+        long receiverBits = receiver._bits;
+        if (mode != kCallModeInline)
+        {
+            if (mode != kCallModeInlineSloppy) return false;
+            if (receiverObject is null || ReferenceEquals(receiverObject, Oddball.Null))
+            {
+                // CallFunction's receiver conversion: the global proxy.
+                receiverObject = function.Context.NativeContext.Slots[(int)Context.Field.GLOBAL_PROXY_INDEX]._obj;
+                receiverBits = 0;
+            }
+            else if (receiverObject.InstanceType < InstanceTypeChecks.FirstJSReceiver) return false;
+        }
+        if (function.RawFeedbackCell.Value is not FeedbackVector feedbackVector) return false;
+        var bytecode = Unsafe.As<BytecodeArray>(shared.FunctionData!);
+        if (bytecode.ConstantPoolValues is null) return false;
+        int argc = args.Count;
+        int formal = bytecode.ParameterCount - 1;
+        // Slots reserved below the frame (an apply's arguments window) are released with it.
+        int registerStart = isolate.RegisterStackTop;
+        int start = registerStart + reservedBelow;
+        int fp = start + (argc > formal ? argc : formal) + InterpreterRuntime.kFixedSlotsAboveParams;
+        int end = fp + bytecode.RegisterCount;
+        if ((uint)end > (uint)isolate.RegisterStackInterruptLimit) return false;
+        int depth = isolate.InterpreterFrameDepth;
+        if ((uint)depth >= (uint)Isolate.kMaxInterpreterFrames) return false;
+
+        // Scalar stores first, then the references (each skipped when the slot
+        // already holds it): nothing computed above lives across a write barrier.
+        if (!Unsafe.IsNullRef(ref callCount))
+        {
+            // IncrementCallCount (CollectCallFeedback, after FeedbackCovers).
+            Unsafe.AsRef(in callCount._bits) = BitConverter.DoubleToInt64Bits(callCount._num + InterpreterCalls.kCallCountIncrement);
+        }
+        InterpreterRuntime.SetFramePc(ref callerFp, pc);
+        isolate.RegisterStackTop = end;
+        isolate.InterpreterFrameDepth = depth + 1;
+        ref InterpreterFrameRecord frame = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.InterpreterFrames), depth);
+        Debug.Assert(st.FrameIndex == depth - 1);
+        Unsafe.Subtract(ref frame, 1).ReturnPc = returnPc;
+        frame.Fp = fp;
+        frame.Flags = InterpreterFrameFlags.InlineCall;
+        frame.RegisterStart = registerStart;
+        st.Accumulator = default;
+        st.Pc = 0;
+        st.Fp = fp;
+        st.FrameIndex = depth;
+        // The trampoline's IncrementInvocationCount.
+        feedbackVector.InvocationCount++;
+
+        ref JSValue stack0 = ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack);
+        ref JSValue fpRef = ref Unsafe.Add(ref stack0, fp);
+        st.ResumeFp = ref fpRef;
+        st.ResumeIp = ref MemoryMarshal.GetArrayDataReference(bytecode.Bytecodes);
+        int dirtyEnd = isolate.RegisterStackDirtyEnd;
+        if (fp < dirtyEnd)
+        {
+            // The register file fill (a loop, not Span.Clear: that is a call).
+            int n = (end < dirtyEnd ? end : dirtyEnd) - fp;
+            for (int i = 0; i < n; i++) Unsafe.Add(ref fpRef, i) = default;
+        }
+        // Missing arguments are undefined (V8's argument adaption).
+        for (int i = argc; i < formal; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = default;
+        ref JSValue firstArgument = ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset);
+        args.StorePayloads(ref stack0, ref firstArgument);
+        ref JSValue receiverSlot = ref Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset);
+        Unsafe.AsRef(in receiverSlot._bits) = receiverBits;
+        Unsafe.AsRef(in Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset)._bits) = 0;
+        Unsafe.AsRef(in Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset)._bits) = 0;
+        Unsafe.AsRef(in Unsafe.Add(ref fpRef, InterpreterRuntime.kBytecodeArrayOffset)._bits) = 0;
+        Unsafe.AsRef(in Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset)._bits) = 0;
+        InterpreterRuntime.SetRawSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kBytecodeOffsetOffset), 0);
+        InterpreterRuntime.SetRawSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kArgcOffset), argc);
+
+        Context context = function.Context;
+        if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
+        StoreReference(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset), context);
+        StoreReference(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset), function);
+        StoreReference(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kBytecodeArrayOffset), bytecode);
+        StoreReference(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset), feedbackVector);
+        StoreReference(ref receiverSlot, receiverObject);
+        args.StoreReferences(ref stack0, ref firstArgument);
+        return true;
+    }
+
+    /// <summary>The reference half of <see cref="StoreSlot"/>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static void StoreReference(ref JSValue slot, HeapObject? value)
+    {
+        if (!ReferenceEquals(slot._obj, value)) Unsafe.AsRef(in slot._obj) = value;
+    }
+
+    /// <summary>
+    /// Whether the call feedback in <paramref name="slots"/> at
+    /// <paramref name="slot"/> needs no update for a call of
+    /// <paramref name="function"/> beyond the call count (CollectCallFeedback's
+    /// early exits: monomorphic on the target or its feedback cell, or
+    /// megamorphic).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool FeedbackCovers(JSValue[] slots, int slot, JSFunction function)
+    {
+        if ((uint)(slot + 1) >= (uint)slots.Length) return false;
+        ref JSValue feedback = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(slots), slot);
+        HeapObject? recorded = feedback._obj;
+        return ReferenceEquals(recorded, function) || ReferenceEquals(recorded, function.RawFeedbackCell) ||
+            ReferenceEquals(recorded, ReadOnlyRoots.megamorphic_symbol);
     }
 
     /// <summary>
@@ -208,6 +351,78 @@ internal static class InterpreterInlineCalls
         if (!TryGetInlineMode(callTarget, out JSFunction function, out int mode)) return false;
         EnterInline(isolate, ref st, function, mode, thisArg, new Baseline.BaselineCalls.RegisterArguments(argsStart, argc), returnPc);
         return true;
+    }
+
+    /// <summary>
+    /// CallProperty2 of Function.prototype.apply (<paramref name="apply"/>),
+    /// `target.apply(thisArg, argumentsList)`, in the common case: call
+    /// feedback that needs only its count bumped (CollectCallFeedback's early
+    /// exits, the receiver case included), a target that runs in this loop
+    /// and an argument list that is an unmodified arguments object or a fast
+    /// array: the elements go into a window above the stack top, reserved
+    /// below the target's frame, and the target is entered through
+    /// <see cref="TryEnterFast"/>. False, with nothing done but the window
+    /// written above the top, for anything else (the general handler then
+    /// takes it, through <see cref="TryPushApplyFrame"/>).
+    /// </summary>
+    // Out of the CallProperty2 handlers: in the general one (which inlines the
+    // call, apply and builtin paths) every apply paid its 664-byte frame.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static bool TryApplyFast(Isolate isolate, ref InterpreterState st, ref JSValue callerFp, ref byte ip, JSFunction apply,
+        JSValue[] slots, int slot)
+    {
+        // CallProperty2 <apply> <target> <thisArg> <argumentsList> <slot>, single scale.
+        ref JSValue regBase = ref Unsafe.Subtract(ref callerFp, -InterpreterRuntime.kRegisterOperandBase);
+        JSValue target = Unsafe.Subtract(ref regBase, (sbyte)Unsafe.Add(ref ip, 2));
+        if (target._obj is not JSFunction function) return false;
+        HeapObject? recorded = slots[slot]._obj;
+        if (!FeedbackCovers(slots, slot, apply) &&
+            !(ReferenceEquals(recorded, function) && InterpreterCalls.FeedbackValueIsReceiver(slots, slot)))
+        {
+            return false;
+        }
+        JSValue thisArg = Unsafe.Subtract(ref regBase, (sbyte)Unsafe.Add(ref ip, 3));
+        JSValue argumentsList = Unsafe.Subtract(ref regBase, (sbyte)Unsafe.Add(ref ip, 4));
+        FixedArrayBase? elements = null;
+        int length = 0;
+        if (!argumentsList.IsNullOrUndefined &&
+            !Builtins.BuiltinsFunction.TryGetFastElements(isolate, argumentsList, out elements, out length))
+        {
+            return false;
+        }
+        int windowStart = isolate.RegisterStackTop;
+        if (windowStart + length + 64 > isolate.RegisterStackLimit) return false;
+        CopyToWindow(ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), windowStart), elements, length);
+        int pc = (int)Unsafe.ByteOffset(ref MemoryMarshal.GetArrayDataReference(InterpreterRuntime.FrameBytecode(ref callerFp).Bytecodes), ref ip);
+        return TryEnterFast(isolate, ref st, ref callerFp, pc, pc + kCallProperty2Size, ref slots[slot + 1], function, thisArg,
+            new Baseline.BaselineCalls.RegisterArguments(windowStart, length), reservedBelow: length);
+    }
+
+    /// <summary>The size of a CallProperty2 bytecode (single operand scale).</summary>
+    const int kCallProperty2Size = 6;
+
+    /// <summary>
+    /// The elements of a fast arguments list into an argument window; holes
+    /// (holey arrays with intact protectors) read as undefined.
+    /// </summary>
+    static void CopyToWindow(ref JSValue window, FixedArrayBase? elements, int length)
+    {
+        if (elements is FixedArray fixedArray)
+        {
+            JSValue[] data = fixedArray.Data;
+            for (int i = 0; i < length; i++)
+            {
+                JSValue value = data[i];
+                Unsafe.Add(ref window, i) = ReferenceEquals(value._obj, Oddball.TheHole) ? default : value;
+            }
+        }
+        else if (elements is FixedDoubleArray doubles)
+        {
+            for (int i = 0; i < length; i++)
+            {
+                Unsafe.Add(ref window, i) = doubles.IsTheHole(i) ? default : JSValue.FromNumber(doubles.GetScalar(i));
+            }
+        }
     }
 
     /// <summary>
@@ -234,24 +449,7 @@ internal static class InterpreterInlineCalls
         // (released with it), as V8 pushes them onto the machine stack.
         int windowStart = isolate.RegisterStackTop;
         if (windowStart + length + 64 > isolate.RegisterStackLimit) return false;
-        ref JSValue window = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), windowStart);
-        if (elements is FixedArray fixedArray)
-        {
-            JSValue[] data = fixedArray.Data;
-            for (int i = 0; i < length; i++)
-            {
-                // Holes (holey arrays with intact protectors) read as undefined.
-                JSValue value = data[i];
-                Unsafe.Add(ref window, i) = ReferenceEquals(value._obj, Oddball.TheHole) ? default : value;
-            }
-        }
-        else if (elements is FixedDoubleArray doubles)
-        {
-            for (int i = 0; i < length; i++)
-            {
-                Unsafe.Add(ref window, i) = doubles.IsTheHole(i) ? default : JSValue.FromNumber(doubles.GetScalar(i));
-            }
-        }
+        CopyToWindow(ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), windowStart), elements, length);
         isolate.RegisterStackTop = windowStart + length;
 
         if (mode == kCallModeInlineSloppy && !thisArg.IsJSReceiver) thisArg = InterpreterCalls.ConvertReceiver(isolate, function, thisArg);
@@ -347,6 +545,33 @@ internal static class InterpreterInlineCalls
     }
 
     /// <summary>
+    /// A marker no JavaScript value can be (an object only this class has):
+    /// a handler that returns a value returns this when it entered a frame
+    /// in the loop instead (a getter called from GetNamedProperty).
+    /// </summary>
+    internal static readonly HeapObject FrameEnteredMarker = new FixedArray(0);
+
+    /// <summary>
+    /// A second marker: a fast handler that does not handle the case returns
+    /// it, and the loop calls the general handler itself.
+    /// </summary>
+    internal static readonly HeapObject NotHandledMarker = new FixedArray(0);
+
+    /// <summary><see cref="NotHandledMarker"/> as a value.</summary>
+    internal static JSValue NotHandled
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => JSValue.FromObject(NotHandledMarker);
+    }
+
+    /// <summary><see cref="FrameEnteredMarker"/> as a value.</summary>
+    internal static JSValue FrameEntered
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => JSValue.FromObject(FrameEnteredMarker);
+    }
+
+    /// <summary>
     /// Sets <paramref name="count"/> slots to undefined: a loop for the usual
     /// small register files (Span.Clear is a call into SpanHelpers).
     /// </summary>
@@ -393,31 +618,58 @@ internal static class InterpreterInlineCalls
         return result;
     }
 
+    /// <summary>The result of <see cref="ReturnInline"/>: the frame was not entered inline.</summary>
+    public const int kReturnNotInline = 0;
+    /// <summary>Returned to the caller; the result is the returned value (the loop's accumulator as it is).</summary>
+    public const int kReturnedAccumulator = 1;
+    /// <summary>Returned from a construct frame; the result (the receiver) is in st.Accumulator.</summary>
+    public const int kReturnedReceiver = 2;
+
+    /// <summary>
+    /// The Return bytecode in a frame this loop entered inline: pops it like
+    /// <see cref="Return"/>, but leaves the returned value to the
+    /// loop's accumulator unless a construct frame replaces it with its
+    /// receiver (then in st.Accumulator), and sets st.ResumeFp/ResumeIp to the
+    /// caller; the context store comes last, so no value lives across its
+    /// write barrier. Returns one of the kReturn* codes.
+    /// </summary>
+    public static int ReturnInline(Isolate isolate, ref InterpreterState st, JSValue result)
+    {
+        int index = st.FrameIndex;
+        ref InterpreterFrameRecord frame = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.InterpreterFrames), index);
+        InterpreterFrameFlags flags = frame.Flags;
+        if ((flags & InterpreterFrameFlags.InlineCall) == 0) return kReturnNotInline;
+        int code = kReturnedAccumulator;
+        if ((flags & InterpreterFrameFlags.Constructor) != 0 && !result.IsJSReceiver)
+        {
+            st.Accumulator = isolate.RegisterStack[frame.Fp + InterpreterRuntime.kReceiverOffset];
+            code = kReturnedReceiver;
+        }
+        // PopFrame, with the record left as it is and the slots kept below
+        // RegisterStackDirtyEnd for the next call at this depth.
+        isolate.InterpreterFrameDepth = index;
+        int top = isolate.RegisterStackTop;
+        if (top > isolate.RegisterStackDirtyEnd) isolate.RegisterStackDirtyEnd = top;
+        isolate.RegisterStackTop = frame.RegisterStart;
+        ref InterpreterFrameRecord caller = ref Unsafe.Subtract(ref frame, 1);
+        int fp = caller.Fp;
+        int pc = caller.ReturnPc;
+        st.Pc = pc;
+        st.Fp = fp;
+        st.FrameIndex = index - 1;
+        ref JSValue fpRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), fp);
+        st.ResumeFp = ref fpRef;
+        st.ResumeIp = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(InterpreterRuntime.FrameBytecode(ref fpRef).Bytecodes), pc);
+        Context context = InterpreterRuntime.FrameContext(ref fpRef);
+        if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
+        return code;
+    }
+
     /// <summary>
     /// Leaves the inline frame <paramref name="st"/> describes: releases its
     /// registers and record and makes <paramref name="st"/> describe the caller
     /// at its return offset.
     /// </summary>
-    /// <summary>
-    /// The Return bytecode in a frame this loop entered inline: <see cref="Return"/>
-    /// with the result in st.Accumulator, true. False, with nothing done, for
-    /// the frame the loop was entered for.
-    /// </summary>
-    public static bool TryReturnInline(Isolate isolate, ref InterpreterState st, JSValue result)
-    {
-        InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
-        ref InterpreterFrameRecord frame = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(frames), st.FrameIndex);
-        InterpreterFrameFlags flags = frame.Flags;
-        if ((flags & InterpreterFrameFlags.InlineCall) == 0) return false;
-        if ((flags & InterpreterFrameFlags.Constructor) != 0 && !result.IsJSReceiver)
-        {
-            result = isolate.RegisterStack[frame.Fp + InterpreterRuntime.kReceiverOffset];
-        }
-        PopFrame(isolate, ref st, frames, ref frame);
-        st.Accumulator = result;
-        return true;
-    }
-
     public static void PopFrame(Isolate isolate, ref InterpreterState st)
     {
         InterpreterFrameRecord[] frames = isolate.InterpreterFrames;

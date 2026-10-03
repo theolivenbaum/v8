@@ -2,8 +2,9 @@
 // and a secondary table of (name, map) -> handler entries. Entries retired
 // from the primary table move to the secondary one.
 //
-// V8 hashes the map's address; a managed object has no stable address, so the
-// map's identity hash (RuntimeHelpers.GetHashCode) takes its place.
+// V8 hashes the map's address and the name's; a managed object has no stable
+// address, so the map's precomputed Map.StubCacheHash and the name's hash
+// field take their place.
 using System.Runtime.CompilerServices;
 
 namespace V8Sharp.IC;
@@ -30,7 +31,7 @@ public sealed class StubCache
     {
         // Compute the hash of the name (use entire hash field).
         uint field = name.RawHashField;
-        uint mapBits = (uint)RuntimeHelpers.GetHashCode(map);
+        uint mapBits = map.StubCacheHash;
         uint mapLow = mapBits ^ (mapBits >> kPrimaryTableBits);
         // Base the offset on a simple combination of name and map.
         uint key = mapLow + field;
@@ -40,8 +41,10 @@ public sealed class StubCache
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static int SecondaryOffset(Name name, Map oldMap)
     {
-        uint nameBits = (uint)RuntimeHelpers.GetHashCode(name);
-        uint mapBits = (uint)RuntimeHelpers.GetHashCode(oldMap);
+        // V8 uses the name's address here; its hash field, mixed differently
+        // from the primary offset, spreads the entries as well.
+        uint nameBits = name.RawHashField * 0x85EBCA6Bu;
+        uint mapBits = oldMap.StubCacheHash;
         uint key = mapBits + nameBits;
         key += key >> kSecondaryTableBits;
         return (int)(key & (kSecondaryTableSize - 1));
