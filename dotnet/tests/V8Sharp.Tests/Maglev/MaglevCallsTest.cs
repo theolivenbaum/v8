@@ -130,10 +130,11 @@ public class MaglevCallsTest
     [Fact]
     public void KnownCallsEnterTheCalleesMaglevCodeDirectly()
     {
-        // Both functions optimized; the callee is too big to inline, so the
+        // Both functions optimized; the callee is too big to inline (V8's
+        // default limit, not the top-tier one), so the
         // caller's CallKnownJSFunction enters its code (a deopt in it
         // continues in the interpreter and returns to the caller's code).
-        Assert.Equal("5,7,8,7.5,8,0", MaglevCompilerTest.Run("--maglev", """
+        Assert.Equal("5,7,8,7.5,8,0", MaglevCompilerTest.Run("--maglev --max-maglev-inlined-bytecode-size=100", """
             function callee(a, b) {
               if (a === 'never') { a = 1; a = 2; a = 3; a = 4; a = 5; a = 6; a = 7; a = 8; a = 9; a = 10; a = 11; a = 12; a = 13; a = 14;
                 a = 15; a = 16; a = 17; a = 18; a = 19; a = 20; a = 21; a = 22; a = 23; a = 24; a = 25; a = 26; a = 27; a = 28; }

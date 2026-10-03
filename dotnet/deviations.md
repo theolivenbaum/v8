@@ -459,6 +459,13 @@ for now, to be revisited when the reason goes away.
   (`BuiltinStringPrototypeCharCodeAtOrNaN`) and the keyed name check against
   the name's primitive (`CheckValueEqualsString` with the primitive) are one
   node each where V8 builds a branch and a phi.
+- Inlining limits: Maglev is V8Sharp's top tier (no Turbofan), so the
+  inlining heuristics use the values V8's `--maglev-as-top-tier` implies
+  (max_maglev_inlined_bytecode_size 460, min_maglev_inlining_frequency
+  0.10) unless those flags are set explicitly; V8's x64 default
+  configuration uses 100 and 0.95 and leaves the rest to Turbofan.
+  Measured (octane-steady, 2026-10-03): +3% geomean on Richards, DeltaBlue,
+  RayTrace, EarleyBoyer, Crypto.
 - Parameter assignments (of the function and of inlined functions) stay in
   IL locals and are written to the frame only before nodes that can observe
   the frame's parameters (calls, allocation of arguments objects):

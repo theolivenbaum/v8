@@ -580,22 +580,29 @@ public sealed partial class MaglevGraphBuilder
         return null;
     }
 
-    // Experiment hooks (V8SHARP_MAGLEV_INLINE_DEPTH / _FREQUENCY): the
-    // flags' values unless the variables are set.
-    // (Also the runtimeconfig properties V8Sharp.MaglevInlineDepth / V8Sharp.MaglevInlineFrequency.)
+    // V8Sharp has no Turbofan: Maglev is the top tier, so it inlines as V8
+    // with --maglev-as-top-tier, whose weak implications raise
+    // max_maglev_inlined_bytecode_size to 460 and lower
+    // min_maglev_inlining_frequency to 0.10 (flag-definitions.h). Flags set
+    // explicitly keep their values. The variables V8SHARP_MAGLEV_INLINE_DEPTH,
+    // _FREQUENCY, _SIZE and _BUDGET (or the runtimeconfig properties
+    // V8Sharp.MaglevInline{Depth,Frequency,Size,Budget}) override the
+    // defaults for experiments.
+    const int kTopTierInlinedBytecodeSize = 460;
+    const double kTopTierInliningFrequency = 0.10;
+
     static readonly int s_inlineDepth = int.TryParse(Setting("V8SHARP_MAGLEV_INLINE_DEPTH", "V8Sharp.MaglevInlineDepth"), out int d) ? d : -1;
     static readonly double s_inlineFrequency = double.TryParse(Setting("V8SHARP_MAGLEV_INLINE_FREQUENCY", "V8Sharp.MaglevInlineFrequency"),
         System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double f) ? f : -1;
+    static readonly int s_inlineSize = int.TryParse(Setting("V8SHARP_MAGLEV_INLINE_SIZE", "V8Sharp.MaglevInlineSize"), out int z) ? z : -1;
+    static readonly int s_inlineBudget = int.TryParse(Setting("V8SHARP_MAGLEV_INLINE_BUDGET", "V8Sharp.MaglevInlineBudget"), out int c) ? c : -1;
 
     static string? Setting(string variable, string property) =>
         Environment.GetEnvironmentVariable(variable) ?? AppContext.GetData(property)?.ToString();
 
-    static readonly int s_inlineSize = int.TryParse(Setting("V8SHARP_MAGLEV_INLINE_SIZE", "V8Sharp.MaglevInlineSize"), out int z) ? z : -1;
-    static readonly int s_inlineBudget = int.TryParse(Setting("V8SHARP_MAGLEV_INLINE_BUDGET", "V8Sharp.MaglevInlineBudget"), out int c) ? c : -1;
-
-    int MaxInlinedBytecodeSize => s_inlineSize >= 0 && !Flags.IsExplicitlySet("max_maglev_inlined_bytecode_size")
-        ? s_inlineSize
-        : Flags.max_maglev_inlined_bytecode_size;
+    int MaxInlinedBytecodeSize => Flags.IsExplicitlySet("max_maglev_inlined_bytecode_size")
+        ? Flags.max_maglev_inlined_bytecode_size
+        : s_inlineSize >= 0 ? s_inlineSize : kTopTierInlinedBytecodeSize;
 
     int MaxInlinedBytecodeSizeCumulative => s_inlineBudget >= 0 && !Flags.IsExplicitlySet("max_maglev_inlined_bytecode_size_cumulative")
         ? s_inlineBudget
@@ -603,9 +610,9 @@ public sealed partial class MaglevGraphBuilder
 
     int MaxInlineDepth => s_inlineDepth >= 0 && !Flags.IsExplicitlySet("max_maglev_inline_depth") ? s_inlineDepth : Flags.max_maglev_inline_depth;
 
-    double MinInliningFrequency => s_inlineFrequency >= 0 && !Flags.IsExplicitlySet("min_maglev_inlining_frequency")
-        ? s_inlineFrequency
-        : Flags.min_maglev_inlining_frequency;
+    double MinInliningFrequency => Flags.IsExplicitlySet("min_maglev_inlining_frequency")
+        ? Flags.min_maglev_inlining_frequency
+        : s_inlineFrequency >= 0 ? s_inlineFrequency : kTopTierInliningFrequency;
 
     /// <summary>Bytecodes that read the frame through the interpreter state cannot run in an inlined frame.</summary>
     static bool InlineableBytecodes(BytecodeArray bytecode)
