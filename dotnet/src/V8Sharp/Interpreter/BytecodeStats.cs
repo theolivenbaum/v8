@@ -6,6 +6,7 @@ public static class BytecodeStats
 {
     static readonly long[] s_single = new long[256];
     static readonly long[] s_pairs = new long[256 * 256];
+    static readonly long[] s_prefixed = new long[2 * 256];
     static int s_prev;
 
     static BytecodeStats()
@@ -13,8 +14,9 @@ public static class BytecodeStats
         AppDomain.CurrentDomain.ProcessExit += (_, _) => Dump();
     }
 
-    public static void Count(byte b)
+    public static void Count(byte b, byte next)
     {
+        if (b <= (byte)Bytecode.ExtraWide) s_prefixed[b * 256 + next]++;
         s_single[b]++;
         s_pairs[s_prev * 256 + b]++;
         s_prev = b;
@@ -31,6 +33,11 @@ public static class BytecodeStats
         var singles = Enumerable.Range(0, 256).OrderByDescending(i => s_single[i]).Take(80);
         foreach (int i in singles)
             w.WriteLine($"{(Bytecode)i,-40} {s_single[i],14} {100.0 * s_single[i] / total,6:F2}%");
+        w.WriteLine();
+        // The bytecodes run with a prefix (Wide, ExtraWide).
+        var prefixed = Enumerable.Range(0, 2 * 256).OrderByDescending(i => s_prefixed[i]).Take(40);
+        foreach (int i in prefixed)
+            w.WriteLine($"{(Bytecode)(i / 256),-12} {(Bytecode)(i % 256),-40} {s_prefixed[i],14} {100.0 * s_prefixed[i] / total,6:F2}%");
         w.WriteLine();
         var pairs = Enumerable.Range(0, 256 * 256).OrderByDescending(i => s_pairs[i]).Take(120);
         foreach (int i in pairs)

@@ -23,6 +23,10 @@ for now, to be revisited when the reason goes away.
 - No Smi/HeapNumber distinction in `JSValue`; `IsSmi` is computed from the
   value (architecture.md section 3). So `%IsSmi(%AllocateHeapNumberWithValue(1))`
   is true (mjsunit call-intrinsic-fuzzing fails on it).
+- Host configuration, not engine behaviour: V8Sharp.Bench runs V8Sharp with
+  the .NET GC's non-region write barrier (`DOTNET_GCWriteBarrier=3`), as V8's
+  stack stores need no barrier at all and the register stack is an old,
+  pinned array (tools/V8Sharp.Bench/README.md). Other hosts may set it too.
 
 ## V8Sharp.Base (numbers, math, unicode, hashing)
 
@@ -159,6 +163,13 @@ for now, to be revisited when the reason goes away.
 - RegExp: no interrupt/stack-guard polling in the bytecode interpreter or the
   NFA interpreter (no isolate), so they never return RETRY; the backtrack
   stack is limited to V8's 64 MB (EXCEPTION on overflow).
+- RegExp bytecode interpreter (structure only): `RawMatch` keeps the
+  backtrack stack in locals (an int array cached per thread, as V8 keeps its
+  RegExpStack on the isolate) instead of a stack object, has no try/finally,
+  and runs SkipUntilOneOfMasked(3) and the case-insensitive back references
+  in separate methods, so that RyuJIT keeps the dispatch state in registers
+  and inlines the operand reads (in one large method its inlining budget ran
+  out and every operand read was a call).
 - RegExp native tier: RegExpMacroAssemblerIL has no CheckPreemption at
   backtracks and no JS stack guard check in the prologue (no isolate), like
   the interpreter above. Positions are absolute char indices where x64 keeps

@@ -351,6 +351,10 @@ public sealed partial class Factory(Isolate isolate)
         return obj;
     }
 
+    /// <summary><see cref="FastNewObject"/> as a call (the interpreter's construct fast path).</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public JSObject FastNewObjectOutOfLine(Map initialMap) => FastNewObject(initialMap);
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     void SlackTrackingStep(Map map) => map.FindRootMap().InobjectSlackTrackingStep(_isolate);
 
