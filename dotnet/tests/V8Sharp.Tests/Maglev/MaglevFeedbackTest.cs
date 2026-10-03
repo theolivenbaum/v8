@@ -84,6 +84,23 @@ public class MaglevFeedbackTest
     }
 
     [Fact]
+    public void StrictEqualsWithReceiverOrNullOrUndefinedFeedback()
+    {
+        // mjsunit/maglev/strict-equals-receiver-or-null-or-undefined.
+        Assert.Equal("true,false,false,true,false,8,false,0", MaglevCompilerTest.Run("--maglev", """
+            function strictEquals(a, b) { return a === b; }
+            %PrepareFunctionForOptimization(strictEquals);
+            strictEquals({}, null);
+            %OptimizeMaglevOnNextCall(strictEquals);
+            const o = {};
+            var r = [strictEquals(null, null), strictEquals(null, undefined), strictEquals(o, {}), strictEquals(o, o),
+                     strictEquals(undefined, o), %GetOptimizationStatus(strictEquals) & 8];
+            r.push(strictEquals({}, ""), %GetOptimizationStatus(strictEquals) & 8);
+            r.join();
+            """));
+    }
+
+    [Fact]
     public void AccessesOnNullAndUndefinedHaveFeedback()
     {
         // Port of the null/undefined cases of mjsunit/compiler/misc-ensure-no-deopt:

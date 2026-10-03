@@ -1356,6 +1356,7 @@ internal sealed class MaglevCodeGenerator
                 {
                     1 => nameof(MaglevBuiltins.IsInternalizedString),
                     2 => nameof(MaglevBuiltins.IsJSReceiver),
+                    4 => nameof(MaglevBuiltins.IsJSReceiverOrNullOrUndefined),
                     _ => nameof(MaglevBuiltins.IsWritableElements),
                 });
                 DeoptIfFalse(node);

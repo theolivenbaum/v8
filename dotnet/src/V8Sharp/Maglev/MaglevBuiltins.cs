@@ -56,6 +56,10 @@ public static class MaglevBuiltins
     public static bool IsJSReceiver(JSValue v) => v._obj is { } o && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver;
 
     [MethodImpl(Inline)]
+    public static bool IsJSReceiverOrNullOrUndefined(JSValue v) =>
+        v._obj is not { } o || ReferenceEquals(o, Oddball.Null) || o.InstanceType >= InstanceTypeChecks.FirstJSReceiver;
+
+    [MethodImpl(Inline)]
     public static bool IsNumberOrOddball(JSValue v) =>
         v._obj is null || ReferenceEquals(v._obj, NumberTag.Instance) || ReferenceEquals(v._obj, Oddball.Null) ||
         ReferenceEquals(v._obj, Oddball.True) || ReferenceEquals(v._obj, Oddball.False);

@@ -1341,6 +1341,12 @@ public sealed partial class MaglevGraphBuilder
                 BuildCheckJSReceiver(right);
                 SetAccumulator(BuildTaggedEqual(left, right));
                 return;
+            case CompareOperationHint.kReceiverOrNullOrUndefined when op == CompareOperation.kStrictEqual:
+                // (Abstract equality falls back to the generic compare: null == undefined.)
+                BuildCheckJSReceiverOrNullOrUndefined(left);
+                BuildCheckJSReceiverOrNullOrUndefined(right);
+                SetAccumulator(BuildTaggedEqual(left, right));
+                return;
             case CompareOperationHint.kString:
             {
                 BuildCheckString(left);
@@ -1393,6 +1399,22 @@ public sealed partial class MaglevGraphBuilder
         if (CheckType(value, NodeType.kJSReceiver)) return;
         AddCheck(Opcode.CheckInstanceType, value, DeoptimizeReason.kNotAJavaScriptObject, int0: 2);
         EnsureType(value, NodeType.kJSReceiver);
+    }
+
+    /// <summary>BuildCheckJSReceiverOrNullOrUndefined (CheckJSReceiverOrNullOrUndefined).</summary>
+    void BuildCheckJSReceiverOrNullOrUndefined(ValueNode value)
+    {
+        if (value.Representation != ValueRepresentation.kTagged)
+        {
+            EmitUnconditionalDeoptAndAbort(DeoptimizeReason.kNotAJavaScriptObjectOrNullOrUndefined);
+        }
+        if (CheckType(value, NodeType.kJSReceiverOrNullOrUndefined)) return;
+        if (!NodeTypes.CanBe(GetType(value), NodeType.kJSReceiverOrNullOrUndefined))
+        {
+            EmitUnconditionalDeoptAndAbort(DeoptimizeReason.kNotAJavaScriptObjectOrNullOrUndefined);
+        }
+        AddCheck(Opcode.CheckInstanceType, value, DeoptimizeReason.kNotAJavaScriptObjectOrNullOrUndefined, int0: 4);
+        EnsureType(value, NodeType.kJSReceiverOrNullOrUndefined);
     }
 
     /// <summary>A reference comparison of two values (TaggedEqual), folded for constants.</summary>
