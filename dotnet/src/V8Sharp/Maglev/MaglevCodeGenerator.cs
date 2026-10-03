@@ -1357,6 +1357,7 @@ internal sealed class MaglevCodeGenerator
                     1 => nameof(MaglevBuiltins.IsInternalizedString),
                     2 => nameof(MaglevBuiltins.IsJSReceiver),
                     4 => nameof(MaglevBuiltins.IsJSReceiverOrNullOrUndefined),
+                    5 => nameof(MaglevBuiltins.IsStringOrStringWrapper),
                     _ => nameof(MaglevBuiltins.IsWritableElements),
                 });
                 DeoptIfFalse(node);
@@ -1469,6 +1470,11 @@ internal sealed class MaglevCodeGenerator
                 Store(v!);
                 return;
             }
+            case Opcode.UnwrapStringWrapper:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Call(nameof(MaglevBuiltins.UnwrapStringWrapper));
+                Store(v!);
+                return;
             case Opcode.MigrateMapIfNeeded:
                 _il.Emit(OpCodes.Ldarg_1);
                 Load(node.Inputs[0], ValueRepresentation.kTagged);

@@ -1042,6 +1042,21 @@ public sealed partial class MaglevGraphBuilder
                     return;
                 }
                 break;
+            case BinaryOperationHint.kStringOrStringWrapper:
+                if (op == Operation.Add &&
+                    _info.DependOnProtector(Protectors.IsStringWrapperToPrimitiveIntact(Isolate), "StringWrapperToPrimitive"))
+                {
+                    ValueNode left = LoadRegister(0);
+                    ValueNode right = GetAccumulator();
+                    BuildCheckStringOrStringWrapper(left);
+                    BuildCheckStringOrStringWrapper(right);
+                    left = BuildUnwrapStringWrapper(left);
+                    right = BuildUnwrapStringWrapper(right);
+                    SetAccumulator(CallMaglev("StringAdd", [left, right], [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1)],
+                        OpProperties.kCanAllocate | OpProperties.kCanThrow | OpProperties.kNotIdempotent, type: NodeType.kString)!);
+                    return;
+                }
+                break;
         }
         SetAccumulator(CallBaseline(generic, [LoadRegister(0), GetAccumulator()],
             [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.FeedbackRef(EmbeddedFeedbackOffset(1))])!);
@@ -1399,6 +1414,26 @@ public sealed partial class MaglevGraphBuilder
         if (CheckType(value, NodeType.kJSReceiver)) return;
         AddCheck(Opcode.CheckInstanceType, value, DeoptimizeReason.kNotAJavaScriptObject, int0: 2);
         EnsureType(value, NodeType.kJSReceiver);
+    }
+
+    /// <summary>BuildCheckStringOrStringWrapper.</summary>
+    void BuildCheckStringOrStringWrapper(ValueNode value)
+    {
+        if (value.Representation != ValueRepresentation.kTagged) EmitUnconditionalDeoptAndAbort(DeoptimizeReason.kNotAStringOrStringWrapper);
+        if (CheckType(value, NodeType.kStringOrStringWrapper)) return;
+        AddCheck(Opcode.CheckInstanceType, value, DeoptimizeReason.kNotAStringOrStringWrapper, int0: 5);
+        EnsureType(value, NodeType.kStringOrStringWrapper);
+    }
+
+    /// <summary>BuildUnwrapStringWrapper: the string of a string or a string wrapper (UnwrapStringWrapper).</summary>
+    ValueNode BuildUnwrapStringWrapper(ValueNode value)
+    {
+        if (CheckType(value, NodeType.kString)) return value;
+        return AddNewNode(new ValueNode(Opcode.UnwrapStringWrapper, ValueRepresentation.kTagged)
+        {
+            Inputs = [value],
+            Type = NodeType.kString,
+        });
     }
 
     /// <summary>BuildCheckJSReceiverOrNullOrUndefined (CheckJSReceiverOrNullOrUndefined).</summary>

@@ -101,6 +101,7 @@ public static class NodeTypes
         if (o is Context) return NodeType.kContext;
         if (o is JSFunction) return NodeType.kJSFunction;
         if (o is JSArray) return NodeType.kJSArray;
+        if (o is JSPrimitiveWrapper { Value._obj: JSString }) return NodeType.kStringWrapper;
         if (o is JSReceiver r) return r.Map.IsCallable ? NodeType.kOtherCallable : NodeType.kOtherJSReceiver;
         return NodeType.kOtherHeapObject;
     }
@@ -227,6 +228,8 @@ public enum Opcode : ushort
     // ---- Loads and stores ---------------------------------------------------------------
     /// <summary>The map of a JSReceiver as a tagged value (undefined for anything else).</summary>
     LoadMap,
+    /// <summary>UnwrapStringWrapper: the string of a string or a string wrapper.</summary>
+    UnwrapStringWrapper,
     /// <summary>MigrateMapIfNeeded: the object's map after migrating it if the map (input 0) is deprecated.</summary>
     MigrateMapIfNeeded,
     LoadTaggedField,

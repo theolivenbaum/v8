@@ -101,6 +101,23 @@ public class MaglevFeedbackTest
     }
 
     [Fact]
+    public void StringWrapperAddDependsOnTheProtector()
+    {
+        // mjsunit/maglev/string-wrapper-add-2 and regress-410867001.
+        Assert.Equal("firstconstant,8,0,firstvalue", MaglevCompilerTest.Run("--maglev", """
+            var stringWrapper = new String('constant');
+            function add(a) { return a + stringWrapper; }
+            %PrepareFunctionForOptimization(add);
+            add('first');
+            %OptimizeMaglevOnNextCall(add);
+            var r = [add('first'), %GetOptimizationStatus(add) & 8];
+            stringWrapper.valueOf = () => 'value';
+            r.push(%GetOptimizationStatus(add) & 8, add('first'));
+            r.join();
+            """));
+    }
+
+    [Fact]
     public void AccessesOnNullAndUndefinedHaveFeedback()
     {
         // Port of the null/undefined cases of mjsunit/compiler/misc-ensure-no-deopt:

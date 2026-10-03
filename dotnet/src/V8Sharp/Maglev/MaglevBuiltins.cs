@@ -56,6 +56,13 @@ public static class MaglevBuiltins
     public static bool IsJSReceiver(JSValue v) => v._obj is { } o && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver;
 
     [MethodImpl(Inline)]
+    public static bool IsStringOrStringWrapper(JSValue v) =>
+        v._obj is { } o && (o.InstanceType <= InstanceTypeChecks.LastString || o is JSPrimitiveWrapper { Value._obj: JSString });
+
+    [MethodImpl(Inline)]
+    public static JSValue UnwrapStringWrapper(JSValue v) => v._obj is JSPrimitiveWrapper w ? w.Value : v;
+
+    [MethodImpl(Inline)]
     public static bool IsJSReceiverOrNullOrUndefined(JSValue v) =>
         v._obj is not { } o || ReferenceEquals(o, Oddball.Null) || o.InstanceType >= InstanceTypeChecks.FirstJSReceiver;
 
