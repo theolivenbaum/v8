@@ -740,6 +740,18 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Bne_Un, isFalse);
         Emit(OpCodes.Br, isTrue);
         _il.MarkLabel(notNumber);
+        // A JSReceiver (`if (node)`): true unless its map is undetectable.
+        Label notReceiver = _il.DefineLabel();
+        Emit(OpCodes.Ldloc, TObj);
+        Emit(OpCodes.Ldfld, s_instanceType);
+        Emit(OpCodes.Ldc_I4, (int)InstanceTypeChecks.FirstJSReceiver);
+        Emit(OpCodes.Blt_Un, notReceiver);
+        Emit(OpCodes.Ldloc, TObj);
+        Emit(OpCodes.Ldfld, s_receiverMap);
+        Emit(OpCodes.Call, s_mapIsUndetectable);
+        Emit(OpCodes.Brtrue, isFalse);
+        Emit(OpCodes.Br, isTrue);
+        _il.MarkLabel(notReceiver);
         Emit(OpCodes.Ldloc, TObj);
         CallBuiltin("ToBooleanSlow");
         Emit(OpCodes.Brtrue, isTrue);
