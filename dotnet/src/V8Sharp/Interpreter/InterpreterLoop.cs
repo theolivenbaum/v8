@@ -1091,6 +1091,16 @@ public static partial class InterpreterExecution
                                 ip = ref Unsafe.Add(ref ip, 2 + 3 * 2);
                                 continue;
                             }
+                            // Arithmetic with a 16-bit immediate (Gameboy's ModSmi):
+                            // the handler the single-scale loop calls, called directly.
+                            case Bytecode.AddSmi when isWide:
+                            case Bytecode.SubSmi when isWide:
+                            case Bytecode.MulSmi when isWide:
+                            case Bytecode.DivSmi when isWide:
+                            case Bytecode.ModSmi when isWide:
+                                acc = BinarySmiOp<DoubleScale>(st.Isolate, ref st, ref fpSlot, ref Unsafe.Add(ref ip, 1), acc);
+                                ip = ref Unsafe.Add(ref ip, 2 + 2 + 1);
+                                continue;
                             case Bytecode.JumpLoop when isWide:
                             {
                                 // JumpLoop without its interrupt and OSR cases (those
