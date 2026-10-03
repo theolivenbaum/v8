@@ -800,6 +800,59 @@ Conformance with these commits merged at b0e12315: test262 95123 run,
 fail at b0e12315 without them (maglev/, turboshaft/ and for-of/
 destructuring deopt tests: the expectations predate the Maglev merge).
 
+Runtime paths pass: accessors, builtins, strings, regexp glue, IC slow
+paths (2026-10-02/03; parity publish, bench-session.sh, V8 --jitless in the
+same session). Counted per run first (temporary counters on builtin calls,
+runtime calls, IC misses/slow entries, stub cache, flattening): the
+runtime paths of the furthest-behind benchmarks are a small share of their
+time; the bulk is the dispatch loop, calls and allocation. The biggest
+counts per SCALE-10 run: pdf.js 1.5M String.fromCharCode through the
+builtin frame, 345K polymorphic typed array and 330K ConsString index loads
+through KeyedLoadIC.LoadSlow, 148K indexOf; TypeScript 2.2M megamorphic
+named stores through StoreNamedSlow, 186K keyed loads with non-internalized
+string keys missing the stub cache; RegExp 2.8M exec and 1.2M replace
+through the builtin frame; DeltaBlue 730K `new Array()`; zlib 280K
+Math.imul; EarleyBoyer hardly any runtime calls (all loop, calls, allocation).
+
+Changes, one commit each (git log 613b6894..): fast paths for
+String.fromCharCode, indexOf (with and without a position),
+substring/slice/substr, Math.imul; polymorphic typed array and String index
+hits in KeyedLoadIC.LoadSlow without the miss; ConsString flattening by
+WriteToFlat (no Stack per flatten); JavaScript getters and setters entered
+in the dispatch loop through EnterInline (own, prototype and
+dictionary-mode holders, the last through LoadNormal handlers as in V8,
+which V8Sharp sent to the slow stub); the megamorphic stub cache on the
+SetNamedProperty path; keyed loads probing with the internalized copy of a
+run-time string key; kNonExistent hits inline; JSObject/String receiver
+tests by instance type in the IC entries (CastHelpers was 1.4-1.7% of
+TypeScript and pdf.js); `new Array()`/`new Array(n)` and the regexp
+builtins (exec, test, match, replace, split) without the builtin frame.
+
+micro/accessors.js (M accesses per CPU s; base / after / V8 --jitless):
+prototype getter 7.2 / 19.6 / 34.8, prototype setter 8.3 / 17.2 / 33.2,
+class getter 7.4 / 17.9 / 35.3, class setter 7.5 / 15.4 / 38.0, inherited
+getter 8.7 / 17.7 / 36.2, object literal getter 5.0 / 15.9 / 33.6, own
+defined getter 7.6 / 19.2 / 41.7; an accessor now costs what a method call
+costs (AccMethodCall 15.5 / 35.1), so the rest of the gap is the call
+protocol. micro/runtime.js geomean 9.9 -> 11.2 (V8 --jitless 28.1):
+fromCharCode +19%, ConsIndex +45%, IndexOf +13%, ConsBuild +14%.
+
+Octane (octane-steady, TypeScript octane-cpu, 3 interleaved runs, one
+session; the host was slow in this session, cpu-cal 1.8 s against 0.6 s
+earlier, so absolute scores are low, the ratios hold): pdf.js 623 -> 637
+(+2.2%), EarleyBoyer +1.7%, RegExp 373 -> 398 (+6.8%), zlib +2.6%,
+DeltaBlue +0.6%, Crypto -4.0% (noise: its paths did not change),
+TypeScript +1.5%; geomean of the seven 165.6 -> 168.2 (V8 --jitless 402.1,
+41.2% -> 41.8%). Gameboy and Box2D fail in octane-steady on every engine
+(the second pass of the harness), so they were not measured there.
+Tried and dropped: polymorphic typed array and String index cases in
+KeyedLoadIC.Load (inlined into the interpreter's handler) made it too large
+to inline: zlib -9%; a dedicated dispatch-loop fast path for prototype
+accessors (handler fields with the accessor): within noise of the
+EnterInline path, the call itself dominates.
+Open: Map/Set get/set (3x), splice (3.2x), StringAdd with numbers (3x),
+substring allocation (3.5x), regexp exec result construction (~2x).
+
 Performance with the baseline tier (Octane, 2026-09-28, 4-core container
 shared with other jobs, mean of 2 runs; V8Sharp.Bench):
 
