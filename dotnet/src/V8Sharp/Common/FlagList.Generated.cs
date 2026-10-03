@@ -183,6 +183,9 @@ public sealed partial class FlagList
     public bool unbox_double_arrays = true;
     public bool string_slices = true;
     public int invocation_count_for_feedback_allocation = unchecked((int)(8));
+    // V8Sharp: invocations (interrupt budget x bytecode length) before a function is
+    // queued for baseline compilation; V8 queues it with the feedback allocation (deviations.md).
+    public int invocation_count_for_sparkplug = unchecked((int)(8));
     public int invocation_count_for_maglev = unchecked((int)(400));  // V8: 400 (1000 only #if defined(ANDROID))
     public int invocation_count_for_maglev_osr = unchecked((int)(100));
     public int osr_from_maglev = unchecked((int)(3));
@@ -218,7 +221,7 @@ public sealed partial class FlagList
     public bool trace_track_allocation_sites = false;
     public bool trace_migration = false;
     public bool trace_generalization = false;
-    public bool sparkplug = false;  // build default; V8: ENABLE_SPARKPLUG_BY_DEFAULT (true on x64). Temporarily off in V8Sharp: the baseline IL tier runs only with --sparkplug / --always-sparkplug (deviations.md)
+    public bool sparkplug = true;  // V8: ENABLE_SPARKPLUG_BY_DEFAULT (true on x64)
     public bool always_sparkplug = false;
     public bool baseline_batch_compilation = true;
     public bool concurrent_sparkplug = true;  // V8: ENABLE_SPARKPLUG_BY_DEFAULT (true on x64); implied off by --predictable, --single-threaded, --jitless
@@ -1240,6 +1243,7 @@ public sealed partial class FlagList
             case "unbox_double_arrays": if (!ParseBool(value, negated, out bool b_unbox_double_arrays)) return false; unbox_double_arrays = b_unbox_double_arrays; _explicitlySet.Add("unbox_double_arrays"); return true;
             case "string_slices": if (!ParseBool(value, negated, out bool b_string_slices)) return false; string_slices = b_string_slices; _explicitlySet.Add("string_slices"); return true;
             case "invocation_count_for_feedback_allocation": if (negated || !ParseInt(value, out int v_invocation_count_for_feedback_allocation)) return false; invocation_count_for_feedback_allocation = v_invocation_count_for_feedback_allocation; _explicitlySet.Add("invocation_count_for_feedback_allocation"); return true;
+            case "invocation_count_for_sparkplug": if (negated || !ParseInt(value, out int v_invocation_count_for_sparkplug)) return false; invocation_count_for_sparkplug = v_invocation_count_for_sparkplug; _explicitlySet.Add("invocation_count_for_sparkplug"); return true;
             case "invocation_count_for_maglev": if (negated || !ParseInt(value, out int v_invocation_count_for_maglev)) return false; invocation_count_for_maglev = v_invocation_count_for_maglev; _explicitlySet.Add("invocation_count_for_maglev"); return true;
             case "invocation_count_for_maglev_osr": if (negated || !ParseInt(value, out int v_invocation_count_for_maglev_osr)) return false; invocation_count_for_maglev_osr = v_invocation_count_for_maglev_osr; _explicitlySet.Add("invocation_count_for_maglev_osr"); return true;
             case "osr_from_maglev": if (negated || !ParseInt(value, out int v_osr_from_maglev)) return false; osr_from_maglev = v_osr_from_maglev; _explicitlySet.Add("osr_from_maglev"); return true;

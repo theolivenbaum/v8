@@ -110,6 +110,19 @@ public sealed class TieringManager(Isolate isolate)
         (ActiveTierIsIgnition(function) && BaselineSupport.CanCompileWithBaseline(isolate, function.Shared) &&
          function.Shared.CachedTieringDecision == CachedTieringDecision.kPending);
 
+    /// <summary>
+    /// V8Sharp deviation: whether the baseline tier-up waits for more
+    /// invocations than the feedback allocation (--invocation-count-for-sparkplug).
+    /// V8 enqueues a function for Sparkplug at its first budget interrupt;
+    /// compiling with RyuJIT costs about a thousand times more, so a function
+    /// first runs as long again as V8 lets it before its feedback vector is
+    /// allocated, which leaves out code that runs only a few times (Octane's
+    /// CodeLoad evaluates fresh code all the time). --always-sparkplug is not
+    /// affected.
+    /// </summary>
+    static bool DelaysSparkplug(Isolate isolate) =>
+        isolate.Flags.invocation_count_for_sparkplug > isolate.Flags.invocation_count_for_feedback_allocation;
+
     /// <summary>maglev::IsMaglevEnabled.</summary>
     static bool IsMaglevEnabled(Isolate isolate) => isolate.UseOptimizer;
 
@@ -151,7 +164,12 @@ public sealed class TieringManager(Isolate isolate)
 
         if (FirstTimeTierUpToSparkplug(isolate, function))
         {
-            return ScaleInterruptBudget((long)isolate.Flags.invocation_count_for_feedback_allocation, bytecodeLength);
+            // V8Sharp: with a feedback vector but no baseline code yet, the
+            // budget to the baseline tier-up (DelaysSparkplug).
+            int invocations = JSFunctionFeedback.HasFeedbackVector(function) && DelaysSparkplug(isolate)
+                ? isolate.Flags.invocation_count_for_sparkplug - isolate.Flags.invocation_count_for_feedback_allocation
+                : isolate.Flags.invocation_count_for_feedback_allocation;
+            return ScaleInterruptBudget((long)invocations, bytecodeLength);
         }
 
         if (bytecodeLength > isolate.Flags.max_optimized_bytecode_size) return kMaxInterruptBudget;
@@ -177,11 +195,14 @@ public sealed class TieringManager(Isolate isolate)
         bool firstTimeTieredUpToSparkplug = FirstTimeTierUpToSparkplug(isolate, function);
         // (maybe_had_optimized_osr_code is always false: there is no optimized OSR code.)
         bool compileSparkplug = BaselineSupport.CanCompileWithBaseline(isolate, shared) && ActiveTierIsIgnition(function);
+        // DelaysSparkplug: the first tick only allocates the feedback vector; the
+        // vector's budget runs to the baseline tier-up.
+        bool delaySparkplug = compileSparkplug && !hadFeedbackVector && DelaysSparkplug(isolate);
 
         // Ensure that the feedback vector has been allocated.
         if (!hadFeedbackVector)
         {
-            if (compileSparkplug && shared.CachedTieringDecision == CachedTieringDecision.kPending)
+            if (compileSparkplug && !delaySparkplug && shared.CachedTieringDecision == CachedTieringDecision.kPending)
             {
                 // Mark the function as compiled with sparkplug before the feedback
                 // vector is created to initialize the interrupt budget for the next
@@ -195,7 +216,7 @@ public sealed class TieringManager(Isolate isolate)
             vector.InvocationCount = 1;
         }
 
-        if (compileSparkplug)
+        if (compileSparkplug && !delaySparkplug)
         {
             if (isolate.Flags.baseline_batch_compilation)
             {

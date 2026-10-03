@@ -952,8 +952,8 @@ Still failing (mjsunit clusters, v8sharp engine):
 Order (decided 2026-09-28): the interpreter is finished first — correctness
 (test262/mjsunit) and interpreter performance (target: within 2x of V8
 --jitless) — before any further work on the IL tiers. The baseline tier is
-merged but off by default until then; the optimizing tier (Maglev) is in
-progress, also off by default.
+on by default since 2026-10-03; the optimizing tier (Maglev) is in
+progress, off by default.
 
 - [x] TieringManager: interrupt budget, OnInterruptTick, feedback allocation
       and the Sparkplug tier-up, InterruptBudgetFor with V8's flag defaults,
@@ -963,7 +963,7 @@ progress, also off by default.
 - [~] Baseline compiler: bytecode -> IL (Sparkplug analogue), src/V8Sharp/Baseline/
       (architecture.md 9.1): every bytecode compiles; entry at function start,
       exception handlers and loop headers (OSR from Ignition at JumpLoop);
-      batch compilation, --sparkplug (V8's default on; off in V8Sharp for now), --always-sparkplug,
+      batch compilation, --sparkplug (on by default, as in V8), --always-sparkplug,
       --sparkplug-filter, %CompileBaseline, %ActiveTierIsSparkplug,
       %BaselineOsr, %GetOptimizationStatus baseline bits; the interpreter's
       fast paths emitted as IL (number arithmetic and comparisons fused with
@@ -976,9 +976,9 @@ progress, also off by default.
       V8). Tests: tests/V8Sharp.Tests/Baseline (interpreter vs
       --always-sparkplug, and the same feedback in both tiers).
       Open: see "Baseline: open items" below.
-      Temporarily OFF by default (--sparkplug=false): enable with --sparkplug
-      or --always-sparkplug. Off because of the compile cost on short runs
-      (deviations.md); see the Octane table above.
+      On by default (--sparkplug, as V8 on x64) since 2026-10-03: mjsunit and
+      test262 with the tier on, 0 newly failing against the expectations;
+      Octane in "Phase 2 measurements" below.
 - Baseline: open items
   - Bytecode flushing and baseline code flushing (mjsunit/baseline/flush-*)
     are not implemented (no bytecode aging).
