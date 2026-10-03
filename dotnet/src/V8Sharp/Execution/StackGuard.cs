@@ -53,6 +53,8 @@ public sealed class StackGuard(Isolate isolate)
             current = Volatile.Read(ref _interruptFlags);
             updated = current | (int)flag;
         } while (Interlocked.CompareExchange(ref _interruptFlags, updated, current) != current);
+        // StackGuard::set_interrupt_limits: entries now fail their stack check.
+        Volatile.Write(ref _isolate.RegisterStackInterruptLimit, 0);
     }
 
     public void ClearInterrupt(InterruptFlag flag)
@@ -63,6 +65,19 @@ public sealed class StackGuard(Isolate isolate)
             current = Volatile.Read(ref _interruptFlags);
             updated = current & ~(int)flag;
         } while (Interlocked.CompareExchange(ref _interruptFlags, updated, current) != current);
+        SyncInterruptLimit();
+    }
+
+    /// <summary>
+    /// StackGuard::reset_limits: the isolate's interrupt limit back to the
+    /// real limit unless an interrupt is (still, or again) pending. A request
+    /// from another thread that races with this can leave the limit lowered
+    /// with no interrupt pending; the next slow entry then calls this again.
+    /// </summary>
+    public void SyncInterruptLimit()
+    {
+        Interlocked.Exchange(ref _isolate.RegisterStackInterruptLimit, _isolate.RegisterStackLimit);
+        if (Volatile.Read(ref _interruptFlags) != 0) Volatile.Write(ref _isolate.RegisterStackInterruptLimit, 0);
     }
 
     public bool CheckTerminateExecution() => CheckInterrupt(InterruptFlag.TERMINATE_EXECUTION);
@@ -83,6 +98,7 @@ public sealed class StackGuard(Isolate isolate)
     public JSValue HandleInterrupts()
     {
         int flags = Interlocked.Exchange(ref _interruptFlags, 0);
+        SyncInterruptLimit();
         if ((flags & (int)InterruptFlag.TERMINATE_EXECUTION) != 0)
         {
             return _isolate.TerminateExecution();

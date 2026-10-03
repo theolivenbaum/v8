@@ -465,12 +465,26 @@ public static class BaselineCalls
 
         /// <summary>Stores the arguments from the first argument's slot downwards (V8's order: the last deepest).</summary>
         void Store(ref JSValue stack0, ref JSValue firstArgumentSlot);
+
+        /// <summary>
+        /// <see cref="Store"/> in two halves: the payloads here, the references
+        /// (each skipped when the slot already holds it) in
+        /// <see cref="StoreReferences"/>. The interpreter's fast call entry
+        /// (InterpreterInlineCalls.TryEnterFast) does all its scalar stores
+        /// before any reference store, so no value lives across a write barrier.
+        /// </summary>
+        void StorePayloads(ref JSValue stack0, ref JSValue firstArgumentSlot);
+
+        /// <summary>The reference halves of <see cref="Store"/>, after <see cref="StorePayloads"/>.</summary>
+        void StoreReferences(ref JSValue stack0, ref JSValue firstArgumentSlot);
     }
 
     internal readonly struct NoArguments : ICallArguments
     {
         public int Count => 0;
         public void Store(ref JSValue stack0, ref JSValue firstArgumentSlot) { }
+        public void StorePayloads(ref JSValue stack0, ref JSValue firstArgumentSlot) { }
+        public void StoreReferences(ref JSValue stack0, ref JSValue firstArgumentSlot) { }
     }
 
     internal readonly struct OneArgument(JSValue arg0) : ICallArguments
@@ -479,6 +493,12 @@ public static class BaselineCalls
 
         [MethodImpl(Inline)]
         public void Store(ref JSValue stack0, ref JSValue firstArgumentSlot) => StoreSlot(ref firstArgumentSlot, arg0);
+
+        [MethodImpl(Inline)]
+        public void StorePayloads(ref JSValue stack0, ref JSValue firstArgumentSlot) => StorePayload(ref firstArgumentSlot, arg0);
+
+        [MethodImpl(Inline)]
+        public void StoreReferences(ref JSValue stack0, ref JSValue firstArgumentSlot) => StoreReference(ref firstArgumentSlot, arg0);
     }
 
     internal readonly struct TwoArguments(JSValue arg0, JSValue arg1) : ICallArguments
@@ -490,6 +510,20 @@ public static class BaselineCalls
         {
             StoreSlot(ref firstArgumentSlot, arg0);
             StoreSlot(ref Unsafe.Subtract(ref firstArgumentSlot, 1), arg1);
+        }
+
+        [MethodImpl(Inline)]
+        public void StorePayloads(ref JSValue stack0, ref JSValue firstArgumentSlot)
+        {
+            StorePayload(ref firstArgumentSlot, arg0);
+            StorePayload(ref Unsafe.Subtract(ref firstArgumentSlot, 1), arg1);
+        }
+
+        [MethodImpl(Inline)]
+        public void StoreReferences(ref JSValue stack0, ref JSValue firstArgumentSlot)
+        {
+            StoreReference(ref firstArgumentSlot, arg0);
+            StoreReference(ref Unsafe.Subtract(ref firstArgumentSlot, 1), arg1);
         }
     }
 
@@ -503,6 +537,20 @@ public static class BaselineCalls
         {
             ref JSValue src = ref Unsafe.Add(ref stack0, start);
             for (int i = 0; i < count; i++) StoreSlot(ref Unsafe.Subtract(ref firstArgumentSlot, i), Unsafe.Add(ref src, i));
+        }
+
+        [MethodImpl(Inline)]
+        public void StorePayloads(ref JSValue stack0, ref JSValue firstArgumentSlot)
+        {
+            ref JSValue src = ref Unsafe.Add(ref stack0, start);
+            for (int i = 0; i < count; i++) StorePayload(ref Unsafe.Subtract(ref firstArgumentSlot, i), Unsafe.Add(ref src, i));
+        }
+
+        [MethodImpl(Inline)]
+        public void StoreReferences(ref JSValue stack0, ref JSValue firstArgumentSlot)
+        {
+            ref JSValue src = ref Unsafe.Add(ref stack0, start);
+            for (int i = 0; i < count; i++) StoreReference(ref Unsafe.Subtract(ref firstArgumentSlot, i), Unsafe.Add(ref src, i));
         }
     }
 
@@ -671,5 +719,16 @@ public static class BaselineCalls
     {
         if (!ReferenceEquals(slot._obj, value._obj)) Unsafe.AsRef(in slot._obj) = value._obj;
         Unsafe.AsRef(in slot._bits) = value._bits;
+    }
+
+    /// <summary>The payload half of <see cref="StoreSlot"/>.</summary>
+    [MethodImpl(Inline)]
+    internal static void StorePayload(ref JSValue slot, JSValue value) => Unsafe.AsRef(in slot._bits) = value._bits;
+
+    /// <summary>The reference half of <see cref="StoreSlot"/>: skipped when the slot already holds it.</summary>
+    [MethodImpl(Inline)]
+    internal static void StoreReference(ref JSValue slot, JSValue value)
+    {
+        if (!ReferenceEquals(slot._obj, value._obj)) Unsafe.AsRef(in slot._obj) = value._obj;
     }
 }

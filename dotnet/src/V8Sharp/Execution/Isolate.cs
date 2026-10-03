@@ -146,6 +146,7 @@ public sealed partial class Isolate
         StackGuard = new StackGuard(this);
         DefaultMicrotaskQueue = new MicrotaskQueue(this);
         RegisterStackLimit = (int)Math.Min(kRegisterStackSize, Math.Max(1L, (long)Flags.stack_size) * 1024 / 8);
+        RegisterStackInterruptLimit = RegisterStackLimit;
         // The register stack and the frame records are large arrays of
         // references that the interpreter holds interior references into for
         // its whole run. On the large object heap each gen-0 collection took
@@ -217,6 +218,16 @@ public sealed partial class Isolate
     /// the backstop for native recursion.
     /// </summary>
     public int RegisterStackLimit;
+
+    /// <summary>
+    /// V8's interrupt stack limit (StackLimitKind::kInterruptStackLimit):
+    /// <see cref="RegisterStackLimit"/>, or 0 while an interrupt is requested
+    /// (StackGuard.RequestInterrupt lowers it, as V8's StackGuard lowers the
+    /// JS limit), so a function entry tests stack overflow and pending
+    /// interrupts with one compare, as V8's InterpreterEntryTrampoline does.
+    /// A failed compare takes the slow entry, which checks both separately.
+    /// </summary>
+    public int RegisterStackInterruptLimit;
 
     /// <summary>Reserves <paramref name="count"/> register slots; throws V8's stack overflow RangeError when full.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
