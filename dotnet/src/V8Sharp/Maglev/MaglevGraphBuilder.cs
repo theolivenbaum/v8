@@ -1189,8 +1189,8 @@ public sealed partial class MaglevGraphBuilder
 
     // ---- Checks ------------------------------------------------------------------------------------------
 
-    Node AddCheck(Opcode opcode, ValueNode input, DeoptimizeReason reason, object? obj0 = null, int int0 = 0) =>
-        AddNewNode(new Node(opcode) { Inputs = [input], Obj0 = obj0, Int0 = int0, Properties = OpProperties.kEagerDeopt }, reason);
+    Node AddCheck(Opcode opcode, ValueNode input, DeoptimizeReason reason, object? obj0 = null, int int0 = 0, int int1 = 0) =>
+        AddNewNode(new Node(opcode) { Inputs = [input], Obj0 = obj0, Int0 = int0, Int1 = int1, Properties = OpProperties.kEagerDeopt }, reason);
 
     /// <summary>BuildCheckSmi.</summary>
     void BuildCheckSmi(ValueNode value)
@@ -1324,7 +1324,10 @@ public sealed partial class MaglevGraphBuilder
                 return;
             }
         }
-        AddCheck(Opcode.CheckMaps, obj, DeoptimizeReason.kWrongMap, maps);
+        // CheckMapsWithMigrationAndDeopt (Int1 = 1) when the feedback had a
+        // deprecated map without migration target (the code generator emits
+        // CheckMapsWithMigration when a map is a migration target).
+        AddCheck(Opcode.CheckMaps, obj, DeoptimizeReason.kWrongMap, maps, int1: _hasDeprecatedMapWithoutMigrationTarget ? 1 : 0);
         RecordKnownMaps(obj, maps);
     }
 

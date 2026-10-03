@@ -352,6 +352,16 @@ public static class MaglevBuiltins
         return Array.IndexOf(maps, o.Map) >= 0;
     }
 
+    /// <summary>
+    /// Runtime_TryMigrateInstanceAndMarkMapAsMigrationTarget (the deferred code of
+    /// CheckMapsWithMigrationAndDeopt): migrates an object with a deprecated map.
+    /// </summary>
+    public static void TryMigrateInstanceAndMarkMapAsMigrationTarget(Isolate isolate, JSValue value)
+    {
+        if (value._obj is not JSObject o || !o.Map.IsDeprecated) return;
+        if (JSObject.TryMigrateInstance(isolate, o)) o.Map.IsMigrationTarget = true;
+    }
+
     /// <summary>TransitionElementsKind to <paramref name="target"/>; false (deopt) if the object ends up with another map.</summary>
     public static bool TransitionElementsKind(Isolate isolate, JSValue obj, Map target)
     {

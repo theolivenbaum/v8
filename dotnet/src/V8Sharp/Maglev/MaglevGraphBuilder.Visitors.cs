@@ -40,6 +40,7 @@ public sealed partial class MaglevGraphBuilder
     void VisitSingleBytecode()
     {
         Checkpoint();
+        _hasDeprecatedMapWithoutMigrationTarget = false;
         try
         {
             Visit(_it.CurrentBytecode());

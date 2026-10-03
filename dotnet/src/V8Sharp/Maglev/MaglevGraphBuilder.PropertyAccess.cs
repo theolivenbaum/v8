@@ -37,7 +37,20 @@ public sealed partial class MaglevGraphBuilder
         public Map? TransitionMap;
     }
 
-    /// <summary>The (map, handler) pairs of a property IC (FeedbackNexus::ExtractMapsAndHandlers), without deprecated maps.</summary>
+    /// <summary>
+    /// The (map, handler) pairs of a property IC (FeedbackNexus::ExtractMapsAndHandlers),
+    /// without deprecated maps. As JSHeapBroker::ReadFeedbackForPropertyAccess,
+    /// a deprecated map whose updated map is not a migration target sets
+    /// <see cref="_hasDeprecatedMapWithoutMigrationTarget"/>: the map checks of
+    /// the access then migrate such an object before they deoptimize
+    /// (CheckMapsWithMigrationAndDeopt), so the interpreter's IC learns the
+    /// updated map.
+    /// </summary>
+    /// <remarks>
+    /// Deviation: V8 replaces a deprecated map by its updated map (and computes
+    /// the access from that map); V8Sharp's accesses come from the IC handlers,
+    /// which belong to the deprecated map, so the map is dropped.
+    /// </remarks>
     List<(Map Map, JSValue Handler)>? MapsAndHandlers(int slot)
     {
         var nexus = new FeedbackNexus(Isolate, _unit.Feedback, slot);
@@ -45,9 +58,17 @@ public sealed partial class MaglevGraphBuilder
         if (state is not (InlineCacheState.MONOMORPHIC or InlineCacheState.POLYMORPHIC)) return null;
         var result = new List<(Map, JSValue)>();
         nexus.ExtractMapsAndHandlers(result);
+        foreach ((Map map, JSValue _) in result)
+        {
+            if (!map.IsDeprecated) continue;
+            if (Map.TryUpdate(Isolate, map) is { IsMigrationTarget: false }) _hasDeprecatedMapWithoutMigrationTarget = true;
+        }
         result.RemoveAll(static e => e.Item1.IsDeprecated);
         return result.Count == 0 ? null : result;
     }
+
+    /// <summary>The feedback of the current access had a deprecated map without migration target.</summary>
+    bool _hasDeprecatedMapWithoutMigrationTarget;
 
     bool IsUninitializedIC(int slot) => new FeedbackNexus(Isolate, _unit.Feedback, slot).IcState() == InlineCacheState.UNINITIALIZED;
 

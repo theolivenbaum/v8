@@ -1877,7 +1877,10 @@ internal sealed class MaglevCodeGenerator
         // with a deprecated map is migrated and checked again.
         bool migrate = false;
         foreach (Map map in maps) migrate |= map.IsMigrationTarget;
-        Label fail = migrate ? _il.DefineLabel() : exit;
+        // CheckMapsWithMigrationAndDeopt: an object with a deprecated map is
+        // migrated (its new map marked as a migration target), then deoptimizes.
+        bool migrateAndDeopt = !migrate && node.Int1 == 1;
+        Label fail = migrate || migrateAndDeopt ? _il.DefineLabel() : exit;
         Label ok = _il.DefineLabel();
         EmitLoadMapOrBranch(node.Inputs[0], exit);
         if (maps.Length == 1)
@@ -1904,6 +1907,14 @@ internal sealed class MaglevCodeGenerator
             LoadConstantObject(maps, typeof(Map[]));
             Call(nameof(MaglevBuiltins.MigrateAndCheckMaps));
             _il.Emit(OpCodes.Brfalse, exit);
+        }
+        else if (migrateAndDeopt)
+        {
+            _il.MarkLabel(fail);
+            _il.Emit(OpCodes.Ldarg_1);
+            Load(node.Inputs[0], ValueRepresentation.kTagged);
+            Call(nameof(MaglevBuiltins.TryMigrateInstanceAndMarkMapAsMigrationTarget));
+            _il.Emit(OpCodes.Br, exit);
         }
         _il.MarkLabel(ok);
     }
