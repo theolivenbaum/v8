@@ -265,7 +265,7 @@ public sealed class CompilationCacheEval
     public const int kMaxSourceLength = 16 * 1024;
 
     /// <summary>EvalCacheKey, with the source as its hash and length (an entry compares its Script's source).</summary>
-    readonly record struct Key(int Hash, int Length, SharedFunctionInfo OuterInfo, LanguageMode LanguageMode, int Position);
+    public readonly record struct Key(int Hash, int Length, SharedFunctionInfo OuterInfo, LanguageMode LanguageMode, int Position);
 
     sealed class Entry
     {
@@ -286,15 +286,49 @@ public sealed class CompilationCacheEval
     public static CompilationCacheEval? For(Isolate isolate) =>
         isolate.Flags.compilation_cache ? s_caches.GetValue(isolate, static _ => new CompilationCacheEval()) : null;
 
+    /// <summary>
+    /// EvalCacheKey for the source string and its flat contents, computed once
+    /// per eval and passed to Lookup and Put. V8 hashes the source with its
+    /// cached string hash (source->EnsureHash()): computed once and kept on
+    /// the string for up to String::kMaxHashCalcLength characters, the length
+    /// alone above that. A short source uses the JSString's cached hash here as
+    /// well. Deviation: a longer source hashes its first and last
+    /// kLongSourceHashChars characters with its length, so that the seen
+    /// markers of distinct large sources of one length (CodeLoad's salted
+    /// evals) do not match each other and get the next one held strongly (see
+    /// kMaxSourceLength). A lookup compares the whole source either way.
+    /// </summary>
+    public static Key KeyOf(JSString source, string flat, SharedFunctionInfo outerInfo, LanguageMode languageMode, int position)
+    {
+        int hash = flat.Length <= JSString.kMaxHashCalcLength
+            ? (int)source.EnsureHash()
+            : LongSourceHash(flat);
+        return new Key(hash, flat.Length, outerInfo, languageMode, position);
+    }
+
+    const int kLongSourceHashChars = 2048;
+
+    static int LongSourceHash(string flat)
+    {
+        ReadOnlySpan<char> span = flat.AsSpan();
+        return HashCode.Combine(flat.Length, string.GetHashCode(span[..kLongSourceHashChars]),
+            string.GetHashCode(span[^kLongSourceHashChars..]));
+    }
+
     static Key KeyOf(string source, SharedFunctionInfo outerInfo, LanguageMode languageMode, int position) =>
-        new(string.GetHashCode(source.AsSpan()), source.Length, outerInfo, languageMode, position);
+        new(source.Length <= JSString.kMaxHashCalcLength
+                ? (int)(StringHasher.HashSequentialString(source.AsSpan()) >> Name.HashShift)
+                : LongSourceHash(source),
+            source.Length, outerInfo, languageMode, position);
 
     static bool SourceEquals(SharedFunctionInfo shared, string source) =>
         shared.Script is { } script && string.Equals(script.SourceString, source, StringComparison.Ordinal);
 
-    public SharedFunctionInfo? Lookup(string source, SharedFunctionInfo outerInfo, LanguageMode languageMode, int position)
+    public SharedFunctionInfo? Lookup(string source, SharedFunctionInfo outerInfo, LanguageMode languageMode, int position) =>
+        Lookup(KeyOf(source, outerInfo, languageMode, position), source);
+
+    public SharedFunctionInfo? Lookup(in Key key, string source)
     {
-        Key key = KeyOf(source, outerInfo, languageMode, position);
         lock (this)
         {
             MaybeAge();
@@ -314,9 +348,11 @@ public sealed class CompilationCacheEval
     }
 
     public void Put(string source, SharedFunctionInfo outerInfo, LanguageMode languageMode, int position,
-                    SharedFunctionInfo shared)
+                    SharedFunctionInfo shared) =>
+        Put(KeyOf(source, outerInfo, languageMode, position), source, shared);
+
+    public void Put(in Key key, string source, SharedFunctionInfo shared)
     {
-        Key key = KeyOf(source, outerInfo, languageMode, position);
         lock (this)
         {
             MaybeAge();

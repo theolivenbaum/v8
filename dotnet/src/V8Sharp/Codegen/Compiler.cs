@@ -463,10 +463,12 @@ namespace V8Sharp.Codegen
             }
             CompilationCacheEval? cache = CompilationCacheEval.For(isolate);
             string? sourceString = null;
+            CompilationCacheEval.Key cacheKey = default;
             if (cache is not null)
             {
                 sourceString = source.ToString();
-                if (cache.Lookup(sourceString, outerInfo, languageMode, evalCachePosition) is { } cached)
+                cacheKey = CompilationCacheEval.KeyOf(source, sourceString, outerInfo, languageMode, evalCachePosition);
+                if (cache.Lookup(cacheKey, sourceString) is { } cached)
                 {
                     JSFunction cachedResult = isolate.Factory.NewFunction(cached, context);
                     JSFunctionFeedback.InitializeFeedbackCell(isolate, cachedResult, false);
@@ -512,7 +514,7 @@ namespace V8Sharp.Codegen
             JSFunctionFeedback.InitializeFeedbackCell(isolate, result, false);
             if (cache is not null && parseInfo.allow_eval_cache() && !flags.block_coverage_enabled())
             {
-                cache.Put(sourceString!, outerInfo, languageMode, evalCachePosition, shared);
+                cache.Put(cacheKey, sourceString!, shared);
             }
             return result;
         }
