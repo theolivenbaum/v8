@@ -215,67 +215,85 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   fp - 10 - i   argument i (parameter register a_i); argc may exceed the
                 formal count, the window holds max(argc, formals) arguments
   fp - 9        receiver                      (kReceiverOffset)
-  fp - 8, -7    unused (V8's caller fp / return address)
+  fp - 8, -7    unused (V8's caller fp / return address; the frame record
+                links frames instead)
   fp - 6        current context               (kContextOffset)
   fp - 5        closure                       (kClosureOffset)
-  fp - 4        argc (kArgcOffset): written on entry from EnterFrame and
-                by baseline calls, not by inline calls; read the count
-                from the frame record
-  fp - 3, -2    unused (bytecode array / offset live in the frame record)
-  fp - 1        feedback vector               (kFeedbackVectorOffset)
+  fp - 4        argc, a raw int               (kArgcOffset)
+  fp - 3        bytecode array                (kBytecodeArrayOffset)
+  fp - 2        bytecode offset, a raw int    (kBytecodeOffsetOffset)
+  fp - 1        feedback vector or undefined  (kFeedbackVectorOffset)
   fp + 0 ...    register file r0 .. r(RegisterCount - 1)
   ```
 
-  A register operand `o` addresses `fp - 7 - o`
+  Each frame value is held once, in its fixed slot, as in V8 (no copy in
+  `InterpreterState` or the record). A raw int slot has a null object half
+  and the int in the payload (`InterpreterRuntime.FramePc`/`FrameArgc`,
+  `SetFramePc`), so storing the offset is one 4-byte store with no write
+  barrier. A register operand `o` addresses `fp - 7 - o`
   (`kRegisterOperandBase`, `Register::FromOperand`), so `r0` is operand -7,
   the receiver operand 2 and `a_i` operand 3 + i, as V8 encodes them in the
-  bytecode.
+  bytecode. Every entry (EnterFrame, the inline calls, baseline and Maglev
+  calls, Maglev's inlined frames, the deoptimizer) writes all six fixed
+  slots; `InterpreterRuntime.InitializeFrameSlots` writes bytecode, offset
+  and argc.
+
   The window starts at the stack top before the call (`RegisterStart`) and
   ends at `fp + RegisterCount` (`RegisterStackTop`). Slots above the top are
   undefined except below `RegisterStackDirtyEnd`, where a returned inline
   frame left its values; a new frame clears the part of its register file
-  below that mark.
+  below that mark (V8's register file fill) and compares before storing
+  each fixed slot's reference, so a repeated call at the same position pays
+  no GC write barriers for them.
 
   Each frame also has an `InterpreterFrameRecord` in
-  `Isolate.InterpreterFrames[0 .. InterpreterFrameDepth)`: `Function`,
-  `Bytecode`, `Fp`, `Pc` (the current bytecode offset, saved before any
-  call or throw), `Argc`, `Kind` (interpreted or builtin exit),
-  `IsConstructor`, `IsBaseline` (the frame runs baseline code with this
-  layout), and for frames entered from a caller's dispatch loop without a
-  .NET call `InlineCall`, `ReturnPc` and `RegisterStart`. The stack walker,
-  `Error.stack`, `arguments` materialization and the debugger read the
-  record, the fixed slots and the parameter slots. Missing arguments are
-  undefined in the parameter slots (V8's argument adaptation).
+  `Isolate.InterpreterFrames[0 .. InterpreterFrameDepth)`: `Fp`, one
+  `Flags` byte (`Builtin`, `Constructor`, `Baseline`, `Maglev`,
+  `InlineCall`), and for frames entered from a caller's dispatch loop without
+  a .NET call `ReturnPc` (on the caller's record) and `RegisterStart`. A
+  builtin frame has no register window and keeps `BuiltinFunction` and
+  `BuiltinReceiver` in its record. The stack walker, `Error.stack`,
+  `arguments` materialization and the debugger read the record and the
+  frame's slots (`GetFunction`, `GetBytecode`, `GetPc`, `GetArgc`). Missing
+  arguments are undefined in the parameter slots (V8's argument adaptation).
 
   While a frame runs, the dispatch loop (`InterpreterExecution.Loop<TS>`)
-  keeps `ip` (a `ref byte` into the bytecode), `fp` (a `ref JSValue` into the
-  register stack) and the accumulator in locals, and the rest of the frame's
-  state in the `ref struct InterpreterState` (`Function`, `Bytecode`,
-  `FeedbackVector`, `Context`, `Pc`, `Fp`, `FrameIndex`, `Argc`,
-  `BaseFrameIndex`). A JS-to-JS call from the loop pushes the callee's frame
-  and record and continues in the same loop (`InterpreterInlineCalls`);
+  keeps `ip` (a `ref byte` into the bytecode), `fpSlot` (a `ref JSValue` at
+  fp) and the accumulator in locals, and reads the function, bytecode,
+  constants, feedback vector and context from the fixed slots through
+  `fpSlot` (`InterpreterRuntime.Frame*`), as V8's handlers load them from
+  the frame. The `ref struct InterpreterState` holds only what is not in
+  the frame: the isolate, the spilled accumulator and offset, `Fp`,
+  `FrameIndex`, `BaseFrameIndex` and the OSR/return flags; its `Function`,
+  `Bytecode`, `FeedbackVector`, `Context` and `Argc` are properties over
+  the slots. A JS-to-JS call from the loop pushes the callee's frame and
+  record and continues in the same loop (`InterpreterInlineCalls`);
   `Return` pops back to the caller's record (`ReturnPc`). The call protocol
-  of such an inline call, in order: the callee's `SharedFunctionInfo.InterpreterCallMode`
-  (cached, reset by the setters of the fields it depends on) says whether it
-  runs in the loop; `EnterInline` reserves parameters, fixed slots and
-  register file at the stack top, clears the register file below
-  `RegisterStackDirtyEnd`, copies the receiver and arguments from the
-  caller's registers into the parameter slots (the only copy; V8's
-  InterpreterPushArgsThenCall pushes them too), stores context, closure and
-  feedback vector, pushes the record at `InterpreterFrameDepth` (the caller's
-  record is the one below it, which gets `ReturnPc`) and points
-  `InterpreterState` at the callee. Every reference store into the register
-  stack or the record compares first, since a returned frame at the same
-  depth leaves its values behind: a repeated call stores no references and
-  pays no GC write barriers. A return restores `InterpreterState` from the
-  caller's record and fixed slots and leaves the callee's slots and record
-  as they are (below `RegisterStackDirtyEnd`). Calls from
-  builtins and runtime code enter a new loop through
-  `InterpreterExecution.EnterFrame` / `Run`, which is also where the baseline
-  tier enters (OSR from `JumpLoop` sets `InterpreterState.OsrToBaseline`,
-  and `Run` continues the frame in baseline code at `Pc`). A tier that
-  materializes an interpreter frame (deoptimization) writes the fixed slots,
-  the register file and a record with `Pc` and continues it through `Run`.
+  of such an inline call, in order: the callee's
+  `SharedFunctionInfo.InterpreterCallMode` (or `InterpreterConstructMode`
+  for `new`; cached, reset by the setters of the fields they depend on)
+  says whether it runs in the loop; a sloppy callee gets the global proxy
+  for an undefined receiver inline; `EnterInline` (the entry other call
+  sites such as accessor ICs can use) reserves parameters, fixed slots and register file at
+  the stack top, clears the register file below `RegisterStackDirtyEnd`,
+  copies the receiver and arguments from the caller's registers into the
+  parameter slots (the only copy; V8's InterpreterPushArgsThenCall pushes
+  them too), writes the six fixed slots, pushes the record (four fields)
+  at `InterpreterFrameDepth` (the caller's record is the one below it,
+  which gets `ReturnPc`) and sets `InterpreterState`'s `Fp`, `FrameIndex`,
+  `Pc` and accumulator. A return restores those four from the caller's
+  record (the context comes from the caller's slot) and leaves the
+  callee's slots and record as they are. Calls from builtins and runtime
+  code enter a new loop through `InterpreterExecution.EnterFrame` / `Run`,
+  which is also where the baseline tier enters (OSR from `JumpLoop` sets
+  `InterpreterState.OsrToBaseline`, and `Run` continues the frame in
+  baseline code at `Pc`). Baseline code keeps `fpRef` in a local and stores
+  the offset into the slot (`BaselineAssembler.StoreBytecodeOffset`);
+  Maglev code does the same per frame, inlined frames included. A tier
+  that materializes an interpreter frame (deoptimization) writes the fixed
+  slots (closure, feedback vector and bytecode of the translated function,
+  the offset), the register file and the record, and continues it
+  through `Run`.
 - **Exceptions.** A JS throw that is caught in the same interpreter frame is
   dispatched through the frame's handler table without .NET exceptions. A
   throw that leaves a frame is a .NET `JavaScriptException` carrying the

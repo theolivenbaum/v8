@@ -536,14 +536,9 @@ public static class BaselineCalls
         var state = new InterpreterState
         {
             Isolate = isolate,
-            Function = function,
-            Bytecode = bytecode,
-            FeedbackVector = vector,
-            Context = function.Context,
             Fp = fp,
             FrameIndex = depth,
             BaseFrameIndex = depth,
-            Argc = args.Count,
         };
         JSValue result = code.HasHandlers ? BaselineExecution.Run(isolate, ref state, code) : code.EntryFor(vector)(isolate, ref state);
         LeaveFrame(isolate, depth, start, savedContext);
@@ -577,16 +572,11 @@ public static class BaselineCalls
         var state = new InterpreterState
         {
             Isolate = isolate,
-            Function = function,
-            Bytecode = bytecode,
-            FeedbackVector = vector,
-            Context = function.Context,
             Accumulator = JSValue.Undefined,
             Pc = 0,
             Fp = fp,
             FrameIndex = depth,
             BaseFrameIndex = depth,
-            Argc = args.Count,
         };
         JSValue result = InterpreterExecution.Run(isolate, ref state);
         // The frames the loop ran inline are gone (they returned to this one).
@@ -633,22 +623,13 @@ public static class BaselineCalls
         StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset), context);
         StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset), function);
         if (vector is not null) StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset), vector);
-        // The argument count slot (fp - 4) is not read in V8Sharp (frames keep
-        // the count in their record), as for the interpreter's inline calls.
+        InterpreterRuntime.InitializeFrameSlots(ref fpRef, bytecode, argc);
         if (isConstruct && incomingNewTargetRegister != int.MinValue) Unsafe.Add(ref fpRef, incomingNewTargetRegister) = newTarget;
 
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
-        // A returned frame leaves Function and Bytecode in its record.
-        if (!ReferenceEquals(frame.Function, function)) frame.Function = function;
-        if (!ReferenceEquals(frame.Bytecode, bytecode)) frame.Bytecode = bytecode;
         frame.Fp = fp;
-        frame.Pc = 0;
-        frame.Argc = argc;
-        frame.Kind = InterpreterFrameKind.Interpreted;
-        frame.IsConstructor = isConstruct;
-        frame.IsBaseline = isBaseline;
-        frame.IsMaglev = false;
-        frame.InlineCall = false;
+        frame.Flags = (isConstruct ? InterpreterFrameFlags.Constructor : InterpreterFrameFlags.None) |
+                      (isBaseline ? InterpreterFrameFlags.Baseline : InterpreterFrameFlags.None);
         frame.ReturnPc = 0;
         frame.RegisterStart = 0;
         return fp;

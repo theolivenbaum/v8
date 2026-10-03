@@ -58,7 +58,7 @@ public static partial class RuntimeTest
         InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
         for (int i = isolate.InterpreterFrameDepth - 1; i >= 0; i--)
         {
-            if (ReferenceEquals(frames[i].Function, function) && frames[i].Kind == InterpreterFrameKind.Interpreted)
+            if (ReferenceEquals(frames[i].GetFunction(isolate), function) && frames[i].Kind == InterpreterFrameKind.Interpreted)
             {
                 status |= kIsExecuting | (frames[i].IsMaglev ? kTopmostFrameIsMaglev
                     : frames[i].IsBaseline ? kTopmostFrameIsBaseline : kTopmostFrameIsInterpreted);
@@ -102,7 +102,7 @@ public static partial class RuntimeTest
         for (int i = isolate.InterpreterFrameDepth - 1; i >= 0; i--)
         {
             if (frames[i].Kind != InterpreterFrameKind.Interpreted) continue;
-            Codegen.Compiler.CompileBaseline(isolate, frames[i].Function);
+            Codegen.Compiler.CompileBaseline(isolate, frames[i].GetFunction(isolate));
             break;
         }
         return JSValue.Undefined;
@@ -300,7 +300,7 @@ public static partial class RuntimeTest
         InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
         for (int i = isolate.InterpreterFrameDepth - 1; i >= 0; i--)
         {
-            if (frames[i].Kind == InterpreterFrameKind.Interpreted) return frames[i].Function!;
+            if (frames[i].Kind == InterpreterFrameKind.Interpreted) return frames[i].GetFunction(isolate)!;
         }
         return JSValue.Undefined;
     }

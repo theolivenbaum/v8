@@ -66,7 +66,7 @@ public static partial class RuntimeTest
             for (int i = isolate.InterpreterFrameDepth - 1; i >= 0; i--)
             {
                 if (frames[i].Kind != InterpreterFrameKind.Interpreted) continue;
-                function = frames[i].Function;
+                function = frames[i].GetFunction(isolate);
                 break;
             }
         }
@@ -108,7 +108,7 @@ public static partial class RuntimeTest
             // The optimized frame (the outermost of an inlined chain) owns the code.
             int j = i;
             while (j > 0 && frames[j].IsMaglev && frames[j - 1].IsMaglev && frames[j - 1].Kind == InterpreterFrameKind.Interpreted) j--;
-            DeoptimizeAll(isolate, frames[j].Function);
+            DeoptimizeAll(isolate, frames[j].GetFunction(isolate));
             break;
         }
         return JSValue.Undefined;

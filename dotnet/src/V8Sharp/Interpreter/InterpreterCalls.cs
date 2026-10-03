@@ -19,7 +19,7 @@ namespace V8Sharp.Interpreter;
 public static class InterpreterCalls
 {
     /// <summary>CallCountField is shifted by the speculation mode and feedback content bits.</summary>
-    const int kCallCountIncrement = 1 << FeedbackNexus.kCallCountShift;
+    internal const int kCallCountIncrement = 1 << FeedbackNexus.kCallCountShift;
 
     // ---- Feedback -------------------------------------------------------------------
 
@@ -63,6 +63,12 @@ public static class InterpreterCalls
     {
         ref JSValue feedback = ref fv.Slots[slot];
         HeapObject? feedbackObject = feedback.HeapObjectOrNull;
+        // The feedback cell of the target (the closures of one creation site):
+        // the last check of ic-callable.tq's sequence taken first, since the
+        // checks before it cannot match a FeedbackCell (it is never the
+        // megamorphic or uninitialized symbol, a cleared reference or a
+        // recorded receiver, and the many-closures cell is never recorded).
+        if (target._obj is JSFunction cellTarget && ReferenceEquals(cellTarget.RawFeedbackCell, feedbackObject)) return;
         if (ReferenceEquals(feedbackObject, ReadOnlyRoots.megamorphic_symbol)) return;
         bool uninitialized = ReferenceEquals(feedbackObject, ReadOnlyRoots.uninitialized_symbol);
         if (uninitialized || FeedbackVector.IsCleared(feedback))
@@ -286,17 +292,10 @@ public static class InterpreterCalls
         int stackTop = isolate.AllocateRegisters(kBuiltinFrameSlots);
         int depth = isolate.InterpreterFrameDepth;
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
-        frame.Function = function;
-        frame.Bytecode = null;
-        frame.Receiver = receiver;
+        frame.BuiltinFunction = function;
+        frame.BuiltinReceiver = receiver;
         frame.Fp = 0;
-        frame.Pc = 0;
-        frame.Argc = args.Length;
-        frame.Kind = InterpreterFrameKind.Builtin;
-        frame.IsConstructor = !newTarget.IsUndefined;
-        frame.IsBaseline = false;
-        frame.IsMaglev = false;
-        frame.InlineCall = false;
+        frame.Flags = newTarget.IsUndefined ? InterpreterFrameFlags.Builtin : InterpreterFrameFlags.Builtin | InterpreterFrameFlags.Constructor;
         frame.ReturnPc = 0;
         frame.RegisterStart = 0;
         Context? saved = isolate.Context;
