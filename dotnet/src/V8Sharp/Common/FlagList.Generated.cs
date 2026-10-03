@@ -183,7 +183,7 @@ public sealed partial class FlagList
     public bool unbox_double_arrays = true;
     public bool string_slices = true;
     public int invocation_count_for_feedback_allocation = unchecked((int)(8));
-    public int invocation_count_for_maglev = unchecked((int)(1000));
+    public int invocation_count_for_maglev = unchecked((int)(400));  // V8: 400 (1000 only #if defined(ANDROID))
     public int invocation_count_for_maglev_osr = unchecked((int)(100));
     public int osr_from_maglev = unchecked((int)(3));
     public double osr_from_maglev_interrupt_scale_factor = 0.8;

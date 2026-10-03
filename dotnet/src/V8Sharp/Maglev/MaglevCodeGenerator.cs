@@ -241,6 +241,7 @@ internal sealed class MaglevCodeGenerator
 
     void AllocateLocals()
     {
+        if (s_shareLocals && TryAllocateSharedLocals()) return;
         int count = 0;
         foreach (BasicBlock block in _graph.Blocks)
         {
@@ -262,6 +263,169 @@ internal sealed class MaglevCodeGenerator
                 if (node is ValueNode v && !v.IsConstant && v.UseCount > 0) v.Local = _il.DeclareLocal(ClrType(v.Representation));
             }
         }
+    }
+
+    // V8SHARP_MAGLEV_SHARE_LOCALS=0 gives every value its own IL local (for comparison).
+    static readonly bool s_shareLocals = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_SHARE_LOCALS") != "0";
+
+    /// <summary>
+    /// The register allocation of maglev-regalloc.cc for IL: values whose live
+    /// ranges do not overlap share an IL local of their CLR type, so the
+    /// method has about as many locals as values live at once. RyuJIT
+    /// compiles a method with more than 512 locals without inlining and one
+    /// with more than 2000 without optimization (MinOpts), which is what
+    /// limited the size of the graphs the tier could compile.
+    ///
+    /// Live ranges (LiveRangeAndNextUseProcessor, maglev-pre-regalloc-codegen-processors.h):
+    /// positions number the nodes in emission order; a value is live from its
+    /// definition (a phi: from the end of its first predecessor) to its last
+    /// use, counting node inputs, the values of the nodes' deopt frames (read
+    /// by the out-of-line exits at the node), phi inputs at the end of the
+    /// predecessor and the arguments of an inlined call whose frame is pushed
+    /// lazily (read by any node of the inlined function); a value live into a
+    /// loop header from outside is live to the loop's last back edge, and so
+    /// is a loop header's phi. Code with catch blocks keeps one local per
+    /// value: their trampolines read the values of the throwing node.
+    /// </summary>
+    bool TryAllocateSharedLocals()
+    {
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (!block.IsDead && block.IsExceptionHandler) return false;
+        }
+        var def = new Dictionary<ValueNode, int>(ReferenceEqualityComparer.Instance);
+        var last = new Dictionary<ValueNode, int>(ReferenceEqualityComparer.Instance);
+        var blockStart = new Dictionary<BasicBlock, int>(ReferenceEqualityComparer.Instance);
+        var blockEnd = new Dictionary<BasicBlock, int>(ReferenceEqualityComparer.Instance);
+        var unitLast = new Dictionary<MaglevCompilationUnit, int>(ReferenceEqualityComparer.Instance);
+        int pos = 0;
+        void Use(ValueNode v, int at)
+        {
+            if (v.IsConstant) return;
+            if (!last.TryGetValue(v, out int l) || l < at) last[v] = at;
+        }
+        void UseFrame(DeoptFrame? frame, int at)
+        {
+            for (DeoptFrame? f = frame; f is not null; f = f.Parent)
+            {
+                var i = (InterpretedDeoptFrame)f;
+                foreach ((Register _, ValueNode value) in i.Values) Use(value, at);
+                Use(i.Closure, at);
+            }
+        }
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            blockStart[block] = pos++;
+            foreach (Node node in block.Nodes)
+            {
+                int at = pos++;
+                foreach (ValueNode input in node.Inputs) Use(input, at);
+                UseFrame(node.EagerDeoptInfo?.TopFrame, at);
+                UseFrame(node.LazyDeoptInfo?.TopFrame, at);
+                if (node is ValueNode v) def[v] = at;
+                for (MaglevCompilationUnit? u = node.Unit; u is { IsInline: true }; u = u.Caller) unitLast[u] = at;
+            }
+            ControlNode c = block.Control!;
+            int end = pos++;
+            blockEnd[block] = end;
+            foreach (ValueNode input in c.Inputs) Use(input, end);
+            UseFrame(c.EagerDeoptInfo?.TopFrame, end);
+        }
+        // Phis: inputs used at the end of their predecessor; the phi is defined
+        // at the end of its first predecessor in emission order.
+        var loops = new List<(int Start, int End)>();
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            int loopEnd = -1;
+            if (block.IsLoopHeader)
+            {
+                foreach (BasicBlock pred in block.Predecessors)
+                {
+                    if (blockEnd.TryGetValue(pred, out int e) && e >= blockStart[block] && e > loopEnd) loopEnd = e;
+                }
+                if (loopEnd >= 0) loops.Add((blockStart[block], loopEnd));
+            }
+            foreach (Phi phi in block.Phis)
+            {
+                int first = blockStart[block];
+                for (int k = 0; k < phi.Inputs.Length && k < block.Predecessors.Count; k++)
+                {
+                    if (!blockEnd.TryGetValue(block.Predecessors[k], out int e)) continue;
+                    Use(phi.Inputs[k], e);
+                    if (e < first) first = e;
+                }
+                def[phi] = first;
+                if (loopEnd >= 0) Use(phi, loopEnd);
+            }
+        }
+        // Lazily pushed inlined frames read their call's receiver and arguments.
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Node node in block.Nodes)
+            {
+                if (node.Opcode != Opcode.EnterInlinedFrame || node.Obj0 is not MaglevCompilationUnit { EagerFrame: false } unit) continue;
+                if (!unitLast.TryGetValue(unit, out int l)) continue;
+                foreach (ValueNode input in node.Inputs) Use(input, l);
+            }
+        }
+        // Values live into a loop from outside are live through it (to a
+        // fixed point: extending a range can reach an enclosing loop).
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach ((int start, int end) in loops)
+            {
+                foreach (KeyValuePair<ValueNode, int> d in def)
+                {
+                    if (d.Value < start && last.TryGetValue(d.Key, out int l) && l >= start && l < end)
+                    {
+                        last[d.Key] = end;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        // Linear scan over the definitions, one free list per CLR type.
+        var values = new List<(int Def, int Last, ValueNode Node)>();
+        foreach (KeyValuePair<ValueNode, int> d in def)
+        {
+            ValueNode v = d.Key;
+            if (v.IsConstant || v.UseCount <= 0) continue;
+            int l = last.TryGetValue(v, out int x) ? x : d.Value;
+            values.Add((d.Value, Math.Max(l, d.Value), v));
+        }
+        values.Sort(static (a, b) => a.Def != b.Def ? a.Def.CompareTo(b.Def) : a.Last.CompareTo(b.Last));
+        var free = new Dictionary<Type, Stack<LocalBuilder>>();
+        // Active ranges ordered by their end.
+        var active = new PriorityQueue<(LocalBuilder Local, Type Type), int>();
+        int locals = 0;
+        foreach ((int d, int l, ValueNode v) in values)
+        {
+            while (active.TryPeek(out (LocalBuilder Local, Type Type) a, out int activeEnd) && activeEnd < d)
+            {
+                active.Dequeue();
+                if (!free.TryGetValue(a.Type, out Stack<LocalBuilder>? stack)) free[a.Type] = stack = new Stack<LocalBuilder>();
+                stack.Push(a.Local);
+            }
+            Type type = ClrType(v.Representation);
+            LocalBuilder local;
+            if (free.TryGetValue(type, out Stack<LocalBuilder>? pool) && pool.Count > 0)
+            {
+                local = pool.Pop();
+            }
+            else
+            {
+                if (++locals > kMaxLocals) throw new MaglevBailoutException($"too many values for IL locals ({locals})");
+                local = _il.DeclareLocal(type);
+            }
+            v.Local = local;
+            active.Enqueue((local, type), l);
+        }
+        return true;
     }
 
     static Type ClrType(ValueRepresentation repr) => repr switch
