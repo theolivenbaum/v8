@@ -1056,8 +1056,19 @@ public sealed partial class BytecodeGenerator
             public bool Equals(Key other) =>
                 Kind == other.Kind && Index == other.Index && ReferenceEquals(Node, other.Node);
 
+            // V8 hashes the node's address. The identity hash (RuntimeHelpers.GetHashCode)
+            // is a runtime call that installs the hash in the object header on first use;
+            // the names' string hash and the nodes' positions spread as well and are
+            // plain field reads (equality stays by reference).
             public override int GetHashCode() =>
-                HashCode.Combine(Kind, Index, Node is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(Node));
+                HashCode.Combine(Kind, Index, Node switch
+                {
+                    null => 0,
+                    AstRawString name => (int)name.Hash(),
+                    Variable variable => (int)variable.raw_name().Hash(),
+                    AstNode node => node.position(),
+                    _ => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(Node),
+                });
         }
 
         readonly Dictionary<Key, int> _map = [];

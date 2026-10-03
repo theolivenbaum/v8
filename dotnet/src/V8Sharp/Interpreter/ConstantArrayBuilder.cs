@@ -193,7 +193,20 @@ public sealed class ConstantArrayBuilder
     ];
 
     // V8 keys AST entries by pointer (constants_map_); identity semantics here.
-    readonly Dictionary<object, int> _constantsMap = new(ReferenceEqualityComparer.Instance);
+    readonly Dictionary<object, int> _constantsMap = new(ConstantKeyComparer.Instance);
+
+    // Identity equality; an AstRawString (most entries) hashes with its string
+    // hash, a field read, instead of the identity hash, a runtime call that
+    // installs the hash in the object header on first use.
+    sealed class ConstantKeyComparer : IEqualityComparer<object>
+    {
+        public static readonly ConstantKeyComparer Instance = new();
+
+        public new bool Equals(object? x, object? y) => ReferenceEquals(x, y);
+
+        public int GetHashCode(object obj) =>
+            obj is Ast.AstRawString name ? (int)name.Hash() : RuntimeHelpers.GetHashCode(obj);
+    }
     readonly Dictionary<int, int> _smiMap = [];
     // std::map<double> compares with operator<, so 0.0 and -0.0 share an entry;
     // .NET's double equality and hashing agree (0.0.Equals(-0.0) is true).

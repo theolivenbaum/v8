@@ -100,8 +100,13 @@ for now, to be revisited when the reason goes away.
   and PreParserExpressionList (C++ stack objects in V8) are objects recycled
   through per-parser (per-thread for the expression lists) free lists.
 - Parsing: AstValueFactory probes the isolate's constants table and then its
-  own (V8 copies the constants' table into each factory); strings hash with
-  FNV-1a (V8: rapidhash with the isolate seed), only for hash tables.
+  own (V8 copies the constants' table into each factory). Strings hash with
+  V8's StringHasher (rapidhash, V8Sharp.Base) with the default hash seed
+  (V8: the isolate's seed), and the engine's StringTable is keyed by the same
+  hash field, so internalizing an AstRawString does not hash it again.
+- Parsing: a multi-segment inferred function name (`a.b.c`) is one flat
+  string, not internalized (V8: a chain of ConsStrings, AstConsString::
+  Allocate, also not internalized).
 - Parsing: the scanner's token LiteralBuffer storage goes back to a small
   per-thread pool when Parser::ParseProgram / ParseFunction finish (V8:
   new[] / delete[] with the scanner).
@@ -123,7 +128,12 @@ for now, to be revisited when the reason goes away.
   compiled again, so a repeated large eval hits from its third evaluation
   (V8 caches every source on the first compile; holding large distinct
   sources alive across gen-2 collections cost 25-30% on large distinct
-  evals, and holding them weakly 7% on micro:compile CompilePdfJS).
+  evals, and holding them weakly 7% on micro:compile CompilePdfJS). The eval
+  key is computed once per eval (V8: EvalCacheKey with the source's cached
+  string hash); a source over String::kMaxHashCalcLength characters hashes
+  its first and last 2048 characters with its length (V8: the length alone),
+  so the seen markers of distinct large sources of one length (CodeLoad's
+  salted evals) do not match each other.
 - Parsing: VariableMap keeps up to 8 entries in an insertion-ordered array
   searched by identity, allocated on first use, plus a hash index beyond 8
   (V8: a ZoneHashMap of 8 entries).
@@ -649,8 +659,9 @@ Heap and object model
 - The special prototype instance types (`JS_OBJECT_PROTOTYPE_TYPE`,
   `JS_PROMISE_PROTOTYPE_TYPE`, ...) are set on the map only;
   `HeapObject.InstanceType` stays the generic type.
-- The string table is a `Dictionary` keyed by content, not V8's open-addressed
-  table with forwarding indices.
+- The string table is V8's open-addressed table probed by the raw hash field
+  (each slot keeps the hash beside the string), without forwarding indices,
+  and it never drops dead strings (the .NET GC does not tell it which died).
 - Allocation mementos: an array created from an AllocationSite (literal copies,
   empty array literals, `new Array` with construct feedback) keeps the site in
   `JSArray.AllocationMementoSite` for its whole life; V8's memento sits behind
@@ -690,7 +701,8 @@ Execution
   Atomics entry points are not ported.
 - `KeyAccumulator` does not use the prototype-info enum cache.
 - Hash tables use local copies of V8's hashers (`Hashing.ComputeSeededHash`
-  and friends) until V8Sharp.Base lands.
+  and friends) until V8Sharp.Base lands. String hash fields come from
+  V8Sharp.Base's StringHasher (rapidhash) with the default hash seed.
 
 Bootstrapper
 - No snapshot: `Bootstrapper.CreateEnvironment` builds every native context
