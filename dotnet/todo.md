@@ -1134,6 +1134,34 @@ Still failing (mjsunit clusters, v8sharp engine):
   d8 `-C` working directory, Intl, WebAssembly, shared structs.
 - `%IsSmi(%AllocateHeapNumberWithValue(1))` (call-intrinsic-fuzzing, deviation).
 
+### Headline, 2026-10-03 (a885b53c)
+
+octane-steady after the harness fix (79e3f6e6: CodeLoad, Crypto and
+EarleyBoyer were scored over the cold pass before it, so earlier steady
+numbers for them are cold), parity publish, 3 interleaved runs with V8
+--jitless in the same session (session-20261003-051949; load 4.1 -> 1.3,
+steal 0%, cpu-cal 1.77-1.81 s, mem-bw 32.4 GB/s; V8 crashed with exit 139 on
+one run of 7 benchmarks, its means there are over 2 runs):
+**52.0%** of V8 --jitless (geomean of 15 scores, latency excluded).
+
+| benchmark | v8sharp | V8 --jitless | share |
+|---|---|---|---|
+| Richards | 406 | 792 | 51% |
+| DeltaBlue | 355 | 854 | 42% |
+| Crypto | 53.2 | 104 | 51% |
+| RayTrace | 193 | 463 | 42% |
+| EarleyBoyer | 78.0 | 193 | 40% |
+| RegExp | 278 | 506 | 55% |
+| Splay | 3481 | 4021 | 87% |
+| NavierStokes | 258 | 223 | 116% |
+| PdfJS | 744 | 2004 | 37% |
+| Mandreel | 66.7 | 145 | 46% |
+| Gameboy | 316 | 750 | 42% |
+| CodeLoad | 3448 | 4083 | 84% |
+| Box2D | 565 | 899 | 63% |
+| zlib | 15.0 | 41.8 | 36% |
+| Typescript | 246 | 628 | 39% |
+
 ## Phase 2: the fast tiers
 
 Order (decided 2026-09-28): the interpreter is finished first — correctness
