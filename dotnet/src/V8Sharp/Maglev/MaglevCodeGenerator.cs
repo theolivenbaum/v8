@@ -1979,7 +1979,7 @@ internal sealed class MaglevCodeGenerator
                 return;
             case Opcode.TestUndetectable:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
-                Call(nameof(MaglevBuiltins.TestUndetectable));
+                Call(node.Int0 != 0 ? nameof(MaglevBuiltins.TestUndefinedOrNull) : nameof(MaglevBuiltins.TestUndetectable));
                 Store(v!);
                 return;
             case Opcode.TestTypeOf:

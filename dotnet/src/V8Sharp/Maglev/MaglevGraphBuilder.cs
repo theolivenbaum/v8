@@ -935,6 +935,30 @@ public sealed partial class MaglevGraphBuilder
         }
     }
 
+    /// <summary>
+    /// BuildTestUndetectable with MaglevReducer::TryFoldTestUndetectable: an
+    /// untagged number or a receiver (under the NoUndetectableObjects
+    /// protector) is not undetectable; with the protector, only null and
+    /// undefined are.
+    /// </summary>
+    ValueNode BuildTestUndetectable(ValueNode value)
+    {
+        if (value.Representation != ValueRepresentation.kTagged) return GetBooleanConstant(false);
+        if (value.IsConstant)
+        {
+            JSValue c = value.ConstantValue();
+            return GetBooleanConstant(c.IsNullOrUndefined || c.HeapObjectOrNull is JSReceiver r && r.Map.IsUndetectable);
+        }
+        bool noUndetectable = _info.DependOnProtector(Protectors.IsNoUndetectableObjectsIntact(Isolate), "NoUndetectableObjects");
+        if (noUndetectable && !NodeTypes.CanBe(GetType(value), NodeType.kNullOrUndefined)) return GetBooleanConstant(false);
+        return AddNewNode(new ValueNode(Opcode.TestUndetectable, ValueRepresentation.kTagged)
+        {
+            Inputs = [value],
+            Type = NodeType.kBoolean,
+            Int0 = noUndetectable ? 1 : 0,
+        });
+    }
+
     NodeType GetType(ValueNode node) => _frame.Known.GetType(node);
     bool CheckType(ValueNode node, NodeType type) => NodeTypes.Is(GetType(node), type);
     void EnsureType(ValueNode node, NodeType type) => _frame.Known.EnsureType(node, type);

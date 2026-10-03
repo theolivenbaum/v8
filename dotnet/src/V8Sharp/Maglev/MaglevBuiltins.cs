@@ -250,7 +250,23 @@ public static class MaglevBuiltins
     [MethodImpl(Inline)]
     public static bool IsIdentical(JSValue a, JSValue b) => a.IsIdenticalTo(b);
 
-    public static JSValue TestUndetectable(JSValue v) => JSValue.FromBoolean(InterpreterOps.IsUndetectable(v));
+    /// <summary>
+    /// TestUndetectable: null, undefined and receivers with undetectable maps
+    /// (the instance type range test instead of a class type test).
+    /// </summary>
+    [MethodImpl(Inline)]
+    public static JSValue TestUndetectable(JSValue v)
+    {
+        HeapObject? o = v._obj;
+        bool undetectable = o is null || ReferenceEquals(o, Oddball.Null) ||
+                            o.InstanceType >= InstanceTypeChecks.FirstJSReceiver && Unsafe.As<JSReceiver>(o).Map.IsUndetectable;
+        return undetectable ? JSValue.True : JSValue.False;
+    }
+
+    /// <summary>TestUndetectable under the NoUndetectableObjects protector: null or undefined.</summary>
+    [MethodImpl(Inline)]
+    public static JSValue TestUndefinedOrNull(JSValue v) =>
+        v._obj is null || ReferenceEquals(v._obj, Oddball.Null) ? JSValue.True : JSValue.False;
 
     public static JSValue TestTypeOf(JSValue v, int literal) => BaselineBuiltinsBridge.TestTypeOf(v, literal);
 

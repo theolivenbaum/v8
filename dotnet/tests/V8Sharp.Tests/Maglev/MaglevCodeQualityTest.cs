@@ -79,6 +79,30 @@ public class MaglevCodeQualityTest
     public void SameResultWhenOptimized(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
 
     [Fact]
+    public void UndetectableComparesFollowTheProtector()
+    {
+        // x == null: null and undefined only while no undetectable object
+        // exists (NoUndetectableObjects protector); creating one deoptimizes
+        // the code, which then also tests the map bit.
+        string source = """
+            function isNull(x) { return x == null; }
+            function nn(x) { return x != null ? 1 : 0; }
+            var vals = [null, undefined, 0, '', {}, [], false, NaN];
+            var out = [];
+            for (var k = 0; k < 30; k++) for (var v of vals) out.push(isNull(v), nn(v));
+            var u = %GetUndetectable();
+            out.push(isNull(u), nn(u), isNull({}), nn(null));
+            for (var k = 0; k < 30; k++) out.push(isNull(u), isNull(k), nn(u));
+            out.join();
+            """;
+        string interpreted = MaglevCompilerTest.Run("--no-maglev --no-sparkplug", source);
+        foreach (string flags in MaglevCompilerTest.StressConfigurations)
+        {
+            Assert.Equal(interpreted, MaglevCompilerTest.Run(flags, source));
+        }
+    }
+
+    [Fact]
     public void KeyedLoadsWithElementsKindTransitionsStayOptimized()
     {
         // The IC's transitioning handler for the packed map: the optimized

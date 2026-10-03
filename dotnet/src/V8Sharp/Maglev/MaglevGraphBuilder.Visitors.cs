@@ -146,11 +146,7 @@ public sealed partial class MaglevGraphBuilder
                 SetAccumulator(BuildTaggedEqual(LoadRegister(0), GetAccumulator()));
                 break;
             case Bytecode.TestUndetectable:
-                SetAccumulator(AddNewNode(new ValueNode(Opcode.TestUndetectable, ValueRepresentation.kTagged)
-                {
-                    Inputs = [GetTaggedValue(GetAccumulator())],
-                    Type = NodeType.kBoolean,
-                }));
+                SetAccumulator(BuildTestUndetectable(GetAccumulator()));
                 break;
             case Bytecode.TestNull:
                 SetAccumulator(BuildTaggedEqual(GetAccumulator(), GetRootConstant(RootIndex.kNullValue)));
