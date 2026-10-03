@@ -249,13 +249,31 @@ internal static class InterpreterInlineCalls
         int formal = bytecode.ParameterCount - 1;
         // Slots reserved below the frame (an apply's arguments window) are released with it.
         int registerStart = isolate.RegisterStackTop;
-        int start = registerStart + reservedBelow;
-        int fp = start + (argc > formal ? argc : formal) + InterpreterRuntime.kFixedSlotsAboveParams;
+        int fp = registerStart + reservedBelow + (argc > formal ? argc : formal) + InterpreterRuntime.kFixedSlotsAboveParams;
         int end = fp + bytecode.RegisterCount;
         if ((uint)end > (uint)isolate.RegisterStackInterruptLimit) return false;
         int depth = isolate.InterpreterFrameDepth;
         if ((uint)depth >= (uint)Isolate.kMaxInterpreterFrames) return false;
+        EnterFastCore(isolate, ref st, ref callerFp, pc, returnPc, ref callCount, function, bytecode, feedbackVector,
+            receiverObject, receiverBits, args, registerStart, fp, end, depth, InterpreterFrameFlags.InlineCall);
+        return true;
+    }
 
+    /// <summary>
+    /// The frame entry of <see cref="TryEnterFast"/> and <see cref="TryConstructFast"/>
+    /// once every check has passed (the frame ends at <paramref name="end"/>,
+    /// under the interrupt limit, and <paramref name="depth"/> is under the
+    /// frame limit).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static void EnterFastCore<TArgs>(Isolate isolate, ref InterpreterState st, ref JSValue callerFp, int pc, int returnPc,
+        ref JSValue callCount, JSFunction function, BytecodeArray bytecode, FeedbackVector feedbackVector,
+        HeapObject? receiverObject, long receiverBits, TArgs args, int registerStart, int fp, int end, int depth,
+        InterpreterFrameFlags flags)
+        where TArgs : struct, Baseline.BaselineCalls.ICallArguments
+    {
+        int argc = args.Count;
+        int formal = bytecode.ParameterCount - 1;
         // Scalar stores first, then the references (each skipped when the slot
         // already holds it): nothing computed above lives across a write barrier.
         if (!Unsafe.IsNullRef(ref callCount))
@@ -270,7 +288,7 @@ internal static class InterpreterInlineCalls
         Debug.Assert(st.FrameIndex == depth - 1);
         Unsafe.Subtract(ref frame, 1).ReturnPc = returnPc;
         frame.Fp = fp;
-        frame.Flags = InterpreterFrameFlags.InlineCall;
+        frame.Flags = flags;
         frame.RegisterStart = registerStart;
         st.Accumulator = default;
         st.Pc = 0;
@@ -302,6 +320,17 @@ internal static class InterpreterInlineCalls
         Unsafe.AsRef(in Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset)._bits) = 0;
         InterpreterRuntime.SetRawSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kBytecodeOffsetOffset), 0);
         InterpreterRuntime.SetRawSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kArgcOffset), argc);
+        ref JSValue newTargetSlot = ref Unsafe.NullRef<JSValue>();
+        if ((flags & InterpreterFrameFlags.Constructor) != 0)
+        {
+            // new.target is the constructor (TryConstructFast checked it).
+            Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
+            if (incoming.IsValid)
+            {
+                newTargetSlot = ref Unsafe.Add(ref fpRef, incoming.Index);
+                Unsafe.AsRef(in newTargetSlot._bits) = 0;
+            }
+        }
 
         Context context = function.Context;
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
@@ -311,6 +340,51 @@ internal static class InterpreterInlineCalls
         StoreReference(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset), feedbackVector);
         StoreReference(ref receiverSlot, receiverObject);
         args.StoreReferences(ref stack0, ref firstArgument);
+        if (!Unsafe.IsNullRef(ref newTargetSlot)) StoreReference(ref newTargetSlot, function);
+    }
+
+    /// <summary>
+    /// The Construct bytecode's common case, with no call but the allocation:
+    /// `new F(...)` where new.target is F, F is an ordinary constructor that
+    /// runs in the loop, the construct feedback is monomorphic on F (or
+    /// megamorphic) and F's initial map is in fast mode (FastNewObject).
+    /// Allocates the receiver and enters F like <see cref="TryEnterFast"/>,
+    /// with the construct stub's slots reserved below its frame; false,
+    /// having changed nothing, otherwise (the general Construct handler
+    /// takes it).
+    /// </summary>
+    // V8: Construct -> JSConstructStubGeneric (FastNewObject, then the
+    // InterpreterEntryTrampoline). Every check comes before the allocation, so
+    // a declined construct allocates nothing and the general path runs from
+    // the start.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryConstructFast(Isolate isolate, ref InterpreterState st, ref JSValue callerFp, int pc, int returnPc,
+        JSValue[] slots, int slot, JSFunction function, int argsStart, int argc)
+    {
+        SharedFunctionInfo shared = function.Shared;
+        if (shared.InterpreterConstructMode != kCallModeInline) return false;
+        if ((uint)(slot + 1) >= (uint)slots.Length) return false;
+        ref JSValue feedback = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(slots), slot);
+        HeapObject? recorded = feedback._obj;
+        if (!ReferenceEquals(recorded, function) && !ReferenceEquals(recorded, ReadOnlyRoots.megamorphic_symbol)) return false;
+        if (function.PrototypeOrInitialMap is not Map initialMap || initialMap.IsDictionaryMap || !function.Map.IsConstructor) return false;
+        if (function.RawFeedbackCell.Value is not FeedbackVector feedbackVector) return false;
+        var bytecode = Unsafe.As<BytecodeArray>(shared.FunctionData!);
+        if (bytecode.ConstantPoolValues is null) return false;
+        int formal = bytecode.ParameterCount - 1;
+        int registerStart = isolate.RegisterStackTop;
+        int fp = registerStart + InterpreterCalls.kConstructStubFrameSlots + (argc > formal ? argc : formal) +
+            InterpreterRuntime.kFixedSlotsAboveParams;
+        int end = fp + bytecode.RegisterCount;
+        if ((uint)end > (uint)isolate.RegisterStackInterruptLimit) return false;
+        int depth = isolate.InterpreterFrameDepth;
+        if ((uint)depth >= (uint)Isolate.kMaxInterpreterFrames) return false;
+        // FastNewObject; nothing above has changed any state, and the
+        // allocation moves neither the stack top nor the frames.
+        JSObject receiver = isolate.Factory.FastNewObjectOutOfLine(initialMap);
+        EnterFastCore(isolate, ref st, ref callerFp, pc, returnPc, ref Unsafe.Add(ref feedback, 1), function, bytecode, feedbackVector,
+            receiver, 0, new Baseline.BaselineCalls.RegisterArguments(argsStart, argc), registerStart, fp, end, depth,
+            InterpreterFrameFlags.InlineCall | InterpreterFrameFlags.Constructor);
         return true;
     }
 
