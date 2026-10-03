@@ -800,6 +800,24 @@ public sealed partial class MaglevGraphBuilder
         return !first;
     }
 
+    /// <summary>
+    /// TryBuildElementAccessOnTypedArray: the access depends on no buffer being
+    /// detached (and, for a store, none being immutable), or checks the buffer
+    /// (CheckTypedArrayValid) when a protector is invalid.
+    /// </summary>
+    void BuildCheckTypedArrayValidOrDepend(ValueNode obj, bool write)
+    {
+        bool dependOnDetaching = _info.DependOnProtector(Protectors.IsArrayBufferDetachingIntact(Isolate), "ArrayBufferDetaching");
+        bool dependOnMutable = !write || _info.DependOnProtector(Protectors.IsArrayBufferMutableIntact(Isolate), "ArrayBufferMutable");
+        if (dependOnDetaching && dependOnMutable) return;
+        AddNewNode(new Node(Opcode.CheckTypedArrayValid)
+        {
+            Inputs = [obj],
+            Int0 = write ? 1 : 0,
+            Properties = OpProperties.kEagerDeopt,
+        }, DeoptimizeReason.kArrayBufferWasDetached);
+    }
+
     static ValueRepresentation TypedArrayElementRepresentation(ElementsKind kind) => kind switch
     {
         ElementsKind.FLOAT32_ELEMENTS or ElementsKind.FLOAT64_ELEMENTS => ValueRepresentation.kFloat64,
@@ -840,6 +858,7 @@ public sealed partial class MaglevGraphBuilder
         var maps = new Map[feedback.Count];
         for (int i = 0; i < maps.Length; i++) maps[i] = feedback[i].Map;
         BuildCheckMaps(obj, maps);
+        BuildCheckTypedArrayValidOrDepend(obj, write: false);
         ValueNode index = GetInt32ElementIndex(key);
         ValueNode length = BuildLoadTypedArrayLength(obj);
         ValueNode BuildLoad() => AddNewNode(new ValueNode(Opcode.LoadTypedArrayElement, TypedArrayElementRepresentation(kind))
@@ -882,18 +901,7 @@ public sealed partial class MaglevGraphBuilder
         var maps = new Map[feedback.Count];
         for (int i = 0; i < maps.Length; i++) maps[i] = feedback[i].Map;
         BuildCheckMaps(obj, maps);
-        // TryBuildElementAccessOnTypedArray: a store needs a mutable buffer
-        // (detached buffers have length 0, which the bounds check and the
-        // out-of-bounds store handle).
-        if (!_info.DependOnProtector(Protectors.IsArrayBufferMutableIntact(Isolate), "ArrayBufferMutable"))
-        {
-            AddNewNode(new Node(Opcode.CheckTypedArrayValid)
-            {
-                Inputs = [obj],
-                Int0 = 1,
-                Properties = OpProperties.kEagerDeopt,
-            }, DeoptimizeReason.kArrayBufferWasDetached);
-        }
+        BuildCheckTypedArrayValidOrDepend(obj, write: true);
         ValueNode index = GetInt32ElementIndex(key);
         // The value as the kind's number type (ToNumber of an oddball is fine: typed arrays store it).
         ValueNode stored = kind switch

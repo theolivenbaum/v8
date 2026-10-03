@@ -180,6 +180,25 @@ public class MaglevFeedbackTest
     }
 
     [Fact]
+    public void TypedArrayAccessesDependOnNoDetachedBuffers()
+    {
+        // mjsunit/maglev/constant-typed-array-load-deopt-detach.
+        Assert.Equal("10,8,0,", MaglevCompilerTest.Run("--maglev", """
+            const ab = new ArrayBuffer(100);
+            var ta = new Uint16Array(ab);
+            for (let i = 0; i < ta.length; ++i) ta[i] = i;
+            function foo(i) { return ta[i]; }
+            %PrepareFunctionForOptimization(foo);
+            foo(3); foo(10);
+            %OptimizeMaglevOnNextCall(foo);
+            var r = [foo(10), %GetOptimizationStatus(foo) & 8];
+            %ArrayBufferDetach(ab);
+            r.push(%GetOptimizationStatus(foo) & 8, foo(10));
+            r.join();
+            """));
+    }
+
+    [Fact]
     public void UndefinedFitsHeapObjectFields()
     {
         // mjsunit/turbolev/new-obj: a literal field that only held undefined
