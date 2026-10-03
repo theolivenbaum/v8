@@ -73,6 +73,7 @@ internal sealed class MaglevCodeGenerator
     readonly Dictionary<DeoptFrame, Label> _frameExits = new(ReferenceEqualityComparer.Instance);
     readonly List<(Label Stub, Label Exit, int Reason)> _eagerStubs = [];
     LocalBuilder? _deoptReason;
+    LocalBuilder? _deoptIndex;
     int _spilledValues;
     readonly List<(Label Label, DeoptInfo Info, DeoptimizeKind Kind, DeoptimizeReason Reason, ValueNode? Result)> _pendingExits = [];
     readonly List<(Label Label, BasicBlock From, BasicBlock To)> _edgeStubs = [];
@@ -151,13 +152,10 @@ internal sealed class MaglevCodeGenerator
     static readonly MethodInfo s_interpreterFrames = typeof(Isolate).GetProperty(nameof(Isolate.InterpreterFrames))!.GetMethod!;
     static readonly FieldInfo s_stFp = typeof(InterpreterState).GetField(nameof(InterpreterState.Fp))!;
     static readonly FieldInfo s_stFrameIndex = typeof(InterpreterState).GetField(nameof(InterpreterState.FrameIndex))!;
-    static readonly MethodInfo s_setFramePc = typeof(InterpreterRuntime).GetMethod(nameof(InterpreterRuntime.SetFramePc),
-        [typeof(JSValue).MakeByRefType(), typeof(int)])!;
     static readonly FieldInfo s_recordFp = typeof(InterpreterFrameRecord).GetField(nameof(InterpreterFrameRecord.Fp))!;
     static readonly FieldInfo s_markedForDeoptimization = typeof(MaglevCode).GetField(nameof(MaglevCode.MarkedForDeoptimization))!;
     static readonly FieldInfo s_deoptScratch = typeof(Isolate).GetField(nameof(Isolate.MaglevDeoptScratch))!;
     static readonly FieldInfo s_propertyCellValue = typeof(PropertyCell).GetField(nameof(PropertyCell.Value))!;
-    static readonly MethodInfo s_deoptimize = typeof(V8Sharp.Deoptimizer.Deoptimizer).GetMethod(nameof(V8Sharp.Deoptimizer.Deoptimizer.Deoptimize))!;
     static readonly MethodInfo s_doubleToInt64Bits = typeof(BitConverter).GetMethod(nameof(BitConverter.DoubleToInt64Bits), [typeof(double)])!;
 
     /// <summary>Time spent creating the code's type and delegate (V8SHARP_JIT_STATS).</summary>
@@ -205,6 +203,13 @@ internal sealed class MaglevCodeGenerator
         int bodySize = _il.ILOffset;
         EmitDeoptExits();
         if (_hasCatchBlocks) EmitTryRegionEnd();
+        if (_il.ILOffset > kMaxOptimizedILBytes && !_info.Isolate.Flags.allow_natives_syntax)
+        {
+            // RyuJIT would compile the method with MinOpts (compSetOptimizationLevel),
+            // slower than the baseline code it replaces (V8Sharp's limit on top
+            // of V8's max_maglev_optimized_bytecode_size; deviations.md).
+            throw new MaglevBailoutException($"IL beyond RyuJIT's optimization limits ({_il.ILOffset} bytes)");
+        }
         if (_info.Isolate.Flags.trace_opt_verbose)
         {
             Console.WriteLine($"[maglev code: {bodySize} bytes IL body, {_il.ILOffset - bodySize} bytes in {_pendingExits.Count} deopt exits " +
@@ -243,6 +248,7 @@ internal sealed class MaglevCodeGenerator
 
     void AllocateLocals()
     {
+        if (s_shareLocals && TryAllocateSharedLocals()) return;
         int count = 0;
         foreach (BasicBlock block in _graph.Blocks)
         {
@@ -264,6 +270,177 @@ internal sealed class MaglevCodeGenerator
                 if (node is ValueNode v && !v.IsConstant && v.UseCount > 0) v.Local = _il.DeclareLocal(ClrType(v.Representation));
             }
         }
+    }
+
+    /// <summary>
+    /// The most IL a tiering compile may produce: RyuJIT compiles methods over
+    /// 60000 IL bytes, 20000 IL instructions or 8000 local references with
+    /// MinOpts; Maglev's IL averages about 2.5 bytes per instruction and 5
+    /// per local reference.
+    /// </summary>
+    const int kMaxOptimizedILBytes = 36000;
+
+    // V8SHARP_MAGLEV_SHARE_LOCALS=0 gives every value its own IL local (for comparison).
+    static readonly bool s_shareLocals = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_SHARE_LOCALS") != "0";
+
+    /// <summary>
+    /// The register allocation of maglev-regalloc.cc for IL: values whose live
+    /// ranges do not overlap share an IL local of their CLR type, so the
+    /// method has about as many locals as values live at once. RyuJIT
+    /// compiles a method with more than 512 locals without inlining and one
+    /// with more than 2000 without optimization (MinOpts), which is what
+    /// limited the size of the graphs the tier could compile.
+    ///
+    /// Live ranges (LiveRangeAndNextUseProcessor, maglev-pre-regalloc-codegen-processors.h):
+    /// positions number the nodes in emission order; a value is live from its
+    /// definition (a phi: from the end of its first predecessor) to its last
+    /// use, counting node inputs, the values of the nodes' deopt frames (read
+    /// by the out-of-line exits at the node), phi inputs at the end of the
+    /// predecessor and the arguments of an inlined call whose frame is pushed
+    /// lazily (read by any node of the inlined function); a value live into a
+    /// loop header from outside is live to the loop's last back edge, and so
+    /// is a loop header's phi. Code with catch blocks keeps one local per
+    /// value: their trampolines read the values of the throwing node.
+    /// </summary>
+    bool TryAllocateSharedLocals()
+    {
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (!block.IsDead && block.IsExceptionHandler) return false;
+        }
+        var def = new Dictionary<ValueNode, int>(ReferenceEqualityComparer.Instance);
+        var last = new Dictionary<ValueNode, int>(ReferenceEqualityComparer.Instance);
+        var blockStart = new Dictionary<BasicBlock, int>(ReferenceEqualityComparer.Instance);
+        var blockEnd = new Dictionary<BasicBlock, int>(ReferenceEqualityComparer.Instance);
+        var unitLast = new Dictionary<MaglevCompilationUnit, int>(ReferenceEqualityComparer.Instance);
+        int pos = 0;
+        void Use(ValueNode v, int at)
+        {
+            if (v.IsConstant) return;
+            if (!last.TryGetValue(v, out int l) || l < at) last[v] = at;
+        }
+        void UseFrame(DeoptFrame? frame, int at)
+        {
+            for (DeoptFrame? f = frame; f is not null; f = f.Parent)
+            {
+                var i = (InterpretedDeoptFrame)f;
+                foreach ((Register _, ValueNode value) in i.Values) Use(value, at);
+                Use(i.Closure, at);
+            }
+        }
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            blockStart[block] = pos++;
+            foreach (Node node in block.Nodes)
+            {
+                int at = pos++;
+                foreach (ValueNode input in node.Inputs) Use(input, at);
+                UseFrame(node.EagerDeoptInfo?.TopFrame, at);
+                UseFrame(node.LazyDeoptInfo?.TopFrame, at);
+                if (node is ValueNode v) def[v] = at;
+                for (MaglevCompilationUnit? u = node.Unit; u is { IsInline: true }; u = u.Caller) unitLast[u] = at;
+            }
+            ControlNode c = block.Control!;
+            int end = pos++;
+            blockEnd[block] = end;
+            foreach (ValueNode input in c.Inputs) Use(input, end);
+            UseFrame(c.EagerDeoptInfo?.TopFrame, end);
+        }
+        // Phis: inputs used at the end of their predecessor; the phi is defined
+        // at the end of its first predecessor in emission order.
+        var loops = new List<(int Start, int End)>();
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            int loopEnd = -1;
+            if (block.IsLoopHeader)
+            {
+                foreach (BasicBlock pred in block.Predecessors)
+                {
+                    if (blockEnd.TryGetValue(pred, out int e) && e >= blockStart[block] && e > loopEnd) loopEnd = e;
+                }
+                if (loopEnd >= 0) loops.Add((blockStart[block], loopEnd));
+            }
+            foreach (Phi phi in block.Phis)
+            {
+                int first = blockStart[block];
+                for (int k = 0; k < phi.Inputs.Length && k < block.Predecessors.Count; k++)
+                {
+                    if (!blockEnd.TryGetValue(block.Predecessors[k], out int e)) continue;
+                    Use(phi.Inputs[k], e);
+                    if (e < first) first = e;
+                }
+                def[phi] = first;
+                if (loopEnd >= 0) Use(phi, loopEnd);
+            }
+        }
+        // Lazily pushed inlined frames read their call's receiver and arguments.
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Node node in block.Nodes)
+            {
+                if (node.Opcode != Opcode.EnterInlinedFrame || node.Obj0 is not MaglevCompilationUnit { EagerFrame: false } unit) continue;
+                if (!unitLast.TryGetValue(unit, out int l)) continue;
+                foreach (ValueNode input in node.Inputs) Use(input, l);
+            }
+        }
+        // Values live into a loop from outside are live through it (to a
+        // fixed point: extending a range can reach an enclosing loop).
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach ((int start, int end) in loops)
+            {
+                foreach (KeyValuePair<ValueNode, int> d in def)
+                {
+                    if (d.Value < start && last.TryGetValue(d.Key, out int l) && l >= start && l < end)
+                    {
+                        last[d.Key] = end;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        // Linear scan over the definitions, one free list per CLR type.
+        var values = new List<(int Def, int Last, ValueNode Node)>();
+        foreach (KeyValuePair<ValueNode, int> d in def)
+        {
+            ValueNode v = d.Key;
+            if (v.IsConstant || v.UseCount <= 0) continue;
+            int l = last.TryGetValue(v, out int x) ? x : d.Value;
+            values.Add((d.Value, Math.Max(l, d.Value), v));
+        }
+        values.Sort(static (a, b) => a.Def != b.Def ? a.Def.CompareTo(b.Def) : a.Last.CompareTo(b.Last));
+        var free = new Dictionary<Type, Stack<LocalBuilder>>();
+        // Active ranges ordered by their end.
+        var active = new PriorityQueue<(LocalBuilder Local, Type Type), int>();
+        int locals = 0;
+        foreach ((int d, int l, ValueNode v) in values)
+        {
+            while (active.TryPeek(out (LocalBuilder Local, Type Type) a, out int activeEnd) && activeEnd < d)
+            {
+                active.Dequeue();
+                if (!free.TryGetValue(a.Type, out Stack<LocalBuilder>? stack)) free[a.Type] = stack = new Stack<LocalBuilder>();
+                stack.Push(a.Local);
+            }
+            Type type = ClrType(v.Representation);
+            LocalBuilder local;
+            if (free.TryGetValue(type, out Stack<LocalBuilder>? pool) && pool.Count > 0)
+            {
+                local = pool.Pop();
+            }
+            else
+            {
+                if (++locals > kMaxLocals) throw new MaglevBailoutException($"too many values for IL locals ({locals})");
+                local = _il.DeclareLocal(type);
+            }
+            v.Local = local;
+            active.Enqueue((local, type), l);
+        }
+        return true;
     }
 
     static Type ClrType(ValueRepresentation repr) => repr switch
@@ -501,9 +678,13 @@ internal sealed class MaglevCodeGenerator
     void StoreBytecodeOffset(NodeBase node)
     {
         if (node.BytecodeOffset < 0) return;
-        LoadFrameSlotAddress(node.Unit, 0);
+        // InterpreterRuntime.SetFramePc as IL (a call is not inlined once
+        // RyuJIT's inline budget of a big method is spent).
+        LoadFrameSlotAddress(node.Unit, InterpreterRuntime.kBytecodeOffsetOffset);
+        _il.Emit(OpCodes.Ldflda, s_bits);
         _il.Emit(OpCodes.Ldc_I4, node.BytecodeOffset);
-        _il.Emit(OpCodes.Call, s_setFramePc);
+        _il.Emit(OpCodes.Conv_I8);
+        _il.Emit(OpCodes.Stind_I8);
     }
 
     // ---- Catch blocks --------------------------------------------------------------------------------------
@@ -897,6 +1078,7 @@ internal sealed class MaglevCodeGenerator
     void EmitDeoptExits()
     {
         _deoptReason ??= _il.DeclareLocal(typeof(int));
+        _deoptIndex ??= _il.DeclareLocal(typeof(int));
         foreach ((Label stub, Label exit, int reason) in _eagerStubs)
         {
             _il.MarkLabel(stub);
@@ -921,10 +1103,21 @@ internal sealed class MaglevCodeGenerator
                 MaglevCompilationUnit unit = f.Unit;
                 var registers = new Register[f.Values.Length];
                 ArgumentsObjectKind[]? materialize = null;
+                JSValue[]? constants = null;
+                bool[]? isConstant = null;
                 for (int k = 0; k < f.Values.Length; k++)
                 {
                     registers[k] = f.Values[k].Register;
                     ValueNode value = f.Values[k].Value;
+                    if (value.IsConstant)
+                    {
+                        // A literal of the translation (V8's StoreLiteral): the
+                        // Deoptimizer writes it, the exit spills nothing.
+                        (constants ??= new JSValue[f.Values.Length])[k] = value.ConstantValue();
+                        (isConstant ??= new bool[f.Values.Length])[k] = true;
+                        spill.Add(null);
+                        continue;
+                    }
                     if (IsElidedArguments(value))
                     {
                         // The Deoptimizer creates the elided arguments object.
@@ -946,6 +1139,8 @@ internal sealed class MaglevCodeGenerator
                     NextOffset = f.NextOffset,
                     Registers = registers,
                     Materialize = materialize,
+                    Constants = constants,
+                    IsConstant = isConstant,
                     ScratchStart = scratch,
                 };
                 scratch += registers.Length;
@@ -960,24 +1155,87 @@ internal sealed class MaglevCodeGenerator
                     scratch++;
                 }
             }
-            _spilledValues += spill.Count;
-            EmitSpill(spill);
             point.Frames = data;
             point.ScratchSize = scratch;
             _maxScratch = Math.Max(_maxScratch, scratch);
             int index = _deoptPoints.Count;
             _deoptPoints.Add(point);
             info.DeoptIndex = index;
+            // The deopt point and the reason go to locals, and the exit jumps to
+            // the spill code of its value sequence, which exits with the same
+            // values in the same scratch slots share (the translations differ
+            // in their frames' offsets and registers, which are data).
+            var key = new SpillKey(spill);
+            if (kind == DeoptimizeKind.kLazy)
+            {
+                _il.Emit(OpCodes.Ldc_I4, (int)reason);
+                _il.Emit(OpCodes.Stloc, _deoptReason);
+            }
+            _il.Emit(OpCodes.Ldc_I4, index);
+            _il.Emit(OpCodes.Stloc, _deoptIndex);
+            if (!_spillBlocks.TryGetValue(key, out Label block))
+            {
+                block = _il.DefineLabel();
+                _spillBlocks[key] = block;
+                _pendingSpills.Add((block, spill));
+            }
+            _il.Emit(OpCodes.Br, block);
+        }
+        foreach ((Label block, List<ValueNode?> spill) in _pendingSpills)
+        {
+            _il.MarkLabel(block);
+            _spilledValues += spill.Count;
+            // The last (up to four) values go with the Deoptimize call
+            // (MaglevBuiltins.DeoptN), the others through Spill*.
+            int tail = spill.Count;
+            int tailCount = 0;
+            while (tail > 0 && tailCount < 4 && spill[tail - 1] is not null)
+            {
+                tail--;
+                tailCount++;
+            }
+            EmitSpill(spill.GetRange(0, tail));
             // Deoptimizer::Deoptimize(isolate, ref state, code, index, reason); return to MaglevExecution.Run.
             _il.Emit(OpCodes.Ldarg_1);
             _il.Emit(OpCodes.Ldarg_2);
             _il.Emit(OpCodes.Ldarg_0);
-            _il.Emit(OpCodes.Ldc_I4, index);
-            if (kind == DeoptimizeKind.kEager) _il.Emit(OpCodes.Ldloc, _deoptReason);
-            else _il.Emit(OpCodes.Ldc_I4, (int)reason);
-            _il.Emit(OpCodes.Call, s_deoptimize);
-            LoadUndefined();
+            _il.Emit(OpCodes.Ldloc, _deoptIndex);
+            _il.Emit(OpCodes.Ldloc, _deoptReason);
+            if (tailCount > 0)
+            {
+                _il.Emit(OpCodes.Ldc_I4, tail);
+                for (int k = 0; k < tailCount; k++) Load(spill[tail + k]!, ValueRepresentation.kTagged);
+            }
+            Call("Deopt" + tailCount);
             EmitReturn();
+        }
+    }
+
+    readonly Dictionary<SpillKey, Label> _spillBlocks = new();
+    readonly List<(Label Block, List<ValueNode?> Spill)> _pendingSpills = [];
+
+    /// <summary>A deopt exit's spill sequence, compared by the values' identities.</summary>
+    readonly struct SpillKey(List<ValueNode?> values) : IEquatable<SpillKey>
+    {
+        readonly List<ValueNode?> _values = values;
+
+        public bool Equals(SpillKey other)
+        {
+            if (_values.Count != other._values.Count) return false;
+            for (int i = 0; i < _values.Count; i++)
+            {
+                if (!ReferenceEquals(_values[i], other._values[i])) return false;
+            }
+            return true;
+        }
+
+        public override bool Equals(object? obj) => obj is SpillKey k && Equals(k);
+
+        public override int GetHashCode()
+        {
+            var h = new HashCode();
+            foreach (ValueNode? v in _values) h.Add(v is null ? 0 : RuntimeHelpers.GetHashCode(v));
+            return h.ToHashCode();
         }
     }
 
@@ -992,7 +1250,15 @@ internal sealed class MaglevCodeGenerator
         int i = 0;
         while (i < values.Count)
         {
-            int remaining = values.Count - i;
+            // Slots the Deoptimizer fills (literals, elided objects) are skipped.
+            if (values[i] is null)
+            {
+                i++;
+                continue;
+            }
+            int run = 0;
+            while (i + run < values.Count && values[i + run] is not null) run++;
+            int remaining = run;
             int chunk = remaining >= 8 ? 8 : remaining >= 4 ? 4 : remaining >= 2 ? 2 : 1;
             _il.Emit(OpCodes.Ldarg_1);
             _il.Emit(OpCodes.Ldfld, s_deoptScratch);
