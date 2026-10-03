@@ -72,8 +72,12 @@ public sealed class VariableMap
     private int _occupancy;
     // Removed slots, reused last-removed first.
     private Stack<int>? _freeSlots;
-    // name -> slot, once the map has more than kLinearLimit slots.
-    private Dictionary<AstRawString, int>? _index;
+    // name -> slot + 1, once the map has more than kLinearLimit slots: open
+    // addressing by the AstRawString's hash, as V8's ZoneHashMap is (0: empty,
+    // kRemovedIndexEntry: a removed entry the probe passes over).
+    private int[]? _index;
+    private int _indexUsed;
+    private const int kRemovedIndexEntry = -1;
 
     public VariableMap() { }
 
@@ -145,7 +149,7 @@ public sealed class VariableMap
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int Find(AstRawString name)
     {
-        if (_index != null) return _index.TryGetValue(name, out int slot) ? slot : -1;
+        if (_index != null) return FindInIndex(name);
         KeyValuePair<AstRawString, Variable>[]? entries = _entries;
         if (entries == null) return -1;
         int count = _count;
@@ -154,6 +158,69 @@ public sealed class VariableMap
             if (ReferenceEquals(entries[i].Key, name)) return i;
         }
         return -1;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int FirstProbe(AstRawString name, int mask) => (int)name.Hash() & mask;
+
+    private int FindInIndex(AstRawString name)
+    {
+        int[] index = _index!;
+        int mask = index.Length - 1;
+        KeyValuePair<AstRawString, Variable>[] entries = _entries!;
+        for (int i = FirstProbe(name, mask); ; i = (i + 1) & mask)
+        {
+            int e = index[i];
+            if (e == 0) return -1;
+            if (e != kRemovedIndexEntry && ReferenceEquals(entries[e - 1].Key, name)) return e - 1;
+        }
+    }
+
+    // Adds slot for name, which is not in the index.
+    private void AddToIndex(AstRawString name, int slot)
+    {
+        if ((_indexUsed + 1) * 2 > _index!.Length) RebuildIndex(_index.Length * 2);
+        int[] index = _index!;
+        int mask = index.Length - 1;
+        int i = FirstProbe(name, mask);
+        while (index[i] > 0) i = (i + 1) & mask;
+        if (index[i] == 0) _indexUsed++;
+        index[i] = slot + 1;
+    }
+
+    private void RemoveFromIndex(AstRawString name)
+    {
+        int[] index = _index!;
+        int mask = index.Length - 1;
+        for (int i = FirstProbe(name, mask); ; i = (i + 1) & mask)
+        {
+            int e = index[i];
+            if (e == 0) return;
+            if (e != kRemovedIndexEntry && ReferenceEquals(_entries![e - 1].Key, name))
+            {
+                index[i] = kRemovedIndexEntry;
+                return;
+            }
+        }
+    }
+
+    private void RebuildIndex(int length)
+    {
+        while (length < _count * 4) length *= 2;
+        var index = new int[length];
+        int mask = length - 1;
+        int used = 0;
+        for (int slot = 0; slot < _count; slot++)
+        {
+            AstRawString? key = _entries![slot].Key;
+            if (key == null) continue;
+            int i = FirstProbe(key, mask);
+            while (index[i] != 0) i = (i + 1) & mask;
+            index[i] = slot + 1;
+            used++;
+        }
+        _index = index;
+        _indexUsed = used;
     }
 
     private void Insert(AstRawString name, Variable var)
@@ -170,21 +237,20 @@ public sealed class VariableMap
             slot = _count++;
             if (_index == null && _count > kLinearLimit)
             {
-                _index = new Dictionary<AstRawString, int>(_count * 2);
-                for (int i = 0; i < _count - 1; i++)
-                {
-                    if (_entries[i].Key != null) _index.Add(_entries[i].Key, i);
-                }
+                _entries[slot] = new(name, var);
+                RebuildIndex(32);
+                _occupancy++;
+                return;
             }
         }
         _entries![slot] = new(name, var);
-        _index?.Add(name, slot);
+        if (_index != null) AddToIndex(name, slot);
         _occupancy++;
     }
 
     private void RemoveAt(int slot)
     {
-        _index?.Remove(_entries![slot].Key);
+        if (_index != null) RemoveFromIndex(_entries![slot].Key);
         _entries![slot] = default;
         (_freeSlots ??= new Stack<int>()).Push(slot);
         _occupancy--;
