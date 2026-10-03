@@ -1550,8 +1550,31 @@ public static partial class InterpreterExecution
         return InterpreterIntrinsicsDispatch.Invoke(isolate, (IntrinsicsHelper.IntrinsicId)id, isolate.RegisterStack.AsSpan(st.Fp + first, count));
     }
 
+    /// <summary>
+    /// Construct: the common case (<see cref="InterpreterInlineCalls.TryConstructFast"/>)
+    /// here, everything else in <see cref="ConstructSlow"/>. Returns the
+    /// constructed object, or FrameEntered when the constructor runs in the loop.
+    /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static bool Construct<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+    static JSValue Construct<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+        where TS : struct, IOperandScale
+    {
+        if (typeof(TS) == typeof(SingleScale) && Reg<TS>(ref fp, ref ip, 1)._obj is JSFunction function &&
+            ReferenceEquals(acc._obj, function) && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            const int S = 1;
+            int pc = PcOf(ref fp, ref ip);
+            if (InterpreterInlineCalls.TryConstructFast(isolate, ref st, ref fp, pc, pc + 1 + 4 * S, fv.Slots, Unsigned<TS>(ref ip, 1 + 3 * S),
+                    function, st.Fp + InterpreterRuntime.kRegisterOperandBase - Signed<TS>(ref ip, 1 + S), Unsigned<TS>(ref ip, 1 + 2 * S)))
+            {
+                return InterpreterInlineCalls.FrameEntered;
+            }
+        }
+        return ConstructSlow<TS>(isolate, ref st, ref fp, ref ip, acc);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue ConstructSlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -1563,9 +1586,8 @@ public static partial class InterpreterExecution
         if (typeof(TS) == typeof(SingleScale) &&
             InterpreterInlineCalls.TryPushConstructFrame(isolate, ref st, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, constructor, acc, st.Fp + first, count, PcOf(ref fp, ref ip) + 1 + 4 * S))
         {
-            return true;
+            return InterpreterInlineCalls.FrameEntered;
         }
-        st.Accumulator = InterpreterCalls.Construct(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, constructor, acc, st.Fp + first, count);
-        return false;
+        return InterpreterCalls.Construct(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, constructor, acc, st.Fp + first, count);
     }
 }

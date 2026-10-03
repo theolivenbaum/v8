@@ -62,13 +62,12 @@ public static partial class InterpreterExecution
         fpSlot = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(st.Isolate.RegisterStack), st.Fp);
         ip = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(InterpreterRuntime.FrameBytecode(ref fpSlot).Bytecodes), st.Pc);
         goto start;
-    // A call entered its callee, or a return resumed its caller, in this loop
-    // (InterpreterInlineCalls): the frame and bytecode are in st.ResumeFp and
-    // st.ResumeIp. A callee starts with an undefined accumulator; a return
-    // keeps the accumulator as the result unless it said otherwise.
+    // A call entered its callee in this loop (InterpreterInlineCalls): the
+    // frame and bytecode are in st.ResumeFp and st.ResumeIp, and the callee
+    // starts with an undefined accumulator. (A return resumes its caller at
+    // the Star lookahead.)
     entered:
         acc = default;
-    resumed:
         fpSlot = ref st.ResumeFp;
         ip = ref st.ResumeIp;
     start:
@@ -676,8 +675,11 @@ public static partial class InterpreterExecution
                         }
                         if (returned != InterpreterInlineCalls.kReturnNotInline)
                         {
+                            // A construct frame's receiver (`x = new F()` .. Star).
                             acc = st.Accumulator;
-                            goto resumed;
+                            fpSlot = ref st.ResumeFp;
+                            ip = ref st.ResumeIp;
+                            goto starLookahead;
                         }
                     }
                     return acc;
@@ -771,8 +773,11 @@ public static partial class InterpreterExecution
 
                 // ---- Construct ----------------------------------------------------------------------------------------
                 case Bytecode.Construct:
-                    if (Construct<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) goto entered;
-                    acc = st.Accumulator;
+                    {
+                        JSValue constructed = Construct<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                        if (ReferenceEquals(constructed._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
+                        acc = constructed;
+                    }
                     ip = ref Unsafe.Add(ref ip, 1 + 4 * S);
                     goto starLookahead;
 
