@@ -829,8 +829,8 @@ public static partial class InterpreterExecution
                 case Bytecode.ShiftRightSmi:
                 case Bytecode.ShiftRightLogicalSmi:
                 {
-                    // One call site for the six operators (InterpreterBitwise.TryAny).
-                    JSValue result = InterpreterBitwise.TryAny((Bytecode)ip, acc, Signed<TS>(ref ip, 1), true,
+                    // One call site for the six operators (InterpreterBitwise.TryAnySmi).
+                    JSValue result = InterpreterBitwise.TryAnySmi((Bytecode)ip, acc, Signed<TS>(ref ip, 1),
                         ref Unsafe.Add(ref ip, 1 + S));
                     acc = result._obj is not null ? result : BinarySmiOp<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 2 + S);
@@ -999,7 +999,7 @@ public static partial class InterpreterExecution
                             case Bytecode.BitwiseAndSmi:
                             case Bytecode.BitwiseOrSmi:
                             case Bytecode.BitwiseXorSmi:
-                                result = InterpreterBitwise.TryAny((Bytecode)Unsafe.Add(ref ip, 1), acc, immediate, true,
+                                result = InterpreterBitwise.TryAnySmi((Bytecode)Unsafe.Add(ref ip, 1), acc, immediate,
                                     ref Unsafe.Add(ref ip, immediateEnd));
                                 break;
                         }
