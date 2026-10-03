@@ -814,8 +814,7 @@ cost 25-30% on large distinct evals).
 
 Open, the next levers: the scanner and preparser
 per token (40% of a TypeScript compile, a third of it the scanner),
-StringTable lookups when internalizing (the AstRawString's hash is not
-reused), RegisterInfo and the other per-function allocations of the
+RegisterInfo and the other per-function allocations of the
 bytecode generator for lazy compiles.
 
 Compilation cache, script part (2026-10-02): CompilationCacheScript ported
@@ -834,6 +833,70 @@ scores the same with --no-compilation-cache (2300 vs 2538 steady, 15373 vs
 16717 wall, one unlocked run each). The CodeLoad gap is compile speed of
 fresh sources (indirect eval of the salted Closure source: V8 --jitless
 about 0.4 ms, V8Sharp about 3.2-4 ms per eval).
+
+CodeLoad pass (2026-10-03; parity publish, one bench-session under the
+lock, 3 interleaved runs; "base" is fc298e30, "final" 0cfb0a18; V8
+--jitless crashed once on steady CodeLoad and once on wall TypeScript, its
+mean is over the other runs):
+
+| benchmark | base | final | V8 --jitless | final / jitless |
+|---|---|---|---|---|
+| CodeLoad (octane-steady, fixed harness) | 3300 | 3514 | 4250 | 83% |
+| CodeLoad (octane, wall) | 9677 | 10054 | 17693 | 57% |
+| micro:codeload CodeLoadClosure | 1115 | 1225 | 2561 | 48% |
+| micro:codeload CodeLoadJQuery | 80.8 | 84.5 | 81.1 | 104% |
+| micro:codeload CacheBustJQuery | 3211 | 3074 | 50714 | 6% |
+| Typescript (steady / wall) | 254 / 6090 | 254 / 6150 | 585 / 14685 | 43% / 42% |
+| EarleyBoyer (steady / wall) | 76.4 / 2269 | 76.5 / 2213 | 188 / 5687 | 41% / 39% |
+
+Finding: octane-steady keyed its warm start by benchmark name while Octane
+reports a suite by the suite's name; CodeLoad (CodeLoadClosure /
+CodeLoadJQuery), Crypto (Encrypt / Decrypt) and EarleyBoyer (Earley /
+Boyer) never found the start and measured the whole cold pass, .NET tier-up
+included (CodeLoad about 1200 instead of 3400). The "CodeLoad at 20% of V8
+--jitless warm" figure was mostly that. Fixed in V8Sharp.Bench (the suite's
+score is over its benchmarks' measured runs); steady numbers for those three
+suites before 2026-10-03 are cold numbers. Warm, jQuery's salted eval now
+runs at V8 --jitless's speed; Closure's is at half.
+
+Changes, one commit each (git log fc298e30..): CompilationCacheEval key
+computed once per eval from the string's cached hash (a source over
+kMaxHashCalcLength hashes its ends; it was hashed twice in full); inferred
+names (`a.b.c = function`) not internalized, as V8 (6% of a Closure eval
+was the StringTable lookup and flattening of them); the StringTable an open
+addressing table keyed by V8's hash field, the engine's StringHasher on
+V8Sharp.Base's rapidhash port and AstRawStrings carrying the hash field, so
+internalizing does not hash again (each new string was hashed three times:
+FNV in the factory, the Dictionary's, Jenkins for the hash field); the
+table's slots keep the hash beside the string (probes no longer load other
+strings: StringTable lookups were 1% of CodeLoad in cache misses);
+VariableProxy 64 to 48 bytes (union of name and variable, flags in a byte;
+20% of the bytes a preparse allocates); Scope::Snapshot a struct;
+VariableMap's index open addressing by the AstRawString hash instead of a
+Dictionary; AccessorTable allocated with its first accessor; the feedback
+slot cache and the constant pool map hashing names by their string hash
+instead of the runtime identity hash. micro:codeload, interleaved, unlocked:
+Closure +6-10%, jQuery +4-6%; allocation of a steady CodeLoad 595 to 560 MB.
+
+Tried and dropped: DOTNET_GCgen0size 8, 32, 64 and 256 MB and
+GCLOHThreshold 1 MB (the replace result then lives in gen0: CacheBust 4x,
+the evals unchanged).
+
+What is left (profile of a CodeLoad loop, bin build, share of the main
+thread): preparsing 24%, the full parser 16%, bytecode generation 14%,
+running the evaluated code 21% (IC misses: a LoadIC/StoreIC/LoadGlobalIC
+object per miss, 4.5% of the bytes of a Closure eval), GC 12-24% (every
+iteration keeps its Closure library alive through a new `goog<hash>`
+global, as in V8, so the heap grows and gen-1/2 collections are not cheap).
+All flat: the scanner is 5-6%, no method above 2.5%. The rest of the
+allocation per compile is per node (Variable, DeclarationScope and its
+VariableMap, ThreadedLists and params list: five objects per scope against
+V8's one zone allocation; RegisterInfo per register; ParsePropertyInfo per
+property). CacheBust (`str.replace(new RegExp("jQuery", "g"), s)` over 190K
+characters) is 16x V8's: the global replace of an atom builds the result
+through IncrementalStringBuilder and flattens the cons source, both
+large-object allocations that trigger gen-2 collections. Octane's wall
+CodeLoad (57%) still pays .NET tier-up in its short timed runs.
 
 Runtime slow paths outside the dispatch loop on zlib, Mandreel, Gameboy,
 PdfJS and Box2D (2026-10-02, after the fourth pass; thread CPU,
