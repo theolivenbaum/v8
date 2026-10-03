@@ -986,15 +986,22 @@ progress, also off by default.
     sources do not share baseline code (mjsunit/baseline/cross-realm).
   - d8.test.verifySourcePositions (verify-bytecode-offsets) is not in the
     test host.
-  - Compile cost: RyuJIT takes about 3-6 us per IL byte (about 10 us per
-    bytecode byte, 23 IL bytes per bytecode byte with the inline fast
-    paths); PdfJS and Box2D spend 2.5-3 s of background CPU compiling 170-290
-    functions, which on a loaded machine slows their short Octane runs below
-    the interpreter. Compact code (no inline paths) halves the IL but saves
-    only 40% of the RyuJIT time and loses the speed-up; RyuJIT's tier 0 for
-    the first version is slower than the interpreter. Waiting for more
-    ticks before compiling (an experiment: 128 and 1000 invocations' worth)
-    hardly reduced what is compiled in those benchmarks.
+  - Compile cost: RyuJIT takes about 11 ms of CPU per function in PdfJS
+    (183 functions, 2.0 s on the Sparkplug thread; 25 IL bytes per bytecode
+    byte), 85% of it in RyuJIT itself. Measured alternatives (2026-10-03):
+    compact code for every function (V8SHARP_BASELINE_COMPACT=1) 1.5 s and a
+    slower tier; registers in the frame (V8SHARP_BASELINE_NO_REGISTER_CACHE=1)
+    1.9 s; RyuJIT tier 0 first (V8SHARP_BASELINE_TIERED=1) 0.6 s but a slower
+    short run. On an idle 4-core host cold Octane runs are now within noise of
+    the interpreter (the compile threads use idle cores); on a loaded host
+    they are still slower.
+  - Functions with more than 5000 bytes of bytecode stay in the interpreter
+    (one IL method beyond RyuJIT's limits even in compact form): TypeScript's
+    and zlib's biggest functions. Splitting a function into several IL
+    methods would let them tier up.
+  - In big methods RyuJIT stops inlining (inline budget, 512 locals): what
+    the code relies on being inlined must be IL (the bytecode offset store,
+    Smi constants are; FieldAt, Map.IsUndetectable, FromNumber are calls).
   - Performance: calls still pay the interpreter frame's setup (register
     file clear, frame record, write barriers: about 20% of DeltaBlue in
     BaselineCalls.Enter and the write barrier); a leaner frame protocol
@@ -1046,10 +1053,11 @@ progress, also off by default.
     typed array length, collection iterators, string compare feedback,
     no stack-slot limit (regress-536945254).
   - Performance: calls not inlined cost ~60 ns (frame record, register
-    window, write barriers); deopt exits are most of the IL of big functions,
-    and RyuJIT compiles big methods without optimization (MinOpts) and only
-    tiers them up late, so the tiering manager does not optimize graphs over
-    500 nodes (V8SHARP_MAGLEV_MAX_NODES). No escape analysis, LICM, loop peeling or CSE of loads.
+    window, write barriers). Deopt exits are a third of the IL (0.55 of the
+    body's in PdfJS after literals, shared spill code and DeoptN). Values
+    share IL locals by live range, so RyuJIT optimizes and inlines big
+    graphs; the tiering limits are 2000 nodes and 36000 bytes of IL. No
+    escape analysis, LICM, loop peeling or CSE of loads.
   - Conformance under forced optimization (`--maglev
     --invocation-count-for-maglev=4 --optimize-on-next-call-optimizes-to-maglev`,
     2026-10-02, after concurrent compilation): test262 0 newly failing
