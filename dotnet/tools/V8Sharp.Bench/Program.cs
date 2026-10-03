@@ -41,18 +41,21 @@ public static partial class Program
     ];
 
     /// <summary>
-    /// octane-quick:&lt;name&gt; is octane-steady:&lt;name&gt; with the iterations
-    /// divided further by this factor (on top of V8SHARP_BENCH_SCALE), chosen so
-    /// each benchmark takes about 2-3 s of V8Sharp interpreter wall time
-    /// (2026-10-03 parity publish; zlib alone was 134 s at the default scale).
-    /// For quick A/B iterations; its scores are comparable only within a
-    /// session, not with octane-steady.
+    /// octane-quick:&lt;suite&gt; is octane-steady:&lt;suite&gt; with these measured
+    /// iteration counts per benchmark (the same number again runs first,
+    /// unmeasured), ignoring Octane's minIterations floor, which at the default
+    /// scale held most benchmarks at 32 iterations (zlib at 3 iterations of
+    /// ~20 s each). Chosen for about 2-4 s per benchmark in the V8Sharp
+    /// interpreter (2026-10-03 parity publish); zlib cannot go below one
+    /// iteration (~40 s). Scores are comparable only within a session.
     /// </summary>
-    static readonly Dictionary<string, int> QuickDivisors = new()
+    static readonly Dictionary<string, string> QuickIterations = new()
     {
-        ["richards"] = 2, ["deltablue"] = 2, ["crypto"] = 10, ["raytrace"] = 3, ["earley-boyer"] = 7,
-        ["regexp"] = 2, ["splay"] = 1, ["navier-stokes"] = 2, ["pdfjs"] = 1, ["mandreel"] = 14,
-        ["gbemu"] = 3, ["code-load"] = 1, ["box2d"] = 2, ["zlib"] = 50, ["typescript"] = 3,
+        ["richards"] = "Richards=82", ["deltablue"] = "DeltaBlue=44", ["crypto"] = "Encrypt=13,Decrypt=5",
+        ["raytrace"] = "RayTrace=10", ["earley-boyer"] = "Earley=15,Boyer=10", ["regexp"] = "RegExp=6",
+        ["splay"] = "Splay=32", ["navier-stokes"] = "NavierStokes=12", ["pdfjs"] = "PdfJS=4",
+        ["mandreel"] = "Mandreel=4", ["gbemu"] = "Gameboy=12", ["code-load"] = "CodeLoadClosure=32,CodeLoadJQuery=32",
+        ["box2d"] = "Box2D=20", ["zlib"] = "zlib=1", ["typescript"] = "Typescript=16",
     };
 
     /// <summary>The oracle's modes: V8 flags for each tier configuration.</summary>
@@ -111,7 +114,7 @@ public static partial class Program
             suites:  octane (all), octane:<name>, octane-cpu (all) | octane-cpu:<name> (fixed work, scored
                      by thread CPU time; V8SHARP_BENCH_SCALE divides the iterations, default 50),
                      octane-steady (all) | octane-steady:<name> (octane-cpu after one unmeasured pass),
-                     octane-quick (all) | octane-quick:<name> (octane-steady scaled to ~2-3 s per benchmark,
+                     octane-quick (all) | octane-quick:<name> (octane-steady with fixed small iteration counts, ~2-4 s,
                      for A/B iterations; comparable only within one session),
                      perf:<js-perf-test dir>, micro:<name> | micro:all
             Octane is fetched by tools/V8Sharp.Bench/fetch-octane.sh into dotnet/artifacts/octane.
@@ -185,6 +188,20 @@ public static partial class Program
         throw new ArgumentException("unknown engine " + engine);
     }
 
+    /// <summary>"A=1,B=2" as a JS object literal, or "null".</summary>
+    static string IterationsLiteral(string? spec)
+    {
+        if (string.IsNullOrEmpty(spec)) return "null";
+        var sb = new StringBuilder("{");
+        foreach (string pair in spec.Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            int eq = pair.IndexOf('=');
+            if (sb.Length > 1) sb.Append(',');
+            sb.Append('"').Append(pair[..eq].Trim()).Append("\":").Append(int.Parse(pair[(eq + 1)..], CultureInfo.InvariantCulture));
+        }
+        return sb.Append('}').ToString();
+    }
+
     /// <summary>Returns (working directory, files to load, driver source) for a suite.</summary>
     static (string WorkDir, string[] Files, string? Driver) Workload(string suite)
     {
@@ -217,15 +234,21 @@ public static partial class Program
             // thread's CPU time varies much less than the wall time Octane scores.
             const string fixedDriver = """
                 (function () {
-                  var scale = __benchScale;
+                  var scale = __benchScale, iterations = __benchIterations, applied = 0;
                   BenchmarkSuite.config.doDeterministic = true;
                   for (var s = 0; s < BenchmarkSuite.suites.length; s++) {
                     var bs = BenchmarkSuite.suites[s].benchmarks;
                     for (var b = 0; b < bs.length; b++) {
-                      bs[b].deterministicIterations =
-                          Math.max(bs[b].minIterations, Math.ceil(bs[b].deterministicIterations / scale));
+                      if (iterations && iterations[bs[b].name] !== undefined) {
+                        bs[b].deterministicIterations = iterations[bs[b].name];
+                        applied++;
+                      } else {
+                        bs[b].deterministicIterations =
+                            Math.max(bs[b].minIterations, Math.ceil(bs[b].deterministicIterations / scale));
+                      }
                     }
                   }
+                  if (iterations) print('@iterations-applied ' + applied);
                   var measured = {};
                   if (__benchSteady) {
                     // octane-steady: within ONE pass, each benchmark first runs its
@@ -273,7 +296,8 @@ public static partial class Program
             string scale = Environment.GetEnvironmentVariable("V8SHARP_BENCH_SCALE") ?? "50";
             return (dir, files.Select(f => Path.Combine(dir, f)).ToArray(),
                 fixedWork
-                    ? "var __benchScale = " + int.Parse(scale, CultureInfo.InvariantCulture) + ", __benchSteady = " +
+                    ? "var __benchScale = " + int.Parse(scale, CultureInfo.InvariantCulture) + ", __benchIterations = " +
+                      IterationsLiteral(Environment.GetEnvironmentVariable("V8SHARP_BENCH_ITERATIONS")) + ", __benchSteady = " +
                       (steady ? "true" : "false") + ";\n" + fixedDriver
                     : driver);
         }
@@ -358,16 +382,16 @@ public static partial class Program
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        // octane-quick:<name>: the child runs octane-steady:<name> with a larger
-        // scale (also understood by older V8Sharp.Bench builds passed as @<dir>).
+        // octane-quick:<name>: the child runs octane-steady:<name> with fixed
+        // iteration counts (V8SHARP_BENCH_ITERATIONS); a child build that does
+        // not apply them (older than this) is reported as an error below, since
+        // it would measure different work.
         string childSuite = suite;
         if (suite.StartsWith("octane-quick:", StringComparison.Ordinal))
         {
             string name = suite["octane-quick:".Length..];
-            int baseScale = int.Parse(Environment.GetEnvironmentVariable("V8SHARP_BENCH_SCALE") ?? "50", CultureInfo.InvariantCulture);
             childSuite = "octane-steady:" + name;
-            psi.Environment["V8SHARP_BENCH_SCALE"] =
-                (baseScale * QuickDivisors.GetValueOrDefault(name, 1)).ToString(CultureInfo.InvariantCulture);
+            psi.Environment["V8SHARP_BENCH_ITERATIONS"] = QuickIterations[name];
         }
         var wallClock = Stopwatch.StartNew();
         if (childEngine == "d8sharp" || childEngine.StartsWith("d8sharp:", StringComparison.Ordinal))
@@ -456,6 +480,8 @@ public static partial class Program
             if (l.StartsWith("@wall-ms ", StringComparison.Ordinal))
                 wall = double.Parse(l[9..], CultureInfo.InvariantCulture);
         }
+        if (suite.StartsWith("octane-quick:", StringComparison.Ordinal) && !stdout.ToString().Contains("@iterations-applied ", StringComparison.Ordinal))
+            error ??= "this V8Sharp.Bench build does not support octane-quick (fixed iterations); rebuild it from a current tree";
         // The shell prints no @wall-ms: the process's wall time (start-up included).
         if (wall == 0) wall = wallClock.Elapsed.TotalMilliseconds;
         if (p.ExitCode != 0)
