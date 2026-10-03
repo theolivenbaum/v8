@@ -447,7 +447,10 @@ public static partial class InterpreterExecution
     // memory access: zlib and Mandreel spent 10-13% in the IC's handler,
     // which called TypedArrayElementsOps.LoadElement out of line).
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static JSValue GetKeyedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+    // It calls nothing, so it saves no registers (the general handler's call
+    // made it push six): the loop calls the general handler when it returns
+    // InterpreterInlineCalls.NotHandled.
+    static JSValue GetKeyedTypedArray<TS>(Isolate isolate, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
         int S = Scale<TS>();
@@ -486,7 +489,16 @@ public static partial class InterpreterExecution
                 }
             }
         }
-        return GetKeyedPropertySlow<TS>(isolate, ref st, ref fp, ref ip, acc);
+        return InterpreterInlineCalls.NotHandled;
+    }
+
+    /// <summary><see cref="GetKeyedTypedArray"/>, then the general handler.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue GetKeyedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+        where TS : struct, IOperandScale
+    {
+        JSValue loaded = GetKeyedTypedArray<TS>(isolate, ref fp, ref ip, acc);
+        return ReferenceEquals(loaded._obj, InterpreterInlineCalls.NotHandledMarker) ? GetKeyedPropertySlow<TS>(isolate, ref st, ref fp, ref ip, acc) : loaded;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

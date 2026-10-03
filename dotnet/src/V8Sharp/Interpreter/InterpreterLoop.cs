@@ -368,7 +368,10 @@ public static partial class InterpreterExecution
                             }
                         }
                     }
-                    acc = o is JSTypedArray ? GetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc) : GetKeyedPropertySlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    {
+                        JSValue loaded = o is JSTypedArray ? GetKeyedTypedArray<TS>(st.Isolate, ref fpSlot, ref ip, acc) : InterpreterInlineCalls.NotHandled;
+                        acc = ReferenceEquals(loaded._obj, InterpreterInlineCalls.NotHandledMarker) ? GetKeyedPropertySlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc) : loaded;
+                    }
                     ip = ref Unsafe.Add(ref ip, 1 + 2 * S);
                     goto starLookahead;
                 }
