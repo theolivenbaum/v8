@@ -39,6 +39,9 @@ public sealed class DeoptFrameData
     public Register[] Registers = [];
     /// <summary>Values the Deoptimizer creates (elided arguments objects), by register position; null if none.</summary>
     public ArgumentsObjectKind[]? Materialize;
+    /// <summary>The translation's literals (constant values), by register position (where IsConstant); null if none.</summary>
+    public JSValue[]? Constants;
+    public bool[]? IsConstant;
     /// <summary>The scratch buffer index of the first value.</summary>
     public int ScratchStart;
 }
