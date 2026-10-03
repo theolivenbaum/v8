@@ -369,8 +369,60 @@ public static partial class InterpreterExecution
         return false;
     }
 
+    /// <summary>
+    /// GetKeyedProperty after the loop's inline fast-elements hits: a
+    /// monomorphic in-bounds typed array element load (KeyedLoadIC.Load's
+    /// first case, V8's EmitElementLoad for the typed kinds) read here, the
+    /// rest in <see cref="GetKeyedPropertySlow"/>.
+    /// </summary>
+    // A separate method with no calls (Emscripten code reads HEAP8/HEAP32 per
+    // memory access: zlib and Mandreel spent 10-13% in the IC's handler,
+    // which called TypedArrayElementsOps.LoadElement out of line).
     [MethodImpl(MethodImplOptions.NoInlining)]
     static JSValue GetKeyedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+        where TS : struct, IOperandScale
+    {
+        int S = Scale<TS>();
+        if (Reg<TS>(ref fp, ref ip, 1)._obj is JSTypedArray array && acc._obj == NumberTag.Instance &&
+            InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + S);
+            byte[]? data = array.FastData;
+            Map map = array.Map;
+            if ((uint)(slot + 1) < (uint)slots.Length && ReferenceEquals(slots[slot]._obj, map) &&
+                slots[slot + 1]._obj is LoadHandler { HandlerKind: LoadHandler.Kind.kElement } &&
+                data is not null && JSValue.TryGetIndex(acc._num, out int index) && (uint)index < (uint)array.FastLength &&
+                (Protectors.IsArrayBufferDetachingIntact(isolate) || !array.Buffer.WasDetached))
+            {
+                int offset = array.FastByteOffset;
+                switch (map.ElementsKind)
+                {
+                    case ElementsKind.UINT8_ELEMENTS:
+                    case ElementsKind.UINT8_CLAMPED_ELEMENTS:
+                        return JSValue.FromInt(data[offset + index]);
+                    case ElementsKind.INT8_ELEMENTS:
+                        return JSValue.FromInt((sbyte)data[offset + index]);
+                    case ElementsKind.UINT16_ELEMENTS:
+                        return JSValue.FromInt(Unsafe.ReadUnaligned<ushort>(ref data[offset + index * 2]));
+                    case ElementsKind.INT16_ELEMENTS:
+                        return JSValue.FromInt(Unsafe.ReadUnaligned<short>(ref data[offset + index * 2]));
+                    case ElementsKind.INT32_ELEMENTS:
+                        return JSValue.FromInt(Unsafe.ReadUnaligned<int>(ref data[offset + index * 4]));
+                    case ElementsKind.UINT32_ELEMENTS:
+                        return JSValue.FromNumber(Unsafe.ReadUnaligned<uint>(ref data[offset + index * 4]));
+                    case ElementsKind.FLOAT32_ELEMENTS:
+                        return JSValue.FromNumber(Unsafe.ReadUnaligned<float>(ref data[offset + index * 4]));
+                    case ElementsKind.FLOAT64_ELEMENTS:
+                        return JSValue.FromNumber(Unsafe.ReadUnaligned<double>(ref data[offset + index * 8]));
+                }
+            }
+        }
+        return GetKeyedPropertySlow<TS>(isolate, ref st, ref fp, ref ip, acc);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue GetKeyedPropertySlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
@@ -418,8 +470,45 @@ public static partial class InterpreterExecution
         StoreIC.DefineNamedOwn(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, obj, name, acc);
     }
 
+    /// <summary>
+    /// SetKeyedProperty after the loop's inline fast-elements hits: a
+    /// monomorphic in-bounds store of a Number into a typed array
+    /// (KeyedStoreIC.Store's first case) written here, the rest in
+    /// <see cref="SetKeyedPropertySlow"/>.
+    /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void SetKeyedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+        where TS : struct, IOperandScale
+    {
+        int S = Scale<TS>();
+        JSValue key = Reg<TS>(ref fp, ref ip, 1 + S);
+        if (Reg<TS>(ref fp, ref ip, 1)._obj is JSTypedArray array && key._obj == NumberTag.Instance && acc._obj == NumberTag.Instance &&
+            InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
+            byte[]? data = array.FastData;
+            Map map = array.Map;
+            if ((uint)(slot + 1) < (uint)slots.Length && ReferenceEquals(slots[slot]._obj, map) &&
+                slots[slot + 1]._obj is StoreHandler { HandlerKind: StoreHandler.Kind.kElement, ElementsTransitionMap: null } handler &&
+                handler.IsValid && data is not null && JSValue.TryGetIndex(key._num, out int index) && (uint)index < (uint)array.FastLength)
+            {
+                // ElementAccess.TryStoreTypedElementFast's conditions.
+                ElementsKind kind = map.ElementsKind;
+                if (!ElementsKinds.IsBigIntTypedArrayElementsKind(kind) &&
+                    (Protectors.IsArrayBufferDetachingIntact(isolate) || !array.Buffer.WasDetached) &&
+                    (Protectors.IsArrayBufferMutableIntact(isolate) || !array.Buffer.IsImmutable))
+                {
+                    TypedArrayElementsOps.StoreElement(data, array.FastByteOffset, kind, index, acc._num);
+                    return;
+                }
+            }
+        }
+        SetKeyedPropertySlow<TS>(isolate, ref st, ref fp, ref ip, acc);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void SetKeyedPropertySlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
