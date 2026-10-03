@@ -880,12 +880,13 @@ public sealed partial class MaglevGraphBuilder
     void StoreRegister(Register r, ValueNode value)
     {
         _frame.Set(r, value);
-        if (r.IsParameter && !r.IsFunctionClosure && !r.IsCurrentContext && !_unit.IsInline)
+        if (r.IsParameter && !r.IsFunctionClosure && !r.IsCurrentContext)
         {
-            // A parameter assignment also goes to the frame: function.arguments
-            // reads the frame's parameters (V8 reads them from the optimized
-            // frame through the deopt translation). The store is sunk to the
-            // next node that can observe the frame (FlushDirtyParameters).
+            // A parameter assignment also goes to the frame (an inlined
+            // function's too): function.arguments reads the frame's parameters
+            // (V8 reads them from the optimized frame through the deopt
+            // translation). The store is sunk to the next node that can
+            // observe the frame (FlushDirtyParameters).
             int index = r.ToParameterIndex();
             if (index < 64)
             {
