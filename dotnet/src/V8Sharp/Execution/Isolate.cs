@@ -140,6 +140,11 @@ public sealed partial class Isolate
     /// <summary>Creates an isolate without a context. <see cref="Bootstrapper"/> creates its native context.</summary>
     public Isolate(FlagList? flags = null)
     {
+        // The dispatch loop compares against InterpreterInlineCalls' markers
+        // after every call handler; it is compiled once, at full optimization,
+        // on its first call, and RyuJIT emits a class-initialization check for
+        // each of those reads when the class is not initialized by then.
+        RuntimeHelpers.RunClassConstructor(typeof(Interpreter.InterpreterInlineCalls).TypeHandle);
         Flags = flags ?? FlagList.Default.Clone();
         StringTable = new StringTable(this);
         Factory = new Factory(this);
