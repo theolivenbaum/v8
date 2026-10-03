@@ -165,15 +165,42 @@ internal sealed class BaselineAssembler
 
     // ---- The bytecode offset --------------------------------------------------------------------------
 
-    static readonly MethodInfo s_setFramePc = typeof(InterpreterRuntime).GetMethod(nameof(InterpreterRuntime.SetFramePc),
-        [typeof(JSValue).MakeByRefType(), typeof(int)])!;
+    internal static readonly FieldInfo s_bits = typeof(JSValue).GetField("_bits", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
-    /// <summary>Records the current bytecode offset in the frame's offset slot (for handler lookup and stack traces).</summary>
-    public void StoreBytecodeOffset(int offset)
+    /// <summary>
+    /// Records the current bytecode offset in the frame's offset slot (for
+    /// handler lookup and stack traces): InterpreterRuntime.SetFramePc as IL,
+    /// a store of the slot's payload. Emitted inline rather than called:
+    /// RyuJIT stops inlining in big methods (its inline budget and local
+    /// count limit), and a call per bytecode that can throw was a few percent
+    /// of the time of the big functions (Mandreel, Box2D).
+    /// </summary>
+    public void StoreBytecodeOffset(int offset) => EmitStoreBytecodeOffset(_il, FpRef, offset);
+
+    /// <summary>fpRef[kBytecodeOffsetOffset]._bits = offset.</summary>
+    internal static void EmitStoreBytecodeOffset(ILGenerator il, LocalBuilder fpRef, int offset)
     {
-        _il.Emit(OpCodes.Ldloc, FpRef);
-        _il.Emit(OpCodes.Ldc_I4, offset);
-        _il.Emit(OpCodes.Call, s_setFramePc);
+        il.Emit(OpCodes.Ldloc, fpRef);
+        il.Emit(OpCodes.Ldc_I4, InterpreterRuntime.kBytecodeOffsetOffset * kJSValueSize);
+        il.Emit(OpCodes.Conv_I);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Ldflda, s_bits);
+        il.Emit(OpCodes.Ldc_I4, offset);
+        il.Emit(OpCodes.Conv_I8);
+        il.Emit(OpCodes.Stind_I8);
+    }
+
+    /// <summary>The same, through a BaselineILEmitter (which counts what RyuJIT's limits count).</summary>
+    static void EmitStoreBytecodeOffset(BaselineILEmitter il, LocalBuilder fpRef, int offset)
+    {
+        il.Emit(OpCodes.Ldloc, fpRef);
+        il.Emit(OpCodes.Ldc_I4, InterpreterRuntime.kBytecodeOffsetOffset * kJSValueSize);
+        il.Emit(OpCodes.Conv_I);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Ldflda, s_bits);
+        il.Emit(OpCodes.Ldc_I4, offset);
+        il.Emit(OpCodes.Conv_I8);
+        il.Emit(OpCodes.Stind_I8);
     }
 
     // ---- Calls ------------------------------------------------------------------------------------------

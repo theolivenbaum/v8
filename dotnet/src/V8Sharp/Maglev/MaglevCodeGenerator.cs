@@ -151,8 +151,6 @@ internal sealed class MaglevCodeGenerator
     static readonly MethodInfo s_interpreterFrames = typeof(Isolate).GetProperty(nameof(Isolate.InterpreterFrames))!.GetMethod!;
     static readonly FieldInfo s_stFp = typeof(InterpreterState).GetField(nameof(InterpreterState.Fp))!;
     static readonly FieldInfo s_stFrameIndex = typeof(InterpreterState).GetField(nameof(InterpreterState.FrameIndex))!;
-    static readonly MethodInfo s_setFramePc = typeof(InterpreterRuntime).GetMethod(nameof(InterpreterRuntime.SetFramePc),
-        [typeof(JSValue).MakeByRefType(), typeof(int)])!;
     static readonly FieldInfo s_recordFp = typeof(InterpreterFrameRecord).GetField(nameof(InterpreterFrameRecord.Fp))!;
     static readonly FieldInfo s_markedForDeoptimization = typeof(MaglevCode).GetField(nameof(MaglevCode.MarkedForDeoptimization))!;
     static readonly FieldInfo s_deoptScratch = typeof(Isolate).GetField(nameof(Isolate.MaglevDeoptScratch))!;
@@ -501,9 +499,13 @@ internal sealed class MaglevCodeGenerator
     void StoreBytecodeOffset(NodeBase node)
     {
         if (node.BytecodeOffset < 0) return;
-        LoadFrameSlotAddress(node.Unit, 0);
+        // InterpreterRuntime.SetFramePc as IL (a call is not inlined once
+        // RyuJIT's inline budget of a big method is spent).
+        LoadFrameSlotAddress(node.Unit, InterpreterRuntime.kBytecodeOffsetOffset);
+        _il.Emit(OpCodes.Ldflda, s_bits);
         _il.Emit(OpCodes.Ldc_I4, node.BytecodeOffset);
-        _il.Emit(OpCodes.Call, s_setFramePc);
+        _il.Emit(OpCodes.Conv_I8);
+        _il.Emit(OpCodes.Stind_I8);
     }
 
     // ---- Catch blocks --------------------------------------------------------------------------------------

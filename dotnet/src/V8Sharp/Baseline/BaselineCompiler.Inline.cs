@@ -190,6 +190,18 @@ public sealed partial class BaselineCompiler
         StfldNum();
     }
 
+    /// <summary>Pushes the number <paramref name="value"/> as a JSValue (built in a temp: no call to JSValue.FromInt).</summary>
+    void PushNumber(double value)
+    {
+        Emit(OpCodes.Ldloca, ValueTemp);
+        Emit(OpCodes.Ldsfld, s_numberTag);
+        Emit(OpCodes.Stfld, s_obj);
+        Emit(OpCodes.Ldloca, ValueTemp);
+        Emit(OpCodes.Ldc_R8, value);
+        StfldNum();
+        Emit(OpCodes.Ldloc, ValueTemp);
+    }
+
     /// <summary>acc = the heap object in the static field <paramref name="root"/> (true, false, null, the hole).</summary>
     void SetAccRoot(FieldInfo root)
     {
@@ -1320,6 +1332,8 @@ public sealed partial class BaselineCompiler
             // The runtime call is in a stub shared by the method's back edges
             // (EmitBackEdgeInterruptStub), which jumps back to this loop header.
             _backEdgeTargets ??= [];
+            // The stub is shared: the loop's JumpLoop records its offset here.
+            if (_pendingOffset >= 0) _masm.StoreBytecodeOffset(_pendingOffset);
             Emit(OpCodes.Ldc_I4, _backEdgeTargets.Count);
             Emit(OpCodes.Stloc, TInt);
             _backEdgeTargets.Add(continueAt);
@@ -1347,6 +1361,7 @@ public sealed partial class BaselineCompiler
         if (_backEdgeTargets is null) return;
         _il.MarkLabel(BackEdgeInterruptStub);
         if (_registerLocals is not null) SpillRegisters(0, _registerLocals.Length);
+        _pendingOffset = -1;
         Isolate();
         Fn();
         CallBuiltin("BudgetInterruptOnJumpLoop");
