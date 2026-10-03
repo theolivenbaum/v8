@@ -216,7 +216,12 @@ internal sealed class MaglevCodeGenerator
                               $"({_frameExits.Count} eager, {_pendingExits.Count - _frameExits.Count} lazy; {_eagerStubs.Count} eager checks, {_spilledValues} values)]");
         }
 
-        if (_optimizeFully || _il.ILOffset <= s_aggressiveMaxIL) _method.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
+        MethodBuilder? fastCall = DefineFastCallEntry();
+        if (_optimizeFully || _il.ILOffset <= s_aggressiveMaxIL)
+        {
+            _method.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
+            fastCall?.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
+        }
         _code.DeoptPoints = _deoptPoints.ToArray();
         _code.SpeculationFeedback = _speculationFeedback.ToArray();
         _code.MaxScratchSize = _maxScratch;
@@ -228,6 +233,11 @@ internal sealed class MaglevCodeGenerator
         }
         MethodInfo method = type.GetMethod(_method.Name)!;
         var entry = (MaglevCodeEntry)method.CreateDelegate(typeof(MaglevCodeEntry), _code);
+        if (fastCall is not null)
+        {
+            _code.FastCall = type.GetMethod(fastCall.Name)!.CreateDelegate(MaglevFastCalls.DelegateTypes[_info.Toplevel.Bytecode.ParameterCount - 1], _code);
+            _code.FastCallArity = _info.Toplevel.Bytecode.ParameterCount - 1;
+        }
         CreateTypeMs += System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalMilliseconds;
         return (entry, _il.ILOffset);
     }
@@ -2096,6 +2106,9 @@ internal sealed class MaglevCodeGenerator
             }
             case Opcode.CallBuiltin:
                 EmitCallBuiltin(node);
+                return;
+            case Opcode.CallKnownJSFunction:
+                EmitCallKnownJSFunction(node);
                 return;
 
             // ---- Generators -------------------------------------------------------------------------

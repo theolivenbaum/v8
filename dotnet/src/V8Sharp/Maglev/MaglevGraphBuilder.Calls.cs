@@ -150,6 +150,11 @@ public sealed partial class MaglevGraphBuilder
                 SetAccumulator(inlined);
                 return;
             }
+            if (TryBuildDirectCall(target, receiver, args, argsFirst, mode) is { } direct)
+            {
+                SetAccumulator(direct);
+                return;
+            }
             if (argsFirst.IsValid || args.Length == 0)
             {
                 SetAccumulator(BuildCallKnownJSFunction(target, receiver, args, argsFirst, mode));
@@ -324,6 +329,54 @@ public sealed partial class MaglevGraphBuilder
     ValueNode BuildCallKnownJSFunction(JSFunction target, ValueNode receiver, ValueNode[] args, Register argsFirst,
         ConvertReceiverMode mode) =>
         BuildCall(GetConstant(target), receiver, args, argsFirst, mode);
+
+    /// <summary>
+    /// CallKnownJSFunction (V8's node of that name): a call of the constant
+    /// <paramref name="target"/> that enters its Maglev code directly
+    /// (MaglevCalls, "Direct calls"), or null when the target cannot be
+    /// called that way.
+    /// </summary>
+    ValueNode? TryBuildDirectCall(JSFunction target, ValueNode receiver, ValueNode[] args, Register argsFirst, ConvertReceiverMode mode)
+    {
+        SharedFunctionInfo shared = target.Shared;
+        if (shared.FunctionData is not BytecodeArray bytecode || shared.HasBuiltinId || shared.IsClassConstructor) return null;
+        if (target.RawFeedbackCell.Value is not FeedbackVector vector) return null;
+        int formal = bytecode.ParameterCount - 1;
+        if (formal > MaglevFastCalls.kMaxArity || args.Length > formal) return null;
+        // The slow path takes the arguments from consecutive registers or as values.
+        if (!argsFirst.IsValid && args.Length > 3) return null;
+        var info = new KnownCallInfo
+        {
+            Target = target,
+            Vector = vector,
+            FormalCount = formal,
+            Argc = args.Length,
+            Mode = mode,
+            ArgsFirst = args.Length == 0 ? Register.InvalidValue() : argsFirst,
+        };
+        var inputs = new List<ValueNode>(args.Length + 2) { GetTaggedValue(receiver) };
+        foreach (ValueNode arg in args) inputs.Add(GetTaggedValue(arg));
+        if (!shared.Native && shared.LanguageMode == Common.LanguageMode.Sloppy)
+        {
+            // CallFunction's receiver conversion, statically where it can be.
+            if (mode == ConvertReceiverMode.NullOrUndefined ||
+                receiver.Opcode == Opcode.RootConstant && receiver.ConstantValue().IsNullOrUndefined)
+            {
+                inputs.Add(GetConstant(target.Context.NativeContext.GlobalProxyObject));
+                info.HasConvertedReceiver = true;
+            }
+            else if (!CheckType(receiver, NodeType.kJSReceiver))
+            {
+                info.CheckReceiver = true;
+            }
+        }
+        return AddNewNode(new ValueNode(Opcode.CallKnownJSFunction, ValueRepresentation.kTagged)
+        {
+            Inputs = inputs.ToArray(),
+            Obj0 = info,
+            Properties = OpProperties.kGenericCall,
+        });
+    }
 
     /// <summary>A call of <paramref name="callee"/> with the arguments in consecutive registers (MaglevCalls.Call).</summary>
     ValueNode BuildCall(ValueNode callee, ValueNode receiver, ValueNode[] args, Register argsFirst, ConvertReceiverMode mode)

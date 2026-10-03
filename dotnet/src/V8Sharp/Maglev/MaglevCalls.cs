@@ -33,6 +33,7 @@ public static class MaglevCalls
                     {
                         receiver = InterpreterCalls.ConvertReceiver(isolate, function, receiver);
                     }
+                    if (argc <= code.FastCallArity) return InvokeFastCall(isolate, code, function, receiver, argsStart, argc);
                     return EnterFrame(isolate, function, code, vector, receiver, argsStart, argc, JSValue.Undefined, false);
                 }
             }
@@ -47,6 +48,24 @@ public static class MaglevCalls
         // Baseline code and interpreted functions are entered directly (V8's
         // Call builtin jumps to the closure's code, whatever its tier).
         return Baseline.BaselineCalls.CallFromOptimizedCode(isolate, callee, receiver, argsStart, argc, mode);
+    }
+
+    /// <summary>A call from a register list through the callee's direct entry (MaglevCode.FastCall).</summary>
+    static JSValue InvokeFastCall(Isolate isolate, MaglevCode code, JSFunction function, JSValue receiver, int argsStart, int argc)
+    {
+        JSValue[] stack = isolate.RegisterStack;
+        JSValue A(int i) => i < argc ? stack[argsStart + i] : default;
+        Delegate fast = code.FastCall!;
+        return code.FastCallArity switch
+        {
+            0 => Unsafe.As<MaglevFastCall0>(fast)(isolate, function, argc, receiver),
+            1 => Unsafe.As<MaglevFastCall1>(fast)(isolate, function, argc, receiver, A(0)),
+            2 => Unsafe.As<MaglevFastCall2>(fast)(isolate, function, argc, receiver, A(0), A(1)),
+            3 => Unsafe.As<MaglevFastCall3>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2)),
+            4 => Unsafe.As<MaglevFastCall4>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2), A(3)),
+            5 => Unsafe.As<MaglevFastCall5>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2), A(3), A(4)),
+            _ => Unsafe.As<MaglevFastCall6>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2), A(3), A(4), A(5)),
+        };
     }
 
     static bool TryBuiltinFastPath(Isolate isolate, JSValue callee, JSValue receiver, int argsStart, int argc, out JSValue result)
@@ -76,6 +95,151 @@ public static class MaglevCalls
             : InterpreterExecution.InvokeFromRegisters(isolate, function, receiver, argsStart, argc, newTarget, true);
         isolate.RegisterStackTop = stubStart;
         return result.IsJSReceiver ? result : receiver;
+    }
+
+    // ---- Direct calls between Maglev code ---------------------------------------------------------------
+    //
+    // A call of a known JSFunction from Maglev code (CallKnownJSFunction) jumps
+    // to the callee's Maglev code directly when it has some: the callee's code
+    // type has a second entry, its FastCall method (MaglevCodeGenerator), which
+    // takes the receiver and the arguments as values and builds the frame
+    // with the callee's constants (parameter and register counts, bytecode,
+    // feedback vector) through the helpers below, as V8's Maglev prologue
+    // does after the Call builtin's CallFunction. Everything else takes
+    // Call above.
+
+    /// <summary>
+    /// The first half of a direct call's frame setup: reserves the frame
+    /// (parameters, fixed slots, registers) at the register stack top, with
+    /// the stack checks of the prologue, and returns its slot at fp.
+    /// </summary>
+    /// <remarks>
+    /// Deviation: the register file is not cleared (V8's prologue fills it
+    /// with undefined): Maglev code keeps its values in IL locals and a deopt
+    /// writes every live register, so the interpreter never reads a register
+    /// of this frame it has not written (bytecode liveness).
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ref JSValue EnterFastFrame(Isolate isolate, int paramSlots, int registerCount, out int start, out int fp, out int depth)
+    {
+        depth = isolate.InterpreterFrameDepth;
+        // The native stack check of the prologue, every 8 frames (as EnterFrame).
+        if ((depth & 7) == 0) CheckNativeStack(isolate);
+        start = isolate.RegisterStackTop;
+        fp = start + paramSlots + InterpreterRuntime.kFixedSlotsAboveParams;
+        int end = fp + registerCount;
+        if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
+        isolate.RegisterStackTop = end;
+        return ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), fp);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void CheckNativeStack(Isolate isolate)
+    {
+        if (!RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
+    }
+
+    /// <summary>
+    /// The second half: the fixed slots, the current context and the frame
+    /// record. Returns the caller's context (restored by <see cref="LeaveFastFrame"/>).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Context? InitializeFastFrame(Isolate isolate, ref JSValue fpRef, int fp, JSFunction function, FeedbackVector vector,
+        BytecodeArray bytecode, int argc)
+    {
+        Context context = function.Context;
+        Context? saved = isolate.Context;
+        if (!ReferenceEquals(saved, context)) isolate.Context = context;
+        JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset), context);
+        JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset), function);
+        JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset), vector);
+        InterpreterRuntime.InitializeFrameSlots(ref fpRef, bytecode, argc);
+        ref InterpreterFrameRecord frame = ref isolate.PushFrame();
+        frame.Fp = fp;
+        frame.Flags = InterpreterFrameFlags.Maglev;
+        frame.ReturnPc = 0;
+        frame.RegisterStart = 0;
+        return saved;
+    }
+
+    /// <summary>A value into a frame slot (the reference half skipped when unchanged: no write barrier).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void StoreFrameSlot(ref JSValue slot, JSValue value) => JSValue.StoreSlot(ref slot, value);
+
+    /// <summary>The epilogue of a direct call (EnterFrame's finally).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void LeaveFastFrame(Isolate isolate, int depth, int start, Context? saved)
+    {
+        if (isolate.InterpreterFrameDepth > depth + 1) isolate.PopFramesTo(depth + 1);
+        isolate.InterpreterFrameDepth = depth;
+        int top = isolate.RegisterStackTop;
+        if (top > isolate.RegisterStackDirtyEnd) isolate.RegisterStackDirtyEnd = top;
+        isolate.RegisterStackTop = start;
+        if (!ReferenceEquals(isolate.Context, saved)) isolate.Context = saved;
+    }
+
+    /// <summary>After the callee's code returned: the interpreter continues its frames if it deoptimized.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue FinishFastCall(Isolate isolate, ref InterpreterState state, JSValue result) =>
+        isolate.MaglevDeoptPending ? MaglevExecution.ContinueAfterDeopt(isolate, ref state) : result;
+
+    /// <summary>
+    /// The slow path of a direct call whose arguments are values (the callee has
+    /// no Maglev code, or another receiver conversion): they go into a window
+    /// above the stack top, as the interpreter's register list would hold them.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue CallValues0(Isolate isolate, JSValue callee, JSValue receiver, int mode) =>
+        Call(isolate, callee, receiver, 0, 0, (ConvertReceiverMode)mode);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue CallValues1(Isolate isolate, JSValue callee, JSValue receiver, JSValue a0, int mode)
+    {
+        int window = isolate.AllocateRegisters(1);
+        isolate.RegisterStack[window] = a0;
+        try
+        {
+            return Call(isolate, callee, receiver, window, 1, (ConvertReceiverMode)mode);
+        }
+        finally
+        {
+            isolate.ReleaseRegisters(window);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue CallValues2(Isolate isolate, JSValue callee, JSValue receiver, JSValue a0, JSValue a1, int mode)
+    {
+        int window = isolate.AllocateRegisters(2);
+        JSValue[] stack = isolate.RegisterStack;
+        stack[window] = a0;
+        stack[window + 1] = a1;
+        try
+        {
+            return Call(isolate, callee, receiver, window, 2, (ConvertReceiverMode)mode);
+        }
+        finally
+        {
+            isolate.ReleaseRegisters(window);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue CallValues3(Isolate isolate, JSValue callee, JSValue receiver, JSValue a0, JSValue a1, JSValue a2, int mode)
+    {
+        int window = isolate.AllocateRegisters(3);
+        JSValue[] stack = isolate.RegisterStack;
+        stack[window] = a0;
+        stack[window + 1] = a1;
+        stack[window + 2] = a2;
+        try
+        {
+            return Call(isolate, callee, receiver, window, 3, (ConvertReceiverMode)mode);
+        }
+        finally
+        {
+            isolate.ReleaseRegisters(window);
+        }
     }
 
     /// <summary>
