@@ -157,6 +157,16 @@ public static partial class InterpreterExecution
                 case Bytecode.Star:
                     StoreRegister(ref RegAt(ref fpSlot, Signed<TS>(ref ip, 1)), acc);
                     ip = ref Unsafe.Add(ref ip, 1 + S);
+                    // Deviation: a Ldar after a long Star (functions with more than
+                    // 16 registers spill and reload this way: 11% of zlib's
+                    // bytecodes are this pair) runs here without its dispatch,
+                    // in the manner of V8's Star lookahead (StarDispatchLookahead),
+                    // which V8 has only for the short Stars.
+                    if (typeof(TS) == typeof(SingleScale) && (Bytecode)ip == Bytecode.Ldar)
+                    {
+                        acc = RegAt(ref fpSlot, Signed<TS>(ref ip, 1));
+                        ip = ref Unsafe.Add(ref ip, 2);
+                    }
                     continue;
                 case Bytecode.Mov:
                     StoreRegister(ref RegAt(ref fpSlot, Signed<TS>(ref ip, 1 + S)),
