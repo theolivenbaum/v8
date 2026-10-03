@@ -105,12 +105,25 @@ for now, to be revisited when the reason goes away.
 - Parsing: the scanner's token LiteralBuffer storage goes back to a small
   per-thread pool when Parser::ParseProgram / ParseFunction finish (V8:
   new[] / delete[] with the scanner).
-- Compiler: CompilationCacheEval keeps only the SharedFunctionInfo (no
-  FeedbackCell per native context) and is cleared past 4096 entries instead
-  of being aged on GC (here: dropped after two full .NET collections unused),
-  and does not cache sources over 16K characters (they kept large scripts
-  alive across gen-2 collections: -30% on large distinct evals); the script
-  part of the compilation cache is not ported.
+- Compiler: the compilation cache (CompilationCacheScript, CompilationCacheEval)
+  is a per-isolate .NET dictionary aged at full .NET collections instead of a
+  CompilationCacheTable aged by bytecode flushing (V8 drops an entry when its
+  bytecode is flushed, after --bytecode-old-time seconds unused); both are
+  cleared past 4096 entries (after dropping dead ones). Script cache: an entry
+  not looked up between two full collections releases its toplevel
+  SharedFunctionInfo and keeps its Script weakly, as V8's key does; a later
+  lookup whose Script is alive is a full hit (V8: a partial hit, the Script
+  only, since its bytecode was flushed; V8Sharp does not flush bytecode).
+  Modules and classic scripts never share an entry (V8 does not compare the
+  origin options of unnamed scripts). Eval cache: keeps only the
+  SharedFunctionInfo (no FeedbackCell per native context); an entry unused
+  between two full collections is demoted to a weak reference (hits while
+  the eval's closures are alive) rather than dropped; a source over 16K
+  characters is only marked as seen when first compiled and cached when
+  compiled again, so a repeated large eval hits from its third evaluation
+  (V8 caches every source on the first compile; holding large distinct
+  sources alive across gen-2 collections cost 25-30% on large distinct
+  evals, and holding them weakly 7% on micro:compile CompilePdfJS).
 - Parsing: VariableMap keeps up to 8 entries in an insertion-ordered array
   searched by identity, allocated on first use, plus a hash index beyond 8
   (V8: a ZoneHashMap of 8 entries).
@@ -538,9 +551,7 @@ for now, to be revisited when the reason goes away.
   outermost script execution returns (d8's kAuto policy); a nested
   `Realm.eval` leaves its microtasks queued.
 - Compiler: source positions are collected eagerly (no lazy source
-  positions); there is no compilation cache and no preparse data (inner
-  functions are reparsed); every lazy function has UncompiledData without
-  preparse data. `DefineClass` builds the class sequentially from the class
+  positions). `DefineClass` builds the class sequentially from the class
   boilerplate stand-in: the constructor's map gets the length, name and
   prototype AccessorConstant descriptors appended (as the descriptor template
   of AddDescriptorsByTemplate has them, so the map stays fast and

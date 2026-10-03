@@ -14,6 +14,9 @@ public sealed partial class Script : IParsingScript
     /// <summary>The source as a .NET string (flattened once and cached).</summary>
     public string SourceString => _sourceString ??= Source.HeapObjectOrNull is JSString s ? s.ToString() : "";
 
+    /// <summary>Sets <see cref="SourceString"/> when the compiler already flattened the source (for the compilation cache).</summary>
+    internal void SetSourceString(string source) => _sourceString = source;
+
     string IParsingScript.source() => SourceString;
     int IParsingScript.id() => Id;
     bool IParsingScript.is_wrapped() => IsWrapped;
