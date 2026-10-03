@@ -1277,6 +1277,71 @@ internal sealed class MaglevCodeGenerator
         }
     }
 
+
+    LocalBuilder? _storeAddress;
+
+    /// <summary>
+    /// Stores <paramref name="value"/> as a JSValue at the address on the IL
+    /// stack (a field, a frame slot): the reference half only when it changes
+    /// (JSValue.StoreSlot), so a number over a number, or the same object
+    /// again, needs no GC write barrier; an untagged number stores its bits
+    /// without being tagged first.
+    /// </summary>
+    /// <remarks>
+    /// V8 elides the write barrier of a Smi store; V8Sharp's numbers are a
+    /// shared tag object and the double's bits, and storing the tag object
+    /// still runs the CLR's barrier unless the store is skipped.
+    /// </remarks>
+    void EmitStoreTagged(ValueNode value)
+    {
+        _storeAddress ??= _il.DeclareLocal(typeof(JSValue).MakeByRefType());
+        _il.Emit(OpCodes.Stloc, _storeAddress);
+        bool untaggedNumber = !value.IsConstant &&
+            value.Representation is ValueRepresentation.kInt32 or ValueRepresentation.kUint32 or ValueRepresentation.kFloat64;
+        bool constantNumber = value.IsConstant && value.TryGetFloat64Constant(out _);
+        Label skip = _il.DefineLabel();
+        if (untaggedNumber || constantNumber)
+        {
+            _il.Emit(OpCodes.Ldloc, _storeAddress);
+            _il.Emit(OpCodes.Ldfld, s_obj);
+            _il.Emit(OpCodes.Ldsfld, s_numberTag);
+            _il.Emit(OpCodes.Beq, skip);
+            _il.Emit(OpCodes.Ldloc, _storeAddress);
+            _il.Emit(OpCodes.Ldsfld, s_numberTag);
+            _il.Emit(OpCodes.Stfld, s_obj);
+            _il.MarkLabel(skip);
+            _il.Emit(OpCodes.Ldloc, _storeAddress);
+            if (constantNumber)
+            {
+                value.TryGetFloat64Constant(out double d);
+                _il.Emit(OpCodes.Ldc_I8, BitConverter.DoubleToInt64Bits(d));
+            }
+            else
+            {
+                Load(value, ValueRepresentation.kFloat64);
+                _il.Emit(OpCodes.Call, s_doubleToInt64Bits);
+            }
+            _il.Emit(OpCodes.Stfld, s_bits);
+            return;
+        }
+        Load(value, ValueRepresentation.kTagged);
+        _il.Emit(OpCodes.Stloc, _tmpValue);
+        _il.Emit(OpCodes.Ldloc, _storeAddress);
+        _il.Emit(OpCodes.Ldfld, s_obj);
+        _il.Emit(OpCodes.Ldloc, _tmpValue);
+        _il.Emit(OpCodes.Ldfld, s_obj);
+        _il.Emit(OpCodes.Beq, skip);
+        _il.Emit(OpCodes.Ldloc, _storeAddress);
+        _il.Emit(OpCodes.Ldloc, _tmpValue);
+        _il.Emit(OpCodes.Ldfld, s_obj);
+        _il.Emit(OpCodes.Stfld, s_obj);
+        _il.MarkLabel(skip);
+        _il.Emit(OpCodes.Ldloc, _storeAddress);
+        _il.Emit(OpCodes.Ldloc, _tmpValue);
+        _il.Emit(OpCodes.Ldfld, s_bits);
+        _il.Emit(OpCodes.Stfld, s_bits);
+    }
+
     void EmitStoreScratch(int index, ValueNode value)
     {
         _il.Emit(OpCodes.Ldarg_1);
@@ -1309,8 +1374,7 @@ internal sealed class MaglevCodeGenerator
                 return;
             case Opcode.StoreRegister:
                 LoadFrameSlotAddress(node.Unit, node.Int0);
-                Load(node.Inputs[0], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Stobj, typeof(JSValue));
+                EmitStoreTagged(node.Inputs[0]);
                 return;
             case Opcode.LoadRegister:
                 LoadFrameSlotAddress(node.Unit, node.Int0);
@@ -1815,8 +1879,7 @@ internal sealed class MaglevCodeGenerator
             case Opcode.StoreTaggedField:
                 if (node.Int1 == 0 && TryLoadFieldAddress(node.Inputs[0], node.Int0))
                 {
-                    Load(node.Inputs[1], ValueRepresentation.kTagged);
-                    _il.Emit(OpCodes.Stobj, typeof(JSValue));
+                    EmitStoreTagged(node.Inputs[1]);
                     return;
                 }
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
@@ -2401,13 +2464,11 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Stloc, unit.FrameRecordLocal!);
         // The receiver and the arguments (the new.target register of a construct).
         LoadFrameSlotAddress(unit, InterpreterRuntime.kReceiverOffset);
-        Load(node.Inputs[0], ValueRepresentation.kTagged);
-        _il.Emit(OpCodes.Stobj, typeof(JSValue));
+        EmitStoreTagged(node.Inputs[0]);
         for (int i = 0; i < argc; i++)
         {
             LoadFrameSlotAddress(unit, InterpreterRuntime.kFirstArgumentOffset - i);
-            Load(node.Inputs[1 + i], ValueRepresentation.kTagged);
-            _il.Emit(OpCodes.Stobj, typeof(JSValue));
+            EmitStoreTagged(node.Inputs[1 + i]);
         }
         if (node.Int2 != 0)
         {
@@ -2415,10 +2476,244 @@ internal sealed class MaglevCodeGenerator
             if (incoming.IsValid)
             {
                 LoadFrameSlotAddress(unit, incoming.Index);
-                Load(node.Inputs[^1], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Stobj, typeof(JSValue));
+                EmitStoreTagged(node.Inputs[^1]);
             }
         }
+    }
+
+    // ---- Direct calls (MaglevCalls, "Direct calls") -----------------------------------------------------
+
+    static readonly FieldInfo s_vectorMaglevCode = typeof(FeedbackVector).GetField(nameof(FeedbackVector.MaglevCode))!;
+    static readonly FieldInfo s_codeFastCall = typeof(MaglevCode).GetField(nameof(MaglevCode.FastCall))!;
+    static readonly FieldInfo s_stIsolate = typeof(InterpreterState).GetField(nameof(InterpreterState.Isolate))!;
+    static readonly FieldInfo s_stBaseFrameIndex = typeof(InterpreterState).GetField(nameof(InterpreterState.BaseFrameIndex))!;
+    static readonly MethodInfo s_enterFastFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.EnterFastFrame))!;
+    static readonly MethodInfo s_initializeFastFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.InitializeFastFrame))!;
+    static readonly MethodInfo s_storeFrameSlot = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.StoreFrameSlot))!;
+    static readonly MethodInfo s_leaveFastFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.LeaveFastFrame))!;
+    static readonly MethodInfo s_finishFastCall = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.FinishFastCall))!;
+    static readonly MethodInfo s_callKnownSlow = typeof(MaglevBuiltins).GetMethod(nameof(MaglevBuiltins.CallKnownJSFunction))!;
+    static readonly MethodInfo[] s_callValues =
+    [
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallValues0))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallValues1))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallValues2))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallValues3))!,
+    ];
+
+    LocalBuilder? _callResult;
+    LocalBuilder? _calleeCode;
+    readonly Dictionary<Type, LocalBuilder> _fastCallLocals = new();
+
+    /// <summary>
+    /// The direct call entry of the code (MaglevCalls, "Direct calls"): the
+    /// callee half of a CallKnownJSFunction, as EnterFrame with the function's
+    /// constants, followed by the code itself. None for OSR code, generators
+    /// and functions with more than kMaxArity parameters.
+    /// </summary>
+    MethodBuilder? DefineFastCallEntry()
+    {
+        if (_info.IsOsr) return null;
+        SharedFunctionInfo shared = _info.Toplevel.SharedFunctionInfo;
+        if (shared.IsClassConstructor || Globals.IsResumableFunction(shared.Kind)) return null;
+        BytecodeArray bytecode = _info.Toplevel.Bytecode;
+        int formal = bytecode.ParameterCount - 1;
+        if (formal > MaglevFastCalls.kMaxArity) return null;
+        var parameters = new Type[5 + formal];
+        parameters[0] = typeof(MaglevCode);
+        parameters[1] = typeof(Isolate);
+        parameters[2] = typeof(JSFunction);
+        parameters[3] = typeof(int);
+        for (int i = 4; i < parameters.Length; i++) parameters[i] = typeof(JSValue);
+        MethodBuilder method = _type.DefineMethod("FastCall", MethodAttributes.Public | MethodAttributes.Static, typeof(JSValue), parameters);
+        ILGenerator il = method.GetILGenerator(256);
+        LocalBuilder fpRef = il.DeclareLocal(typeof(JSValue).MakeByRefType());
+        LocalBuilder start = il.DeclareLocal(typeof(int));
+        LocalBuilder fp = il.DeclareLocal(typeof(int));
+        LocalBuilder depth = il.DeclareLocal(typeof(int));
+        LocalBuilder saved = il.DeclareLocal(typeof(Context));
+        LocalBuilder state = il.DeclareLocal(typeof(InterpreterState));
+        LocalBuilder result = il.DeclareLocal(typeof(JSValue));
+        // fpRef = EnterFastFrame(isolate, formal, registers, out start, out fp, out depth)
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldc_I4, formal);
+        il.Emit(OpCodes.Ldc_I4, bytecode.RegisterCount);
+        il.Emit(OpCodes.Ldloca, start);
+        il.Emit(OpCodes.Ldloca, fp);
+        il.Emit(OpCodes.Ldloca, depth);
+        il.Emit(OpCodes.Call, s_enterFastFrame);
+        il.Emit(OpCodes.Stloc, fpRef);
+        // The receiver and the arguments (V8's pushes).
+        void StoreSlot(int index, int arg)
+        {
+            il.Emit(OpCodes.Ldloc, fpRef);
+            il.Emit(OpCodes.Ldc_I4, index * kJSValueSize);
+            il.Emit(OpCodes.Conv_I);
+            il.Emit(OpCodes.Add);
+            if (arg >= 0)
+            {
+                il.Emit(OpCodes.Ldarg, (short)arg);
+            }
+            else
+            {
+                il.Emit(OpCodes.Ldloca, result);
+                il.Emit(OpCodes.Initobj, typeof(JSValue));
+                il.Emit(OpCodes.Ldloc, result);
+            }
+            il.Emit(OpCodes.Call, s_storeFrameSlot);
+        }
+        StoreSlot(InterpreterRuntime.kReceiverOffset, 4);
+        for (int i = 0; i < formal; i++) StoreSlot(InterpreterRuntime.kFirstArgumentOffset - i, 5 + i);
+        // A call's new.target is undefined.
+        Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
+        if (incoming.IsValid) StoreSlot(incoming.Index, -1);
+        // saved = InitializeFastFrame(isolate, ref fpRef, fp, function, vector, bytecode, argc)
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldloc, fpRef);
+        il.Emit(OpCodes.Ldloc, fp);
+        il.Emit(OpCodes.Ldarg_2);
+        EmitConstant(il, _info.Toplevel.Feedback, typeof(FeedbackVector));
+        EmitConstant(il, bytecode, typeof(BytecodeArray));
+        il.Emit(OpCodes.Ldarg_3);
+        il.Emit(OpCodes.Call, s_initializeFastFrame);
+        il.Emit(OpCodes.Stloc, saved);
+        // The InterpreterState of the frame (a deopt continues it).
+        il.Emit(OpCodes.Ldloca, state);
+        il.Emit(OpCodes.Initobj, typeof(InterpreterState));
+        il.Emit(OpCodes.Ldloca, state);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Stfld, s_stIsolate);
+        il.Emit(OpCodes.Ldloca, state);
+        il.Emit(OpCodes.Ldloc, fp);
+        il.Emit(OpCodes.Stfld, s_stFp);
+        il.Emit(OpCodes.Ldloca, state);
+        il.Emit(OpCodes.Ldloc, depth);
+        il.Emit(OpCodes.Stfld, s_stFrameIndex);
+        il.Emit(OpCodes.Ldloca, state);
+        il.Emit(OpCodes.Ldloc, depth);
+        il.Emit(OpCodes.Stfld, s_stBaseFrameIndex);
+        Label end = il.DefineLabel();
+        il.BeginExceptionBlock();
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldloca, state);
+        il.Emit(OpCodes.Call, _method);
+        il.Emit(OpCodes.Stloc, result);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldloca, state);
+        il.Emit(OpCodes.Ldloc, result);
+        il.Emit(OpCodes.Call, s_finishFastCall);
+        il.Emit(OpCodes.Stloc, result);
+        il.Emit(OpCodes.Leave, end);
+        il.BeginFinallyBlock();
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldloc, depth);
+        il.Emit(OpCodes.Ldloc, start);
+        il.Emit(OpCodes.Ldloc, saved);
+        il.Emit(OpCodes.Call, s_leaveFastFrame);
+        il.EndExceptionBlock();
+        il.MarkLabel(end);
+        il.Emit(OpCodes.Ldloc, result);
+        il.Emit(OpCodes.Ret);
+        return method;
+    }
+
+    /// <summary>A constant object from a static field of the code's type, in another method's IL.</summary>
+    void EmitConstant(ILGenerator il, object value, Type type)
+    {
+        if (!_constantFields.TryGetValue((value, type), out FieldBuilder? field))
+        {
+            field = _type.DefineField("k" + _constantFields.Count.ToString(System.Globalization.CultureInfo.InvariantCulture), type,
+                FieldAttributes.Public | FieldAttributes.Static);
+            _constantFields[(value, type)] = field;
+            _staticConstants.Add((field, value));
+        }
+        il.Emit(OpCodes.Ldsfld, field);
+    }
+
+    /// <summary>
+    /// CallKnownJSFunction: when the callee's feedback vector has Maglev code
+    /// with a direct entry, the receiver and the arguments go to it as values;
+    /// otherwise the Call builtin's path (MaglevCalls.Call).
+    /// </summary>
+    void EmitCallKnownJSFunction(Node node)
+    {
+        var info = (KnownCallInfo)node.Obj0!;
+        var v = (ValueNode)node;
+        _callResult ??= _il.DeclareLocal(typeof(JSValue));
+        _calleeCode ??= _il.DeclareLocal(typeof(MaglevCode));
+        Type delegateType = MaglevFastCalls.DelegateTypes[info.FormalCount];
+        if (!_fastCallLocals.TryGetValue(delegateType, out LocalBuilder? entry))
+        {
+            entry = _il.DeclareLocal(delegateType);
+            _fastCallLocals[delegateType] = entry;
+        }
+        Label slow = _il.DefineLabel(), done = _il.DefineLabel();
+        StoreBytecodeOffset(node);
+        // code = vector.MaglevCode; entry = code?.FastCall as MaglevFastCallN
+        LoadConstantObject(info.Vector, typeof(FeedbackVector));
+        _il.Emit(OpCodes.Ldfld, s_vectorMaglevCode);
+        _il.Emit(OpCodes.Stloc, _calleeCode);
+        _il.Emit(OpCodes.Ldloc, _calleeCode);
+        _il.Emit(OpCodes.Brfalse, slow);
+        _il.Emit(OpCodes.Ldloc, _calleeCode);
+        _il.Emit(OpCodes.Ldfld, s_codeFastCall);
+        _il.Emit(OpCodes.Isinst, delegateType);
+        _il.Emit(OpCodes.Stloc, entry);
+        _il.Emit(OpCodes.Ldloc, entry);
+        _il.Emit(OpCodes.Brfalse, slow);
+        if (info.CheckReceiver)
+        {
+            Load(node.Inputs[0], ValueRepresentation.kTagged);
+            Call(nameof(MaglevBuiltins.IsJSReceiver));
+            _il.Emit(OpCodes.Brfalse, slow);
+        }
+        _il.Emit(OpCodes.Ldloc, entry);
+        _il.Emit(OpCodes.Ldarg_1);
+        LoadConstantObject(info.Target, typeof(JSFunction));
+        _il.Emit(OpCodes.Ldc_I4, info.Argc);
+        Load(info.HasConvertedReceiver ? node.Inputs[^1] : node.Inputs[0], ValueRepresentation.kTagged);
+        for (int i = 0; i < info.FormalCount; i++)
+        {
+            if (i < info.Argc) Load(node.Inputs[1 + i], ValueRepresentation.kTagged);
+            else LoadUndefined();
+        }
+        _il.Emit(OpCodes.Callvirt, delegateType.GetMethod("Invoke")!);
+        _il.Emit(OpCodes.Stloc, _callResult);
+        _il.Emit(OpCodes.Br, done);
+        // The slow path: the arguments in the caller's registers (or as values).
+        _il.MarkLabel(slow);
+        if (info.ArgsFirst.IsValid)
+        {
+            for (int i = 0; i < info.Argc; i++)
+            {
+                LoadFrameSlotAddress(node.Unit, info.ArgsFirst.Index + i);
+                EmitStoreTagged(node.Inputs[1 + i]);
+            }
+            _il.Emit(OpCodes.Ldarg_1);
+            LoadConstantObject(info.Target, typeof(JSValue));
+            Load(node.Inputs[0], ValueRepresentation.kTagged);
+            LoadFp(node.Unit);
+            _il.Emit(OpCodes.Ldc_I4, info.ArgsFirst.Index);
+            _il.Emit(OpCodes.Add);
+            _il.Emit(OpCodes.Ldc_I4, info.Argc);
+            _il.Emit(OpCodes.Ldc_I4, (int)info.Mode);
+            _il.Emit(OpCodes.Call, s_callKnownSlow);
+        }
+        else
+        {
+            _il.Emit(OpCodes.Ldarg_1);
+            LoadConstantObject(info.Target, typeof(JSValue));
+            Load(node.Inputs[0], ValueRepresentation.kTagged);
+            for (int i = 0; i < info.Argc; i++) Load(node.Inputs[1 + i], ValueRepresentation.kTagged);
+            _il.Emit(OpCodes.Ldc_I4, (int)info.Mode);
+            _il.Emit(OpCodes.Call, s_callValues[info.Argc]);
+        }
+        _il.Emit(OpCodes.Stloc, _callResult);
+        _il.MarkLabel(done);
+        _il.Emit(OpCodes.Ldloc, _callResult);
+        Store(v);
+        if (node.LazyDeoptInfo is not null) EmitLazyDeoptCheck(node, v);
     }
 
     /// <summary>A CallBuiltin node: register stores, the arguments, the call, the result, the lazy deopt check.</summary>
@@ -2431,8 +2726,7 @@ internal sealed class MaglevCodeGenerator
         for (int i = 0; i < info.RegisterStores.Length; i++)
         {
             LoadFrameSlotAddress(node.Unit, info.RegisterStores[i].Register.Index);
-            Load(node.Inputs[storeInputBase + i], ValueRepresentation.kTagged);
-            _il.Emit(OpCodes.Stobj, typeof(JSValue));
+            EmitStoreTagged(node.Inputs[storeInputBase + i]);
         }
         if (node.IsCall || node.CanThrow) StoreBytecodeOffset(node);
         for (int a = 0; a < info.Args.Length; a++)
