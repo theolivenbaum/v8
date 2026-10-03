@@ -142,6 +142,27 @@ public class MaglevCodeQualityTest
           return out.join();
         })()
         """,
+        // Context slots an "immutable" load reads while a call assigns them:
+        // a generator's var after its resumption, a derived constructor's
+        // this read by an arrow before and after super().
+        """
+        (function() {
+          function* f() { yield function g() { return '' + test + (gen.next(), test); }; var test = 10; }
+          var gen, out = [];
+          for (var k = 0; k < 40; k++) { gen = f(); out.push(gen.next().value()); }
+          class B { constructor() { this.b = 1; } }
+          class D extends B {
+            constructor(k) {
+              var get = () => { try { return this.b; } catch (e) { return 'tdz'; } };
+              var before = get();
+              super();
+              this.r = before + ':' + get();
+            }
+          }
+          for (var k = 0; k < 40; k++) out.push(new D(k).r);
+          return out.join();
+        })()
+        """,
         """
         (function() {
           function sum(a, n) { var s = 0; for (var j = 0; j < n; j++) for (var i = 0; i < a.length; i++) s += a[i]; return s; }

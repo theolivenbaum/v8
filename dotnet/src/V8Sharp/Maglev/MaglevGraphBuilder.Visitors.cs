@@ -86,17 +86,19 @@ public sealed partial class MaglevGraphBuilder
                 break;
 
             // ---- Context slots ---------------------------------------------------------------------
+            // LoadAndCacheContextSlot caches a slot as a constant by its scope
+            // info's MaybeAssigned flag (never for var, which a generator's
+            // resumption can assign after an "immutable" load); without the
+            // context's scope info here every slot is cached as mutable.
             case Bytecode.LdaContextSlotNoCell:
             case Bytecode.LdaContextSlot:
             case Bytecode.LdaImmutableContextSlot:
-                SetAccumulator(BuildLoadContextSlot(LoadRegister(0), Uint(2), ContextSlot(1),
-                    _it.CurrentBytecode() == Bytecode.LdaImmutableContextSlot));
+                SetAccumulator(BuildLoadContextSlot(LoadRegister(0), Uint(2), ContextSlot(1)));
                 break;
             case Bytecode.LdaCurrentContextSlotNoCell:
             case Bytecode.LdaCurrentContextSlot:
             case Bytecode.LdaImmutableCurrentContextSlot:
-                SetAccumulator(BuildLoadContextSlot(_frame.Context, 0, ContextSlot(0),
-                    _it.CurrentBytecode() == Bytecode.LdaImmutableCurrentContextSlot));
+                SetAccumulator(BuildLoadContextSlot(_frame.Context, 0, ContextSlot(0)));
                 break;
             case Bytecode.StaContextSlotNoCell:
             case Bytecode.StaContextSlot:
