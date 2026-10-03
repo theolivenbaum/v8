@@ -860,6 +860,130 @@ not this pass); test262 95123 run, 0 newly failing, 0 newly passing;
 bytecode goldens 100/100 files, 557/557 snippets (bytecode generation untouched by the pass). regress/regress-1236560
 ran 73 s at the base and 77 s at 3a5e180f alone (exception unwinding
 through ExInfo); it can time out at 60 s under load in both.
+Eighth interpreter performance pass: dispatch of prefixed and paired
+bytecodes, the loop's compile-time state (2026-10-03; "before" is b1fa1fae,
+main with no engine change; all V8Sharp numbers are `v8sharp:jitless`, the
+interpreter alone, since the baseline tier is on by default now).
+
+Parity publishes (ReadyToRun composite, self-contained), `bench-session.sh`,
+octane-steady in two sessions (session A: Richards .. NavierStokes plus
+micro:accessors and micro:cpu; session B: PdfJS .. TypeScript), 3
+interleaved runs each with V8 --jitless in the same session. Fingerprints
+(before / after): A load 2.76 / 1.26, steal 0%, idle 97 / 99%, cpu-cal
+1700 / 1828 ms, mem-bw 33.1 / 32.2 GB/s; B load 0.83 / 1.13, steal 0%, idle
+93 / 98%, cpu-cal 1814 / 1740 ms, mem-bw 34.3 / 32.9 GB/s (Intel Xeon @
+2.80GHz, 4 CPUs). V8 exited 139 on one run of Richards, DeltaBlue,
+NavierStokes and Mandreel and two of CodeLoad and TypeScript; its means
+there are over the runs that finished.
+
+| benchmark | before | after | V8 --jitless | before / after of jitless | after/before |
+|---|---|---|---|---|---|
+| Richards | 434.3 | 407.9 | 758.6 | 57% / 54% | -6.1% |
+| DeltaBlue | 356.5 | 387.5 | 872.5 | 41% / 44% | +8.7% |
+| Crypto | 55.5 | 55.3 | 98.4 | 56% / 56% | -0.4% |
+| RayTrace | 183.4 | 202.2 | 464.8 | 39% / 44% | +10.3% |
+| EarleyBoyer | 79.0 | 82.3 | 185.5 | 43% / 44% | +4.2% |
+| RegExp | 200.9 | 208.9 | 499.2 | 40% / 42% | +4.0% |
+| Splay | 3636 | 3664 | 3798 | 96% / 96% | +0.8% |
+| NavierStokes | 239.0 | 237.8 | 219.3 | 109% / 108% | -0.5% |
+| PdfJS | 745.8 | 787.0 | 1942.7 | 38% / 41% | +5.5% |
+| Mandreel | 69.5 | 80.3 | 141.2 | 49% / 57% | +15.5% |
+| Gameboy | 323.6 | 346.1 | 714.5 | 45% / 48% | +7.0% |
+| CodeLoad | 3198 | 3343 | 4153 | 77% / 80% | +4.5% |
+| Box2D | 574.7 | 639.9 | 897.0 | 64% / 71% | +11.3% |
+| zlib | 15.82 | 18.06 | 39.88 | 40% / 45% | +14.1% |
+| Typescript | 250.4 | 288.3 | 629.8 | 40% / 46% | +15.1% |
+| **geomean (15, no latency scores)** | 268.1 | 284.4 | 511.4 | **52.4% / 55.6%** | +6.1% |
+| micro:cpu geomean (18) | 22.9 | 24.1 | 40.3 | 56.9% / 59.7% | +4.8% |
+| micro:accessors geomean (8) | 15.4 | 15.3 | 28.1 | 54.8% / 54.5% | -0.5% |
+
+Richards is 6% slower in all three runs of the parity build (the bin
+sessions put it at -4% for the Star lookahead step, within noise); a
+profile of both parity builds shows no handler slower and the dispatch
+jump down from 18.6% to 11.7% of the loop's samples (the lookahead block
+6.1%), i.e. layout of the loop, not work. micro:cpu after/before:
+EmptyLoop +13%, AddLoop +18%, PropLoad +12%, NullCheck +10%, DoubleArray
++12%; accessors flat.
+
+The pass, one commit each (git log b1fa1fae..). Per-step A/B sessions on
+bin builds, `octane-quick` (fixed small iteration counts) and micro:cpu,
+3 interleaved runs with V8 --jitless in the same session; a step under
+~5% on one benchmark is noise on this host:
+- Star lookahead (V8's StarDispatchLookahead after the
+  Bytecodes::IsStarLookahead bytecodes, and after an inline return), and
+  one case for the 16 short Stars. Richards -4%, DeltaBlue +4%, EarleyBoyer
+  +2%, micro:cpu +0.5%: neutral. Kept as V8's design (it removes one
+  dispatch per X+StarN pair, 20-27% of the bytecodes of the OO benchmarks).
+- Wide/ExtraWide register moves (Ldar, Star, Mov), current context loads,
+  the shift Smi operators, Wide GetKeyedProperty, SetKeyedProperty,
+  JumpLoop, and JumpConstant / JumpIf{True,False}Constant decoded by the
+  single-scale loop: Emscripten functions have hundreds of registers and
+  long bodies, and zlib ran 5.6% of its bytecodes through RunPrefixed (one
+  step of Loop<DoubleScale>) and its constant-pool jumps through LoopCold.
+- The typed-array keyed load calls nothing (GetKeyedTypedArray returns
+  NotHandled and the loop calls the general handler): it pushed six
+  registers for the call it rarely made.
+  zlib +6.6% for these three steps (base 16.98, after 18.11, 2 runs).
+- TestInstanceOf: OrdinaryHasInstance's prototype walk inline when the
+  feedback needs no update (`ObjectOps.FastInstanceOf` returns 1/0/-1, no
+  out parameter; Map.IsSpecialReceiverMap inlines). EarleyBoyer's
+  instanceof was 5.7% of its samples over four call layers, 4.1% after.
+- Wide GetNamedProperty in the loop (TypeScript runs 1.4% of its bytecodes
+  as Wide GetNamedProperty, Box2D 0.5%), ToBoolean of objects and strings
+  without a second call.
+- `Isolate` runs InterpreterInlineCalls' class constructor: the loop is
+  compiled once on its first call, and with the class not yet initialized
+  RyuJIT put 17 class-initialization checks into it, one after every call
+  handler's FrameEntered compare. micro:cpu +3% for the last three steps
+  (38.6 -> 40.6 geomean with the steps before).
+- The long Star runs a following Ldar (a deviation: V8's lookahead is for
+  the short Stars only). The pair is 11% of zlib's bytecodes: zlib +5.5%
+  (16.82 -> 17.73, 3 runs), the rest within noise.
+- Wide AddSmi/SubSmi/MulSmi/DivSmi/ModSmi (Gameboy runs 0.9% of its
+  bytecodes as Wide ModSmi), Wide SetNamedProperty and
+  JumpIfToBoolean{True,False}Constant (TypeScript) in the loop.
+  Session for all the steps against the base: zlib +8.7%, TypeScript
+  +11.5%, Gameboy +6.4%, Mandreel +16.9%, Box2D +8.8% (octane-quick, 3
+  runs).
+
+Tried and dropped, measured:
+- A branch lookahead after the tests (TestEqual, TestLessThan,
+  TestUndetectable, LogicalNot ... followed by JumpIfTrue/JumpIfFalse take
+  the branch without its dispatch): micro:cpu +2.7% (loop conditions), but
+  Octane mixed (Richards +3%, Crypto -3%, DeltaBlue, RayTrace, EarleyBoyer
+  within 1%), so not worth a deviation from V8.
+- Write barriers: the barrier for a store of `NumberTag.Instance` cannot be
+  skipped safely. RyuJIT omits the barrier only for objects on the frozen
+  (non-GC) heap, and a `static readonly` instance of a class is not
+  allocated there (checked: the JIT loads the static and calls
+  CORINFO_HELP_CHECKED_ASSIGN_REF); a store without a barrier through
+  `Unsafe.As` would be a GC hole while the object can move (gen 0) and
+  under background GC. Attribution of the barrier samples (perf with 8
+  bytes of user stack: the return address at [rsp] of the frameless
+  helper) on Richards: 9.3% of all samples are barriers, 48% of them in the
+  short Star stores of objects (the register file is on the pinned heap,
+  the stored objects young) and 50% in the call handlers' frame entry (the
+  context, closure, bytecode array and feedback vector slots when a call
+  at the same depth enters a different function). Both are reference
+  stores V8 makes without a barrier (its frames are on the machine stack);
+  the compare-and-skip of the earlier passes is all that applies.
+- The call path, Construct and TryApplyFast (RayTrace's
+  `this.initialize.apply(this, arguments)`) were profiled again: no single
+  hot spot (Construct runs with a 232-byte frame and spills; a fast front
+  was tried in the seventh pass).
+
+What is left (profiles of the final build): the dispatch jump is still
+10-15% of the loop's samples on the OO benchmarks; write barriers 6-10% on
+Richards, DeltaBlue, RayTrace, EarleyBoyer; calls and returns; `new`
+(Construct 5-7% of EarleyBoyer and RayTrace); GC (PdfJS ~5%). PdfJS's
+profile is flat (the loop is 17%, nothing else above 1.5%). Not reached:
+70% of V8 --jitless (55.6% measured).
+
+Conformance at the end of the pass (98e54502): V8Sharp.Tests 1061/1061
+(Baseline and Maglev tests included); mjsunit 7602 run, 0 newly failing, 0
+newly passing; test262 95123 run, 0 newly failing, 0 newly passing (both
+under the shared lock, 2 jobs each, run side by side); bytecode goldens
+pass (bytecode generation untouched by the pass).
 Front end and bytecode compilation pass (2026-10-02; parity publish,
 thread CPU, under the benchmark lock, mean of 3 interleaved runs).
 `micro:compile` (tools/V8Sharp.Bench/micro/compile.js: Octane's sources
@@ -1258,6 +1382,15 @@ After the seventh interpreter performance pass (3a5e180f, parity publish,
 session-20261003-102501, same harness): **54.9%** of V8 --jitless
 (274.9 / 501.0; the base of that pass, 6a480c2f, measured 52.7% in the
 same session). See "Seventh interpreter performance pass" above.
+
+After the eighth interpreter performance pass (98e54502, parity publish,
+two sessions, 3 runs): **55.6%** of V8 --jitless (284.4 / 511.4; its base,
+b1fa1fae, measured 52.4% in the same sessions). These and later numbers
+are `v8sharp:jitless`: the baseline tier is on by default since 2b647a54,
+and V8Sharp's --jitless also runs regular expressions in the bytecode
+interpreter, as V8's does (RegExp 201 here against 278 with compiled
+regular expressions in the seventh pass's sessions). See "Eighth
+interpreter performance pass" above.
 
 ## Phase 2: the fast tiers
 

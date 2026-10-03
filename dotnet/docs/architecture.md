@@ -352,7 +352,21 @@ V8 exactly:
   the interpreter's field loads and stores read it as V8 reads a Smi
   handler. Readers of the slots that test the handler object are unaffected.
 - `Interpreter` is a `switch` dispatch loop over the bytecode array, with the
-  accumulator and the register window as locals.
+  accumulator and the register window as locals. As V8's handlers do
+  (`StarDispatchLookahead`, `Bytecodes::IsStarLookahead`), the loads,
+  property loads, arithmetic, call and construct handlers and an inline
+  return store the accumulator into a following short Star (`Star0` ..
+  `Star15`, the last opcodes, one compare) without dispatching it; the long
+  `Star` likewise runs a following `Ldar` (a V8Sharp addition). The frequent
+  Wide forms of huge functions (register moves, context loads, keyed and
+  named loads, keyed and named stores, Smi arithmetic, `JumpLoop`) and
+  the frequent constant-pool jumps are decoded by the single-scale loop itself; the rest
+  of the prefixed bytecodes run one step in `Loop<DoubleScale>` /
+  `Loop<QuadrupleScale>` (`RunPrefixed`). The loop is compiled once, at full
+  optimization, on its first call, so every class whose statics it reads
+  must be initialized before then (the `Isolate` constructor runs
+  `InterpreterInlineCalls`' class constructor): otherwise RyuJIT emits a
+  class-initialization check at each read.
 
 ## 9. Tiers (after the interpreter is conformant)
 

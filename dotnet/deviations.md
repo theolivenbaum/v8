@@ -474,8 +474,23 @@ for now, to be revisited when the reason goes away.
   registers: on System V x64 a double local would sit in a stack slot. The
   offset is computed from the reference where a handler needs it (SavePc,
   the return offset of a call). The loop is AggressiveOptimization (it
-  would otherwise run as OSR code). Wide/ExtraWide run one bytecode in the scaled loop, except
-  LdaSmi, which the single-scale loop decodes itself.
+  would otherwise run as OSR code). Wide/ExtraWide run one bytecode in the
+  scaled loop, except the frequent forms of huge functions, which the
+  single-scale loop decodes itself: LdaSmi, Ldar, Star, Mov, the current
+  context slot loads and the Smi bitwise operators (both prefixes), and with
+  Wide GetNamedProperty, SetNamedProperty, GetKeyedProperty,
+  SetKeyedProperty, the Smi arithmetic operators and JumpLoop without an
+  interrupt or OSR (V8 has a handler per operand scale instead).
+  JumpConstant, JumpIf{True,False}Constant and
+  JumpIfToBoolean{True,False}Constant are in the loop, the other
+  constant-pool jumps in `LoopCold`.
+- Star lookahead: V8's (StarDispatchLookahead) for the short Stars after the
+  bytecodes of `Bytecodes::IsStarLookahead`, the calls included: a call
+  entered in the loop does it at the inline return (in V8 the call
+  handler does it when the callee returns to it). In addition the long `Star`
+  runs a following `Ldar` without its dispatch, which V8 does not do: in
+  functions with more than 16 registers (Emscripten's) the pair is 11% of
+  zlib's bytecodes.
 - JavaScript getters and setters found through the load/store feedback
   (own accessor pairs, prototype-chain accessors, and accessors of
   dictionary-mode holders through LoadNormal) are entered by the
