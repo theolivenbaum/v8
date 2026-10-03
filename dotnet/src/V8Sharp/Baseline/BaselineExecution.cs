@@ -82,6 +82,47 @@ public static class BaselineExecution
     public static void BudgetInterruptOnJumpLoop(Isolate isolate, JSFunction function) =>
         BytecodeBudgetInterruptWithStackCheck(isolate, function);
 
+    /// <summary>
+    /// The runtime call of a baseline back edge with on-stack replacement into
+    /// Maglev code (OSR from Sparkplug: the JumpLoop's
+    /// Runtime_BytecodeBudgetInterruptWithStackCheck_Sparkplug, then V8's
+    /// OnStackReplacement as from Ignition). True when this frame continues
+    /// in OSR code for its JumpLoop (the offset in the frame, an unprefixed
+    /// JumpLoop): <see cref="OsrToMaglev"/> runs it.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static bool BudgetInterruptOnJumpLoopOsr(Isolate isolate, ref InterpreterState state, JSFunction function)
+    {
+        BytecodeBudgetInterruptWithStackCheck(isolate, function);
+        if (!isolate.UseOptimizer || function.RawFeedbackCell.Value is not FeedbackVector vector) return false;
+        ref JSValue fp = ref isolate.RegisterStack[state.Fp];
+        int pc = InterpreterRuntime.FramePc(ref fp);
+        var bytecode = (BytecodeArray)function.Shared.FunctionData!;
+        if ((uint)pc >= (uint)bytecode.Length || bytecode.Bytecodes[pc] != (byte)Bytecode.JumpLoop) return false;
+        if (Maglev.MaglevExecution.TryGetOsrCode(isolate, function, vector, bytecode, pc) is not { } code) return false;
+        state.OsrCode = code;
+        return true;
+    }
+
+    /// <summary>
+    /// Continues the baseline frame in the OSR code <see cref="BudgetInterruptOnJumpLoopOsr"/>
+    /// found, at the loop header (the registers are in the frame); returns the
+    /// function's result, which the baseline code returns.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue OsrToMaglev(Isolate isolate, ref InterpreterState state)
+    {
+        ref JSValue fp = ref isolate.RegisterStack[state.Fp];
+        int pc = InterpreterRuntime.FramePc(ref fp);
+        BytecodeArray bytecode = InterpreterRuntime.FrameBytecode(ref fp);
+        // JumpLoop's first operand: the unsigned distance back to the loop header.
+        state.Pc = pc - bytecode.Bytecodes[pc + 1];
+        state.Accumulator = default;
+        Maglev.MaglevCode code = state.OsrCode!;
+        state.OsrCode = null;
+        return Maglev.MaglevExecution.RunOsr(isolate, ref state, code);
+    }
+
     /// <summary>The runtime call of baseline Return when the budget ran out.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static void BudgetInterruptOnReturn(Isolate isolate, JSFunction function) => BytecodeBudgetInterrupt(isolate, function);

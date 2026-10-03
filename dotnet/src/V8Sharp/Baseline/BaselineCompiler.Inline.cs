@@ -190,6 +190,18 @@ public sealed partial class BaselineCompiler
         StfldNum();
     }
 
+    /// <summary>Pushes the number <paramref name="value"/> as a JSValue (built in a temp: no call to JSValue.FromInt).</summary>
+    void PushNumber(double value)
+    {
+        Emit(OpCodes.Ldloca, ValueTemp);
+        Emit(OpCodes.Ldsfld, s_numberTag);
+        Emit(OpCodes.Stfld, s_obj);
+        Emit(OpCodes.Ldloca, ValueTemp);
+        Emit(OpCodes.Ldc_R8, value);
+        StfldNum();
+        Emit(OpCodes.Ldloc, ValueTemp);
+    }
+
     /// <summary>acc = the heap object in the static field <paramref name="root"/> (true, false, null, the hole).</summary>
     void SetAccRoot(FieldInfo root)
     {
@@ -728,6 +740,18 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Bne_Un, isFalse);
         Emit(OpCodes.Br, isTrue);
         _il.MarkLabel(notNumber);
+        // A JSReceiver (`if (node)`): true unless its map is undetectable.
+        Label notReceiver = _il.DefineLabel();
+        Emit(OpCodes.Ldloc, TObj);
+        Emit(OpCodes.Ldfld, s_instanceType);
+        Emit(OpCodes.Ldc_I4, (int)InstanceTypeChecks.FirstJSReceiver);
+        Emit(OpCodes.Blt_Un, notReceiver);
+        Emit(OpCodes.Ldloc, TObj);
+        Emit(OpCodes.Ldfld, s_receiverMap);
+        Emit(OpCodes.Call, s_mapIsUndetectable);
+        Emit(OpCodes.Brtrue, isFalse);
+        Emit(OpCodes.Br, isTrue);
+        _il.MarkLabel(notReceiver);
         Emit(OpCodes.Ldloc, TObj);
         CallBuiltin("ToBooleanSlow");
         Emit(OpCodes.Brtrue, isTrue);
@@ -1320,6 +1344,8 @@ public sealed partial class BaselineCompiler
             // The runtime call is in a stub shared by the method's back edges
             // (EmitBackEdgeInterruptStub), which jumps back to this loop header.
             _backEdgeTargets ??= [];
+            // The stub is shared: the loop's JumpLoop records its offset here.
+            if (_pendingOffset >= 0) _masm.StoreBytecodeOffset(_pendingOffset);
             Emit(OpCodes.Ldc_I4, _backEdgeTargets.Count);
             Emit(OpCodes.Stloc, TInt);
             _backEdgeTargets.Add(continueAt);
@@ -1347,9 +1373,28 @@ public sealed partial class BaselineCompiler
         if (_backEdgeTargets is null) return;
         _il.MarkLabel(BackEdgeInterruptStub);
         if (_registerLocals is not null) SpillRegisters(0, _registerLocals.Length);
-        Isolate();
-        Fn();
-        CallBuiltin("BudgetInterruptOnJumpLoop");
+        _pendingOffset = -1;
+        if (!_compact && !Globals.IsResumableFunction(_shared.Kind))
+        {
+            // OSR into Maglev code (BaselineExecution.BudgetInterruptOnJumpLoopOsr).
+            Label noOsr = _il.DefineLabel();
+            Isolate();
+            State();
+            Fn();
+            CallBuiltin("BudgetInterruptOnJumpLoopOsr");
+            Emit(OpCodes.Brfalse, noOsr);
+            Isolate();
+            State();
+            CallBuiltin("OsrToMaglev");
+            Emit(OpCodes.Ret);
+            _il.MarkLabel(noOsr);
+        }
+        else
+        {
+            Isolate();
+            Fn();
+            CallBuiltin("BudgetInterruptOnJumpLoop");
+        }
         Emit(OpCodes.Ldloc, TInt);
         _il.Emit(OpCodes.Switch, _backEdgeTargets.ToArray());
         // (The index is always in the table.)

@@ -515,12 +515,13 @@ bytes of bytecode do not tier up by themselves (`BaselineSupport.TiersUpToBaseli
 `%CompileBaseline` still compiles them).
 
 **Tiering.** `TieringManager.OnInterruptTick` is ported: the first budget
-interrupt allocates the feedback vector and enqueues the function to the
-batch compiler (V8's defaults: `--sparkplug`, `--baseline-batch-compilation`,
-threshold 4 KB of estimated code, budget `invocation_count_for_feedback_allocation`
-(8) x bytecode length). Later ticks raise the budget (there is no optimizing
-tier: `use_optimizer()` is false, as in a V8 built without Turbofan and
-Maglev). A call to a function whose SharedFunctionInfo has baseline code
+interrupt allocates the feedback vector (budget `invocation_count_for_feedback_allocation`
+(8) x bytecode length) and, once `--invocation-count-for-sparkplug` (64, a
+V8Sharp deviation; V8 enqueues at the first interrupt) invocations' worth of
+budget ran out, the function is enqueued to the batch compiler (V8's
+defaults: `--sparkplug`, on, `--baseline-batch-compilation`, threshold 4 KB
+of estimated code). Later ticks raise the budget, or with `--maglev` tier up
+to Maglev (section 9.2). A call to a function whose SharedFunctionInfo has baseline code
 enters it (allocating the feedback vector first if needed,
 Runtime_InstallBaselineCode). `--always-sparkplug` compiles every function
 when its bytecode is finalized. A running interpreter frame switches at its
@@ -529,7 +530,18 @@ the dispatch loop returns to `Run`, which continues the same frame in the
 baseline code at the loop header. `--jitless` implies `--no-sparkplug`.
 The interrupt budget's runtime call on a back edge is in one stub per method
 that every loop's budget check jumps to (with the loop's index), so the
-loops' code stays small.
+loops' code stays small; the stub also enters Maglev OSR code for the loop
+when there is some (`BaselineExecution.BudgetInterruptOnJumpLoopOsr`).
+Calls between the tiers are direct: baseline code enters a callee's Maglev
+code (`BaselineCalls.EnterMaglev`, also for `new` and `f.apply`), and Maglev
+code enters a callee's baseline code (`BaselineCalls.CallFromOptimizedCode`).
+
+**Code generation threads.** The bytecode offset is stored only before calls
+that can throw or call out, as IL (RyuJIT stops inlining in big methods:
+what must be cheap there is emitted as IL, not called). Each thread that
+emits code has its own dynamic assemblies (`BaselineCodeSpace`); the
+Sparkplug batches and the Maglev jobs have a background thread each
+(`BaselineCompileThread`, `MaglevCompileThread`).
 
 **Concurrent compilation and RyuJIT.** With `--concurrent-sparkplug` (the
 default, as in V8 on x64), a batch is compiled by one process-wide background
@@ -642,16 +654,29 @@ protectors. `DependentCode` keeps a weak table from the object to the code;
 the object model calls `DeoptimizeDependencyGroups` where V8 does, which
 marks the code (lazy deopt).
 
+**Locals.** Values whose live ranges do not overlap share an IL local
+(`MaglevCodeGenerator.TryAllocateSharedLocals`, the role of maglev-regalloc):
+ranges run from a value's definition to its last use, counting deopt frame
+values, phi inputs at the predecessor's end and lazily pushed inlined
+frames, and a value live into a loop is live through it. This keeps a
+method's locals below RyuJIT's inlining (512) and MinOpts (2000) limits.
+A compile whose IL exceeds 36000 bytes bails out (MinOpts territory).
+Deopt exits spill only non-constant values (constants are literals of the
+deopt point), share spill code between exits with the same values, and end
+in one call that takes the last values (`MaglevBuiltins.Deopt0-4`).
+
 **Tiering.** `--maglev` (off by default in V8Sharp) makes
 `Isolate.UseOptimizer` true; `TieringManager.OnInterruptTick` requests a
 compile once a function's invocation count reaches
-`--invocation-count-for-maglev`. With `--concurrent-recompilation` (the
+`--invocation-count-for-maglev` (400, V8's). With `--concurrent-recompilation` (the
 default) the graph is built at once and the IL generation and RyuJIT's
-fully optimized compile run on the background compile thread
+fully optimized compile run on the Maglev compile thread
 (`MaglevCompiler.CompileConcurrently`); INSTALL_MAGLEV_CODE installs the
 code on the feedback vector, which every closure of the CreateClosure site
 shares, unless a dependency was invalidated meanwhile. A frame stuck
-in a loop OSRs at its next JumpLoop budget interrupt
-(`MaglevExecution.TryGetOsrCode`, `RunOsr`): OSR code starts at the loop
-header with the interpreter's registers as initial values; back edges of
-enclosing loops leave it (kOSREarlyExit).
+in a loop (interpreted or baseline) OSRs at its next JumpLoop budget
+interrupt (`MaglevExecution.TryGetOsrCode`, `RunOsr`); with
+`--concurrent-osr` the OSR compile is a concurrent job too and a later back
+edge enters the code. OSR code starts at the loop header with the frame's
+registers as initial values; back edges of enclosing loops leave it
+(kOSREarlyExit).

@@ -139,6 +139,60 @@ public static class MaglevBuiltins
 
     public static void Spill1(JSValue[] s, int i, JSValue a) => s[i] = a;
 
+    // The end of a deopt exit: the last values of its translation (at scratch
+    // index i), then Deoptimizer::Deoptimize; the exit returns the result.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue Deopt0(Isolate isolate, ref InterpreterState state, MaglevCode code, int index, int reason)
+    {
+        V8Sharp.Deoptimizer.Deoptimizer.Deoptimize(isolate, ref state, code, index, reason);
+        return JSValue.Undefined;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue Deopt1(Isolate isolate, ref InterpreterState state, MaglevCode code, int index, int reason, int i, JSValue a)
+    {
+        JSValue[] s = isolate.MaglevDeoptScratch;
+        s[i] = a;
+        V8Sharp.Deoptimizer.Deoptimizer.Deoptimize(isolate, ref state, code, index, reason);
+        return JSValue.Undefined;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue Deopt2(Isolate isolate, ref InterpreterState state, MaglevCode code, int index, int reason, int i, JSValue a,
+        JSValue b)
+    {
+        JSValue[] s = isolate.MaglevDeoptScratch;
+        s[i] = a;
+        s[i + 1] = b;
+        V8Sharp.Deoptimizer.Deoptimizer.Deoptimize(isolate, ref state, code, index, reason);
+        return JSValue.Undefined;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue Deopt3(Isolate isolate, ref InterpreterState state, MaglevCode code, int index, int reason, int i, JSValue a,
+        JSValue b, JSValue c)
+    {
+        JSValue[] s = isolate.MaglevDeoptScratch;
+        s[i] = a;
+        s[i + 1] = b;
+        s[i + 2] = c;
+        V8Sharp.Deoptimizer.Deoptimizer.Deoptimize(isolate, ref state, code, index, reason);
+        return JSValue.Undefined;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue Deopt4(Isolate isolate, ref InterpreterState state, MaglevCode code, int index, int reason, int i, JSValue a,
+        JSValue b, JSValue c, JSValue d)
+    {
+        JSValue[] s = isolate.MaglevDeoptScratch;
+        s[i] = a;
+        s[i + 1] = b;
+        s[i + 2] = c;
+        s[i + 3] = d;
+        V8Sharp.Deoptimizer.Deoptimizer.Deoptimize(isolate, ref state, code, index, reason);
+        return JSValue.Undefined;
+    }
+
     public static void Spill2(JSValue[] s, int i, JSValue a, JSValue b)
     {
         s[i] = a;

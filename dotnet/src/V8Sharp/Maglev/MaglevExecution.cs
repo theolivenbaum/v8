@@ -137,6 +137,15 @@ namespace V8Sharp.Maglev
             if (vector.OsrUrgency <= loopDepth) return null;
             if (MaglevCompiler.OptimizationDisabled(function.Shared)) return null;
             if (isolate.Flags.trace_osr) Console.WriteLine($"[OSR - compiling {MaglevCompiler.DebugName(function.Shared)} at JumpLoop {jumpLoopOffset}]");
+            // --concurrent-osr (V8's default): the job is queued, the frame
+            // keeps running in its tier, and a later back edge enters the code
+            // INSTALL_MAGLEV_CODE put in the OSR cache. Natives tests
+            // (%OptimizeOsr) compile synchronously, so the next back edge OSRs.
+            if (isolate.Flags.concurrent_osr && isolate.Flags.concurrent_recompilation && !isolate.Flags.allow_natives_syntax)
+            {
+                MaglevCompiler.CompileConcurrently(isolate, function, jumpLoopOffset);
+                return null;
+            }
             MaglevCode? code = MaglevCompiler.Compile(isolate, function, jumpLoopOffset, byTieringManager: true);
             if (code is null) return null;
             MaglevCompiler.InstallCode(isolate, code);

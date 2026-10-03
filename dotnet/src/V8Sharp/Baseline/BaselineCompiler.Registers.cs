@@ -35,6 +35,8 @@ public sealed partial class BaselineCompiler
     const int kMaxCachedRegisters = 64;
 
     static readonly bool s_noRegisterCache = Environment.GetEnvironmentVariable("V8SHARP_BASELINE_NO_REGISTER_CACHE") == "1";
+    internal static readonly string? s_forceCompact = Environment.GetEnvironmentVariable("V8SHARP_BASELINE_COMPACT");
+    static readonly bool s_compactWithRegisters = s_forceCompact == "2";
 
     /// <summary>The IL locals of the cached registers r0..rN, or null when the registers stay in the frame.</summary>
     LocalBuilder[]? _registerLocals;
@@ -45,7 +47,7 @@ public sealed partial class BaselineCompiler
     void SetUpRegisterCache()
     {
         int count = _bytecode.RegisterCount;
-        if (s_noRegisterCache || _compact || count == 0 || count > kMaxCachedRegisters) return;
+        if (s_noRegisterCache || _compact && !s_compactWithRegisters || count == 0 || count > kMaxCachedRegisters) return;
         if (_bytecode.HandlerTable.Length != 0) return;
         if (Globals.IsResumableFunction(_shared.Kind)) return;
         _registerLocals = new LocalBuilder[count];

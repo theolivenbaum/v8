@@ -408,9 +408,35 @@ public sealed partial class BaselineCompiler
     /// <summary>The bytecode array offset of an embedded feedback operand.</summary>
     int EmbeddedFeedbackOffset(int i) => Cursor + _iterator.CurrentOperandOffset(i);
 
-    void CallBuiltin(string name) => _masm.Call(s_builtins[name]);
+    // The offset of the current bytecode when it records one (NeedsBytecodeOffset), else -1.
+    int _pendingOffset = -1;
 
-    void CallCalls(string name) => _masm.Call(s_calls[name]);
+    // Builtins that neither throw nor call out: no offset store before them.
+    static readonly HashSet<string> s_noOffsetBuiltins = new(StringComparer.Ordinal)
+    {
+        "Box", "Smi", "Zero", "Null", "TheHole", "True", "False", "TruncateToInt32", "CompareNumbersFeedback",
+        "ToBooleanValue", "ToBooleanSlow", "IsUndefined", "TestReferenceEqual", "TryStoreOwnField", "TryStoreElementInBounds",
+    };
+
+    /// <summary>
+    /// Calls a builtin, storing the bytecode offset first when the builtin
+    /// can throw or call out (V8 derives it from the return address of the
+    /// call). The store sits before the call rather than at the start of the
+    /// bytecode, so a fast path that does not call out stores nothing; the
+    /// store's IL leaves the evaluation stack as it was, so it can follow the
+    /// pushed arguments.
+    /// </summary>
+    void CallBuiltin(string name)
+    {
+        if (_pendingOffset >= 0 && !s_noOffsetBuiltins.Contains(name)) _masm.StoreBytecodeOffset(_pendingOffset);
+        _masm.Call(s_builtins[name]);
+    }
+
+    void CallCalls(string name)
+    {
+        if (_pendingOffset >= 0) _masm.StoreBytecodeOffset(_pendingOffset);
+        _masm.Call(s_calls[name]);
+    }
 
     JSValue[] ConstantPoolValues => _bytecode.ConstantPoolValues ?? InterpreterRuntime.MaterializeConstantPool(_isolate, _bytecode);
 
@@ -577,7 +603,7 @@ public sealed partial class BaselineCompiler
         if (_isJumpTarget[offset]) _masm.Bind(_labels[offset]);
 
         Bytecode bytecode = _iterator.CurrentBytecode();
-        if (NeedsBytecodeOffset(bytecode)) _masm.StoreBytecodeOffset(Cursor);
+        _pendingOffset = NeedsBytecodeOffset(bytecode) ? Cursor : -1;
         if (_registerLocals is not null) SpillRegisterListOperands(bytecode);
 
         switch (bytecode)
@@ -629,7 +655,7 @@ public sealed partial class BaselineCompiler
 
             // ---- Register transfers -------------------------------------------------------------------------
             case Bytecode.Star:
-                if (_compact) _masm.StoreAccumulatorToRegister(RegisterOperand(0));
+                if (_compact && _registerLocals is null) _masm.StoreAccumulatorToRegister(RegisterOperand(0));
                 else EmitStar(RegisterOperand(0));
                 break;
             case Bytecode.Star0:
@@ -648,11 +674,11 @@ public sealed partial class BaselineCompiler
             case Bytecode.Star13:
             case Bytecode.Star14:
             case Bytecode.Star15:
-                if (_compact) _masm.StoreAccumulatorToRegister(_iterator.GetStarTargetRegister());
+                if (_compact && _registerLocals is null) _masm.StoreAccumulatorToRegister(_iterator.GetStarTargetRegister());
                 else EmitStar(_iterator.GetStarTargetRegister());
                 break;
             case Bytecode.Mov:
-                if (_compact) _masm.MoveRegister(RegisterOperand(0), RegisterOperand(1));
+                if (_compact && _registerLocals is null) _masm.MoveRegister(RegisterOperand(0), RegisterOperand(1));
                 else EmitMov(RegisterOperand(0), RegisterOperand(1));
                 break;
 
@@ -1628,8 +1654,7 @@ public sealed partial class BaselineCompiler
     {
         Isolate();
         Acc();
-        I(Int(0));
-        CallBuiltin("Smi");
+        PushNumber(Int(0));
         Feedback(1);
         CallBuiltin(builtin);
         SetAcc();

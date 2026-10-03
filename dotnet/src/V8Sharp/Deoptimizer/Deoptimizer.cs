@@ -100,6 +100,15 @@ public static class Deoptimizer
                     scratch[f.ScratchStart + k] = materialized;
                 }
             }
+            if (f.IsConstant is { } isConstant)
+            {
+                // The translation's literals.
+                JSValue[] constants = f.Constants!;
+                for (int k = 0; k < registers.Length; k++)
+                {
+                    if (isConstant[k]) scratch[f.ScratchStart + k] = constants[k];
+                }
+            }
             for (int k = 0; k < registers.Length; k++)
             {
                 JSValue value = scratch[f.ScratchStart + k];

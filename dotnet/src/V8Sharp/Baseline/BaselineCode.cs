@@ -135,7 +135,7 @@ public sealed class BaselineCode
         var compiler = new BaselineCompiler(_isolate, SharedFunctionInfo, Bytecode, methodName: methodName, optimizeFully: optimizeFully,
             feedback: vector);
         compiler.GenerateCode();
-        if (compiler.ExceedsOptimizationLimits)
+        if (compiler.ExceedsOptimizationLimits || BaselineCompiler.s_forceCompact is not null)
         {
             // RyuJIT would not optimize the method (BaselineILEmitter): emit the
             // compact form, whose bytecodes call out of line.

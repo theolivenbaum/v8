@@ -13,8 +13,11 @@
 // architecture.md section 9: V8's tiers above, RyuJIT's tiers below.
 //
 // Deviation: RyuJIT does not tier methods of collectible assemblies, so the
-// code space is one non-collectible assembly per process, shared by all
-// isolates: baseline code is never freed (V8 collects code objects). The
+// code space is non-collectible, shared by all isolates: baseline code is
+// never freed (V8 collects code objects). Each thread that generates code
+// (the main thread, the concurrent Sparkplug and Maglev compile threads) has
+// its own assemblies: emitting IL resolves member tokens in the module's
+// tables, which are not thread-safe. The
 // V8SHARP_BASELINE_DYNAMICMETHOD=1 environment variable switches to
 // collectible DynamicMethods (compiled once with full optimization).
 using System.Reflection;
@@ -41,7 +44,7 @@ internal sealed class BaselineCodeSpace
     }
 
     static int s_spaces;
-    static BaselineCodeSpace? s_current;
+    [ThreadStatic] static BaselineCodeSpace? t_current;
     static readonly Lock s_lock = new();
 
     /// <summary>
@@ -52,16 +55,13 @@ internal sealed class BaselineCodeSpace
     /// </summary>
     const int kTypesPerAssembly = 1024;
 
-    /// <summary>The current code space (one at a time per process, shared by all isolates).</summary>
-    public static BaselineCodeSpace For(Isolate isolate)
-    {
-        lock (s_lock) return Current();
-    }
+    /// <summary>The current code space of this thread (shared by all isolates).</summary>
+    public static BaselineCodeSpace For(Isolate isolate) => Current();
 
     static BaselineCodeSpace Current()
     {
-        if (s_current is null || s_current._counter >= kTypesPerAssembly) s_current = new BaselineCodeSpace();
-        return s_current;
+        if (t_current is null || t_current._counter >= kTypesPerAssembly) t_current = new BaselineCodeSpace();
+        return t_current;
     }
 
     /// <summary>Defines a type holding one static method with the baseline entry signature.</summary>

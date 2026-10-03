@@ -1399,8 +1399,8 @@ interpreter performance pass" above.
 Order (decided 2026-09-28): the interpreter is finished first — correctness
 (test262/mjsunit) and interpreter performance (target: within 2x of V8
 --jitless) — before any further work on the IL tiers. The baseline tier is
-merged but off by default until then; the optimizing tier (Maglev) is in
-progress, also off by default.
+on by default since 2026-10-03; the optimizing tier (Maglev) is in
+progress, off by default.
 
 - [x] TieringManager: interrupt budget, OnInterruptTick, feedback allocation
       and the Sparkplug tier-up, InterruptBudgetFor with V8's flag defaults,
@@ -1410,7 +1410,7 @@ progress, also off by default.
 - [~] Baseline compiler: bytecode -> IL (Sparkplug analogue), src/V8Sharp/Baseline/
       (architecture.md 9.1): every bytecode compiles; entry at function start,
       exception handlers and loop headers (OSR from Ignition at JumpLoop);
-      batch compilation, --sparkplug (V8's default on; off in V8Sharp for now), --always-sparkplug,
+      batch compilation, --sparkplug (on by default, as in V8), --always-sparkplug,
       --sparkplug-filter, %CompileBaseline, %ActiveTierIsSparkplug,
       %BaselineOsr, %GetOptimizationStatus baseline bits; the interpreter's
       fast paths emitted as IL (number arithmetic and comparisons fused with
@@ -1423,9 +1423,9 @@ progress, also off by default.
       V8). Tests: tests/V8Sharp.Tests/Baseline (interpreter vs
       --always-sparkplug, and the same feedback in both tiers).
       Open: see "Baseline: open items" below.
-      Temporarily OFF by default (--sparkplug=false): enable with --sparkplug
-      or --always-sparkplug. Off because of the compile cost on short runs
-      (deviations.md); see the Octane table above.
+      On by default (--sparkplug, as V8 on x64) since 2026-10-03: mjsunit and
+      test262 with the tier on, 0 newly failing against the expectations;
+      Octane in "Phase 2 measurements" below.
 - Baseline: open items
   - Bytecode flushing and baseline code flushing (mjsunit/baseline/flush-*)
     are not implemented (no bytecode aging).
@@ -1435,15 +1435,22 @@ progress, also off by default.
     lazy compile (isBaseline(f2) is false after f2(0), line 35).
   - d8.test.verifySourcePositions (verify-bytecode-offsets) is not in the
     test host.
-  - Compile cost: RyuJIT takes about 3-6 us per IL byte (about 10 us per
-    bytecode byte, 23 IL bytes per bytecode byte with the inline fast
-    paths); PdfJS and Box2D spend 2.5-3 s of background CPU compiling 170-290
-    functions, which on a loaded machine slows their short Octane runs below
-    the interpreter. Compact code (no inline paths) halves the IL but saves
-    only 40% of the RyuJIT time and loses the speed-up; RyuJIT's tier 0 for
-    the first version is slower than the interpreter. Waiting for more
-    ticks before compiling (an experiment: 128 and 1000 invocations' worth)
-    hardly reduced what is compiled in those benchmarks.
+  - Compile cost: RyuJIT takes about 11 ms of CPU per function in PdfJS
+    (183 functions, 2.0 s on the Sparkplug thread; 25 IL bytes per bytecode
+    byte), 85% of it in RyuJIT itself. Measured alternatives (2026-10-03):
+    compact code for every function (V8SHARP_BASELINE_COMPACT=1) 1.5 s and a
+    slower tier; registers in the frame (V8SHARP_BASELINE_NO_REGISTER_CACHE=1)
+    1.9 s; RyuJIT tier 0 first (V8SHARP_BASELINE_TIERED=1) 0.6 s but a slower
+    short run. On an idle 4-core host cold Octane runs are now within noise of
+    the interpreter (the compile threads use idle cores); on a loaded host
+    they are still slower.
+  - Functions with more than 5000 bytes of bytecode stay in the interpreter
+    (one IL method beyond RyuJIT's limits even in compact form): TypeScript's
+    and zlib's biggest functions. Splitting a function into several IL
+    methods would let them tier up.
+  - In big methods RyuJIT stops inlining (inline budget, 512 locals): what
+    the code relies on being inlined must be IL (the bytecode offset store,
+    Smi constants are; FieldAt, Map.IsUndetectable, FromNumber are calls).
   - Performance: calls still pay the interpreter frame's setup (register
     file clear, frame record, write barriers: about 20% of DeltaBlue in
     BaselineCalls.Enter and the write barrier); a leaner frame protocol
@@ -1514,10 +1521,11 @@ progress, also off by default.
     code-coverage-block-opt); super property ICs (super-ic-opt's
     const-field dependency: GetNamedPropertyFromSuper records no feedback).
   - Performance: calls not inlined cost ~60 ns (frame record, register
-    window, write barriers); deopt exits are most of the IL of big functions,
-    and RyuJIT compiles big methods without optimization (MinOpts) and only
-    tiers them up late, so the tiering manager does not optimize graphs over
-    500 nodes (V8SHARP_MAGLEV_MAX_NODES). No escape analysis, LICM, loop peeling or CSE of loads.
+    window, write barriers). Deopt exits are a third of the IL (0.55 of the
+    body's in PdfJS after literals, shared spill code and DeoptN). Values
+    share IL locals by live range, so RyuJIT optimizes and inlines big
+    graphs; the tiering limits are 2000 nodes and 36000 bytes of IL. No
+    escape analysis, LICM, loop peeling or CSE of loads.
   - Conformance under forced optimization (`--maglev
     --invocation-count-for-maglev=4 --optimize-on-next-call-optimizes-to-maglev`,
     2026-10-02, after concurrent compilation): test262 0 newly failing
@@ -1566,6 +1574,64 @@ progress, also off by default.
     (V8Sharp's interpreter is 42% of V8's on this run).
   - The tier stays off by default until it is conformance-clean under
     forced optimization and a net win on Octane.
+- Phase 2 measurements (2026-10-03; V8Sharp.Bench `compare`, octane-steady
+  (thread CPU after a warm pass), 3 interleaved runs, parity publishes,
+  bench-session.sh under the lock; host load 1.1-1.8, steal 0%, cpu-cal
+  1855/1710 ms, mem-bw 30.8/31.1 GB/s before/after). "base" is 3f13618b
+  (with the Bench scoring fix), "final" this branch (5c8f2e12 + the
+  tier-up delay); sparkplug = `--sparkplug --no-maglev`, maglev =
+  `--sparkplug --maglev`:
+
+  | benchmark | base jitless | base sparkplug | base maglev | final jitless | final sparkplug | final maglev | v8:sparkplug | v8:maglev |
+  |---|---|---|---|---|---|---|---|---|
+  | Richards | 376 | 455 | 1083 | 388 | 468 | 942 | 860 | 10129 |
+  | DeltaBlue | 326 | 396 | 1105 | 330 | 396 | 1096 | 943 | 10104 |
+  | Crypto | 53.6 | 53.8 | 114 | 51.9 | 56.3 | 111 | 130 | 1719 |
+  | RayTrace | 188 | 234 | 183 | 188 | 236 | 270 | 545 | 4749 |
+  | EarleyBoyer | 76.1 | 90.0 | 114 | 75.9 | 88.5 | 135 | 246 | 1200 |
+  | RegExp | 199 | 264 | 272 | 206 | 273 | 284 | 868 | 1422 |
+  | Splay | 3073 | 3606 | 3737 | 3066 | 3461 | 4473 | 4733 | 16413 |
+  | NavierStokes | 251 | 323 | 1086 | 242 | 335 | 1056 | 257 | 2763 |
+  | PdfJS | 688 | 812 | 908 | 695 | 846 | 979 | 2471 | 7983 |
+  | Mandreel | 65.6 | 57.2 | 266 | 66.4 | 69.5 | 438 | 199 | 4379 |
+  | Gameboy | 312 | 372 | 838 | 315 | 372 | 1012 | 988 | 7530 |
+  | CodeLoad | 3081 | 2710 | 2689 | 3300 | 3034 | 2699 | 4173 | 3676 |
+  | Box2D | 534 | 544 | 573 | 537 | 550 | 1254 | 1076 | 15901 |
+  | zlib | 15.3 | 15.5 | 16.0 | 15.2 | 16.3 | 25.3 | 1817 | 1826 |
+  | Typescript | 238 | 261 | 229 | 248 | 249 | 249 | 901 | 2519 |
+  | geomean (with latencies) | 573 | 650 | 1011 | 590 | 650 | 1153 | 1428 | 6238 |
+
+  Final: the baseline tier beats the interpreter on every benchmark but
+  CodeLoad (-8%) and Typescript (equal); Maglev beats the baseline tier on
+  every benchmark but CodeLoad (-11%) and Typescript (equal). CodeLoad
+  compiles fresh code all the time: the compile threads' work slows the
+  main thread (thread CPU, R2R build; under full JIT, where the runtime's
+  own tiering thread is busy too, the tiers are even). Cold (octane, wall-clock
+  scores, same builds, 3 runs, 13:37-15:07Z, load 1.7-3.0, steal 0%):
+
+  | benchmark | base jitless | base sparkplug | base maglev | final jitless | final sparkplug | final maglev | v8:sparkplug | v8:maglev |
+  |---|---|---|---|---|---|---|---|---|
+  | Richards | 676 | 808 | 2076 | 677 | 863 | 1578 | 1775 | 23870 |
+  | DeltaBlue | 558 | 708 | 2217 | 582 | 675 | 2462 | 1783 | 34159 |
+  | Crypto | 605 | 658 | 1338 | 625 | 691 | 1380 | 1648 | 21397 |
+  | RayTrace | 1267 | 1682 | 1210 | 1305 | 1587 | 1821 | 4087 | 39552 |
+  | EarleyBoyer | 2150 | 2450 | 2910 | 2081 | 2481 | 3282 | 7468 | 30863 |
+  | RegExp | 891 | 1179 | 1144 | 905 | 1150 | 1232 | 4023 | 6007 |
+  | Splay | 2120 | 2342 | 2508 | 2121 | 2626 | 3414 | 3820 | 7414 |
+  | NavierStokes | 1676 | 2340 | 7452 | 1738 | 2475 | 7400 | 1771 | 20954 |
+  | PdfJS | 2290 | 2480 | 2382 | 2304 | 2461 | 2966 | 8981 | 31029 |
+  | Mandreel | 428 | 365 | 1307 | 429 | 453 | 2348 | 1251 | 25813 |
+  | Gameboy | 3054 | 3298 | 3546 | 2872 | 3461 | 5233 | 8667 | 67388 |
+  | CodeLoad | 9642 | 8627 | 9043 | 9679 | 8902 | 8958 | 17603 | 17357 |
+  | Box2D | 2063 | 2031 | 1950 | 2032 | 2058 | 2207 | 4636 | 71094 |
+  | zlib | 689 | 698 | 702 | 679 | 732 | 1127 | 72865 | 73992 |
+  | Typescript | 5782 | 5930 | 5494 | 5641 | 5571 | 5937 | 20941 | 54448 |
+  | geomean (with latencies) | 1608 | 1772 | 2458 | 1614 | 1832 | 2896 | 5211 | 25983 |
+
+  Cold, the final baseline tier is ahead of the interpreter on every
+  benchmark but CodeLoad (-8%) and Typescript (-1%), and Maglev is
+  ahead of the baseline tier everywhere but CodeLoad (+1%, equal).
+
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays
 - [ ] Benchmarks: test/js-perf-test, JetStream-like, against the oracle
 
