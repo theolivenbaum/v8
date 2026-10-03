@@ -100,8 +100,8 @@ public sealed class CompilerHeap(Isolate isolate, Script script) : IBytecodeGene
         // eagerly; V8Sharp always creates it (the SFI stays "not compiled" until
         // its bytecode is installed).
         JSString inferredName = lit.raw_inferred_name() is { } rawInferredName
-            ? InternalizedName(isolate, rawInferredName)
-            : isolate.Factory.InternalizeString("");
+            ? InferredName(isolate, rawInferredName)
+            : ReadOnlyRoots.empty_string;
         // CreateAndSetUncompiledData: with the preparse data of a skipped
         // function, so its lazy compile can skip its inner functions too.
         shared.FunctionData = new UncompiledData(inferredName, lit.start_position(), lit.end_position(),
@@ -227,6 +227,25 @@ public sealed class CompilerHeap(Isolate isolate, Script script) : IBytecodeGene
             : isolate.Factory.InternalizeString(name.ToFlatString());
         name.string_ = result;
         return result;
+    }
+
+    /// <summary>
+    /// FunctionLiteral::GetInferredName (AstConsString::GetString): a
+    /// one-segment name is its raw string, internalized once; a longer one
+    /// (`a.b.c` for `a.b.c = function () {}`) is a new string that is not
+    /// internalized (V8: a chain of ConsStrings, flattened when used; here one
+    /// flat string, AstConsString::AllocateFlat).
+    /// </summary>
+    static JSString InferredName(Isolate isolate, AstConsString name)
+    {
+        if (name.string_ is JSString cached) return cached;
+        IReadOnlyList<AstRawString> segments = name.ToRawStrings();
+        return segments.Count switch
+        {
+            0 => ReadOnlyRoots.empty_string,
+            1 => segments[0].string_ as JSString ?? InternalizeRawString(isolate, segments[0]),
+            _ => isolate.Factory.NewStringFromUtf16(name.ToFlatString()),
+        };
     }
 
     public object ConsString(object consString) => consString switch

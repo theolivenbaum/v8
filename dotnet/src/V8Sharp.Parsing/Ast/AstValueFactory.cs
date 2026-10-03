@@ -168,9 +168,16 @@ public sealed class AstConsString
     {
         if (_segments.Count == 0) return string.Empty;
         if (_segments.Count == 1) return _segments[0].Value;
-        var sb = new System.Text.StringBuilder();
-        foreach (var s in _segments) sb.Append(s.Value);
-        return sb.ToString();
+        int length = 0;
+        foreach (var s in _segments) length += s.Value.Length;
+        return string.Create(length, _segments, static (span, segments) =>
+        {
+            foreach (var s in segments)
+            {
+                s.Value.AsSpan().CopyTo(span);
+                span = span[s.Value.Length..];
+            }
+        });
     }
 
     public override string ToString() => ToFlatString();
