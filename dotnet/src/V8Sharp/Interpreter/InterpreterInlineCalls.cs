@@ -529,24 +529,46 @@ internal static class InterpreterInlineCalls
         return result;
     }
 
+    /// <summary>The result of <see cref="ReturnInline"/>: the frame was not entered inline.</summary>
+    public const int kReturnNotInline = 0;
+    /// <summary>Returned to the caller; the result is the returned value (the loop's accumulator as it is).</summary>
+    public const int kReturnedAccumulator = 1;
+    /// <summary>Returned from a construct frame; the result (the receiver) is in st.Accumulator.</summary>
+    public const int kReturnedReceiver = 2;
+
     /// <summary>
-    /// The Return bytecode in a frame this loop entered inline: <see cref="Return"/>
-    /// with the result in st.Accumulator, true. False, with nothing done, for
-    /// the frame the loop was entered for.
+    /// The Return bytecode in a frame this loop entered inline: pops it like
+    /// <see cref="Return"/>, but leaves the returned value to the
+    /// loop's accumulator unless a construct frame replaces it with its
+    /// receiver (then in st.Accumulator); the context store comes last, so no
+    /// value lives across its write barrier. Returns one of the kReturn* codes.
     /// </summary>
-    public static bool TryReturnInline(Isolate isolate, ref InterpreterState st, JSValue result)
+    public static int ReturnInline(Isolate isolate, ref InterpreterState st, JSValue result)
     {
-        InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
-        ref InterpreterFrameRecord frame = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(frames), st.FrameIndex);
+        int index = st.FrameIndex;
+        ref InterpreterFrameRecord frame = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.InterpreterFrames), index);
         InterpreterFrameFlags flags = frame.Flags;
-        if ((flags & InterpreterFrameFlags.InlineCall) == 0) return false;
+        if ((flags & InterpreterFrameFlags.InlineCall) == 0) return kReturnNotInline;
+        int code = kReturnedAccumulator;
         if ((flags & InterpreterFrameFlags.Constructor) != 0 && !result.IsJSReceiver)
         {
-            result = isolate.RegisterStack[frame.Fp + InterpreterRuntime.kReceiverOffset];
+            st.Accumulator = isolate.RegisterStack[frame.Fp + InterpreterRuntime.kReceiverOffset];
+            code = kReturnedReceiver;
         }
-        PopFrame(isolate, ref st, frames, ref frame);
-        st.Accumulator = result;
-        return true;
+        // PopFrame, with the record left as it is and the slots kept below
+        // RegisterStackDirtyEnd for the next call at this depth.
+        isolate.InterpreterFrameDepth = index;
+        int top = isolate.RegisterStackTop;
+        if (top > isolate.RegisterStackDirtyEnd) isolate.RegisterStackDirtyEnd = top;
+        isolate.RegisterStackTop = frame.RegisterStart;
+        ref InterpreterFrameRecord caller = ref Unsafe.Subtract(ref frame, 1);
+        int fp = caller.Fp;
+        st.Pc = caller.ReturnPc;
+        st.Fp = fp;
+        st.FrameIndex = index - 1;
+        Context context = InterpreterRuntime.FrameContext(ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), fp));
+        if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
+        return code;
     }
 
     /// <summary>

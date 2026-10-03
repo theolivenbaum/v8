@@ -58,9 +58,10 @@ public static partial class InterpreterExecution
         // frames by updating {st} and reloading the locals here.
         goto start;
     reload:
+        acc = st.Accumulator;
+    reloadFrame:
         fpSlot = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(st.Isolate.RegisterStack), st.Fp);
         ip = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(InterpreterRuntime.FrameBytecode(ref fpSlot).Bytecodes), st.Pc);
-        acc = st.Accumulator;
     start:
 
         while (true)
@@ -640,10 +641,14 @@ public static partial class InterpreterExecution
                         st.Done = true;
                         st.Accumulator = acc;
                     }
-                    else if (InterpreterInlineCalls.TryReturnInline(st.Isolate, ref st, acc))
+                    else
                     {
-                        // Returned to a caller running in this loop (InterpreterInlineCalls).
-                        goto reload;
+                        // Returned to a caller running in this loop (InterpreterInlineCalls):
+                        // the accumulator is the result, unless a construct frame
+                        // returned its receiver instead.
+                        int returned = InterpreterInlineCalls.ReturnInline(st.Isolate, ref st, acc);
+                        if (returned == InterpreterInlineCalls.kReturnedAccumulator) goto reloadFrame;
+                        if (returned != InterpreterInlineCalls.kReturnNotInline) goto reload;
                     }
                     return acc;
                 }
