@@ -2584,10 +2584,9 @@ internal sealed class MaglevCodeGenerator
         }
         StoreSlot(InterpreterRuntime.kReceiverOffset, 4);
         for (int i = 0; i < formal; i++) StoreSlot(InterpreterRuntime.kFirstArgumentOffset - i, 5 + i);
-        // A call's new.target is undefined.
+        // saved = InitializeFastFrame(isolate, ref fpRef, fp, function, vector, bytecode, argc, newTargetRegister)
+        // (a construct's argc has the sign bit set; new.target is undefined for a call)
         Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
-        if (incoming.IsValid) StoreSlot(incoming.Index, -1);
-        // saved = InitializeFastFrame(isolate, ref fpRef, fp, function, vector, bytecode, argc)
         il.Emit(OpCodes.Ldarg_1);
         il.Emit(OpCodes.Ldloc, fpRef);
         il.Emit(OpCodes.Ldloc, fp);
@@ -2595,6 +2594,7 @@ internal sealed class MaglevCodeGenerator
         EmitConstant(il, _info.Toplevel.Feedback, typeof(FeedbackVector));
         EmitConstant(il, bytecode, typeof(BytecodeArray));
         il.Emit(OpCodes.Ldarg_3);
+        il.Emit(OpCodes.Ldc_I4, incoming.IsValid ? incoming.Index : int.MinValue);
         il.Emit(OpCodes.Call, s_initializeFastFrame);
         il.Emit(OpCodes.Stloc, saved);
         // The InterpreterState of the frame (a deopt continues it).
@@ -2703,7 +2703,7 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Br, done);
         // The slow path: the arguments in the caller's registers (or as values).
         _il.MarkLabel(slow);
-        if (info.ArgsFirst.IsValid)
+        if (info.ArgsFirst.IsValid && info.Argc >= s_callValues.Length)
         {
             for (int i = 0; i < info.Argc; i++)
             {

@@ -18,6 +18,9 @@ namespace V8Sharp
         /// <summary>The values a deopt exit hands the Deoptimizer (the optimized frame's translation values).</summary>
         public JSValue[] MaglevDeoptScratch = new JSValue[64];
 
+        /// <summary>The new.target of a construct entering Maglev code's direct entry (MaglevCalls.ConstructWithReceiver).</summary>
+        public JSValue MaglevNewTarget;
+
         /// <summary>Set by the Deoptimizer: the Maglev code returned to continue in the interpreter.</summary>
         public bool MaglevDeoptPending;
 

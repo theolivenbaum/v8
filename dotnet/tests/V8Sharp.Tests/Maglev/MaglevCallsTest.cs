@@ -73,6 +73,20 @@ public class MaglevCallsTest
           return out.join();
         })()
         """,
+        // Constructs entering the constructor's direct entry: new.target,
+        // arguments, an object result, the Class.create pattern.
+        """
+        (function() {
+          var Class = { create: function() { return function() { this.initialize.apply(this, arguments); }; } };
+          var P = Class.create();
+          P.prototype = { initialize: function(x, y) { this.x = x; this.y = y; this.nt = typeof new.target; } };
+          function Q(a, b) { this.s = arguments.length + ':' + (new.target === Q) + ':' + a; if (b === 'obj') return { o: 1 }; }
+          function make(k) { var p = new P(k, k + 1), q = new Q(k), r = new Q(k, 'obj'); return [p.x + p.y, p.nt, q.s, r.o, r.s].join('/'); }
+          var out = [];
+          for (var k = 0; k < 40; k++) out.push(make(k));
+          return out.join();
+        })()
+        """,
         // function.arguments of a frame entered through a direct call.
         """
         (function() {

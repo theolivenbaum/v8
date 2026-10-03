@@ -33,7 +33,7 @@ public static class MaglevCalls
                     {
                         receiver = InterpreterCalls.ConvertReceiver(isolate, function, receiver);
                     }
-                    if (argc <= code.FastCallArity) return InvokeFastCall(isolate, code, function, receiver, argsStart, argc);
+                    if (argc <= code.FastCallArity) return InvokeFastCall(isolate, code, function, receiver, argsStart, argc, argc);
                     return EnterFrame(isolate, function, code, vector, receiver, argsStart, argc, JSValue.Undefined, false);
                 }
             }
@@ -51,20 +51,21 @@ public static class MaglevCalls
     }
 
     /// <summary>A call from a register list through the callee's direct entry (MaglevCode.FastCall).</summary>
-    static JSValue InvokeFastCall(Isolate isolate, MaglevCode code, JSFunction function, JSValue receiver, int argsStart, int argc)
+    static JSValue InvokeFastCall(Isolate isolate, MaglevCode code, JSFunction function, JSValue receiver, int argsStart, int argc,
+        int passedArgc)
     {
         JSValue[] stack = isolate.RegisterStack;
         JSValue A(int i) => i < argc ? stack[argsStart + i] : default;
         Delegate fast = code.FastCall!;
         return code.FastCallArity switch
         {
-            0 => Unsafe.As<MaglevFastCall0>(fast)(isolate, function, argc, receiver),
-            1 => Unsafe.As<MaglevFastCall1>(fast)(isolate, function, argc, receiver, A(0)),
-            2 => Unsafe.As<MaglevFastCall2>(fast)(isolate, function, argc, receiver, A(0), A(1)),
-            3 => Unsafe.As<MaglevFastCall3>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2)),
-            4 => Unsafe.As<MaglevFastCall4>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2), A(3)),
-            5 => Unsafe.As<MaglevFastCall5>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2), A(3), A(4)),
-            _ => Unsafe.As<MaglevFastCall6>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2), A(3), A(4), A(5)),
+            0 => Unsafe.As<MaglevFastCall0>(fast)(isolate, function, passedArgc, receiver),
+            1 => Unsafe.As<MaglevFastCall1>(fast)(isolate, function, passedArgc, receiver, A(0)),
+            2 => Unsafe.As<MaglevFastCall2>(fast)(isolate, function, passedArgc, receiver, A(0), A(1)),
+            3 => Unsafe.As<MaglevFastCall3>(fast)(isolate, function, passedArgc, receiver, A(0), A(1), A(2)),
+            4 => Unsafe.As<MaglevFastCall4>(fast)(isolate, function, passedArgc, receiver, A(0), A(1), A(2), A(3)),
+            5 => Unsafe.As<MaglevFastCall5>(fast)(isolate, function, passedArgc, receiver, A(0), A(1), A(2), A(3), A(4)),
+            _ => Unsafe.As<MaglevFastCall6>(fast)(isolate, function, passedArgc, receiver, A(0), A(1), A(2), A(3), A(4), A(5)),
         };
     }
 
@@ -90,9 +91,24 @@ public static class MaglevCalls
     {
         var function = Unsafe.As<JSFunction>(target._obj!);
         int stubStart = isolate.AllocateRegisters(InterpreterCalls.kConstructStubFrameSlots);
-        JSValue result = function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: { } code } vector
-            ? EnterFrame(isolate, function, code, vector, receiver, argsStart, argc, newTarget, true)
-            : InterpreterExecution.InvokeFromRegisters(isolate, function, receiver, argsStart, argc, newTarget, true);
+        JSValue result;
+        if (function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: { } code } vector)
+        {
+            if (argc <= code.FastCallArity)
+            {
+                // The direct entry (argc's sign bit: a construct, new.target in the isolate).
+                isolate.MaglevNewTarget = newTarget;
+                result = InvokeFastCall(isolate, code, function, receiver, argsStart, argc, argc | int.MinValue);
+            }
+            else
+            {
+                result = EnterFrame(isolate, function, code, vector, receiver, argsStart, argc, newTarget, true);
+            }
+        }
+        else
+        {
+            result = InterpreterExecution.InvokeFromRegisters(isolate, function, receiver, argsStart, argc, newTarget, true);
+        }
         isolate.RegisterStackTop = stubStart;
         return result.IsJSReceiver ? result : receiver;
     }
@@ -145,8 +161,22 @@ public static class MaglevCalls
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Context? InitializeFastFrame(Isolate isolate, ref JSValue fpRef, int fp, JSFunction function, FeedbackVector vector,
-        BytecodeArray bytecode, int argc)
+        BytecodeArray bytecode, int argc, int newTargetRegister)
     {
+        // A construct (ConstructWithReceiver) sets argc's sign bit and passes
+        // new.target in the isolate; a call's new.target is undefined.
+        InterpreterFrameFlags flags = InterpreterFrameFlags.Maglev;
+        if (argc < 0)
+        {
+            argc &= int.MaxValue;
+            flags |= InterpreterFrameFlags.Constructor;
+            if (newTargetRegister != int.MinValue) Unsafe.Add(ref fpRef, newTargetRegister) = isolate.MaglevNewTarget;
+            isolate.MaglevNewTarget = default;
+        }
+        else if (newTargetRegister != int.MinValue)
+        {
+            Unsafe.Add(ref fpRef, newTargetRegister) = default;
+        }
         Context context = function.Context;
         Context? saved = isolate.Context;
         if (!ReferenceEquals(saved, context)) isolate.Context = context;
@@ -156,7 +186,7 @@ public static class MaglevCalls
         InterpreterRuntime.InitializeFrameSlots(ref fpRef, bytecode, argc);
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
         frame.Fp = fp;
-        frame.Flags = InterpreterFrameFlags.Maglev;
+        frame.Flags = flags;
         frame.ReturnPc = 0;
         frame.RegisterStart = 0;
         return saved;
