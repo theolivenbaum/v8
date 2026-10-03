@@ -105,6 +105,8 @@ public sealed partial class BaselineCompiler
     LocalBuilder? _tObj, _tVal, _tInt, _tInt2, _tDouble, _tLoadHandler, _tStoreHandler, _tCell, _tFeedbackCell, _tValues, _tDoubles;
 
     LocalBuilder TObj => _tObj ??= _il.DeclareLocal(typeof(HeapObject));
+    LocalBuilder? _tValueRef;
+    LocalBuilder TValueRef => _tValueRef ??= _il.DeclareLocal(typeof(JSValue).MakeByRefType());
     LocalBuilder TVal => _tVal ??= _il.DeclareLocal(typeof(JSValue));
     LocalBuilder TInt => _tInt ??= _il.DeclareLocal(typeof(int));
     LocalBuilder TInt2 => _tInt2 ??= _il.DeclareLocal(typeof(int));
@@ -1066,6 +1068,19 @@ public sealed partial class BaselineCompiler
         int slot = FeedbackSlot(2);
         NamedLoadPaths paths = GetNamedPropertySite(slot);
         EmitMonomorphicMapCheck(receiver, slot, slow);
+        if (CompileTimeOwnField(slot) is int fieldIndex)
+        {
+            // The own field the feedback named when the function was compiled:
+            // the handler half of the pair carries its index (FeedbackNexus.EncodeHandler),
+            // so a hit is the payload compare and a load at a fixed offset.
+            EmitHandlerPayloadCheck(slot, fieldIndex + 1, slow);
+            EmitFieldAddress(fieldIndex);
+            Emit(OpCodes.Ldobj, typeof(JSValue));
+            SetAcc();
+            Emit(OpCodes.Br, done);
+            EmitGetNamedPropertySlow(slow, done, receiver, slot);
+            return;
+        }
         FeedbackSlotObj(slot + 1);
         Emit(OpCodes.Isinst, typeof(LoadHandler));
         Emit(OpCodes.Stloc, TLoadHandler);
@@ -1119,6 +1134,11 @@ public sealed partial class BaselineCompiler
             Emit(OpCodes.Br, done);
         }
 
+        EmitGetNamedPropertySlow(slow, done, receiver, slot);
+    }
+
+    void EmitGetNamedPropertySlow(Label slow, Label done, Register receiver, int slot)
+    {
         _il.MarkLabel(slow);
         Isolate();
         Fv();
@@ -1130,6 +1150,78 @@ public sealed partial class BaselineCompiler
         _il.MarkLabel(done);
     }
 
+    /// <summary>
+    /// The own field index of a monomorphic load whose handler was an own
+    /// field when the function was compiled, when the field can be addressed
+    /// at a fixed offset (in-object slots laid out contiguously, or the property array).
+    /// </summary>
+    int? CompileTimeOwnField(int slot)
+    {
+        if (_compact || FeedbackUnknown) return null;
+        if (CompileTimeFeedback(slot) is not Map || CompileTimeFeedback(slot + 1) is not LoadHandler { OwnFieldIndex: >= 0 } handler) return null;
+        int index = handler.OwnFieldIndex;
+        return index >= JSObject.kPropertyArrayStorageBase || InObjectLayout.IsContiguous ? index : null;
+    }
+
+    /// <summary>
+    /// The store counterpart: the encoded field store (StoreIC.EncodeFieldStore)
+    /// of a monomorphic store whose handler was a field store at compile time.
+    /// </summary>
+    long CompileTimeEncodedFieldStore(int slot)
+    {
+        if (_compact || FeedbackUnknown) return 0;
+        if (CompileTimeFeedback(slot) is not Map || CompileTimeFeedback(slot + 1) is not StoreHandler handler) return 0;
+        long encoded = StoreIC.EncodeFieldStore(handler);
+        int index = (int)encoded - 1;
+        return encoded != 0 && (index >= JSObject.kPropertyArrayStorageBase || InObjectLayout.IsContiguous) ? encoded : 0;
+    }
+
+    /// <summary>
+    /// Branches to <paramref name="miss"/> unless the payload of feedback slot
+    /// <paramref name="handlerSlot"/>'s handler (after the map check of its pair) is <paramref name="payload"/>.
+    /// </summary>
+    void EmitHandlerPayloadCheck(int handlerSlot, long payload, Label miss)
+    {
+        _masm.LoadFeedbackSlotAddress(handlerSlot + 1);
+        Emit(OpCodes.Ldflda, s_bits);
+        if (payload == (int)payload)
+        {
+            Emit(OpCodes.Ldind_I4);
+            Emit(OpCodes.Ldc_I4, (int)payload);
+        }
+        else
+        {
+            Emit(OpCodes.Ldind_I8);
+            Emit(OpCodes.Ldc_I8, payload);
+        }
+        Emit(OpCodes.Bne_Un, miss);
+    }
+
+    static readonly FieldInfo s_inObjectSlots0 = typeof(JSObjectInObject1).GetField(nameof(JSObjectInObject1._slots0), kAnyInstance)!;
+    static readonly FieldInfo s_propertyArray = typeof(JSObject).GetField(nameof(JSObject._fields), kAnyInstance)!;
+
+    /// <summary>
+    /// Pushes the address of field <paramref name="index"/> of the JSObject in
+    /// TObj (JSObject.FieldAt at a known index: the map check established the layout).
+    /// </summary>
+    void EmitFieldAddress(int index)
+    {
+        Emit(OpCodes.Ldloc, TObj);
+        if (index >= JSObject.kPropertyArrayStorageBase)
+        {
+            Emit(OpCodes.Ldfld, s_propertyArray);
+            Emit(OpCodes.Ldc_I4, index - JSObject.kPropertyArrayStorageBase);
+            Emit(OpCodes.Ldelema, typeof(JSValue));
+            return;
+        }
+        Emit(OpCodes.Ldflda, s_inObjectSlots0);
+        if (index != 0)
+        {
+            Emit(OpCodes.Ldc_I4, index * System.Runtime.CompilerServices.Unsafe.SizeOf<JSValue>());
+            Emit(OpCodes.Add);
+        }
+    }
+
     /// <summary>SetNamedProperty: StoreIC's monomorphic hits (a field store or a field-adding transition).</summary>
     void VisitSetNamedProperty()
     {
@@ -1137,6 +1229,65 @@ public sealed partial class BaselineCompiler
         Register receiver = RegisterOperand(0);
         int slot = FeedbackSlot(2);
         EmitMonomorphicMapCheck(receiver, slot, slow);
+        if (CompileTimeEncodedFieldStore(slot) is var encoded && encoded != 0)
+        {
+            // The field store the feedback named at compile time (StoreIC.TryStoreEncodedField
+            // with the representation known): the payload compare, the value's
+            // representation check, and the store at a fixed offset.
+            EmitHandlerPayloadCheck(slot, encoded, slow);
+            switch ((Representation.Kind)(encoded >> 32))
+            {
+                case Representation.Kind.Smi:
+                    AccObj();
+                    Emit(OpCodes.Ldsfld, s_numberTag);
+                    Emit(OpCodes.Bne_Un, slow);
+                    AccNum();
+                    Emit(OpCodes.Call, s_isSmiNumber);
+                    Emit(OpCodes.Brfalse, slow);
+                    break;
+                case Representation.Kind.Double:
+                    // A number other than NaN (the general store canonicalizes NaN).
+                    AccObj();
+                    Emit(OpCodes.Ldsfld, s_numberTag);
+                    Emit(OpCodes.Bne_Un, slow);
+                    AccNum();
+                    AccNum();
+                    Emit(OpCodes.Bne_Un, slow);
+                    break;
+                case Representation.Kind.HeapObject:
+                    AccObj();
+                    Emit(OpCodes.Ldsfld, s_numberTag);
+                    Emit(OpCodes.Beq, slow);
+                    break;
+            }
+            EmitFieldAddress((int)encoded - 1);
+            Emit(OpCodes.Stloc, TValueRef);
+            // JSValue.StoreSlot: the reference half only when it changes.
+            Label skipReference = _il.DefineLabel();
+            Emit(OpCodes.Ldloc, TValueRef);
+            Emit(OpCodes.Ldfld, s_obj);
+            AccObj();
+            Emit(OpCodes.Beq, skipReference);
+            Emit(OpCodes.Ldloc, TValueRef);
+            AccObj();
+            Emit(OpCodes.Stfld, s_obj);
+            _il.MarkLabel(skipReference);
+            Emit(OpCodes.Ldloc, TValueRef);
+            Emit(OpCodes.Ldloca, _masm.Acc);
+            Emit(OpCodes.Ldfld, s_bits);
+            Emit(OpCodes.Stfld, s_bits);
+            Emit(OpCodes.Br, done);
+            _il.MarkLabel(slow);
+            Isolate();
+            Fv();
+            I(slot);
+            Reg(receiver);
+            Const(ConstantPoolIndex(1));
+            Acc();
+            CallBuiltin("SetNamedPropertySlow");
+            _il.MarkLabel(done);
+            return;
+        }
         FeedbackSlotObj(slot + 1);
         Emit(OpCodes.Isinst, typeof(StoreHandler));
         Emit(OpCodes.Stloc, TStoreHandler);
