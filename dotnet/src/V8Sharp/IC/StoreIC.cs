@@ -1084,7 +1084,18 @@ public sealed class KeyedStoreIC : IC
             }
         }
 
-        JSValue result = RuntimeStore(obj, key, value);
+        JSValue result;
+        try
+        {
+            result = RuntimeStore(obj, key, value);
+        }
+        catch (JavaScriptException)
+        {
+            // set_slow_stub_reason("failed to set property"): V8's failed store
+            // continues with use_ic false, so the vector still goes megamorphic.
+            if (VectorNeedsUpdate) ConfigureVectorStateMegamorphic(key);
+            throw;
+        }
         if (useIc)
         {
             if (oldReceiverMap is not null)

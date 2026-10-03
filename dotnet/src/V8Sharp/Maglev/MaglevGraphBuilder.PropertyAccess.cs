@@ -24,7 +24,7 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>A PropertyAccessInfo for one receiver map.</summary>
     sealed class PropertyAccessInfo
     {
-        public enum Kind { DataField, DataConstant, NotFound, ArrayLength, StringLength, FieldStore, ConstFieldStore, TransitionStore }
+        public enum Kind { DataField, DataConstant, NotFound, ArrayLength, StringLength, TypedArrayLength, FieldStore, ConstFieldStore, TransitionStore }
         public Kind AccessKind;
         public Map Map = null!;
         public int StorageIndex = -1;
@@ -37,17 +37,75 @@ public sealed partial class MaglevGraphBuilder
         public Map? TransitionMap;
     }
 
-    /// <summary>The (map, handler) pairs of a property IC (FeedbackNexus::ExtractMapsAndHandlers), without deprecated maps.</summary>
-    List<(Map Map, JSValue Handler)>? MapsAndHandlers(int slot)
+    /// <summary>
+    /// The (map, handler) pairs of a property IC (FeedbackNexus::ExtractMapsAndHandlers),
+    /// without deprecated maps. As JSHeapBroker::ReadFeedbackForPropertyAccess,
+    /// a deprecated map whose updated map is not a migration target sets
+    /// <see cref="_hasDeprecatedMapWithoutMigrationTarget"/>: the map checks of
+    /// the access then migrate such an object before they deoptimize
+    /// (CheckMapsWithMigrationAndDeopt), so the interpreter's IC learns the
+    /// updated map.
+    /// </summary>
+    /// <remarks>
+    /// As V8, a deprecated map is replaced by its updated map (Map::TryUpdate).
+    /// Deviation: V8 computes the access from the updated map; V8Sharp's
+    /// accesses come from the IC handlers, which belong to the deprecated map,
+    /// so the updated map keeps the handler only for a named load whose handler
+    /// applies to it unchanged (<see cref="LoadHandlerAppliesToUpdatedMap"/>);
+    /// otherwise the map is dropped.
+    /// </remarks>
+    List<(Map Map, JSValue Handler)>? MapsAndHandlers(int slot, Name? loadName = null)
     {
         var nexus = new FeedbackNexus(Isolate, _unit.Feedback, slot);
         InlineCacheState state = nexus.IcState();
         if (state is not (InlineCacheState.MONOMORPHIC or InlineCacheState.POLYMORPHIC)) return null;
-        var result = new List<(Map, JSValue)>();
+        var result = new List<(Map Map, JSValue Handler)>();
         nexus.ExtractMapsAndHandlers(result);
-        result.RemoveAll(static e => e.Item1.IsDeprecated);
+        for (int i = 0; i < result.Count; i++)
+        {
+            (Map map, JSValue handler) = result[i];
+            if (!map.IsDeprecated) continue;
+            Map? updated = Map.TryUpdate(Isolate, map);
+            if (updated is null) continue;
+            if (!updated.IsMigrationTarget) _hasDeprecatedMapWithoutMigrationTarget = true;
+            if (loadName is not null && !result.Exists(e => ReferenceEquals(e.Map, updated)) &&
+                LoadHandlerAppliesToUpdatedMap(map, updated, loadName, handler))
+            {
+                result[i] = (updated, handler);
+            }
+        }
+        result.RemoveAll(static e => e.Map.IsDeprecated);
         return result.Count == 0 ? null : result;
     }
+
+    /// <summary>
+    /// Whether the load handler of a deprecated map gives the same access for
+    /// its updated map: an own field at the same storage index, or a lookup on
+    /// the (same) prototype chain of a property the map does not have.
+    /// </summary>
+    static bool LoadHandlerAppliesToUpdatedMap(Map deprecated, Map updated, Name name, JSValue handlerValue)
+    {
+        if (handlerValue.HeapObjectOrNull is not LoadHandler h || h.LookupOnLookupStartObject) return false;
+        if (!ReferenceEquals(updated.Prototype, deprecated.Prototype) || updated.InstanceType != deprecated.InstanceType) return false;
+        InternalIndex descriptor = updated.InstanceDescriptors.Search(name, updated);
+        switch (h.HandlerKind)
+        {
+            case LoadHandler.Kind.kField when h.Holder is null:
+                return descriptor.IsFound &&
+                       updated.InstanceDescriptors.GetDetails(descriptor).Location == PropertyLocation.Field &&
+                       FieldIndex.ForDescriptor(updated, descriptor).StorageIndex == h.FieldIndex;
+            case LoadHandler.Kind.kField:
+            case LoadHandler.Kind.kConstantFromPrototype:
+            case LoadHandler.Kind.kNonExistent:
+            case LoadHandler.Kind.kAccessorFromPrototype:
+                return descriptor.IsNotFound;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>The feedback of the current access had a deprecated map without migration target.</summary>
+    bool _hasDeprecatedMapWithoutMigrationTarget;
 
     bool IsUninitializedIC(int slot) => new FeedbackNexus(Isolate, _unit.Feedback, slot).IcState() == InlineCacheState.UNINITIALIZED;
 
@@ -63,7 +121,7 @@ public sealed partial class MaglevGraphBuilder
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForGenericNamedAccess);
             return;
         }
-        if (MapsAndHandlers(slot) is { } feedback && TryBuildNamedLoad(receiver, feedback) is { } result)
+        if (MapsAndHandlers(slot, (Name)name.Object) is { } feedback && TryBuildNamedLoad(receiver, feedback) is { } result)
         {
             SetAccumulator(result);
             return;
@@ -73,7 +131,7 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>ComputePropertyAccessInfo for a load handler, or null when Maglev does not handle it.</summary>
-    static PropertyAccessInfo? LoadAccessInfo(Map map, JSValue handlerValue)
+    PropertyAccessInfo? LoadAccessInfo(Map map, JSValue handlerValue)
     {
         if (handlerValue.HeapObjectOrNull is not LoadHandler h) return null;
         if (h.LookupOnLookupStartObject) return null;
@@ -99,9 +157,41 @@ public sealed partial class MaglevGraphBuilder
             case LoadHandler.Kind.kStringLength:
                 info.AccessKind = PropertyAccessInfo.Kind.StringLength;
                 return info;
+            case LoadHandler.Kind.kAccessorFromPrototype:
+                // AccessInfoFactory::LookupSpecialFieldAccessorInHolder: the
+                // TypedArray.prototype.length getter of a (non-RAB/GSAB) typed array.
+                if (Flags.typed_array_length_loading && map.InstanceType == InstanceType.JSTypedArrayType &&
+                    !ElementsKinds.IsRabGsabTypedArrayElementsKind(map.ElementsKind) &&
+                    h.Data.HeapObjectOrNull is JSFunction { Shared.BuiltinId: Builtins.Builtin.TypedArrayPrototypeLength } &&
+                    h.Holder is not null)
+                {
+                    info.AccessKind = PropertyAccessInfo.Kind.TypedArrayLength;
+                    info.Holder = h.Holder;
+                    return info;
+                }
+                return null;
             default:
                 return null;
         }
+    }
+
+    /// <summary>
+    /// CompilationDependencies::DependOnStablePrototypeChain: the maps of the
+    /// prototypes of <paramref name="map"/> up to <paramref name="holder"/> stay
+    /// stable (false when one is not stable now).
+    /// </summary>
+    bool DependOnStablePrototypeChain(Map map, JSReceiver holder)
+    {
+        var maps = new List<Map>();
+        for (JSReceiver? prototype = map.Prototype; prototype is not null; prototype = prototype.Map.Prototype)
+        {
+            Map prototypeMap = prototype.Map;
+            if (!prototypeMap.IsStable) return false;
+            maps.Add(prototypeMap);
+            if (ReferenceEquals(prototype, holder)) break;
+        }
+        foreach (Map m in maps) _info.AddDependency(m, Objects.DependentCode.DependencyGroups.PrototypeCheck);
+        return true;
     }
 
     /// <summary>TryBuildNamedAccess for loads: map checks and the access per map (polymorphic: a map dispatch).</summary>
@@ -210,6 +300,14 @@ public sealed partial class MaglevGraphBuilder
                     Inputs = [GetTaggedValue(receiver)],
                     Type = NodeType.kSmi,
                 });
+            case PropertyAccessInfo.Kind.TypedArrayLength:
+                // TryBuildPropertyLoad's kTypedArrayLength: with the prototype
+                // chain stable (the getter cannot change without a deopt) and
+                // without detached buffers (a detached array's length is 0,
+                // which LoadTypedArrayLength also returns).
+                DependOnStablePrototypeChain(info.Map, info.Holder!);
+                _info.DependOnProtector(Protectors.IsArrayBufferDetachingIntact(Isolate), "ArrayBufferDetaching");
+                return BuildLoadTypedArrayLengthAsNumber(receiver);
             default:
                 throw new InvalidOperationException();
         }
@@ -241,6 +339,23 @@ public sealed partial class MaglevGraphBuilder
             Type = NodeType.kOtherHeapObject,
             Properties = OpProperties.kCanRead,
         });
+        // TryBuildPolymorphicPropertyAccess: when a map is a migration target,
+        // an object with a deprecated map is migrated before the dispatch
+        // (MigrateMapIfNeeded).
+        bool needsMigration = false;
+        foreach ((Map[] maps, Func<ValueNode?> _) in cases)
+        {
+            foreach (Map m in maps) needsMigration |= m.IsMigrationTarget;
+        }
+        if (needsMigration)
+        {
+            map = AddNewNode(new ValueNode(Opcode.MigrateMapIfNeeded, ValueRepresentation.kTagged)
+            {
+                Inputs = [map, receiver],
+                Type = NodeType.kOtherHeapObject,
+                Properties = OpProperties.kCanWrite | OpProperties.kCanAllocate | OpProperties.kNotIdempotent,
+            });
+        }
         KnownNodeAspects entryKnown = _frame.Known.Clone();
         BasicBlock join = _graph.NewBlock();
         var results = new List<(BasicBlock Block, ValueNode? Value, KnownNodeAspects Known)>();
@@ -685,12 +800,49 @@ public sealed partial class MaglevGraphBuilder
         return !first;
     }
 
+    /// <summary>
+    /// TryBuildElementAccessOnTypedArray: the access depends on no buffer being
+    /// detached (and, for a store, none being immutable), or checks the buffer
+    /// (CheckTypedArrayValid) when a protector is invalid.
+    /// </summary>
+    void BuildCheckTypedArrayValidOrDepend(ValueNode obj, bool write)
+    {
+        bool dependOnDetaching = _info.DependOnProtector(Protectors.IsArrayBufferDetachingIntact(Isolate), "ArrayBufferDetaching");
+        bool dependOnMutable = !write || _info.DependOnProtector(Protectors.IsArrayBufferMutableIntact(Isolate), "ArrayBufferMutable");
+        if (dependOnDetaching && dependOnMutable) return;
+        AddNewNode(new Node(Opcode.CheckTypedArrayValid)
+        {
+            Inputs = [obj],
+            Int0 = write ? 1 : 0,
+            Properties = OpProperties.kEagerDeopt,
+        }, DeoptimizeReason.kArrayBufferWasDetached);
+    }
+
     static ValueRepresentation TypedArrayElementRepresentation(ElementsKind kind) => kind switch
     {
         ElementsKind.FLOAT32_ELEMENTS or ElementsKind.FLOAT64_ELEMENTS => ValueRepresentation.kFloat64,
         ElementsKind.UINT32_ELEMENTS => ValueRepresentation.kUint32,
         _ => ValueRepresentation.kInt32,
     };
+
+    /// <summary>
+    /// BuildLoadTypedArrayLength for the length property: the whole length as a number.
+    /// </summary>
+    /// <remarks>
+    /// Deviation: V8's LoadTypedArrayLength is an IntPtr value (converted by
+    /// CheckedIntPtrToInt32, TruncateIntPtrToInt32 or IntPtrToNumber where it
+    /// is used); V8Sharp has no IntPtr representation and gives it Float64
+    /// representation, which holds any typed array length exactly and has the
+    /// same conversions (checked to int32, truncated, tagged).
+    /// </remarks>
+    ValueNode BuildLoadTypedArrayLengthAsNumber(ValueNode obj) =>
+        AddNewNode(new ValueNode(Opcode.LoadTypedArrayLength, ValueRepresentation.kFloat64)
+        {
+            Inputs = [GetTaggedValue(obj)],
+            Int0 = 1,
+            Type = NodeType.kNumber,
+            Properties = OpProperties.kCanRead,
+        });
 
     ValueNode BuildLoadTypedArrayLength(ValueNode obj) =>
         AddNewNode(new ValueNode(Opcode.LoadTypedArrayLength, ValueRepresentation.kInt32)
@@ -706,6 +858,7 @@ public sealed partial class MaglevGraphBuilder
         var maps = new Map[feedback.Count];
         for (int i = 0; i < maps.Length; i++) maps[i] = feedback[i].Map;
         BuildCheckMaps(obj, maps);
+        BuildCheckTypedArrayValidOrDepend(obj, write: false);
         ValueNode index = GetInt32ElementIndex(key);
         ValueNode length = BuildLoadTypedArrayLength(obj);
         ValueNode BuildLoad() => AddNewNode(new ValueNode(Opcode.LoadTypedArrayElement, TypedArrayElementRepresentation(kind))
@@ -748,6 +901,7 @@ public sealed partial class MaglevGraphBuilder
         var maps = new Map[feedback.Count];
         for (int i = 0; i < maps.Length; i++) maps[i] = feedback[i].Map;
         BuildCheckMaps(obj, maps);
+        BuildCheckTypedArrayValidOrDepend(obj, write: true);
         ValueNode index = GetInt32ElementIndex(key);
         // The value as the kind's number type (ToNumber of an oddball is fine: typed arrays store it).
         ValueNode stored = kind switch

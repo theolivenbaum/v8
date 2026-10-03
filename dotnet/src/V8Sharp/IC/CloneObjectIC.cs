@@ -137,7 +137,7 @@ public static class CloneObjectIC
             if (!source.IsSmi && (nexus is null || !nexus.Value.IsMegamorphic))
             {
                 bool nullProtoLiteral = (flags & kHasNullPrototype) != 0;
-                Map? sourceMap = ICMaps.MapOf(isolate, source);
+                Map? sourceMap = source.IsNullOrUndefined ? null : ICMaps.MapOf(isolate, source);
                 if (sourceMap is null)
                 {
                     // null and undefined (see the header comment): the empty object

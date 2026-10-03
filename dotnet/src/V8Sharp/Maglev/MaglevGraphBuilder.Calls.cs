@@ -373,6 +373,10 @@ public sealed partial class MaglevGraphBuilder
                 case Builtin.MathMax:
                 case Builtin.MathMin:
                     return ReduceMathMinMax(id == Builtin.MathMax, args);
+                case Builtin.ArrayPrototypePush:
+                    return TryReduceArrayPrototypePush(receiver, args);
+                case Builtin.ArrayPrototypePop:
+                    return TryReduceArrayPrototypePop(receiver);
                 case Builtin.MathPow:
                     if (args.Length < 2) return null;
                     return Float64Binary(Opcode.Float64Exponentiate, GetFloat64(args[0]), GetFloat64(args[1]));
@@ -482,16 +486,16 @@ public sealed partial class MaglevGraphBuilder
         SharedFunctionInfo shared = target.Shared;
         if (shared.FunctionData is not BytecodeArray bytecode) return "no bytecode";
         if (shared.HasBuiltinId || shared.Native) return "builtin";
+        // SharedFunctionInfo::GetInlineability: kHasOptimizationDisabled.
+        if (MaglevCompiler.OptimizationDisabled(shared)) return "optimization disabled";
         if (target.RawFeedbackCell.Value is not FeedbackVector) return "no feedback vector";
         if (!isConstruct && shared.IsClassConstructor) return "class constructor";
         if (isConstruct && Globals.IsDerivedConstructor(shared.Kind)) return "derived constructor";
-        if (Globals.IsResumableFunction(shared.Kind)) return "resumable";
         if (UnsupportedReason(shared, bytecode) is { } reason) return reason;
         if (!InlineableBytecodes(bytecode)) return "frame-reading bytecode";
         // V8Sharp: the IL backend's catch blocks are in the outermost function
         // (an exception leaves inlined frames through the interpreter's frames).
         if (bytecode.HandlerTable.Length != 0) return "exception handlers";
-        if (IsInsideTryBlock) return "inside a try block";
         int length = bytecode.Length;
         bool small = length <= Flags.max_maglev_inlined_bytecode_size_small;
         int depth = _unit.InliningDepth + 1;

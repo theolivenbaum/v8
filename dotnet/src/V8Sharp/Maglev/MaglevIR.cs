@@ -101,6 +101,7 @@ public static class NodeTypes
         if (o is Context) return NodeType.kContext;
         if (o is JSFunction) return NodeType.kJSFunction;
         if (o is JSArray) return NodeType.kJSArray;
+        if (o is JSPrimitiveWrapper { Value._obj: JSString }) return NodeType.kStringWrapper;
         if (o is JSReceiver r) return r.Map.IsCallable ? NodeType.kOtherCallable : NodeType.kOtherJSReceiver;
         return NodeType.kOtherHeapObject;
     }
@@ -155,6 +156,12 @@ public enum Opcode : ushort
     // ---- Int32 ------------------------------------------------------------------
     Int32AddWithOverflow,
     Int32SubtractWithOverflow,
+    /// <summary>Int32Add: the wrapping sum (a truncated Int32AddWithOverflow, MaglevTruncation).</summary>
+    Int32Add,
+    /// <summary>Int32Subtract: the wrapping difference (MaglevTruncation).</summary>
+    Int32Subtract,
+    /// <summary>Int32Multiply: the wrapping product (MaglevTruncation).</summary>
+    Int32Multiply,
     Int32MultiplyWithOverflow,
     Int32DivideWithOverflow,
     Int32ModulusWithOverflow,
@@ -227,6 +234,10 @@ public enum Opcode : ushort
     // ---- Loads and stores ---------------------------------------------------------------
     /// <summary>The map of a JSReceiver as a tagged value (undefined for anything else).</summary>
     LoadMap,
+    /// <summary>UnwrapStringWrapper: the string of a string or a string wrapper.</summary>
+    UnwrapStringWrapper,
+    /// <summary>MigrateMapIfNeeded: the object's map after migrating it if the map (input 0) is deprecated.</summary>
+    MigrateMapIfNeeded,
     LoadTaggedField,
     StoreTaggedField,
     /// <summary>A field-adding map transition: grows the PropertyArray if needed, stores the value, then the map.</summary>
@@ -253,6 +264,11 @@ public enum Opcode : ushort
     TransitionElementsKind,
     /// <summary>LoadTypedArrayLength: the length of a typed array (0 when detached).</summary>
     LoadTypedArrayLength,
+    /// <summary>
+    /// CheckTypedArrayValid: the typed array's buffer is not detached and, for
+    /// a write (Int0 = 1), not immutable.
+    /// </summary>
+    CheckTypedArrayValid,
     /// <summary>LoadTypedArrayElement (LoadSignedIntTypedArrayElement ...): Int0 is the elements kind.</summary>
     LoadTypedArrayElement,
     /// <summary>StoreTypedArrayElement (StoreIntTypedArrayElement ...): Int0 is the elements kind; Int1 ignores out of bounds.</summary>
@@ -262,6 +278,17 @@ public enum Opcode : ushort
     /// <summary>V8Sharp: EnsureWritableFastElements + MaybeGrowFastElements for an append store.</summary>
     MaybeGrowFastElements,
     UpdateJSArrayLength,
+    /// <summary>
+    /// V8Sharp: BuildLoadTaggedField of a JSGeneratorObject field (V8 loads by
+    /// offset): Int0 is the field (GeneratorField).
+    /// </summary>
+    LoadGeneratorField,
+    /// <summary>V8Sharp: BuildStoreTaggedFieldNoWriteBarrier of the generator's continuation (Int32 input).</summary>
+    StoreGeneratorContinuation,
+    /// <summary>GeneratorStore: the parameters and registers, the context, the suspend id and the bytecode offset.</summary>
+    GeneratorStore,
+    /// <summary>GeneratorRestoreRegister: element Int0 of the generator's register file (then cleared).</summary>
+    GeneratorRestoreRegister,
 
     // ---- Operations ------------------------------------------------------------------------
     TaggedEqual,
@@ -315,6 +342,17 @@ public enum CompareOperation : byte
     kLessThanOrEqual,
     kGreaterThan,
     kGreaterThanOrEqual,
+}
+
+/// <summary>The JSGeneratorObject fields LoadGeneratorField reads.</summary>
+public enum GeneratorField : byte
+{
+    /// <summary>context_ (tagged).</summary>
+    kContext,
+    /// <summary>input_or_debug_pos_ (tagged).</summary>
+    kInputOrDebugPos,
+    /// <summary>continuation_ (Int32).</summary>
+    kContinuation,
 }
 
 /// <summary>The roots RootConstant can name.</summary>

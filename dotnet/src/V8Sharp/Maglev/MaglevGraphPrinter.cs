@@ -80,6 +80,19 @@ internal static class MaglevGraphPrinter
             }
         }
         if (node.Obj0 is CallBuiltinInfo info) sb.Append(' ').Append(info.Name);
+        if (node.Obj0 is Map[] maps)
+        {
+            sb.Append(" {");
+            for (int i = 0; i < maps.Length; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append("map@").Append(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(maps[i]).ToString("x"));
+                if (maps[i].IsDeprecated) sb.Append(" deprecated");
+                if (maps[i].IsMigrationTarget) sb.Append(" migration-target");
+                if (!maps[i].IsStable) sb.Append(" unstable");
+            }
+            sb.Append('}');
+        }
         if (node.Inputs.Length > 0)
         {
             sb.Append(" [");

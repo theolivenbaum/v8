@@ -717,6 +717,17 @@ internal sealed class MaglevCodeGenerator
                 _il.Emit(OpCodes.Ldc_I4, c.Int0);
                 _il.Emit(OpCodes.Sub);
                 BasicBlock?[] targets = c.Targets!;
+                if (c.Int1 == 1)
+                {
+                    // No fallthrough (the generator switch: every state is a case).
+                    var cases = new Label[targets.Length];
+                    for (int i = 0; i < cases.Length; i++) cases[i] = EdgeLabel(block, targets[i]!);
+                    _il.Emit(OpCodes.Switch, cases);
+                    _il.Emit(OpCodes.Call, B(nameof(MaglevBuiltins.Unreachable)));
+                    LoadUndefined();
+                    EmitReturn();
+                    return;
+                }
                 var labels = new Label[targets.Length - 1];
                 for (int i = 0; i < labels.Length; i++) labels[i] = EdgeLabel(block, targets[i]!);
                 _il.Emit(OpCodes.Switch, labels);
@@ -1047,6 +1058,14 @@ internal sealed class MaglevCodeGenerator
             case Opcode.Int32MultiplyWithOverflow:
                 EmitInt32Overflowing(node);
                 return;
+            case Opcode.Int32Add:
+            case Opcode.Int32Subtract:
+            case Opcode.Int32Multiply:
+                Load(node.Inputs[0], ValueRepresentation.kInt32);
+                Load(node.Inputs[1], ValueRepresentation.kInt32);
+                _il.Emit(node.Opcode == Opcode.Int32Add ? OpCodes.Add : node.Opcode == Opcode.Int32Subtract ? OpCodes.Sub : OpCodes.Mul);
+                Store(v!);
+                return;
             case Opcode.Int32DivideWithOverflow:
             case Opcode.Int32ModulusWithOverflow:
                 Load(node.Inputs[0], ValueRepresentation.kInt32);
@@ -1321,9 +1340,13 @@ internal sealed class MaglevCodeGenerator
                 _il.Emit(OpCodes.Bne_Un, EagerExit(node.EagerDeoptInfo!));
                 return;
             case Opcode.CheckHeapObject:
+                // Not a number (undefined included): the values a field of
+                // HeapObject representation holds (Object::FitsRepresentation's
+                // V8Sharp deviation: numbers are unboxed, undefined is an oddball).
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
-                Call(nameof(MaglevBuiltins.IsHeapObject));
-                DeoptIfFalse(node);
+                _il.Emit(OpCodes.Ldfld, s_obj);
+                _il.Emit(OpCodes.Ldsfld, s_numberTag);
+                _il.Emit(OpCodes.Beq, EagerExit(node.EagerDeoptInfo!));
                 return;
             case Opcode.CheckString:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
@@ -1341,14 +1364,22 @@ internal sealed class MaglevCodeGenerator
                 {
                     1 => nameof(MaglevBuiltins.IsInternalizedString),
                     2 => nameof(MaglevBuiltins.IsJSReceiver),
+                    4 => nameof(MaglevBuiltins.IsJSReceiverOrNullOrUndefined),
+                    5 => nameof(MaglevBuiltins.IsStringOrStringWrapper),
                     _ => nameof(MaglevBuiltins.IsWritableElements),
                 });
                 DeoptIfFalse(node);
                 return;
             case Opcode.LoadTypedArrayLength:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
-                Call(nameof(MaglevBuiltins.TypedArrayLength));
+                Call(node.Int0 == 1 ? nameof(MaglevBuiltins.TypedArrayLengthAsFloat64) : nameof(MaglevBuiltins.TypedArrayLength));
                 Store(v!);
+                return;
+            case Opcode.CheckTypedArrayValid:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                _il.Emit(node.Int0 == 1 ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0);
+                Call(nameof(MaglevBuiltins.IsTypedArrayValid));
+                DeoptIfFalse(node);
                 return;
             case Opcode.LoadTypedArrayElement:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
@@ -1447,6 +1478,18 @@ internal sealed class MaglevCodeGenerator
                 Store(v!);
                 return;
             }
+            case Opcode.UnwrapStringWrapper:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Call(nameof(MaglevBuiltins.UnwrapStringWrapper));
+                Store(v!);
+                return;
+            case Opcode.MigrateMapIfNeeded:
+                _il.Emit(OpCodes.Ldarg_1);
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Load(node.Inputs[1], ValueRepresentation.kTagged);
+                Call(nameof(MaglevBuiltins.MigrateMapIfNeeded));
+                Store(v!);
+                return;
             case Opcode.LoadTaggedField:
                 if (TryLoadFieldAddress(node.Inputs[0], node.Int0))
                 {
@@ -1578,9 +1621,18 @@ internal sealed class MaglevCodeGenerator
                 _il.Emit(OpCodes.Ldarg_1);
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
-                _il.Emit(OpCodes.Ldc_I4, node.Int0);
-                _il.Emit(OpCodes.Ldc_I4, node.Int1);
-                Call(nameof(MaglevBuiltins.MaybeGrowFastElements));
+                if (node.Int2 > 0)
+                {
+                    // Array.prototype.push: append Int2 elements at the old length.
+                    _il.Emit(OpCodes.Ldc_I4, node.Int2);
+                    Call(nameof(MaglevBuiltins.MaybeGrowFastElementsForPush));
+                }
+                else
+                {
+                    _il.Emit(OpCodes.Ldc_I4, node.Int0);
+                    _il.Emit(OpCodes.Ldc_I4, node.Int1);
+                    Call(nameof(MaglevBuiltins.MaybeGrowFastElements));
+                }
                 _il.Emit(OpCodes.Stloc, _tmpValue);
                 _il.Emit(OpCodes.Ldloc, _tmpValue);
                 _il.Emit(OpCodes.Ldfld, s_obj);
@@ -1672,6 +1724,50 @@ internal sealed class MaglevCodeGenerator
             }
             case Opcode.CallBuiltin:
                 EmitCallBuiltin(node);
+                return;
+
+            // ---- Generators -------------------------------------------------------------------------
+            case Opcode.LoadGeneratorField:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Call((GeneratorField)node.Int0 switch
+                {
+                    GeneratorField.kContext => nameof(MaglevBuiltins.LoadGeneratorContext),
+                    GeneratorField.kInputOrDebugPos => nameof(MaglevBuiltins.LoadGeneratorInputOrDebugPos),
+                    _ => nameof(MaglevBuiltins.LoadGeneratorContinuation),
+                });
+                Store(v!);
+                return;
+            case Opcode.StoreGeneratorContinuation:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Load(node.Inputs[1], ValueRepresentation.kInt32);
+                Call(nameof(MaglevBuiltins.StoreGeneratorContinuation));
+                return;
+            case Opcode.GeneratorStore:
+            {
+                // The parameters and registers into the register file, then the fixed fields.
+                LocalBuilder file = _il.DeclareLocal(typeof(JSValue[]));
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Call(nameof(MaglevBuiltins.GeneratorRegisterFile));
+                _il.Emit(OpCodes.Stloc, file);
+                for (int i = 2; i < node.Inputs.Length; i++)
+                {
+                    _il.Emit(OpCodes.Ldloc, file);
+                    _il.Emit(OpCodes.Ldc_I4, i - 2);
+                    Load(node.Inputs[i], ValueRepresentation.kTagged);
+                    _il.Emit(OpCodes.Stelem, typeof(JSValue));
+                }
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Load(node.Inputs[1], ValueRepresentation.kTagged);
+                _il.Emit(OpCodes.Ldc_I4, node.Int0);
+                _il.Emit(OpCodes.Ldc_I4, node.Int1);
+                Call(nameof(MaglevBuiltins.GeneratorSuspend));
+                return;
+            }
+            case Opcode.GeneratorRestoreRegister:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                _il.Emit(OpCodes.Ldc_I4, node.Int0);
+                Call(nameof(MaglevBuiltins.GeneratorRestoreRegister));
+                Store(v!);
                 return;
             default:
                 throw new MaglevBailoutException("no code generation for " + node.Opcode);
@@ -1822,7 +1918,10 @@ internal sealed class MaglevCodeGenerator
         // with a deprecated map is migrated and checked again.
         bool migrate = false;
         foreach (Map map in maps) migrate |= map.IsMigrationTarget;
-        Label fail = migrate ? _il.DefineLabel() : exit;
+        // CheckMapsWithMigrationAndDeopt: an object with a deprecated map is
+        // migrated (its new map marked as a migration target), then deoptimizes.
+        bool migrateAndDeopt = !migrate && node.Int1 == 1;
+        Label fail = migrate || migrateAndDeopt ? _il.DefineLabel() : exit;
         Label ok = _il.DefineLabel();
         EmitLoadMapOrBranch(node.Inputs[0], exit);
         if (maps.Length == 1)
@@ -1849,6 +1948,14 @@ internal sealed class MaglevCodeGenerator
             LoadConstantObject(maps, typeof(Map[]));
             Call(nameof(MaglevBuiltins.MigrateAndCheckMaps));
             _il.Emit(OpCodes.Brfalse, exit);
+        }
+        else if (migrateAndDeopt)
+        {
+            _il.MarkLabel(fail);
+            _il.Emit(OpCodes.Ldarg_1);
+            Load(node.Inputs[0], ValueRepresentation.kTagged);
+            Call(nameof(MaglevBuiltins.TryMigrateInstanceAndMarkMapAsMigrationTarget));
+            _il.Emit(OpCodes.Br, exit);
         }
         _il.MarkLabel(ok);
     }

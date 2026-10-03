@@ -56,6 +56,17 @@ public static class MaglevBuiltins
     public static bool IsJSReceiver(JSValue v) => v._obj is { } o && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver;
 
     [MethodImpl(Inline)]
+    public static bool IsStringOrStringWrapper(JSValue v) =>
+        v._obj is { } o && (o.InstanceType <= InstanceTypeChecks.LastString || o is JSPrimitiveWrapper { Value._obj: JSString });
+
+    [MethodImpl(Inline)]
+    public static JSValue UnwrapStringWrapper(JSValue v) => v._obj is JSPrimitiveWrapper w ? w.Value : v;
+
+    [MethodImpl(Inline)]
+    public static bool IsJSReceiverOrNullOrUndefined(JSValue v) =>
+        v._obj is not { } o || ReferenceEquals(o, Oddball.Null) || o.InstanceType >= InstanceTypeChecks.FirstJSReceiver;
+
+    [MethodImpl(Inline)]
     public static bool IsNumberOrOddball(JSValue v) =>
         v._obj is null || ReferenceEquals(v._obj, NumberTag.Instance) || ReferenceEquals(v._obj, Oddball.Null) ||
         ReferenceEquals(v._obj, Oddball.True) || ReferenceEquals(v._obj, Oddball.False);
@@ -299,6 +310,22 @@ public static class MaglevBuiltins
         return length > int.MaxValue ? int.MaxValue : (int)length;
     }
 
+    /// <summary>CheckTypedArrayValid: not detached, and for a write not immutable.</summary>
+    [MethodImpl(Inline)]
+    public static bool IsTypedArrayValid(JSValue obj, bool write)
+    {
+        JSArrayBuffer buffer = Unsafe.As<JSTypedArray>(obj._obj!).Buffer;
+        return !buffer.WasDetached && !(write && buffer.IsImmutable);
+    }
+
+    /// <summary>LoadTypedArrayLength of the length property: the whole length (V8: an IntPtr).</summary>
+    [MethodImpl(Inline)]
+    public static double TypedArrayLengthAsFloat64(JSValue obj)
+    {
+        var a = Unsafe.As<JSTypedArray>(obj._obj!);
+        return a.Buffer.WasDetached ? 0 : a.IsVariableLength ? a.GetLength() : a.RawLength;
+    }
+
     [MethodImpl(Inline)]
     public static bool TypedArrayIndexInBounds(JSValue obj, int index) => (uint)index < (uint)TypedArrayLength(obj);
 
@@ -350,6 +377,29 @@ public static class MaglevBuiltins
         if (value._obj is not JSObject o || !o.Map.IsDeprecated) return false;
         if (!JSObject.TryMigrateInstance(isolate, o)) return false;
         return Array.IndexOf(maps, o.Map) >= 0;
+    }
+
+    /// <summary>
+    /// MigrateMapIfNeeded: an object whose map is deprecated is migrated
+    /// (Runtime_TryMigrateInstance); the result is its map then. (V8 deopts
+    /// when the migration fails; V8Sharp returns the deprecated map, which the
+    /// dispatch's last map check rejects.)
+    /// </summary>
+    public static JSValue MigrateMapIfNeeded(Isolate isolate, JSValue map, JSValue obj)
+    {
+        if (map._obj is not Map { IsDeprecated: true } || obj._obj is not JSObject o) return map;
+        JSObject.TryMigrateInstance(isolate, o);
+        return o.Map;
+    }
+
+    /// <summary>
+    /// Runtime_TryMigrateInstanceAndMarkMapAsMigrationTarget (the deferred code of
+    /// CheckMapsWithMigrationAndDeopt): migrates an object with a deprecated map.
+    /// </summary>
+    public static void TryMigrateInstanceAndMarkMapAsMigrationTarget(Isolate isolate, JSValue value)
+    {
+        if (value._obj is not JSObject o || !o.Map.IsDeprecated) return;
+        if (JSObject.TryMigrateInstance(isolate, o)) o.Map.IsMigrationTarget = true;
     }
 
     /// <summary>TransitionElementsKind to <paramref name="target"/>; false (deopt) if the object ends up with another map.</summary>
@@ -431,36 +481,88 @@ public static class MaglevBuiltins
             : isJSArray != 0 ? length + 1L : elementsLength;
         if ((uint)index >= limit) return default;
         if (o.Elements.IsCowArray) JSObject.EnsureWritableFastElements(isolate, o);
-        FixedArrayBase elements = o.Elements;
-        if (index >= elements.Length)
-        {
-            // Grow as Runtime_GrowArrayElements / the CSA grow path (new capacity from NewElementsCapacity).
-            if (index >= FixedArrayBase.kMaxLength) return default;
-            int capacity = JSObject.NewElementsCapacity(index + 1);
-            if (ElementsKinds.IsDoubleElementsKind(e))
-            {
-                var grown = new FixedDoubleArray(capacity);
-                // An empty double array's elements are the empty FixedArray.
-                int oldLength = 0;
-                if (elements is FixedDoubleArray old)
-                {
-                    Array.Copy(old._data, grown._data, old.Length);
-                    oldLength = old.Length;
-                }
-                grown._data.AsSpan(oldLength).Fill(FixedDoubleArray.HoleNaN);
-                o.Elements = grown;
-            }
-            else
-            {
-                var grown = new FixedArray(capacity);
-                var old = (FixedArray)elements;
-                Array.Copy(old._data, grown._data, old.Length);
-                grown._data.AsSpan(old.Length).Fill(JSValue.TheHole);
-                o.Elements = grown;
-            }
-        }
+        if (index >= o.Elements.Length && !GrowFastElements(o, e, index + 1)) return default;
         if (isJSArray != 0 && index >= length) Unsafe.As<JSArray>(o).Length = JSValue.FromInt(index + 1);
         return JSValue.FromObject(o.Elements);
+    }
+
+    /// <summary>
+    /// MaybeGrowFastElements of TryReduceArrayPrototypePush: room for
+    /// <paramref name="count"/> elements appended at <paramref name="oldLength"/>
+    /// of a map-checked fast JSArray, and the new length. Returns the writable
+    /// elements, or undefined to deoptimize (the length would leave the Smi range).
+    /// </summary>
+    public static JSValue MaybeGrowFastElementsForPush(Isolate isolate, JSValue obj, int oldLength, int count)
+    {
+        var a = Unsafe.As<JSArray>(obj._obj!);
+        long newLength = (long)oldLength + count;
+        if (newLength > JSValue.SmiMaxValue || newLength >= FixedArrayBase.kMaxLength) return default;
+        if (a.Elements.IsCowArray) JSObject.EnsureWritableFastElements(isolate, a);
+        if (newLength > a.Elements.Length && !GrowFastElements(a, a.Map.ElementsKind, (int)newLength)) return default;
+        a.Length = JSValue.FromInt((int)newLength);
+        return JSValue.FromObject(a.Elements);
+    }
+
+    /// <summary>Grows fast elements to hold <paramref name="needed"/> elements (Runtime_GrowArrayElements / the CSA grow path).</summary>
+    static bool GrowFastElements(JSObject o, ElementsKind e, int needed)
+    {
+        if (needed > FixedArrayBase.kMaxLength) return false;
+        FixedArrayBase elements = o.Elements;
+        // New capacity from NewElementsCapacity.
+        int capacity = JSObject.NewElementsCapacity(needed);
+        if (ElementsKinds.IsDoubleElementsKind(e))
+        {
+            var grown = new FixedDoubleArray(capacity);
+            // An empty double array's elements are the empty FixedArray.
+            int oldLength = 0;
+            if (elements is FixedDoubleArray old)
+            {
+                Array.Copy(old._data, grown._data, old.Length);
+                oldLength = old.Length;
+            }
+            grown._data.AsSpan(oldLength).Fill(FixedDoubleArray.HoleNaN);
+            o.Elements = grown;
+        }
+        else
+        {
+            var grown = new FixedArray(capacity);
+            var old = (FixedArray)elements;
+            Array.Copy(old._data, grown._data, old.Length);
+            grown._data.AsSpan(old.Length).Fill(JSValue.TheHole);
+            o.Elements = grown;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// TryReduceArrayPrototypePop's nodes for a map-checked fast JSArray: the
+    /// last element (a hole is undefined) with the hole stored in its place and
+    /// the length decremented; undefined for an empty array.
+    /// </summary>
+    public static JSValue ArrayPop(Isolate isolate, JSValue obj)
+    {
+        var a = Unsafe.As<JSArray>(obj._obj!);
+        int length = (int)a.Length._num;
+        if (length == 0) return JSValue.Undefined;
+        int newLength = length - 1;
+        ElementsKind kind = a.Map.ElementsKind;
+        JSValue value;
+        if (ElementsKinds.IsDoubleElementsKind(kind))
+        {
+            var elements = Unsafe.As<FixedDoubleArray>(a.Elements);
+            value = elements.IsTheHole(newLength) ? JSValue.Undefined : JSValue.FromNumber(elements._data[newLength]);
+            elements.SetTheHole(newLength);
+        }
+        else
+        {
+            if (a.Elements.IsCowArray) JSObject.EnsureWritableFastElements(isolate, a);
+            JSValue[] data = Unsafe.As<FixedArray>(a.Elements)._data;
+            value = data[newLength];
+            if (value.IsTheHole) value = JSValue.Undefined;
+            data[newLength] = JSValue.TheHole;
+        }
+        a.Length = JSValue.FromInt(newLength);
+        return value;
     }
 
     // ---- Strings -------------------------------------------------------------------------------------------
@@ -518,6 +620,52 @@ public static class MaglevBuiltins
     {
         frameContextSlot = context;
         isolate.Context = Unsafe.As<Context>(context._obj!);
+    }
+
+    // ---- Generators (LoadTaggedField / StoreTaggedFieldNoWriteBarrier of JSGeneratorObject fields,
+    //      GeneratorStore, GeneratorRestoreRegister) ------------------------------------------------------
+
+    [MethodImpl(Inline)]
+    public static JSValue LoadGeneratorContext(JSValue generator) => Unsafe.As<JSGeneratorObject>(generator._obj!).Context;
+
+    [MethodImpl(Inline)]
+    public static JSValue LoadGeneratorInputOrDebugPos(JSValue generator) =>
+        Unsafe.As<JSGeneratorObject>(generator._obj!).InputOrDebugPos;
+
+    [MethodImpl(Inline)]
+    public static int LoadGeneratorContinuation(JSValue generator) =>
+        Unsafe.As<JSGeneratorObject>(generator._obj!).ContinuationValue;
+
+    [MethodImpl(Inline)]
+    public static void StoreGeneratorContinuation(JSValue generator, int value) =>
+        Unsafe.As<JSGeneratorObject>(generator._obj!).ContinuationValue = value;
+
+    /// <summary>The generator's parameters_and_registers (GeneratorStore writes it element by element).</summary>
+    [MethodImpl(Inline)]
+    public static JSValue[] GeneratorRegisterFile(JSValue generator) =>
+        Unsafe.As<JSGeneratorObject>(generator._obj!).ParametersAndRegisters.Data;
+
+    /// <summary>GeneratorStore's fixed part: the context, the continuation and input_or_debug_pos.</summary>
+    [MethodImpl(Inline)]
+    public static void GeneratorSuspend(JSValue generator, JSValue context, int suspendId, int bytecodeOffset)
+    {
+        var g = Unsafe.As<JSGeneratorObject>(generator._obj!);
+        g.Context = Unsafe.As<Context>(context._obj!);
+        g.ContinuationValue = suspendId;
+        g.InputOrDebugPos = JSValue.FromInt(bytecodeOffset);
+    }
+
+    /// <summary>
+    /// GeneratorRestoreRegister: the saved value, and the slot cleared so the
+    /// generator does not keep it alive (V8 writes the stale register sentinel).
+    /// </summary>
+    [MethodImpl(Inline)]
+    public static JSValue GeneratorRestoreRegister(JSValue generator, int index)
+    {
+        JSValue[] data = Unsafe.As<JSGeneratorObject>(generator._obj!).ParametersAndRegisters.Data;
+        JSValue value = data[index];
+        data[index] = default;
+        return value;
     }
 
     // ---- Math ----------------------------------------------------------------------------------------------

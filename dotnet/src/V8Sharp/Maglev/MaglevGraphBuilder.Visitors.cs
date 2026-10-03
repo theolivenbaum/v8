@@ -40,6 +40,7 @@ public sealed partial class MaglevGraphBuilder
     void VisitSingleBytecode()
     {
         Checkpoint();
+        _hasDeprecatedMapWithoutMigrationTarget = false;
         try
         {
             Visit(_it.CurrentBytecode());
@@ -758,6 +759,17 @@ public sealed partial class MaglevGraphBuilder
                     [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1)], properties: OpProperties.kCanThrow | OpProperties.kNotIdempotent);
                 break;
 
+            // ---- Generators -------------------------------------------------------------------------------
+            case Bytecode.SwitchOnGeneratorState:
+                VisitSwitchOnGeneratorState();
+                break;
+            case Bytecode.SuspendGenerator:
+                VisitSuspendGenerator();
+                break;
+            case Bytecode.ResumeGenerator:
+                VisitResumeGenerator();
+                break;
+
             // ---- Misc --------------------------------------------------------------------------------------
             case Bytecode.Debugger:
                 // Runtime_HandleDebuggerStatement: no debugger is attached.
@@ -1027,6 +1039,21 @@ public sealed partial class MaglevGraphBuilder
                     ValueNode result = CallMaglev("StringAdd", [left, right], [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1)],
                         OpProperties.kCanAllocate | OpProperties.kCanThrow | OpProperties.kNotIdempotent, type: NodeType.kString)!;
                     SetAccumulator(result);
+                    return;
+                }
+                break;
+            case BinaryOperationHint.kStringOrStringWrapper:
+                if (op == Operation.Add &&
+                    _info.DependOnProtector(Protectors.IsStringWrapperToPrimitiveIntact(Isolate), "StringWrapperToPrimitive"))
+                {
+                    ValueNode left = LoadRegister(0);
+                    ValueNode right = GetAccumulator();
+                    BuildCheckStringOrStringWrapper(left);
+                    BuildCheckStringOrStringWrapper(right);
+                    left = BuildUnwrapStringWrapper(left);
+                    right = BuildUnwrapStringWrapper(right);
+                    SetAccumulator(CallMaglev("StringAdd", [left, right], [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1)],
+                        OpProperties.kCanAllocate | OpProperties.kCanThrow | OpProperties.kNotIdempotent, type: NodeType.kString)!);
                     return;
                 }
                 break;
@@ -1329,6 +1356,12 @@ public sealed partial class MaglevGraphBuilder
                 BuildCheckJSReceiver(right);
                 SetAccumulator(BuildTaggedEqual(left, right));
                 return;
+            case CompareOperationHint.kReceiverOrNullOrUndefined when op == CompareOperation.kStrictEqual:
+                // (Abstract equality falls back to the generic compare: null == undefined.)
+                BuildCheckJSReceiverOrNullOrUndefined(left);
+                BuildCheckJSReceiverOrNullOrUndefined(right);
+                SetAccumulator(BuildTaggedEqual(left, right));
+                return;
             case CompareOperationHint.kString:
             {
                 BuildCheckString(left);
@@ -1381,6 +1414,42 @@ public sealed partial class MaglevGraphBuilder
         if (CheckType(value, NodeType.kJSReceiver)) return;
         AddCheck(Opcode.CheckInstanceType, value, DeoptimizeReason.kNotAJavaScriptObject, int0: 2);
         EnsureType(value, NodeType.kJSReceiver);
+    }
+
+    /// <summary>BuildCheckStringOrStringWrapper.</summary>
+    void BuildCheckStringOrStringWrapper(ValueNode value)
+    {
+        if (value.Representation != ValueRepresentation.kTagged) EmitUnconditionalDeoptAndAbort(DeoptimizeReason.kNotAStringOrStringWrapper);
+        if (CheckType(value, NodeType.kStringOrStringWrapper)) return;
+        AddCheck(Opcode.CheckInstanceType, value, DeoptimizeReason.kNotAStringOrStringWrapper, int0: 5);
+        EnsureType(value, NodeType.kStringOrStringWrapper);
+    }
+
+    /// <summary>BuildUnwrapStringWrapper: the string of a string or a string wrapper (UnwrapStringWrapper).</summary>
+    ValueNode BuildUnwrapStringWrapper(ValueNode value)
+    {
+        if (CheckType(value, NodeType.kString)) return value;
+        return AddNewNode(new ValueNode(Opcode.UnwrapStringWrapper, ValueRepresentation.kTagged)
+        {
+            Inputs = [value],
+            Type = NodeType.kString,
+        });
+    }
+
+    /// <summary>BuildCheckJSReceiverOrNullOrUndefined (CheckJSReceiverOrNullOrUndefined).</summary>
+    void BuildCheckJSReceiverOrNullOrUndefined(ValueNode value)
+    {
+        if (value.Representation != ValueRepresentation.kTagged)
+        {
+            EmitUnconditionalDeoptAndAbort(DeoptimizeReason.kNotAJavaScriptObjectOrNullOrUndefined);
+        }
+        if (CheckType(value, NodeType.kJSReceiverOrNullOrUndefined)) return;
+        if (!NodeTypes.CanBe(GetType(value), NodeType.kJSReceiverOrNullOrUndefined))
+        {
+            EmitUnconditionalDeoptAndAbort(DeoptimizeReason.kNotAJavaScriptObjectOrNullOrUndefined);
+        }
+        AddCheck(Opcode.CheckInstanceType, value, DeoptimizeReason.kNotAJavaScriptObjectOrNullOrUndefined, int0: 4);
+        EnsureType(value, NodeType.kJSReceiverOrNullOrUndefined);
     }
 
     /// <summary>A reference comparison of two values (TaggedEqual), folded for constants.</summary>

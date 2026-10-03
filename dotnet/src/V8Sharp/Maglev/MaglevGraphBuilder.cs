@@ -12,10 +12,9 @@
 // CallBuiltin nodes that call the same BaselineBuiltins method the baseline
 // compiler calls for that bytecode (V8 uses Generic* nodes that call the
 // interpreter's builtins with feedback, which is the same thing); register
-// lists those builtins read are stored into the frame first. Exception
-// handlers, generators and a few bytecodes are not supported yet: the
-// compilation bails out (MaglevBailoutException) and the function stays in
-// the lower tiers.
+// lists those builtins read are stored into the frame first. Debug-break
+// bytecodes and a few others are not supported yet: the compilation bails out
+// (MaglevBailoutException) and the function stays in the lower tiers.
 using System.Reflection;
 using V8Sharp.Baseline;
 using V8Sharp.Deoptimizer;
@@ -130,16 +129,12 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>The bytecodes and features the builder supports; others bail out.</summary>
     internal static string? UnsupportedReason(SharedFunctionInfo shared, BytecodeArray bytecode)
     {
-        if (Globals.IsResumableFunction(shared.Kind)) return "resumable function";
         var it = new BytecodeArrayIterator(bytecode);
         for (; !it.Done(); it.Advance())
         {
             Bytecode bc = it.CurrentBytecode();
             switch (bc)
             {
-                case Bytecode.SwitchOnGeneratorState:
-                case Bytecode.SuspendGenerator:
-                case Bytecode.ResumeGenerator:
                 case Bytecode.Illegal:
                     return "unsupported bytecode " + bc;
             }
@@ -380,7 +375,13 @@ public sealed partial class MaglevGraphBuilder
     /// V8Sharp always builds the catch block, as the interpreter does not
     /// record handler use.)
     /// </summary>
-    void AttachExceptionHandlerInfo(Node node)
+    /// <remarks>
+    /// A node of an inlined function called inside a try block attaches the
+    /// caller's catch block (the caller's frame at the call merges into it,
+    /// with what the inlined code knows, <paramref name="known"/>), as V8's
+    /// inlined calls in try blocks do.
+    /// </remarks>
+    void AttachExceptionHandlerInfo(Node node, KnownNodeAspects? known = null)
     {
         (int _, int handler, int contextRegister) = _catchBlockStack.Peek();
         MergePointInterpreterFrameState? state = _catchStates[handler];
@@ -391,7 +392,21 @@ public sealed partial class MaglevGraphBuilder
             _catchStates[handler] = state;
         }
         node.ExceptionHandler = new ExceptionHandlerInfo(state, state.PredecessorsSoFar);
-        state.MergeThrow(this, _frame);
+        state.MergeThrow(this, _frame, known);
+    }
+
+    /// <summary>
+    /// The builder of the innermost caller of this inlined function whose call
+    /// is inside a try block (the catch block a throw in the inlined code
+    /// continues at, after its inlined frames are dropped), or null.
+    /// </summary>
+    MaglevGraphBuilder? CallerInsideTryBlock()
+    {
+        for (MaglevGraphBuilder? b = _caller; b is not null; b = b._caller)
+        {
+            if (b.IsInsideTryBlock) return b;
+        }
+        return null;
     }
 
     /// <summary>
@@ -512,7 +527,7 @@ public sealed partial class MaglevGraphBuilder
         var state = new MergePointInterpreterFrameState(_unit, offset, _predecessorCount[offset],
             _analysis.GetInLivenessFor(offset), loop);
         _mergeStates[offset] = state;
-        state.InitializeLoop(this, _frame, entryPredecessor, _loopChangesContext[offset]);
+        state.InitializeLoop(this, _frame, entryPredecessor, _loopChangesContext[offset], IsResumableLoop(loop));
         BasicBlock header = _graph.NewBlock();
         header.IsLoopHeader = true;
         header.Offset = offset;
@@ -705,7 +720,14 @@ public sealed partial class MaglevGraphBuilder
             node.LazyDeoptInfo = new LazyDeoptInfo(GetDeoptFrameForLazyDeopt(), _lazyResultLocation, _lazyResultSize);
         }
         _currentBlock!.Nodes.Add(node);
-        if (_catchBlockStack.Count > 0 && CanThrowInTry(node)) AttachExceptionHandlerInfo(node);
+        if (_catchBlockStack.Count > 0)
+        {
+            if (CanThrowInTry(node)) AttachExceptionHandlerInfo(node);
+        }
+        else if (_caller is not null && CanThrowInTry(node) && CallerInsideTryBlock() is { } catcher)
+        {
+            catcher.AttachExceptionHandlerInfo(node, _frame.Known);
+        }
         if ((node.Properties & (OpProperties.kCanWrite | OpProperties.kCall)) != 0)
         {
             _frame.Known.ClearUnstableMaps();
@@ -1194,8 +1216,8 @@ public sealed partial class MaglevGraphBuilder
 
     // ---- Checks ------------------------------------------------------------------------------------------
 
-    Node AddCheck(Opcode opcode, ValueNode input, DeoptimizeReason reason, object? obj0 = null, int int0 = 0) =>
-        AddNewNode(new Node(opcode) { Inputs = [input], Obj0 = obj0, Int0 = int0, Properties = OpProperties.kEagerDeopt }, reason);
+    Node AddCheck(Opcode opcode, ValueNode input, DeoptimizeReason reason, object? obj0 = null, int int0 = 0, int int1 = 0) =>
+        AddNewNode(new Node(opcode) { Inputs = [input], Obj0 = obj0, Int0 = int0, Int1 = int1, Properties = OpProperties.kEagerDeopt }, reason);
 
     /// <summary>BuildCheckSmi.</summary>
     void BuildCheckSmi(ValueNode value)
@@ -1223,9 +1245,10 @@ public sealed partial class MaglevGraphBuilder
     void BuildCheckHeapObject(ValueNode value)
     {
         if (value.Representation != ValueRepresentation.kTagged) EmitUnconditionalDeoptAndAbort(DeoptimizeReason.kSmi);
-        if (CheckType(value, NodeType.kAnyHeapObject)) return;
+        // (Not a number: numbers do not fit HeapObject representation in V8Sharp.)
+        if (CheckType(value, NodeType.kAnyHeapObject & ~NodeType.kHeapNumber)) return;
         AddCheck(Opcode.CheckHeapObject, value, DeoptimizeReason.kSmi);
-        EnsureType(value, NodeType.kAnyHeapObject & ~NodeType.kUndefined);
+        EnsureType(value, NodeType.kAnyHeapObject & ~NodeType.kHeapNumber);
     }
 
     /// <summary>BuildCheckString.</summary>
@@ -1329,7 +1352,10 @@ public sealed partial class MaglevGraphBuilder
                 return;
             }
         }
-        AddCheck(Opcode.CheckMaps, obj, DeoptimizeReason.kWrongMap, maps);
+        // CheckMapsWithMigrationAndDeopt (Int1 = 1) when the feedback had a
+        // deprecated map without migration target (the code generator emits
+        // CheckMapsWithMigration when a map is a migration target).
+        AddCheck(Opcode.CheckMaps, obj, DeoptimizeReason.kWrongMap, maps, int1: _hasDeprecatedMapWithoutMigrationTarget ? 1 : 0);
         RecordKnownMaps(obj, maps);
     }
 
