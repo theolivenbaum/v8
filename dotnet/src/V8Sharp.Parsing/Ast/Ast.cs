@@ -1742,77 +1742,77 @@ public sealed class ThisExpression : Expression
 
 public sealed class VariableProxy : Expression, IThreadedListNode<VariableProxy>
 {
-    private AstRawString _rawName;
-    private Variable? _var;
+    // V8: union { const AstRawString* raw_name_; Variable* var_; }, the name
+    // until the proxy is resolved and its variable after; and bit_field_. One
+    // is allocated per identifier reference, preparsed or parsed, so its size
+    // matters (48 bytes, against 64 with separate fields).
+    private object _nameOrVar;
     private VariableProxy? _nextUnresolved;
+    private byte _bitField;
 
-    private bool _isAssigned;
-    private bool _isResolved;
-    private bool _isRemovedFromUnresolved;
-    private bool _isNewTarget;
-    private bool _isHomeObject;
-    private HoleCheckMode _holeCheckMode;
+    private const byte kIsAssigned = 1;
+    private const byte kIsResolved = 2;
+    private const byte kIsRemovedFromUnresolved = 4;
+    private const byte kIsNewTarget = 8;
+    private const byte kIsHomeObject = 16;
+    private const byte kHoleCheckRequired = 32;
 
     internal VariableProxy(Variable var, int start_position) : base(start_position, NodeType.VariableProxy)
     {
-        _rawName = var.raw_name();
-        _holeCheckMode = HoleCheckMode.kElided;
+        _nameOrVar = var.raw_name();
         BindTo(var);
     }
 
     internal VariableProxy(AstRawString name, VariableKind variable_kind, int start_position)
         : base(start_position, NodeType.VariableProxy)
     {
-        _rawName = name;
-        _holeCheckMode = HoleCheckMode.kElided;
+        _nameOrVar = name;
     }
 
     internal VariableProxy(VariableProxy copy_from) : base(copy_from.position(), NodeType.VariableProxy)
     {
-        _isAssigned = copy_from._isAssigned;
-        _isResolved = copy_from._isResolved;
-        _isRemovedFromUnresolved = copy_from._isRemovedFromUnresolved;
-        _isNewTarget = copy_from._isNewTarget;
-        _isHomeObject = copy_from._isHomeObject;
-        _holeCheckMode = copy_from._holeCheckMode;
+        _bitField = copy_from._bitField;
         if (copy_from.is_parenthesized()) mark_parenthesized();
-        _rawName = copy_from._rawName;
+        _nameOrVar = copy_from._nameOrVar;
     }
 
     VariableProxy? IThreadedListNode<VariableProxy>.NextNode { get => _nextUnresolved; set => _nextUnresolved = value; }
 
     public new bool IsValidReferenceExpression() => !is_new_target();
 
-    public AstRawString raw_name() => _isResolved ? _var!.raw_name() : _rawName;
+    public AstRawString raw_name() =>
+        is_resolved() ? Unsafe.As<Variable>(_nameOrVar).raw_name() : Unsafe.As<AstRawString>(_nameOrVar);
 
-    public Variable var() => _var!;
+    public Variable var() => is_resolved() ? Unsafe.As<Variable>(_nameOrVar) : null!;
 
-    public void set_var(Variable v) => _var = v;
+    public void set_var(Variable v) => _nameOrVar = v;
 
     public Scanner.Location location() => new(position(), position() + raw_name().length());
 
-    public bool is_assigned() => _isAssigned;
+    public bool is_assigned() => (_bitField & kIsAssigned) != 0;
 
     public void set_is_assigned()
     {
-        _isAssigned = true;
+        _bitField |= kIsAssigned;
         if (is_resolved())
         {
             var().SetMaybeAssigned();
         }
     }
 
-    public void clear_is_assigned() => _isAssigned = false;
+    public void clear_is_assigned() => _bitField &= unchecked((byte)~kIsAssigned);
 
-    public bool is_resolved() => _isResolved;
-    public void set_is_resolved() => _isResolved = true;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool is_resolved() => (_bitField & kIsResolved) != 0;
+    public void set_is_resolved() => _bitField |= kIsResolved;
 
-    public bool is_new_target() => _isNewTarget;
-    public void set_is_new_target() => _isNewTarget = true;
+    public bool is_new_target() => (_bitField & kIsNewTarget) != 0;
+    public void set_is_new_target() => _bitField |= kIsNewTarget;
 
-    public HoleCheckMode hole_check_mode() => _holeCheckMode;
-    public void set_needs_hole_check() => _holeCheckMode = HoleCheckMode.kRequired;
-    public void clear_needs_hole_check(Variable var) => _holeCheckMode = HoleCheckMode.kElided;
+    public HoleCheckMode hole_check_mode() =>
+        (_bitField & kHoleCheckRequired) != 0 ? HoleCheckMode.kRequired : HoleCheckMode.kElided;
+    public void set_needs_hole_check() => _bitField |= kHoleCheckRequired;
+    public void clear_needs_hole_check(Variable var) => _bitField &= unchecked((byte)~kHoleCheckRequired);
 
     public new bool IsPrivateName() => raw_name().IsPrivateName();
 
@@ -1835,11 +1835,11 @@ public sealed class VariableProxy : Expression, IThreadedListNode<VariableProxy>
     }
 
     public VariableProxy? next_unresolved() => _nextUnresolved;
-    public bool is_removed_from_unresolved() => _isRemovedFromUnresolved;
-    public void mark_removed_from_unresolved() => _isRemovedFromUnresolved = true;
+    public bool is_removed_from_unresolved() => (_bitField & kIsRemovedFromUnresolved) != 0;
+    public void mark_removed_from_unresolved() => _bitField |= kIsRemovedFromUnresolved;
 
-    public bool is_home_object() => _isHomeObject;
-    public void set_is_home_object() => _isHomeObject = true;
+    public bool is_home_object() => (_bitField & kIsHomeObject) != 0;
+    public void set_is_home_object() => _bitField |= kIsHomeObject;
 
     public override string ToString() => raw_name().ToString();
 }
