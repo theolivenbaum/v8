@@ -89,12 +89,14 @@ public sealed partial class MaglevGraphBuilder
             case Bytecode.LdaContextSlotNoCell:
             case Bytecode.LdaContextSlot:
             case Bytecode.LdaImmutableContextSlot:
-                SetAccumulator(BuildLoadContextSlot(LoadRegister(0), Uint(2), ContextSlot(1)));
+                SetAccumulator(BuildLoadContextSlot(LoadRegister(0), Uint(2), ContextSlot(1),
+                    _it.CurrentBytecode() == Bytecode.LdaImmutableContextSlot));
                 break;
             case Bytecode.LdaCurrentContextSlotNoCell:
             case Bytecode.LdaCurrentContextSlot:
             case Bytecode.LdaImmutableCurrentContextSlot:
-                SetAccumulator(BuildLoadContextSlot(_frame.Context, 0, ContextSlot(0)));
+                SetAccumulator(BuildLoadContextSlot(_frame.Context, 0, ContextSlot(0),
+                    _it.CurrentBytecode() == Bytecode.LdaImmutableCurrentContextSlot));
                 break;
             case Bytecode.StaContextSlotNoCell:
             case Bytecode.StaContextSlot:
@@ -855,14 +857,28 @@ public sealed partial class MaglevGraphBuilder
     // ---- Contexts --------------------------------------------------------------------------------
 
     /// <summary>The context <paramref name="depth"/> levels up from <paramref name="context"/>, then slot <paramref name="index"/>.</summary>
-    ValueNode BuildLoadContextSlot(ValueNode context, int depth, int index) =>
-        AddNewNode(new ValueNode(Opcode.LoadContextSlot, ValueRepresentation.kTagged)
+    /// <remarks>
+    /// Load elimination (KnownNodeAspects::loaded_context_slots and, for
+    /// immutable slots, loaded_context_constants): a slot loaded or stored
+    /// since the last write that can reach it is not loaded again.
+    /// </remarks>
+    ValueNode BuildLoadContextSlot(ValueNode context, int depth, int index, bool immutable = false)
+    {
+        context = GetTaggedValue(context);
+        KnownNodeAspects known = _frame.Known;
+        if (known.LoadedContextConstants.TryGetValue((context, depth, index), out ValueNode? constant)) return constant;
+        if (known.LoadedContextSlots.TryGetValue((context, depth, index), out ValueNode? loaded)) return loaded;
+        ValueNode value = AddNewNode(new ValueNode(Opcode.LoadContextSlot, ValueRepresentation.kTagged)
         {
-            Inputs = [GetTaggedValue(context)],
+            Inputs = [context],
             Int0 = index,
             Int1 = depth,
             Properties = OpProperties.kCanRead,
         });
+        if (immutable) known.LoadedContextConstants[(context, depth, index)] = value;
+        else known.LoadedContextSlots[(context, depth, index)] = value;
+        return value;
+    }
 
     void BuildStoreContextSlot(ValueNode context, int depth, int index, ValueNode value) =>
         AddNewNode(new Node(Opcode.StoreContextSlot)
@@ -1701,6 +1717,7 @@ public sealed partial class MaglevGraphBuilder
         if (state is null || !state.IsLoop) throw new MaglevBailoutException($"loop without header (JumpLoop at {_it.CurrentOffset()} to {header}, state {(state is null ? "none" : "not a loop")})");
         // HandleNoHeapWritesInterrupt (V8's loop interrupt check; there is no Turbofan to count budget for).
         AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kCanThrow | OpProperties.kNotIdempotent });
+        CheckLoopEffects(header);
         // JumpLoop clobbers the accumulator.
         SetAccumulator(GetRootConstant(RootIndex.kUndefinedValue));
         BasicBlock block = _currentBlock!;

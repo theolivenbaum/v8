@@ -275,25 +275,25 @@ public sealed partial class MaglevGraphBuilder
         {
             case PropertyAccessInfo.Kind.DataField:
             {
-                ValueNode holder = info.Holder is null ? receiver : GetConstant(info.Holder);
-                return AddNewNode(new ValueNode(Opcode.LoadTaggedField, ValueRepresentation.kTagged)
+                ValueNode holder = GetTaggedValue(info.Holder is null ? receiver : GetConstant(info.Holder));
+                return BuildLoadProperty(holder, info.StorageIndex, () => AddNewNode(new ValueNode(Opcode.LoadTaggedField, ValueRepresentation.kTagged)
                 {
-                    Inputs = [GetTaggedValue(holder)],
+                    Inputs = [holder],
                     Int0 = info.StorageIndex,
                     Properties = OpProperties.kCanRead,
-                });
+                }));
             }
             case PropertyAccessInfo.Kind.DataConstant:
                 return GetConstant(info.Constant);
             case PropertyAccessInfo.Kind.NotFound:
                 return GetRootConstant(RootIndex.kUndefinedValue);
             case PropertyAccessInfo.Kind.ArrayLength:
-                return AddNewNode(new ValueNode(Opcode.LoadJSArrayLength, ValueRepresentation.kTagged)
+                return BuildLoadProperty(receiver, PropertyKeys.kJSArrayLength, () => AddNewNode(new ValueNode(Opcode.LoadJSArrayLength, ValueRepresentation.kTagged)
                 {
                     Inputs = [receiver],
                     Type = NodeType.kNumber,
                     Properties = OpProperties.kCanRead,
-                });
+                }));
             case PropertyAccessInfo.Kind.StringLength:
                 return AddNewNode(new ValueNode(Opcode.StringLength, ValueRepresentation.kInt32)
                 {
@@ -1114,12 +1114,12 @@ public sealed partial class MaglevGraphBuilder
     }
 
     ValueNode BuildLoadElements(ValueNode obj) =>
-        AddNewNode(new ValueNode(Opcode.LoadElements, ValueRepresentation.kTagged)
+        BuildLoadProperty(obj, PropertyKeys.kElements, () => AddNewNode(new ValueNode(Opcode.LoadElements, ValueRepresentation.kTagged)
         {
             Inputs = [obj],
             Type = NodeType.kOtherHeapObject,
             Properties = OpProperties.kCanRead,
-        });
+        }));
 
     /// <summary>index &lt; length (unsigned), deoptimizing out of bounds.</summary>
     void BuildBoundsCheck(ValueNode obj, ValueNode elements, ValueNode index, bool isJSArray)
@@ -1137,18 +1137,18 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>The length elements accesses check: a JSArray's length, else the backing store's.</summary>
     ValueNode BuildLoadLength(ValueNode obj, ValueNode elements, bool isJSArray) =>
         isJSArray
-            ? GetInt32(AddNewNode(new ValueNode(Opcode.LoadJSArrayLength, ValueRepresentation.kTagged)
+            ? GetInt32(BuildLoadProperty(obj, PropertyKeys.kJSArrayLength, () => AddNewNode(new ValueNode(Opcode.LoadJSArrayLength, ValueRepresentation.kTagged)
             {
                 Inputs = [obj],
                 Type = NodeType.kSmi,
                 Properties = OpProperties.kCanRead,
-            }))
-            : AddNewNode(new ValueNode(Opcode.LoadFixedArrayLength, ValueRepresentation.kInt32)
+            })))
+            : BuildLoadProperty(elements, PropertyKeys.kFixedArrayLength, () => AddNewNode(new ValueNode(Opcode.LoadFixedArrayLength, ValueRepresentation.kInt32)
             {
                 Inputs = [elements],
                 Type = NodeType.kSmi,
                 Properties = OpProperties.kCanRead,
-            });
+            }));
 
     // ---- Keyed stores -------------------------------------------------------------------------------------
 

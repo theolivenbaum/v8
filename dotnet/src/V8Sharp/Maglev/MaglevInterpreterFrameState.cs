@@ -41,20 +41,95 @@ public sealed class NodeInfo
     public bool HasMaps => PossibleMaps is not null;
 }
 
-/// <summary>KnownNodeAspects (the subset: node infos; loaded properties are not cached yet).</summary>
+/// <summary>
+/// The key of a loaded property (KnownNodeAspects::loaded_properties'
+/// PropertyKey): a field's storage index (FieldIndex.StorageIndex, so two
+/// maps' fields at the same index share a key: a store to one forgets the
+/// other's), or one of the special keys.
+/// </summary>
+public static class PropertyKeys
+{
+    public const int kElements = -1;
+    public const int kJSArrayLength = -2;
+    /// <summary>The length of a FixedArray(Base) (the object is the elements).</summary>
+    public const int kFixedArrayLength = -3;
+    public const int kTypedArrayLength = -4;
+}
+
+/// <summary>
+/// KnownNodeAspects: node infos, and the loaded properties and context slots
+/// (load elimination: a load of a known (object, key) reuses the value).
+/// </summary>
 public sealed class KnownNodeAspects
 {
     readonly Dictionary<ValueNode, NodeInfo> _infos;
+    /// <summary>loaded_properties: (object, key) -> value.</summary>
+    public readonly Dictionary<(ValueNode Object, int Key), ValueNode> LoadedProperties;
+    /// <summary>loaded_context_slots: (context, depth, slot) -> value.</summary>
+    public readonly Dictionary<(ValueNode Context, int Depth, int Slot), ValueNode> LoadedContextSlots;
+    /// <summary>loaded_context_constants: immutable slots (never forgotten).</summary>
+    public readonly Dictionary<(ValueNode Context, int Depth, int Slot), ValueNode> LoadedContextConstants;
 
-    public KnownNodeAspects() => _infos = new Dictionary<ValueNode, NodeInfo>(ReferenceEqualityComparer.Instance);
+    public KnownNodeAspects()
+    {
+        _infos = new Dictionary<ValueNode, NodeInfo>(ReferenceEqualityComparer.Instance);
+        LoadedProperties = new();
+        LoadedContextSlots = new();
+        LoadedContextConstants = new();
+    }
 
-    KnownNodeAspects(Dictionary<ValueNode, NodeInfo> infos) => _infos = infos;
+    KnownNodeAspects(Dictionary<ValueNode, NodeInfo> infos, KnownNodeAspects from)
+    {
+        _infos = infos;
+        LoadedProperties = new(from.LoadedProperties);
+        LoadedContextSlots = new(from.LoadedContextSlots);
+        LoadedContextConstants = new(from.LoadedContextConstants);
+    }
 
     public KnownNodeAspects Clone()
     {
         var copy = new Dictionary<ValueNode, NodeInfo>(_infos.Count, ReferenceEqualityComparer.Instance);
         foreach (KeyValuePair<ValueNode, NodeInfo> e in _infos) copy[e.Key] = e.Value.Clone();
-        return new KnownNodeAspects(copy);
+        return new KnownNodeAspects(copy, this);
+    }
+
+    /// <summary>After a call or an unknown write: every mutable loaded property and context slot.</summary>
+    public void ClearLoaded()
+    {
+        LoadedProperties.Clear();
+        LoadedContextSlots.Clear();
+    }
+
+    /// <summary>A store to <paramref name="key"/> of some object: loads of that key of any object (aliasing) are forgotten.</summary>
+    public void ForgetPropertyKey(int key)
+    {
+        List<(ValueNode, int)>? remove = null;
+        foreach (KeyValuePair<(ValueNode Object, int Key), ValueNode> e in LoadedProperties)
+        {
+            if (e.Key.Key == key) (remove ??= []).Add(e.Key);
+        }
+        if (remove is not null) foreach ((ValueNode, int) k in remove) LoadedProperties.Remove(k);
+    }
+
+    /// <summary>A store to context slot <paramref name="slot"/> of some context.</summary>
+    public void ForgetContextSlot(int slot)
+    {
+        List<(ValueNode, int, int)>? remove = null;
+        foreach (KeyValuePair<(ValueNode Context, int Depth, int Slot), ValueNode> e in LoadedContextSlots)
+        {
+            if (e.Key.Slot == slot) (remove ??= []).Add(e.Key);
+        }
+        if (remove is not null) foreach ((ValueNode, int, int) k in remove) LoadedContextSlots.Remove(k);
+    }
+
+    static void Intersect<TKey>(Dictionary<TKey, ValueNode> mine, Dictionary<TKey, ValueNode> theirs) where TKey : notnull
+    {
+        List<TKey>? remove = null;
+        foreach (KeyValuePair<TKey, ValueNode> e in mine)
+        {
+            if (!theirs.TryGetValue(e.Key, out ValueNode? v) || !ReferenceEquals(v, e.Value)) (remove ??= []).Add(e.Key);
+        }
+        if (remove is not null) foreach (TKey k in remove) mine.Remove(k);
     }
 
     public NodeInfo? TryGetInfoFor(ValueNode node) => _infos.GetValueOrDefault(node);
@@ -136,6 +211,27 @@ public sealed class KnownNodeAspects
             if (!ReferenceEquals(mine.TruncatedInt32Alternative, theirs.TruncatedInt32Alternative)) mine.TruncatedInt32Alternative = null;
         }
         if (remove is not null) foreach (ValueNode n in remove) _infos.Remove(n);
+        Intersect(LoadedProperties, other.LoadedProperties);
+        Intersect(LoadedContextSlots, other.LoadedContextSlots);
+        Intersect(LoadedContextConstants, other.LoadedContextConstants);
+    }
+
+    /// <summary>Forgets the loaded values that are <paramref name="values"/> or have them as object (a loop's phis).</summary>
+    public void ForgetLoadedInvolving(HashSet<ValueNode> values)
+    {
+        if (values.Count == 0) return;
+        List<(ValueNode, int)>? remove = null;
+        foreach (KeyValuePair<(ValueNode Object, int Key), ValueNode> e in LoadedProperties)
+        {
+            if (values.Contains(e.Key.Object) || values.Contains(e.Value)) (remove ??= []).Add(e.Key);
+        }
+        if (remove is not null) foreach ((ValueNode, int) k in remove) LoadedProperties.Remove(k);
+        List<(ValueNode, int, int)>? removeSlots = null;
+        foreach (KeyValuePair<(ValueNode Context, int Depth, int Slot), ValueNode> e in LoadedContextSlots)
+        {
+            if (values.Contains(e.Key.Context) || values.Contains(e.Value)) (removeSlots ??= []).Add(e.Key);
+        }
+        if (removeSlots is not null) foreach ((ValueNode, int, int) k in removeSlots) LoadedContextSlots.Remove(k);
     }
 
     static Map[] UnionMaps(Map[] a, Map[] b)
@@ -146,7 +242,12 @@ public sealed class KnownNodeAspects
     }
 
     /// <summary>Forget everything (loop headers: the back edge is not known yet).</summary>
-    public void Clear() => _infos.Clear();
+    public void Clear()
+    {
+        _infos.Clear();
+        ClearLoaded();
+        LoadedContextConstants.Clear();
+    }
 }
 
 /// <summary>InterpreterFrameState.</summary>
@@ -447,7 +548,7 @@ public sealed class MergePointInterpreterFrameState
     /// (NewForLoop's is_resumable_loop).
     /// </remarks>
     public void InitializeLoop(MaglevGraphBuilder builder, InterpreterFrameState unmerged, BasicBlock? predecessor,
-        bool loopChangesContext, bool resumable = false)
+        bool loopChangesContext, bool resumable = false, LoopEffects? assumed = null)
     {
         IsResumableLoop = resumable;
         LoopInfo loop = Loop!;
@@ -489,8 +590,20 @@ public sealed class MergePointInterpreterFrameState
         // The back edge can change anything the loop body changes: V8 keeps
         // the stable facts (LoopEffects); V8Sharp starts the loop with the
         // entry's facts about values the loop does not assign, minus unstable maps.
+        // V8Sharp: with the effects the body is assumed to have (LoopEffects,
+        // checked at the back edge), the rest of what the entry knows holds
+        // in the loop too: maps and loaded values (V8 learns the effects by
+        // peeling the loop's first iteration).
         Known = resumable ? new KnownNodeAspects() : unmerged.Known.Clone();
-        Known.ClearUnstableMaps();
+        if (assumed is null)
+        {
+            Known.ClearUnstableMaps();
+            Known.ClearLoaded();
+        }
+        else
+        {
+            assumed.ApplyTo(Known);
+        }
         foreach (Phi phi in Phis)
         {
             // Nothing is known about a loop phi until the back edge is merged.

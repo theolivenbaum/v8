@@ -78,6 +78,54 @@ public class MaglevCodeQualityTest
     [MemberData(nameof(Snippets))]
     public void SameResultWhenOptimized(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
 
+    public static TheoryData<string> LoadEliminationSnippets => new()
+    {
+        // Loaded fields, lengths and context slots reused across a loop whose
+        // body stores some of them (the loop's effects), through aliases, and
+        // with growing arrays and calls.
+        """
+        (function() {
+          var width = 4, height = 3;
+          function f(o, p, a) {
+            var s = 0;
+            for (var i = 0; i < width; i++) {
+              s += o.x + p.x + a.length + a[i % a.length];
+              p.x = p.x + 1;
+              if (i == 2) a.push(i);
+              if (i == 3) width = 3;
+            }
+            width = 4;
+            return s + ':' + o.x + ':' + p.x + ':' + a.length;
+          }
+          function g(o, n) { var t = 0; for (var i = 0; i < n; i++) { t += o.y; o.y = i; height++; t += height; } return t; }
+          var out = [];
+          for (var k = 0; k < 40; k++) {
+            var o = { x: k, y: 1 }, p = (k & 1) ? o : { x: 2 * k, y: 2 }, a = [1, 2, 3];
+            out.push(f(o, p, a), g(o, 5), g(p, 3));
+          }
+          return out.join();
+        })()
+        """,
+        """
+        (function() {
+          function sum(a, n) { var s = 0; for (var j = 0; j < n; j++) for (var i = 0; i < a.length; i++) s += a[i]; return s; }
+          function mutate(a, n) { var s = 0; for (var i = 0; i < n; i++) { s += a.length; if (i % 3 == 0) a.pop(); else a.push(i); } return s + ':' + a.length; }
+          function poly(objs) { var s = 0; for (var i = 0; i < objs.length; i++) { var o = objs[i]; s += o.v; o.v = s; } return s; }
+          var out = [];
+          for (var k = 0; k < 40; k++) {
+            out.push(sum([1, 2, 3, k], 3), sum([1.5, 2], 2), mutate([1, 2, 3], 10));
+            var a = { v: 1 }, b = { w: 0, v: 2 };
+            out.push(poly([a, b, a, b, a]), a.v, b.v);
+          }
+          return out.join();
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(LoadEliminationSnippets))]
+    public void LoadEliminationGivesTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
     [Fact]
     public void UndetectableComparesFollowTheProtector()
     {

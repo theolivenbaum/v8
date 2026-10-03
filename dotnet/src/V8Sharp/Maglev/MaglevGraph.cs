@@ -253,6 +253,35 @@ public sealed class MaglevCompilationInfo
 
     public bool IsTracing => Isolate.Flags.trace_maglev_graph_building;
 
+    // ---- Loop effects (V8: LoopEffects, learnt by loop peeling) -----------------------------------------
+
+    /// <summary>Loop headers keep what the entry knows, minus the effects of the loop body (false: they forget).</summary>
+    public bool OptimisticLoops = true;
+    /// <summary>The effects each loop's body had in an earlier attempt, by (function, header offset).</summary>
+    public Dictionary<(SharedFunctionInfo, int), LoopEffects> LoopHints = new();
+    /// <summary>The loops being built (outermost first), with the effects they assumed and those seen so far.</summary>
+    public readonly List<ActiveLoop> ActiveLoops = [];
+
+    public sealed class ActiveLoop(MaglevCompilationUnit unit, int header, int end, LoopEffects assumed)
+    {
+        public readonly MaglevCompilationUnit Unit = unit;
+        public readonly int Header = header;
+        public readonly int End = end;
+        public readonly LoopEffects Assumed = assumed;
+        public readonly LoopEffects Observed = new();
+    }
+
+    /// <summary>Records an effect of the code being built in every loop it is in.</summary>
+    public void RecordLoopEffect(bool clearsAll = false, int propertyKey = int.MinValue, int contextSlot = int.MinValue)
+    {
+        foreach (ActiveLoop loop in ActiveLoops)
+        {
+            if (clearsAll) loop.Observed.Cleared = true;
+            if (propertyKey != int.MinValue) loop.Observed.PropertyKeys.Add(propertyKey);
+            if (contextSlot != int.MinValue) loop.Observed.ContextSlots.Add(contextSlot);
+        }
+    }
+
     /// <summary>
     /// CompilationDependencies::DependOnProtector: false when the protector is
     /// already invalid; otherwise the code is invalidated with it.
@@ -269,4 +298,47 @@ public sealed class MaglevCompilationInfo
 
     /// <summary>The reason a compilation gave up, for --trace-opt.</summary>
     public string? BailoutReason;
+}
+
+/// <summary>
+/// LoopEffects: what a loop body can change of what is known at its header:
+/// everything (a call or an unknown write: unstable maps and loaded
+/// values), or the loaded values of some property keys and context slots.
+/// </summary>
+public sealed class LoopEffects
+{
+    public bool Cleared;
+    public readonly HashSet<int> PropertyKeys = [];
+    public readonly HashSet<int> ContextSlots = [];
+
+    public bool IsSubsetOf(LoopEffects other) =>
+        other.Cleared || !Cleared && PropertyKeys.IsSubsetOf(other.PropertyKeys) && ContextSlots.IsSubsetOf(other.ContextSlots);
+
+    public LoopEffects Union(LoopEffects other)
+    {
+        var result = new LoopEffects { Cleared = Cleared || other.Cleared };
+        result.PropertyKeys.UnionWith(PropertyKeys);
+        result.PropertyKeys.UnionWith(other.PropertyKeys);
+        result.ContextSlots.UnionWith(ContextSlots);
+        result.ContextSlots.UnionWith(other.ContextSlots);
+        return result;
+    }
+
+    /// <summary>Forgets what the effects can change.</summary>
+    public void ApplyTo(KnownNodeAspects known)
+    {
+        if (Cleared)
+        {
+            known.ClearUnstableMaps();
+            known.ClearLoaded();
+            return;
+        }
+        foreach (int key in PropertyKeys) known.ForgetPropertyKey(key);
+        foreach (int slot in ContextSlots) known.ForgetContextSlot(slot);
+    }
+}
+
+/// <summary>A loop's body had effects its header did not assume: the graph is built again (MaglevCompiler.BuildGraph).</summary>
+public sealed class MaglevRestartException : Exception
+{
 }

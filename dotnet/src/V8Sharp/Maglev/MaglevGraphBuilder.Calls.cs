@@ -689,9 +689,9 @@ public sealed partial class MaglevGraphBuilder
             result = phi;
         }
         _currentBlock = continuation;
+        // (What the callee's nodes changed, its returns' known node aspects
+        // already forget: MarkPossibleSideEffect.)
         _frame.Known = known;
-        // The callee may have changed anything (its stores, its calls).
-        _frame.Known.ClearUnstableMaps();
         AddNewNode(new Node(Opcode.LeaveInlinedFrame)
         {
             Inputs = [_frame.Context],

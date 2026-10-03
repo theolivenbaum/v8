@@ -114,12 +114,11 @@ public static class MaglevCompiler
         if (MaglevGraphBuilder.UnsupportedReason(shared, bytecode) is { } unsupported) return Fail(isolate, shared, unsupported);
         if (!shared.IsUserJavaScript()) return Fail(isolate, shared, "not user JavaScript");
 
-        var info = new MaglevCompilationInfo(isolate, function, osrOffset);
+        MaglevCompilationInfo info;
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         try
         {
-            var builder = new MaglevGraphBuilder(info, info.Toplevel);
-            builder.Build();
+            info = BuildGraph(isolate, function, osrOffset);
             FinalizeGraph(info.Graph);
             if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph, !SpeculativeUntaggingDisabled(shared));
             if (isolate.Flags.maglev_truncation) MaglevTruncation.Run(info.Graph);
@@ -171,6 +170,33 @@ public static class MaglevCompiler
         }
     }
 
+    /// <summary>
+    /// MaglevGraphBuilder::Build, again when a loop's effects contradict what
+    /// its header assumed (MaglevRestartException): the next attempt starts
+    /// that loop with the effects the previous one saw (V8 peels the loop's
+    /// first iteration to learn them instead). After a few attempts, every
+    /// loop header forgets what the body could change.
+    /// </summary>
+    static MaglevCompilationInfo BuildGraph(Isolate isolate, JSFunction function, int osrOffset)
+    {
+        Dictionary<(SharedFunctionInfo, int), LoopEffects>? hints = null;
+        for (int attempt = 0; ; attempt++)
+        {
+            var info = new MaglevCompilationInfo(isolate, function, osrOffset) { OptimisticLoops = attempt < 4 };
+            if (hints is not null) info.LoopHints = hints;
+            try
+            {
+                new MaglevGraphBuilder(info, info.Toplevel).Build();
+                return info;
+            }
+            catch (MaglevRestartException)
+            {
+                hints = info.LoopHints;
+                if (info.IsTracing) Console.WriteLine("[maglev] restarting the graph with the loop effects learnt");
+            }
+        }
+    }
+
     // ---- Concurrent compilation (MaglevConcurrentDispatcher) -----------------------------------------------
 
     /// <summary>
@@ -196,12 +222,11 @@ public static class MaglevCompiler
         if (MaglevGraphBuilder.UnsupportedReason(shared, bytecode) is { } unsupported) return Fail(isolate, shared, unsupported) is not null;
         if (!shared.IsUserJavaScript()) return Fail(isolate, shared, "not user JavaScript") is not null;
 
-        var info = new MaglevCompilationInfo(isolate, function, osrOffset);
+        MaglevCompilationInfo info;
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         try
         {
-            var builder = new MaglevGraphBuilder(info, info.Toplevel);
-            builder.Build();
+            info = BuildGraph(isolate, function, osrOffset);
             FinalizeGraph(info.Graph);
             if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph, !SpeculativeUntaggingDisabled(shared));
             if (isolate.Flags.maglev_truncation) MaglevTruncation.Run(info.Graph);
