@@ -137,7 +137,7 @@ public sealed partial class ScopeInfo : IScopeInfo
                     // Due to duplicate parameters, context locals aren't guaranteed to
                     // come in order.
                     int localIndex = var.index() - contextHeaderLength;
-                    names[localIndex] = factory.InternalizeString(var.raw_name().Value);
+                    names[localIndex] = factory.InternalizeString(var.raw_name());
                     infos[localIndex] = VariablePropertiesBits.Encode(var.mode(), var.initialization_flag(), var.maybe_assigned(),
                         false, RelativePosition(scope, var), var.is_static_flag());
                     break;
@@ -147,7 +147,7 @@ public sealed partial class ScopeInfo : IScopeInfo
                     int properties = VariablePropertiesBits.Encode(var.mode(), var.initialization_flag(), var.maybe_assigned(),
                         false, RelativePosition(scope, var), var.is_static_flag());
                     moduleVariables[moduleVarNumber++] =
-                        new ModuleVariableEntry(factory.InternalizeString(var.raw_name().Value), var.index(), properties);
+                        new ModuleVariableEntry(factory.InternalizeString(var.raw_name()), var.index(), properties);
                     break;
                 }
             }
@@ -181,7 +181,7 @@ public sealed partial class ScopeInfo : IScopeInfo
             Variable classVariable = scope.AsClassScope().class_variable()!;
             scopeInfo.SavedClassVariableInfo = scopeInfo.HasInlinedLocalNames
                 ? JSValue.FromInt(classVariable.index())
-                : factory.InternalizeString(classVariable.raw_name().Value);
+                : factory.InternalizeString(classVariable.raw_name());
         }
 
         // If present, add the function variable name and its index.
@@ -193,7 +193,7 @@ public sealed partial class ScopeInfo : IScopeInfo
             if (var is not null)
             {
                 varIndex = var.index();
-                name = factory.InternalizeString(var.raw_name().Value);
+                name = factory.InternalizeString(var.raw_name());
             }
             scopeInfo.FunctionVariableName = name;
             scopeInfo.FunctionVariableContextOrStackSlotIndex = varIndex;

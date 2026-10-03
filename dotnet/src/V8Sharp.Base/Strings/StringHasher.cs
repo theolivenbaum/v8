@@ -493,17 +493,19 @@ public static class StringHasher
     /// <summary>Whether every code unit is &lt;= 0xFF.</summary>
     public static bool IsOnly8Bit(ReadOnlySpan<char> chars) => !chars.ContainsAnyExceptInRange((char)0, (char)0xFF);
 
-    static ulong GetRapidHash(ReadOnlySpan<char> chars, HashSeed seed, out bool oneByteContent)
+    // oneByteHint: 1 when the caller knows every code unit is <= 0xFF (V8: a
+    // one-byte string), 0 when it knows one is not, -1 when it does not know.
+    static ulong GetRapidHash(ReadOnlySpan<char> chars, HashSeed seed, int oneByteHint, out bool oneByteContent)
     {
         // For 2-byte strings we need to preserve the same hash for strings in just
         // the latin-1 range.
-        oneByteContent = IsOnly8Bit(chars);
+        oneByteContent = oneByteHint < 0 ? IsOnly8Bit(chars) : oneByteHint != 0;
         if (oneByteContent) return RapidHash.HashConvertingTo8Bit(chars, seed.seed, seed.secret);
         return RapidHash.HashUtf16(chars, seed.seed, seed.secret);
     }
 
-    static uint GetUsableRapidHash(ReadOnlySpan<char> chars, HashSeed seed, out bool oneByteContent) =>
-        ConvertRawHashToUsableHash(GetRapidHash(chars, seed, out oneByteContent));
+    static uint GetUsableRapidHash(ReadOnlySpan<char> chars, HashSeed seed, int oneByteHint, out bool oneByteContent) =>
+        ConvertRawHashToUsableHash(GetRapidHash(chars, seed, oneByteHint, out oneByteContent));
 
     public static uint GetTrivialHash(uint length)
     {
@@ -591,7 +593,19 @@ public static class StringHasher
 
     /// <summary>As above; oneByteContent reports whether the content fits in
     /// one byte (only meaningful when the content was scanned).</summary>
-    public static uint HashSequentialString(ReadOnlySpan<char> chars, HashSeed seed, out bool oneByteContent)
+    public static uint HashSequentialString(ReadOnlySpan<char> chars, HashSeed seed, out bool oneByteContent) =>
+        HashSequentialString(chars, seed, -1, out oneByteContent);
+
+    /// <summary>
+    /// As above, for characters the caller knows to be one-byte (all &lt;= 0xFF:
+    /// V8's uint8_t instantiation, the scanner's literal buffer knows), so the
+    /// content is not scanned for it. Two-byte content is scanned, as V8 does
+    /// for uint16_t strings, so that Latin-1 content hashes as one-byte.
+    /// </summary>
+    public static uint HashSequentialString(ReadOnlySpan<char> chars, HashSeed seed, bool isOneByte) =>
+        HashSequentialString(chars, seed, isOneByte ? 1 : -1, out _);
+
+    static uint HashSequentialString(ReadOnlySpan<char> chars, HashSeed seed, int oneByteHint, out bool oneByteContent)
     {
         oneByteContent = false;
         int length = chars.Length;
@@ -615,7 +629,7 @@ public static class StringHasher
                         if (TryParseIntegerIndex(chars, i, index) == IndexParseResult.kSuccess)
                         {
                             uint hash = NameHashField.CreateHashFieldValue(
-                                GetUsableRapidHash(chars, seed, out oneByteContent),
+                                GetUsableRapidHash(chars, seed, oneByteHint, out oneByteContent),
                                 NameHashField.HashFieldType.kIntegerIndex);
                             if (NameHashField.ContainsCachedArrayIndex(hash))
                             {
@@ -639,7 +653,7 @@ public static class StringHasher
         }
 
         // Non-index hash.
-        return NameHashField.CreateHashFieldValue(GetUsableRapidHash(chars, seed, out oneByteContent),
+        return NameHashField.CreateHashFieldValue(GetUsableRapidHash(chars, seed, oneByteHint, out oneByteContent),
                                                   NameHashField.HashFieldType.kHash);
     }
 

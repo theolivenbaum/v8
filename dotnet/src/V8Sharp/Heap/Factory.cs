@@ -135,6 +135,18 @@ public sealed partial class Factory(Isolate isolate)
 
     public JSString InternalizeString(ReadOnlySpan<char> s) => _isolate.StringTable.LookupString(s);
 
+    /// <summary>
+    /// AstRawString::Internalize: the internalized string of a parser string,
+    /// looked up with the hash the AstValueFactory computed and kept on it.
+    /// </summary>
+    public JSString InternalizeString(Ast.AstRawString s)
+    {
+        if (s.string_ is JSString cached) return cached;
+        JSString result = _isolate.StringTable.LookupString(s.Value, s.raw_hash_field());
+        s.set_string(result);
+        return result;
+    }
+
     /// <summary>Factory::InternalizeName: internalizes strings, returns symbols unchanged.</summary>
     public Name InternalizeName(Name name) => name is JSString s ? InternalizeString(s) : name;
 

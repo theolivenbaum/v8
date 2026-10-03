@@ -10,12 +10,13 @@
 // deduplicated per AstValueFactory, so reference equality is content equality
 // within one factory, as in V8.
 //
-// Deviation: V8 hashes with StringHasher and the isolate's hash seed and
-// packs array-index information into the hash field. Here the hash is .NET's
-// (only used for hash tables, never for output order), and the integer/array
-// index facts are computed directly with V8's rules.
+// As in V8, an AstRawString carries its raw hash field (StringHasher with the
+// default hash seed, V8Sharp.Base), with the array-index information packed
+// into it; the engine's StringTable is keyed by the same hash, so
+// internalizing an AstRawString does not hash it again.
 
 using System.Runtime.CompilerServices;
+using V8Sharp.Base.Strings;
 
 namespace V8Sharp.Ast;
 
@@ -23,7 +24,7 @@ public sealed class AstRawString
 {
     private readonly string _value;
     private readonly bool _isOneByte;
-    private readonly int _hash;
+    private readonly uint _rawHashField;
     // Array index / integer index facts (V8 keeps these in raw_hash_field_).
     private readonly bool _isIntegerIndex;
     private readonly bool _isArrayIndex;
@@ -35,14 +36,17 @@ public sealed class AstRawString
     // The internalized heap string, set by the engine (V8: string_ / set_string).
     public object? string_ { get; private set; }
 
-    internal AstRawString(string value, bool isOneByte) : this(value, isOneByte, AstStringTable.Hash(value)) { }
+    internal AstRawString(string value, bool isOneByte) : this(value, isOneByte, AstStringTable.Hash(value, isOneByte)) { }
 
-    internal AstRawString(string value, bool isOneByte, int hash)
+    internal AstRawString(string value, bool isOneByte, uint rawHashField)
     {
         _value = value;
         _isOneByte = isOneByte;
-        _hash = hash;
-        ComputeIndex(value, out _isIntegerIndex, out _isArrayIndex, out _arrayIndex);
+        _rawHashField = rawHashField;
+        // V8 reads these from the hash field (AstRawString::AsArrayIndex); a
+        // string that is not an integer index says so in its hash field.
+        if (NameHashField.IsIntegerIndex(rawHashField))
+            ComputeIndex(value, out _isIntegerIndex, out _isArrayIndex, out _arrayIndex);
     }
 
     private static void ComputeIndex(string s, out bool isIntegerIndex, out bool isArrayIndex, out uint arrayIndex)
@@ -120,9 +124,11 @@ public sealed class AstRawString
     public bool IsPrivateName() => length() > 0 && FirstCharacter() == '#';
 
     // For storing AstRawStrings in a hash map.
-    public uint Hash() => (uint)_hash;
+    public uint Hash() => _rawHashField >> NameHashField.HashBits.kShift;
 
-    public override int GetHashCode() => _hash;
+    public uint raw_hash_field() => _rawHashField;
+
+    public override int GetHashCode() => (int)_rawHashField;
 
     // Reference equality: strings are unique per factory.
     public override bool Equals(object? obj) => ReferenceEquals(this, obj);
@@ -362,7 +368,7 @@ public sealed class AstValueFactory
                 return _stringConstants.one_character_string(key);
             }
         }
-        int hash = AstStringTable.Hash(literal);
+        uint hash = AstStringTable.Hash(literal, isOneByte);
         AstRawString? existing = _constantsTable.Lookup(literal, hash) ?? _stringTable.Lookup(literal, hash);
         if (existing != null) return existing;
         var result = new AstRawString(literal.ToString(), isOneByte, hash);
@@ -494,25 +500,25 @@ internal sealed class AstStringTable
 
     public AstStringTable(int capacity = 256) => _slots = new AstRawString?[capacity];
 
-    // FNV-1a over the code units: cheap for the short identifiers the
-    // scanner produces. Only used for hash tables, never for output order.
+    // The raw hash field V8's AstValueFactory computes (StringHasher::
+    // HashSequentialString with the hash seed; one-byte literals are not
+    // scanned for their width again).
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int Hash(ReadOnlySpan<char> s)
-    {
-        uint h = 2166136261u;
-        for (int i = 0; i < s.Length; i++) h = (h ^ s[i]) * 16777619u;
-        return (int)(h ^ (h >> 15));
-    }
+    public static uint Hash(ReadOnlySpan<char> s, bool isOneByte) =>
+        StringHasher.HashSequentialString(s, HashSeed.Default, isOneByte);
 
-    public AstRawString? Lookup(ReadOnlySpan<char> literal, int hash)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int FirstProbe(uint rawHashField, int mask) => (int)(rawHashField >> NameHashField.HashBits.kShift) & mask;
+
+    public AstRawString? Lookup(ReadOnlySpan<char> literal, uint hash)
     {
         AstRawString?[] slots = _slots;
         int mask = slots.Length - 1;
-        for (int i = hash & mask; ; i = (i + 1) & mask)
+        for (int i = FirstProbe(hash, mask); ; i = (i + 1) & mask)
         {
             AstRawString? s = slots[i];
             if (s == null) return null;
-            if (s.GetHashCode() == hash && literal.SequenceEqual(s.Value)) return s;
+            if (s.raw_hash_field() == hash && literal.SequenceEqual(s.Value)) return s;
         }
     }
 
@@ -526,7 +532,7 @@ internal sealed class AstStringTable
     private static void Insert(AstRawString?[] slots, AstRawString s)
     {
         int mask = slots.Length - 1;
-        int i = s.GetHashCode() & mask;
+        int i = FirstProbe(s.raw_hash_field(), mask);
         while (slots[i] != null) i = (i + 1) & mask;
         slots[i] = s;
     }

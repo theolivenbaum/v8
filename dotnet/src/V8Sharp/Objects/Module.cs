@@ -513,7 +513,7 @@ public sealed class SourceTextModuleInfo
         return false;
     }
 
-    static JSString? ToStringOrNull(Factory factory, AstRawString? s) => s is null ? null : factory.InternalizeString(s.Value);
+    static JSString? ToStringOrNull(Factory factory, AstRawString? s) => s is null ? null : factory.InternalizeString(s);
 
     /// <summary>SourceTextModuleDescriptor::Entry::Serialize.</summary>
     static SourceTextModuleInfoEntry Serialize(Factory factory, SourceTextModuleDescriptor.Entry entry) =>
@@ -531,12 +531,12 @@ public sealed class SourceTextModuleInfo
         int i = 0;
         foreach (KeyValuePair<AstRawString, (AstRawString value, Parsing.Scanner.Location location)> kv in attributes)
         {
-            importAttributesArray.Set(i, factory.InternalizeString(kv.Key.Value));
-            importAttributesArray.Set(i + 1, factory.InternalizeString(kv.Value.value.Value));
+            importAttributesArray.Set(i, factory.InternalizeString(kv.Key));
+            importAttributesArray.Set(i + 1, factory.InternalizeString(kv.Value.value));
             importAttributesArray.Set(i + 2, JSValue.FromInt(kv.Value.location.beg_pos));
             i += ModuleRequest.kAttributeEntrySize;
         }
-        return new ModuleRequest(factory.InternalizeString(request.specifier().Value), request.phase(), importAttributesArray,
+        return new ModuleRequest(factory.InternalizeString(request.specifier()), request.phase(), importAttributesArray,
             request.position());
     }
 
@@ -576,8 +576,8 @@ public sealed class SourceTextModuleInfo
             do { ++next; } while (next < map.Count && ReferenceEquals(map[next].Key, map[it].Key));
             var exportNames = new JSString[next - it];
             SourceTextModuleDescriptor.Entry first = map[it].Value;
-            for (int i = 0; it < next; ++it) exportNames[i++] = factory.InternalizeString(map[it].Value.export_name!.Value);
-            regularExports.Add(new RegularExport(factory.InternalizeString(first.local_name!.Value), first.cell_index,
+            for (int i = 0; it < next; ++it) exportNames[i++] = factory.InternalizeString(map[it].Value.export_name!);
+            regularExports.Add(new RegularExport(factory.InternalizeString(first.local_name!), first.cell_index,
                 exportNames));
         }
         result.RegularExports = [.. regularExports];

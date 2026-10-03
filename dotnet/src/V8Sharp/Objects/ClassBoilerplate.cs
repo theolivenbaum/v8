@@ -107,7 +107,7 @@ public sealed class ClassBoilerplate() : HeapObject(InstanceType.ClassBoilerplat
             Literal keyLiteral = property.key().AsLiteral()!;
             JSValue key = keyLiteral.AsArrayIndex(out uint index)
                 ? JSValue.FromNumber(index)
-                : isolate.Factory.InternalizeString(keyLiteral.AsRawPropertyName().Value);
+                : isolate.Factory.InternalizeString(keyLiteral.AsRawPropertyName());
             members.Add(new Member(property.is_static(), valueKind, false, key, -1, valueIndex));
         }
 

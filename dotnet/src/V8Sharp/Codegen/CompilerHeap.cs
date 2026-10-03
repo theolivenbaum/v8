@@ -206,12 +206,7 @@ public sealed class CompilerHeap(Isolate isolate, Script script) : IBytecodeGene
 
     object InternalizeRawString(AstRawString s) => InternalizeRawString(isolate, s);
 
-    static JSString InternalizeRawString(Isolate isolate, AstRawString s)
-    {
-        JSString result = isolate.Factory.InternalizeString(s.Value);
-        s.set_string(result);
-        return result;
-    }
+    static JSString InternalizeRawString(Isolate isolate, AstRawString s) => isolate.Factory.InternalizeString(s);
 
     /// <summary>
     /// A function name as an internalized string. A one-segment name (most of
