@@ -159,6 +159,13 @@ for now, to be revisited when the reason goes away.
 - RegExp: no interrupt/stack-guard polling in the bytecode interpreter or the
   NFA interpreter (no isolate), so they never return RETRY; the backtrack
   stack is limited to V8's 64 MB (EXCEPTION on overflow).
+- RegExp bytecode interpreter (structure only): `RawMatch` keeps the
+  backtrack stack in locals (an int array cached per thread, as V8 keeps its
+  RegExpStack on the isolate) instead of a stack object, has no try/finally,
+  and runs SkipUntilOneOfMasked(3) and the case-insensitive back references
+  in separate methods, so that RyuJIT keeps the dispatch state in registers
+  and inlines the operand reads (in one large method its inlining budget ran
+  out and every operand read was a call).
 - RegExp native tier: RegExpMacroAssemblerIL has no CheckPreemption at
   backtracks and no JS stack guard check in the prologue (no isolate), like
   the interpreter above. Positions are absolute char indices where x64 keeps
