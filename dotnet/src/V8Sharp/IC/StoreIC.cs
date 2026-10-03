@@ -120,6 +120,18 @@ public sealed class StoreIC : IC
         }
     }
 
+    /// <summary>
+    /// The field store case of <see cref="TryStoreOwnField"/> alone (no
+    /// transition, so nothing that calls out).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool TryStoreField(JSObject obj, StoreHandler handler, JSValue value)
+    {
+        if (handler.HandlerKind != StoreHandler.Kind.kField || !FitsField(handler, value)) return false;
+        JSValue.StoreSlot(ref obj.FieldAt(handler.FieldIndex), handler.Representation.IsDouble ? CanonicalizeDouble(value) : value);
+        return true;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static bool FitsField(StoreHandler handler, in JSValue value)
     {
@@ -142,8 +154,11 @@ public sealed class StoreIC : IC
         Map? fieldClass = handler.FieldTypeClass;
         if (fieldClass is not null)
         {
-            // A field with a class field type accepts only objects with that map.
-            return value._obj is JSReceiver r && ReferenceEquals(r.Map, fieldClass);
+            // A field with a class field type accepts only objects with that map
+            // (the receiver test by instance type: a type test of the class is
+            // a call to the cast helper).
+            HeapObject? o = value._obj;
+            return o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver && ReferenceEquals(Unsafe.As<JSReceiver>(o).Map, fieldClass);
         }
         return true;
     }

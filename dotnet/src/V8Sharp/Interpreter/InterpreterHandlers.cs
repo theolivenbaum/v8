@@ -432,8 +432,71 @@ public static partial class InterpreterExecution
         return KeyedLoadIC.Load(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, obj, acc);
     }
 
+    /// <summary>
+    /// SetNamedProperty after the loop's inline monomorphic hits: the cases of
+    /// HandleStoreICHandlerCase that need no call (a monomorphic or
+    /// polymorphic field store) and JavaScript setters (prototype accessors
+    /// and own accessor pairs) entered in this loop through
+    /// InterpreterInlineCalls.TryEnterFast; everything else (transitions, the
+    /// megamorphic stub cache, misses) is <see cref="SetNamedPropertySlow"/>.
+    /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     static bool SetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
+        where TS : struct, IOperandScale
+    {
+        int S = Scale<TS>();
+        HeapObject? o = Reg<TS>(ref fp, ref ip, 1)._obj;
+        if (o is not null && InstanceTypeChecks.IsJSObject(o.InstanceType) && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
+            if ((uint)(slot + 1) < (uint)slots.Length)
+            {
+                var obj = Unsafe.As<JSObject>(o);
+                Map map = obj.Map;
+                HeapObject? feedback = slots[slot]._obj;
+                HeapObject? found = null;
+                if (ReferenceEquals(feedback, map)) found = slots[slot + 1]._obj;
+                else if (feedback is FixedArray polymorphic)
+                {
+                    JSValue[] data = polymorphic._data;
+                    for (int i = 0; i + 1 < data.Length; i += 2)
+                    {
+                        if (ReferenceEquals(data[i]._obj, map))
+                        {
+                            found = data[i + 1]._obj;
+                            break;
+                        }
+                    }
+                }
+                if (found is StoreHandler handler)
+                {
+                    if (StoreIC.TryStoreField(obj, handler, acc)) return false;
+                    // StoreNamedOrSetter's setter cases (a prototype handler
+                    // applies to fast-mode receivers only), called like a
+                    // CallProperty1 with the receiver and the value.
+                    StoreHandler.Kind kind = handler.HandlerKind;
+                    JSFunction? setter = !handler.IsValid ? null
+                        : kind == StoreHandler.Kind.kAccessorFromPrototype ? (obj.HasFastProperties ? handler.Data._obj as JSFunction : null)
+                        : kind == StoreHandler.Kind.kAccessorPair ? Unsafe.As<AccessorPair>(handler.Data._obj!).Setter._obj as JSFunction
+                        : null;
+                    if (typeof(TS) == typeof(SingleScale) && setter is not null)
+                    {
+                        int pc = PcOf(ref fp, ref ip);
+                        if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 3 * S, ref Unsafe.NullRef<JSValue>(), setter,
+                                JSValue.FromObject(obj), new Baseline.BaselineCalls.OneArgument(acc)))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return SetNamedPropertySlow<TS>(isolate, ref st, ref fp, ref ip, acc);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool SetNamedPropertySlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip, JSValue acc)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
