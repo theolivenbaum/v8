@@ -114,6 +114,7 @@ public static class MaglevCompiler
             if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph);
             ComputeUseCounts(info.Graph);
             ElideArgumentsObjects(info.Graph);
+            CheckStackSlots(info.Graph);
             if (isolate.Flags.print_maglev_graph) MaglevGraphPrinter.Print(info, Console.Out);
             long graphBuilt = System.Diagnostics.Stopwatch.GetTimestamp();
             if (byTieringManager && info.Graph.NodeCount > kMaxTieringGraphNodes)
@@ -194,6 +195,7 @@ public static class MaglevCompiler
             if (isolate.Flags.maglev_untagged_phis) MaglevPhiRepresentationSelector.Run(info.Graph);
             ComputeUseCounts(info.Graph);
             ElideArgumentsObjects(info.Graph);
+            CheckStackSlots(info.Graph);
             if (isolate.Flags.print_maglev_graph) MaglevGraphPrinter.Print(info, Console.Out);
             if (info.Graph.NodeCount > kMaxTieringGraphNodes)
             {
@@ -281,6 +283,13 @@ public static class MaglevCompiler
     {
         while (Volatile.Read(ref isolate.MaglevJobsInFlight) > 0) Thread.Sleep(1);
         InstallConcurrentCode(isolate);
+    }
+
+    /// <summary>MaglevCompiler::Compile's kMaxStackSlots bailout (MaglevStackSlots).</summary>
+    static void CheckStackSlots(Graph graph)
+    {
+        int slots = MaglevStackSlots.MaxLiveValues(graph);
+        if (slots > MaglevStackSlots.kMaxStackSlots) throw new MaglevBailoutException($"too many stack slots ({slots})");
     }
 
     static MaglevCode? Fail(Isolate isolate, SharedFunctionInfo shared, string reason)

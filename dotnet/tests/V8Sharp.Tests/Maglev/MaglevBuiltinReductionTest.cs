@@ -37,6 +37,29 @@ public class MaglevBuiltinReductionTest
     public void SameResultWhenOptimized(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
 
     [Fact]
+    public void FunctionsWithTooManyLiveValuesAreNotOptimized()
+    {
+        // maglev-compiler.cc kMaxStackSlots (mjsunit/maglev/regress-536945254):
+        // 600 int32 values live at once need more than 4 KB of stack slots.
+        Assert.Equal("true,0,true,8", MaglevCompilerTest.Run("--maglev", """
+            function build(count) {
+              let defs = '', sum = '0';
+              for (let i = 0; i < count; i++) { defs += `let v${i} = (a ^ ${i}) | 0;`; sum += ` + v${i}`; }
+              return Function(`return function wide(a) { a |= 0; ${defs} return ${sum}; };`)();
+            }
+            var r = [];
+            for (const count of [600, 100]) {
+              const wide = build(count);
+              %PrepareFunctionForOptimization(wide);
+              const expected = wide(5);
+              %OptimizeMaglevOnNextCall(wide);
+              r.push(wide(5) === expected, %GetOptimizationStatus(wide) & 8);
+            }
+            r.join();
+            """));
+    }
+
+    [Fact]
     public void ArrayPushIsReducedAndDeoptsOnAnImpossibleType()
     {
         // mjsunit/maglev/array-push-with-smi-object.
