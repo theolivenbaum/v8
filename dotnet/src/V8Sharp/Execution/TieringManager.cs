@@ -120,8 +120,15 @@ public sealed class TieringManager(Isolate isolate)
     /// CodeLoad evaluates fresh code all the time). --always-sparkplug is not
     /// affected.
     /// </summary>
-    static bool DelaysSparkplug(Isolate isolate) =>
-        isolate.Flags.invocation_count_for_sparkplug > isolate.Flags.invocation_count_for_feedback_allocation;
+    /// (A program that sets --invocation-count-for-feedback-allocation alone,
+    /// as V8's tests do to drive the tier-up, gets V8's behaviour.)
+    static bool DelaysSparkplug(Isolate isolate)
+    {
+        FlagList flags = isolate.Flags;
+        return flags.invocation_count_for_sparkplug > flags.invocation_count_for_feedback_allocation &&
+               (!flags.IsExplicitlySet("invocation_count_for_feedback_allocation") ||
+                flags.IsExplicitlySet("invocation_count_for_sparkplug"));
+    }
 
     /// <summary>maglev::IsMaglevEnabled.</summary>
     static bool IsMaglevEnabled(Isolate isolate) => isolate.UseOptimizer;
