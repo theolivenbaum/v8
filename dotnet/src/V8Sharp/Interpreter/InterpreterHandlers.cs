@@ -255,6 +255,19 @@ public static partial class InterpreterExecution
         StoreGlobalIC.Store(isolate, InterpreterRuntime.FrameFeedbackVector(ref fp), slot, InterpreterRuntime.FrameContext(ref fp), name, acc);
     }
 
+    /// <summary>
+    /// Whether a call of <paramref name="callee"/> can take the fast call
+    /// handler (InterpreterInlineCalls.TryEnterFast): a JSFunction whose
+    /// cached call mode runs it in this loop. The loop calls the general
+    /// handler directly otherwise, so a call of a builtin does not pass
+    /// through the fast handler's frame and checks first.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsInlineCallee(in JSValue callee) =>
+        callee._obj is JSFunction function &&
+        (uint)(function.Shared.InterpreterCallMode - InterpreterInlineCalls.kCallModeInline) <=
+        InterpreterInlineCalls.kCallModeInlineSloppy - InterpreterInlineCalls.kCallModeInline;
+
     // ---- Property loads and stores --------------------------------------------------
 
     /// <summary>
@@ -263,10 +276,12 @@ public static partial class InterpreterExecution
     /// no call (monomorphic or polymorphic field and prototype constant hits),
     /// and JavaScript getters on the prototype chain or own accessor pairs
     /// entered in this loop (InterpreterInlineCalls.TryEnterFast); everything
-    /// else is <see cref="GetNamedPropertySlow"/>. Returns the value, or
+    /// else is <see cref="GetNamedPropertySlow"/>. Returns the value,
     /// InterpreterInlineCalls.FrameEntered when a getter's frame was entered
     /// (returning the value in registers, rather than storing it in
-    /// st.Accumulator for the loop to load again).
+    /// st.Accumulator for the loop to load again), or
+    /// InterpreterInlineCalls.NotHandled, and the loop calls the slow handler
+    /// itself (no second call layer for dictionary-mode and other loads).
     /// </summary>
     // A separate method so that this path has no calls: the slow path's
     // inlined EnterInline and IC dispatch made RyuJIT save six registers and
@@ -330,6 +345,10 @@ public static partial class InterpreterExecution
                                 return value;
                             }
                         }
+                        if (kind == LoadHandler.Kind.kNormal)
+                        {
+                            return GetNamedPropertyNormal<TS>(isolate, ref st, ref fp, ref ip, o, map, handler);
+                        }
                         // A JavaScript getter (a function that runs in this loop
                         // has no builtin fast path, which LoadNamedOrGetter tries
                         // first): called like a CallProperty0 with the receiver.
@@ -350,7 +369,45 @@ public static partial class InterpreterExecution
                 }
             }
         }
-        return GetNamedPropertySlow<TS>(isolate, ref st, ref fp, ref ip) ? InterpreterInlineCalls.FrameEntered : st.Accumulator;
+        return InterpreterInlineCalls.NotHandled;
+    }
+
+    /// <summary>
+    /// LoadHandler::LoadNormal for the fast handler: the property dictionary of
+    /// the receiver, or of the holder when the receiver is fast (the same
+    /// conditions as LoadIC.LoadNamedCore); a JavaScript getter in an accessor
+    /// pair is entered in this loop. Anything else is not handled.
+    /// </summary>
+    // Out of line so the fast handler stays call-free (object literals with
+    // accessors are dictionary-mode: their getters took the slow handler).
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue GetNamedPropertyNormal<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip,
+        HeapObject o, Map map, LoadHandler handler)
+        where TS : struct, IOperandScale
+    {
+        if ((handler.Holder is null ? map.IsDictionaryMap : !map.IsDictionaryMap) &&
+            (handler.Holder ?? o) is JSObject { HasFastProperties: false } holder && holder is not JSGlobalObject)
+        {
+            int S = Scale<TS>();
+            var name = InterpreterRuntime.FrameBytecode(ref fp).ConstantPoolValues![Unsigned<TS>(ref ip, 1 + S)].UncheckedAs<Name>();
+            NameDictionary dictionary = holder.PropertyDictionary;
+            InternalIndex entry = dictionary.FindEntry(name);
+            if (entry.IsFound)
+            {
+                JSValue value = dictionary.ValueAt(entry);
+                if (dictionary.DetailsAt(entry).Kind == PropertyKind.Data) return value;
+                if (typeof(TS) == typeof(SingleScale) && value._obj is AccessorPair pair && pair.Getter._obj is JSFunction getter)
+                {
+                    int pc = PcOf(ref fp, ref ip);
+                    if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 3 * S, ref Unsafe.NullRef<JSValue>(), getter,
+                            JSValue.FromObject(o), new Baseline.BaselineCalls.NoArguments()))
+                    {
+                        return InterpreterInlineCalls.FrameEntered;
+                    }
+                }
+            }
+        }
+        return InterpreterInlineCalls.NotHandled;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

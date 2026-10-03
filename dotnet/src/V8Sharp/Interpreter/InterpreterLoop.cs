@@ -354,7 +354,13 @@ public static partial class InterpreterExecution
                         }
                     }
                     {
-                        JSValue loaded = GetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        JSValue loaded = o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver
+                            ? GetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip)
+                            : InterpreterInlineCalls.NotHandled;
+                        if (ReferenceEquals(loaded._obj, InterpreterInlineCalls.NotHandledMarker))
+                        {
+                            loaded = GetNamedPropertySlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip) ? InterpreterInlineCalls.FrameEntered : st.Accumulator;
+                        }
                         if (ReferenceEquals(loaded._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
                         acc = loaded;
                     }
@@ -405,7 +411,7 @@ public static partial class InterpreterExecution
                             }
                         }
                     }
-                    acc = GetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    acc = o is JSTypedArray ? GetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc) : GetKeyedPropertySlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 1 + 2 * S);
                     continue;
                 }
@@ -441,7 +447,9 @@ public static partial class InterpreterExecution
                     }
                     if ((Bytecode)ip == Bytecode.SetNamedProperty)
                     {
-                        if (SetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) goto entered;
+                        if (o is not null && InstanceTypeChecks.IsJSObject(o.InstanceType)
+                            ? SetNamedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)
+                            : SetNamedPropertySlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) goto entered;
                     }
                     else DefineNamedOwnProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
@@ -464,7 +472,7 @@ public static partial class InterpreterExecution
                             continue;
                         }
                     }
-                    if (!SetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) SetKeyedPropertySlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
+                    if (o is not JSTypedArray || !SetKeyedProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc)) SetKeyedPropertySlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip, acc);
                     ip = ref Unsafe.Add(ref ip, 1 + 3 * S);
                     continue;
                 }
@@ -691,7 +699,8 @@ public static partial class InterpreterExecution
                 case Bytecode.CallAnyReceiver:
                 case Bytecode.CallProperty:
                     {
-                        JSValue called = CallProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
+                            ? CallProperty<TS>(st.Isolate, ref st, ref fpSlot, ref ip) : CallPropertySlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
                         if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
                         acc = called;
                     }
@@ -699,7 +708,8 @@ public static partial class InterpreterExecution
                     continue;
                 case Bytecode.CallProperty0:
                     {
-                        JSValue called = CallProperty0<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
+                            ? CallProperty0<TS>(st.Isolate, ref st, ref fpSlot, ref ip) : CallProperty0Slow<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
                         if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
                         acc = called;
                     }
@@ -707,7 +717,8 @@ public static partial class InterpreterExecution
                     continue;
                 case Bytecode.CallProperty1:
                     {
-                        JSValue called = CallProperty1<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
+                            ? CallProperty1<TS>(st.Isolate, ref st, ref fpSlot, ref ip) : CallProperty1Slow<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
                         if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
                         acc = called;
                     }
@@ -715,7 +726,8 @@ public static partial class InterpreterExecution
                     continue;
                 case Bytecode.CallProperty2:
                     {
-                        JSValue called = CallProperty2<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        JSValue called = RegAt(ref fpSlot, Signed<TS>(ref ip, 1))._obj is JSFunction
+                            ? CallProperty2<TS>(st.Isolate, ref st, ref fpSlot, ref ip) : CallProperty2Slow<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
                         if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
                         acc = called;
                     }
@@ -723,7 +735,8 @@ public static partial class InterpreterExecution
                     continue;
                 case Bytecode.CallUndefinedReceiver:
                     {
-                        JSValue called = CallUndefinedReceiver<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
+                            ? CallUndefinedReceiver<TS>(st.Isolate, ref st, ref fpSlot, ref ip) : CallUndefinedReceiverSlow<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
                         if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
                         acc = called;
                     }
@@ -731,7 +744,8 @@ public static partial class InterpreterExecution
                     continue;
                 case Bytecode.CallUndefinedReceiver0:
                     {
-                        JSValue called = CallUndefinedReceiver0<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
+                            ? CallUndefinedReceiver0<TS>(st.Isolate, ref st, ref fpSlot, ref ip) : CallUndefinedReceiver0Slow<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
                         if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
                         acc = called;
                     }
@@ -739,7 +753,8 @@ public static partial class InterpreterExecution
                     continue;
                 case Bytecode.CallUndefinedReceiver1:
                     {
-                        JSValue called = CallUndefinedReceiver1<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
+                            ? CallUndefinedReceiver1<TS>(st.Isolate, ref st, ref fpSlot, ref ip) : CallUndefinedReceiver1Slow<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
                         if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
                         acc = called;
                     }
@@ -747,7 +762,8 @@ public static partial class InterpreterExecution
                     continue;
                 case Bytecode.CallUndefinedReceiver2:
                     {
-                        JSValue called = CallUndefinedReceiver2<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
+                        JSValue called = IsInlineCallee(RegAt(ref fpSlot, Signed<TS>(ref ip, 1)))
+                            ? CallUndefinedReceiver2<TS>(st.Isolate, ref st, ref fpSlot, ref ip) : CallUndefinedReceiver2Slow<TS>(st.Isolate, ref st, ref fpSlot, ref ip);
                         if (ReferenceEquals(called._obj, InterpreterInlineCalls.FrameEnteredMarker)) goto entered;
                         acc = called;
                     }

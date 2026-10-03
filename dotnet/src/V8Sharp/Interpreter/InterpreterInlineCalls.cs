@@ -551,6 +551,19 @@ internal static class InterpreterInlineCalls
     /// </summary>
     internal static readonly HeapObject FrameEnteredMarker = new FixedArray(0);
 
+    /// <summary>
+    /// A second marker: a fast handler that does not handle the case returns
+    /// it, and the loop calls the general handler itself.
+    /// </summary>
+    internal static readonly HeapObject NotHandledMarker = new FixedArray(0);
+
+    /// <summary><see cref="NotHandledMarker"/> as a value.</summary>
+    internal static JSValue NotHandled
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => JSValue.FromObject(NotHandledMarker);
+    }
+
     /// <summary><see cref="FrameEnteredMarker"/> as a value.</summary>
     internal static JSValue FrameEntered
     {
