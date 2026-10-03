@@ -1362,9 +1362,27 @@ public sealed partial class BaselineCompiler
         _il.MarkLabel(BackEdgeInterruptStub);
         if (_registerLocals is not null) SpillRegisters(0, _registerLocals.Length);
         _pendingOffset = -1;
-        Isolate();
-        Fn();
-        CallBuiltin("BudgetInterruptOnJumpLoop");
+        if (!_compact && !Globals.IsResumableFunction(_shared.Kind))
+        {
+            // OSR into Maglev code (BaselineExecution.BudgetInterruptOnJumpLoopOsr).
+            Label noOsr = _il.DefineLabel();
+            Isolate();
+            State();
+            Fn();
+            CallBuiltin("BudgetInterruptOnJumpLoopOsr");
+            Emit(OpCodes.Brfalse, noOsr);
+            Isolate();
+            State();
+            CallBuiltin("OsrToMaglev");
+            Emit(OpCodes.Ret);
+            _il.MarkLabel(noOsr);
+        }
+        else
+        {
+            Isolate();
+            Fn();
+            CallBuiltin("BudgetInterruptOnJumpLoop");
+        }
         Emit(OpCodes.Ldloc, TInt);
         _il.Emit(OpCodes.Switch, _backEdgeTargets.ToArray());
         // (The index is always in the table.)

@@ -47,6 +47,8 @@ public static class MaglevCompiler
         public string? FailureReason;
         /// <summary>TieringState::kInProgress: a concurrent job is compiling the function.</summary>
         public bool CompileInProgress;
+        /// <summary>The JumpLoop offsets with a concurrent OSR job in flight (V8: the OSR cache's in-progress entries).</summary>
+        public HashSet<int>? OsrInProgress;
     }
 
     static readonly ConditionalWeakTable<SharedFunctionInfo, SharedState> s_sharedState = new();
@@ -172,11 +174,11 @@ public static class MaglevCompiler
     /// and the install drops it (V8 checks them at commit). False when the
     /// function cannot be optimized.
     /// </summary>
-    public static bool CompileConcurrently(Isolate isolate, JSFunction function)
+    public static bool CompileConcurrently(Isolate isolate, JSFunction function, int osrOffset = -1)
     {
         SharedFunctionInfo shared = function.Shared;
         SharedState state = StateOf(shared);
-        if (state.CompileInProgress) return true;
+        if (osrOffset < 0 ? state.CompileInProgress : state.OsrInProgress?.Contains(osrOffset) == true) return true;
         if (OptimizationDisabled(shared)) return false;
         if (function.RawFeedbackCell.Value is not FeedbackVector) return false;
         if (shared.FunctionData is not BytecodeArray bytecode) return false;
@@ -184,7 +186,7 @@ public static class MaglevCompiler
         if (MaglevGraphBuilder.UnsupportedReason(shared, bytecode) is { } unsupported) return Fail(isolate, shared, unsupported) is not null;
         if (!shared.IsUserJavaScript()) return Fail(isolate, shared, "not user JavaScript") is not null;
 
-        var info = new MaglevCompilationInfo(isolate, function, -1);
+        var info = new MaglevCompilationInfo(isolate, function, osrOffset);
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         try
         {
@@ -204,17 +206,19 @@ public static class MaglevCompiler
         {
             return Fail(isolate, shared, e.Message) is not null;
         }
-        var code = new MaglevCode(function, info.Toplevel.Feedback, -1)
+        var code = new MaglevCode(function, info.Toplevel.Feedback, osrOffset)
         {
             NodeCount = info.Graph.NodeCount,
             Dependencies = info.Dependencies.ToArray(),
+            OsrEntryPoint = osrOffset >= 0 ? info.Toplevel.BytecodeAnalysis.OsrEntryPoint : -1,
         };
         foreach (CompilationDependency dependency in code.Dependencies)
         {
             Objects.DependentCode.InstallDependency(isolate, code, dependency.Object, dependency.Groups);
         }
         double graphMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
-        state.CompileInProgress = true;
+        if (osrOffset < 0) state.CompileInProgress = true;
+        else (state.OsrInProgress ??= []).Add(osrOffset);
         Interlocked.Increment(ref isolate.MaglevJobsInFlight);
         Baseline.BaselineCompileThread.Post(() =>
         {
@@ -257,10 +261,14 @@ public static class MaglevCompiler
         while (isolate.MaglevInstallQueue.TryDequeue(out MaglevCode? code))
         {
             SharedFunctionInfo shared = code.SharedFunctionInfo;
-            StateOf(shared).CompileInProgress = false;
+            SharedState sharedState = StateOf(shared);
+            if (code.OsrOffset < 0) sharedState.CompileInProgress = false;
+            else sharedState.OsrInProgress?.Remove(code.OsrOffset);
             FeedbackVector vector = code.FeedbackVector;
             bool install = !code.MarkedForDeoptimization && code.Entry is not null && !OptimizationDisabled(shared) &&
-                           vector.MaglevCode is not { MarkedForDeoptimization: false };
+                           (code.OsrOffset < 0
+                               ? vector.MaglevCode is not { MarkedForDeoptimization: false }
+                               : vector.MaglevOsrCode?.GetValueOrDefault(code.OsrOffset) is not { MarkedForDeoptimization: false });
             if (install)
             {
                 EnsureScratch(isolate, code.MaxScratchSize);
