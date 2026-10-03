@@ -254,8 +254,96 @@ public static partial class InterpreterExecution
 
     // ---- Property loads and stores --------------------------------------------------
 
+    /// <summary>
+    /// GetNamedProperty after the loop's inline monomorphic hits: the
+    /// handler cases of AccessorAssembler::HandleLoadICHandlerCase that need
+    /// no call (monomorphic or polymorphic field and prototype constant hits),
+    /// and JavaScript getters on the prototype chain or own accessor pairs
+    /// entered in this loop (InterpreterInlineCalls.TryEnterFast); everything
+    /// else is <see cref="GetNamedPropertySlow"/>. False with the value in
+    /// st.Accumulator, true when a getter's frame was entered.
+    /// </summary>
+    // A separate method so that this path has no calls: the slow path's
+    // inlined EnterInline and IC dispatch made RyuJIT save six registers and
+    // spill on every polymorphic field load (13% of Octane Gameboy).
     [MethodImpl(MethodImplOptions.NoInlining)]
     static bool GetNamedProperty<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
+        where TS : struct, IOperandScale
+    {
+        int S = Scale<TS>();
+        HeapObject? o = Reg<TS>(ref fp, ref ip, 1)._obj;
+        if (o is not null && o.InstanceType >= InstanceTypeChecks.FirstJSReceiver && InterpreterRuntime.FrameFeedbackVector(ref fp) is { } fv)
+        {
+            JSValue[] slots = fv.Slots;
+            int slot = Unsigned<TS>(ref ip, 1 + 2 * S);
+            if ((uint)(slot + 1) < (uint)slots.Length)
+            {
+                Map map = Unsafe.As<JSReceiver>(o).Map;
+                HeapObject? feedback = slots[slot]._obj;
+                HeapObject? found = null;
+                if (ReferenceEquals(feedback, map)) found = slots[slot + 1]._obj;
+                else if (feedback is FixedArray polymorphic)
+                {
+                    // AccessorAssembler::HandlePolymorphicCase: the (map, handler) pairs.
+                    JSValue[] data = polymorphic._data;
+                    for (int i = 0; i + 1 < data.Length; i += 2)
+                    {
+                        if (ReferenceEquals(data[i]._obj, map))
+                        {
+                            found = data[i + 1]._obj;
+                            break;
+                        }
+                    }
+                }
+                if (found is LoadHandler handler)
+                {
+                    if (handler.OwnFieldIndex >= 0)
+                    {
+                        st.Accumulator = Unsafe.As<JSObject>(o).FieldAt(handler.OwnFieldIndex);
+                        return false;
+                    }
+                    LoadHandler.Kind kind = handler.HandlerKind;
+                    if (handler.IsValid)
+                    {
+                        if (handler.IsPrototypeConstant)
+                        {
+                            st.Accumulator = handler.Data;
+                            return false;
+                        }
+                        if (handler.PrototypeFieldIndex >= 0)
+                        {
+                            JSValue value = Unsafe.As<JSObject>(handler.Holder!).FieldAt(handler.PrototypeFieldIndex);
+                            if (!ReferenceEquals(value._obj, Oddball.Uninitialized))
+                            {
+                                st.Accumulator = value;
+                                return false;
+                            }
+                        }
+                        // A JavaScript getter (a function that runs in this loop
+                        // has no builtin fast path, which LoadNamedOrGetter tries
+                        // first): called like a CallProperty0 with the receiver.
+                        JSFunction? getter =
+                            kind == LoadHandler.Kind.kAccessorFromPrototype && !map.IsDictionaryMap ? handler.Data._obj as JSFunction
+                            : kind == LoadHandler.Kind.kAccessorPair ? Unsafe.As<AccessorPair>(handler.Data._obj!).Getter._obj as JSFunction
+                            : null;
+                        if (typeof(TS) == typeof(SingleScale) && getter is not null)
+                        {
+                            int pc = PcOf(ref fp, ref ip);
+                            if (InterpreterInlineCalls.TryEnterFast(isolate, ref st, ref fp, pc, pc + 1 + 3 * S, ref Unsafe.NullRef<JSValue>(), getter,
+                                    JSValue.FromObject(o), new Baseline.BaselineCalls.NoArguments()))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return GetNamedPropertySlow<TS>(isolate, ref st, ref fp, ref ip);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool GetNamedPropertySlow<TS>(Isolate isolate, ref InterpreterState st, ref JSValue fp, ref byte ip)
         where TS : struct, IOperandScale
     {
         SavePc(ref fp, ref ip);
