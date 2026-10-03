@@ -283,6 +283,17 @@ public static class MaglevBuiltins
         return ObjectOps.InstanceOf(isolate, obj, constructor) ? JSValue.True : JSValue.False;
     }
 
+    /// <summary>
+    /// CreateObjectLiteral for a shallow boilerplate (no nested objects, which
+    /// boilerplates never get): a copy of it; the runtime's path once its map
+    /// is deprecated (the deep copy migrates it).
+    /// </summary>
+    public static JSValue CloneObjectLiteral(Isolate isolate, FeedbackVector fv, int slot, JSValue description, int flags, JSObject boilerplate)
+    {
+        if (!boilerplate.Map.IsDeprecated) return isolate.Factory.CopyJSObject(boilerplate);
+        return Baseline.BaselineBuiltins.CreateObjectLiteral(isolate, fv, slot, description, flags);
+    }
+
     /// <summary>TestUndetectable under the NoUndetectableObjects protector: null or undefined.</summary>
     [MethodImpl(Inline)]
     public static JSValue TestUndefinedOrNull(JSValue v) =>
