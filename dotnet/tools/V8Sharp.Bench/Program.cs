@@ -209,32 +209,43 @@ public static partial class Program
                           Math.max(bs[b].minIterations, Math.ceil(bs[b].deterministicIterations / scale));
                     }
                   }
-                  var starts = {};
+                  var measured = {};
                   if (__benchSteady) {
                     // octane-steady: within ONE pass, each benchmark first runs its
                     // own iterations unmeasured (as many as it then measures), so
                     // the measured part runs warm (tier-1 code, filled caches and
                     // feedback). Running the whole suite twice instead breaks
                     // benchmarks whose tearDown clears state the next setUp needs
-                    // (Box2D, Typescript, Gameboy).
+                    // (Box2D, Typescript, Gameboy). A suite's score is over the sum
+                    // of its benchmarks' measured runs: Octane reports a suite by its
+                    // own name, which for CodeLoad, Crypto and EarleyBoyer is none of
+                    // its benchmarks' names (keying the start by benchmark name made
+                    // those three measure the whole cold suite).
                     for (var s2 = 0; s2 < BenchmarkSuite.suites.length; s2++) {
-                      var bs2 = BenchmarkSuite.suites[s2].benchmarks;
-                      for (var b2 = 0; b2 < bs2.length; b2++) (function (bm) {
-                        var warm = bm.deterministicIterations, n = 0, run = bm.run;
+                      var suite2 = BenchmarkSuite.suites[s2], bs2 = suite2.benchmarks;
+                      for (var b2 = 0; b2 < bs2.length; b2++) (function (bm, suiteName) {
+                        var warm = bm.deterministicIterations, n = 0, run = bm.run, last = 0;
                         bm.deterministicIterations = warm * 2;
                         bm.run = function () {
-                          if (n++ === warm) starts[bm.name] = cpuTimeMs();
-                          return run.apply(this, arguments);
+                          if (n++ === warm) last = cpuTimeMs();
+                          var result = run.apply(this, arguments);
+                          if (n > warm) {
+                            // Every measured run, up to the benchmark's last one.
+                            var now = cpuTimeMs();
+                            measured[suiteName] = (measured[suiteName] || 0) + (now - last);
+                            last = now;
+                          }
+                          return result;
                         };
-                      })(bs2[b2]);
+                      })(bs2[b2], suite2.name);
                     }
                   }
                   var last = cpuTimeMs();
                   BenchmarkSuite.RunSuites({
                     NotifyResult: function (name, result) {
                       var now = cpuTimeMs();
-                      var from = starts[name] !== undefined ? starts[name] : last;
-                      print(name + '(Score): ' + (1e6 / (now - from)));
+                      var ms = measured[name] !== undefined ? measured[name] : now - last;
+                      print(name + '(Score): ' + (1e6 / ms));
                       last = now;
                     },
                     NotifyError: function (name, error) { print(name + '(Error): ' + error); },
