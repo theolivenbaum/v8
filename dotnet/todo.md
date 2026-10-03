@@ -986,6 +986,112 @@ Conformance at the end of the pass (98e54502): V8Sharp.Tests 1061/1061
 newly passing; test262 95123 run, 0 newly failing, 0 newly passing (both
 under the shared lock, 2 jobs each, run side by side); bytecode goldens
 pass (bytecode generation untouched by the pass).
+Ninth interpreter performance pass: construct, the regexp interpreter, Wide
+calls, the GC write barrier (2026-10-03; "before" is b376253d, "after"
+b04f4c35; `v8sharp:jitless` against V8 --jitless, regular expressions in
+both engines' bytecode interpreters).
+
+Parity publishes, `bench-session.sh`, octane-steady in two sessions of 3
+interleaved runs (A: Richards .. NavierStokes plus micro:accessors and
+micro:cpu, with a third column: the final build on the runtime's default
+write barrier; B: PdfJS .. TypeScript). Every V8Sharp column runs with
+`DOTNET_GCWriteBarrier=3` (below) unless stated. Fingerprints (before /
+after): A load 1.51 / 1.89, steal 0%, idle 99 / 72%, cpu-cal 1796 / 1722 ms,
+mem-bw 32.0 / 31.4 GB/s; B load 2.28 / 5.24, steal 0%, idle 99 / 73%,
+cpu-cal 1787 / 1757 ms, mem-bw 33.8 / 27.9 GB/s (another agent's build ran
+during the end of B). V8 exited 139 on one run of Richards, DeltaBlue, PdfJS
+and CodeLoad.
+
+| benchmark | before | after | after, default barrier | V8 --jitless | after / V8 |
+|---|---|---|---|---|---|
+| Richards | 472.0 | 476.1 | 429.7 | 801.7 | 59% |
+| DeltaBlue | 417.3 | 417.2 | 389.8 | 855.0 | 49% |
+| Crypto | 56.4 | 55.0 | 54.5 | 99.2 | 55% |
+| RayTrace | 212.9 | 219.7 | 215.6 | 457.9 | 48% |
+| EarleyBoyer | 87.4 | 91.4 | 83.7 | 187.8 | 49% |
+| RegExp | 209.9 | 234.1 | 224.3 | 494.4 | 47% |
+| Splay | 3705 | 3726 | 3531 | 4418 | 84% |
+| NavierStokes | 240.8 | 240.3 | 236.4 | 208.9 | 115% |
+| PdfJS | 802.9 | 818.9 | | 1921.9 | 43% |
+| Mandreel | 83.5 | 83.0 | | 143.7 | 58% |
+| Gameboy | 372.3 | 362.9 | | 781.5 | 46% |
+| CodeLoad | 3445 | 3456 | | 4083 | 85% |
+| Box2D | 737.8 | 735.0 | | 934.0 | 79% |
+| zlib | 19.21 | 19.39 | | 40.42 | 48% |
+| Typescript | 295.8 | 299.8 | | 627.4 | 48% |
+| **geomean (15, no latency scores)** | 299.4 | 303.1 | | 520.5 | **57.5% / 58.2%** |
+| geomean of session A (8) | 280.9 | 287.0 | 273.0 | 476.8 | 58.9% / 60.2% (57.3% default barrier) |
+| micro:accessors + micro:cpu geomean (26) | 20.51 | 20.90 | 20.55 | 35.79 | 57.3% / 58.4% |
+
+The engine changes are worth +1.2% on the geomean of 15 (RegExp +11.5%,
+EarleyBoyer +4.5%, RayTrace +3.2%, the rest within noise); the write
+barrier setting +5.1% on session A's eight (Richards +10.8%, EarleyBoyer
++9.2%, DeltaBlue +7.0%, Splay +5.5%). The eighth pass's 55.6% was measured
+on the default barrier. Accessors are unchanged: AccProtoGetter 15.95 M/s
+(63 ns) against V8's 29.5 M/s (34 ns).
+
+The pass, one commit each (git log b376253d..b04f4c35). Per-step A/B
+sessions on bin builds (`octane-quick`, 3 interleaved runs, V8 --jitless in
+the session; ab1-ab3 in artifacts/scratch, not committed):
+- Construct fast path (`InterpreterInlineCalls.TryConstructFast`): a
+  monomorphic ordinary constructor that is its own new.target, with an
+  initial map in fast mode, is checked, its receiver allocated
+  (FastNewObject, the one call) and entered through `EnterFastCore` (the
+  frame entry `TryEnterFast` now shares), with the construct stub's slots
+  reserved below the frame; the general entry is `ConstructSlow`. A
+  construct frame's return takes the Star lookahead. RayTrace +4%,
+  EarleyBoyer +2%.
+- RegExp bytecode interpreter: RyuJIT's inlining budget ran out in
+  `RawMatch` (11.9 KB of code, a 968-byte frame), so every operand read
+  (`I32`, `U16`, `IndexIsInBounds`, the span conversions) was a call, and
+  SkipUntilOneOfMasked(3) looked their operands up by name at each execution.
+  Operand reads are unaligned loads at fixed offsets, the backtrack stack is
+  an array in locals (cached per thread, as V8's RegExpStack on the isolate)
+  without try/finally, and the two peephole scans and the case-insensitive
+  back references are separate methods (5.7 KB, a 216-byte frame).
+  RegExp +12.5%.
+- Wide calls and `Construct` (functions with more than 256 feedback slots or
+  128 registers) run the single-scale call handlers from the loop
+  (`WideCall`), which enter a callee for both scales; they used to run one
+  step of `Loop<DoubleScale>` and a nested Run per call (a wide method call
+  in a loop: 160 -> 87 ns). TypeScript within noise (its wide calls are 6% of
+  its calls); kept for the micro. `BytecodeStats` lists the prefixed
+  bytecodes.
+- Function.prototype.apply's fast elements test the instance type instead of
+  casting to the (unsealed) JSObject class (the cast helper was 0.5% of
+  RayTrace).
+- V8Sharp.Bench runs V8Sharp with `DOTNET_GCWriteBarrier=3`, the GC's
+  non-region ("server") write barrier: an ephemeral range check and a card
+  byte, where the default bitwise region barrier looks up the generation of
+  both regions. Reference stores into the register stack (an old, pinned
+  array) at Stars and call entries make the barrier 6-13% of the OO
+  benchmarks. A host setting only the environment can make
+  (tools/V8Sharp.Bench/README.md, deviations.md General); d8sharp should be
+  run with it for comparable numbers.
+
+Tried and dropped, measured:
+- JSString.Length as a type test for SeqString and a virtual call otherwise:
+  PdfJS -7%, RegExp -2% (reverted).
+- The in-object transition store in the fast SetNamedProperty handler: the
+  loop's monomorphic case already calls StoreIC.TryStoreTransition; no
+  effect on `new` micros (not committed).
+
+What is left (profiles of the final build): a getter or method call and
+return are still ~1.8x V8 (63 ns against 34 ns): the handler call, frame
+entry and return are each 40-120 instructions with no single hot spot; the
+loop's Smi tests of doubles (cvttsd2si/cvtsi2sd round trips) in Add,
+Inc and the comparisons; polymorphic named loads in Gameboy (9% in the fast
+handler, the field load and its return through a stack temporary); GC and
+allocation (a Context is two objects, a string two, arguments objects
+copy their elements); `LoopCold` has a 0x508-byte zeroed frame (TDZ checks
+of let/const/class bindings take it; rare in Octane). Not reached: 70% of
+V8 --jitless (58.2% measured).
+
+Conformance at b04f4c35: V8Sharp.Tests 1064/1064 (Baseline and Maglev
+tests included; 1064/1064 again after merging d20549e1); mjsunit 7602 run, 0
+newly failing, 0 newly passing; test262 95123 run, 0 newly failing, 0 newly
+passing (shared lock, 2 jobs each, side by side); V8Sharp.RegExp.Tests
+103/103 (3 skipped); bytecode generation untouched.
 Front end and bytecode compilation pass (2026-10-02; parity publish,
 thread CPU, under the benchmark lock, mean of 3 interleaved runs).
 `micro:compile` (tools/V8Sharp.Bench/micro/compile.js: Octane's sources
@@ -1393,6 +1499,13 @@ tier will be on by default once 2b647a54 is merged), and V8Sharp's --jitless als
 interpreter, as V8's does (RegExp 201 here against 278 with compiled
 regular expressions in the seventh pass's sessions). See "Eighth
 interpreter performance pass" above.
+
+After the ninth interpreter performance pass (b04f4c35, parity publish, two
+sessions, 3 runs, `v8sharp:jitless`): **58.2%** of V8 --jitless (303.1 /
+520.5; its base, b376253d, measured 57.5% in the same sessions). Both
+columns run with the GC's non-region write barrier, which V8Sharp.Bench now
+sets (worth +5.1% on the eight classic benchmarks; the 55.6% above is on the
+default barrier). See "Ninth interpreter performance pass" above.
 
 ## Phase 2: the fast tiers
 
