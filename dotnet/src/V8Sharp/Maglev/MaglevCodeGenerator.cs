@@ -1332,9 +1332,13 @@ internal sealed class MaglevCodeGenerator
                 _il.Emit(OpCodes.Bne_Un, EagerExit(node.EagerDeoptInfo!));
                 return;
             case Opcode.CheckHeapObject:
+                // Not a number (undefined included): the values a field of
+                // HeapObject representation holds (Object::FitsRepresentation's
+                // V8Sharp deviation: numbers are unboxed, undefined is an oddball).
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
-                Call(nameof(MaglevBuiltins.IsHeapObject));
-                DeoptIfFalse(node);
+                _il.Emit(OpCodes.Ldfld, s_obj);
+                _il.Emit(OpCodes.Ldsfld, s_numberTag);
+                _il.Emit(OpCodes.Beq, EagerExit(node.EagerDeoptInfo!));
                 return;
             case Opcode.CheckString:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);

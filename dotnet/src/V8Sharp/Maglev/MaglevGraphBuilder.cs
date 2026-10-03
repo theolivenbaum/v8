@@ -1218,9 +1218,10 @@ public sealed partial class MaglevGraphBuilder
     void BuildCheckHeapObject(ValueNode value)
     {
         if (value.Representation != ValueRepresentation.kTagged) EmitUnconditionalDeoptAndAbort(DeoptimizeReason.kSmi);
-        if (CheckType(value, NodeType.kAnyHeapObject)) return;
+        // (Not a number: numbers do not fit HeapObject representation in V8Sharp.)
+        if (CheckType(value, NodeType.kAnyHeapObject & ~NodeType.kHeapNumber)) return;
         AddCheck(Opcode.CheckHeapObject, value, DeoptimizeReason.kSmi);
-        EnsureType(value, NodeType.kAnyHeapObject & ~NodeType.kUndefined);
+        EnsureType(value, NodeType.kAnyHeapObject & ~NodeType.kHeapNumber);
     }
 
     /// <summary>BuildCheckString.</summary>
