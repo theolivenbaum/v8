@@ -554,8 +554,8 @@ public sealed partial class MaglevGraphBuilder
         int depth = _unit.InliningDepth + 1;
         if (depth > Flags.max_maglev_hard_inline_depth) return "too deep";
         if (!small && depth > MaxInlineDepth) return "inline depth";
-        if (length > Flags.max_maglev_inlined_bytecode_size) return "too big";
-        if (!small && _info.InlinedBytecodeSize + length > Flags.max_maglev_inlined_bytecode_size_cumulative) return "budget";
+        if (length > MaxInlinedBytecodeSize) return "too big";
+        if (!small && _info.InlinedBytecodeSize + length > MaxInlinedBytecodeSizeCumulative) return "budget";
         if (!small)
         {
             float frequency = nexus.IsNull ? 1f : nexus.ComputeCallFrequency();
@@ -578,6 +578,17 @@ public sealed partial class MaglevGraphBuilder
 
     static string? Setting(string variable, string property) =>
         Environment.GetEnvironmentVariable(variable) ?? AppContext.GetData(property)?.ToString();
+
+    static readonly int s_inlineSize = int.TryParse(Setting("V8SHARP_MAGLEV_INLINE_SIZE", "V8Sharp.MaglevInlineSize"), out int z) ? z : -1;
+    static readonly int s_inlineBudget = int.TryParse(Setting("V8SHARP_MAGLEV_INLINE_BUDGET", "V8Sharp.MaglevInlineBudget"), out int c) ? c : -1;
+
+    int MaxInlinedBytecodeSize => s_inlineSize >= 0 && !Flags.IsExplicitlySet("max_maglev_inlined_bytecode_size")
+        ? s_inlineSize
+        : Flags.max_maglev_inlined_bytecode_size;
+
+    int MaxInlinedBytecodeSizeCumulative => s_inlineBudget >= 0 && !Flags.IsExplicitlySet("max_maglev_inlined_bytecode_size_cumulative")
+        ? s_inlineBudget
+        : Flags.max_maglev_inlined_bytecode_size_cumulative;
 
     int MaxInlineDepth => s_inlineDepth >= 0 && !Flags.IsExplicitlySet("max_maglev_inline_depth") ? s_inlineDepth : Flags.max_maglev_inline_depth;
 
