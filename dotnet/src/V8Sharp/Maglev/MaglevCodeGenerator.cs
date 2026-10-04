@@ -362,7 +362,10 @@ internal sealed class MaglevCodeGenerator
                 {
                     Use(input, at);
                     // Stores read the untagged value under a tagging (UntaggedNumberSource).
-                    if (node.Opcode is Opcode.StoreFixedArrayElement or Opcode.StoreContextSlot) Use(UntaggedNumberSource(input), at);
+                    if (node.Opcode is Opcode.StoreFixedArrayElement or Opcode.StoreContextSlot or Opcode.StoreMapTransition)
+                    {
+                        Use(UntaggedNumberSource(input), at);
+                    }
                 }
                 UseFrame(node.EagerDeoptInfo?.TopFrame, at);
                 UseFrame(node.LazyDeoptInfo?.TopFrame, at);
@@ -1969,6 +1972,34 @@ internal sealed class MaglevCodeGenerator
                 Load(node.Inputs[1], ValueRepresentation.kFloat64);
                 Call(nameof(MaglevBuiltins.StoreDoubleFieldFloat64));
                 return;
+            case Opcode.StoreMapTransition when node.Int0 < JSObject.kPropertyArrayStorageBase && InObjectLayout.IsContiguous:
+            {
+                // An in-object field (a constructor's this.x = ...): the value
+                // into the slot the map already has, then the map (StoreMap +
+                // StoreTaggedField, as StoreIC's TryStoreTransition).
+                TryLoadFieldAddress(node.Inputs[0], node.Int0);
+                if (node.Int1 != 0)
+                {
+                    _storeAddress ??= _il.DeclareLocal(typeof(JSValue).MakeByRefType());
+                    _il.Emit(OpCodes.Stloc, _storeAddress);
+                    _il.Emit(OpCodes.Ldloc, _storeAddress);
+                    _il.Emit(OpCodes.Ldsfld, s_numberTag);
+                    _il.Emit(OpCodes.Stfld, s_obj);
+                    _il.Emit(OpCodes.Ldloc, _storeAddress);
+                    Load(UntaggedNumberSource(node.Inputs[1]), ValueRepresentation.kFloat64);
+                    Call(nameof(MaglevBuiltins.DoubleFieldBits));
+                    _il.Emit(OpCodes.Stfld, s_bits);
+                }
+                else
+                {
+                    EmitStoreTagged(UntaggedNumberSource(node.Inputs[1]));
+                }
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                _il.Emit(OpCodes.Ldfld, s_obj);
+                LoadConstantObject(node.Obj0, typeof(Map));
+                _il.Emit(OpCodes.Stfld, s_receiverMap);
+                return;
+            }
             case Opcode.StoreMapTransition:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 LoadConstantObject(node.Obj0, typeof(Map));

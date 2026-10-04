@@ -568,6 +568,24 @@ for now, to be revisited when the reason goes away.
   are estimated as the most values live at once (MaglevStackSlots; frame
   slots of InitialValues are not counted). Without CSE, fewer values live
   long than in V8 (mjsunit/maglev/regress-536945254 still compiles).
+- Loop peeling: one iteration is peeled (V8's non-optimistic mode;
+  V8 by default peels optimistically and merges the loop without a second
+  copy when the peeled iteration changed nothing). Loops overlapping a try
+  range (start, end or handler inside the loop) and the loops of an OSR
+  compilation up to the OSR loop are not peeled (V8 recreates the catch
+  merge states for the second copy).
+- Polymorphic load continuations are built only for arms that load
+  different constants (methods), the case they exist for; V8 also builds
+  them for field-load arms.
+- Field representation on loads: the access info comes from the IC handler
+  and the field's descriptor in the receiver's (or holder's) map; arms of a
+  merged polymorphic group whose descriptors differ load the field tagged.
+  A Double field's slot always holds a number (JSValue's payload, the hole
+  NaN when uninitialized), so LoadDoubleField reads the payload where V8
+  loads the HeapNumber's value, and StoreDoubleField writes the payload.
+- Code bodies of at most 1200 bytes of IL without exception handlers are
+  AggressiveInlining, so RyuJIT compiles them into their direct entry (one
+  .NET call per direct call); V8's call is one jump to the code.
 
 ## Interpreter execution, ICs, runtime, compiler and modules
 

@@ -244,6 +244,25 @@ public class MaglevCodeQualityTest
           return out.join();
         })()
         """,
+        // Field-adding transitions in constructors written inline (in-object
+        // fields: the value, then the map): doubles, NaN, objects, fields
+        // beyond the in-object ones, construction after slack tracking.
+        """
+        (function() {
+          function V(x, y, z) { this.x = x; this.y = y; this.z = z; }
+          V.prototype.add = function (o) { return new V(this.x + o.x, this.y + o.y, this.z + o.z); };
+          function Big(a) { this.a = a; this.b = a + 1; this.c = { a: a }; this.d = 'd' + a; this.e = a * 0.5; this.f = [a]; this.g = a; this.h = a; this.i = a; this.j = a; this.k = a; }
+          var out = [], acc = new V(0, 0, 0);
+          for (var k = 0; k < 60; k++) {
+            acc = acc.add(new V(k * 0.5, -k, k % 3 ? 0 / 0 : 1));
+            var b = new Big(k);
+            out.push(acc.x, acc.y, isNaN(acc.z), b.c.a + b.d + b.e + b.f[0] + b.k);
+          }
+          var f = new Float64Array(1); f[0] = new V(0 / 0, 0, 0).x;
+          out.push(new Uint32Array(f.buffer)[1], Object.keys(new Big(1)).join(''));
+          return out.join();
+        })()
+        """,
         // Const fields of constant objects folded (TryFoldLoadConstantDataField):
         // the field changed after optimization (constness generalized, the
         // code deoptimized), a double const field, a prototype's const field.
