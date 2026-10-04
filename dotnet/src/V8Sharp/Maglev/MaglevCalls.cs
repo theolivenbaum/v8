@@ -310,6 +310,43 @@ public static class MaglevCalls
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void StoreFrameSlot(ref JSValue slot, JSValue value) => JSValue.StoreSlot(ref slot, value);
 
+    /// <summary>
+    /// The deopt exit of a frameless direct entry (MaglevCodeGenerator,
+    /// "Frameless direct entries"): builds the frame the direct entry would
+    /// have built (the receiver and the arguments from the deopt scratch
+    /// buffer at <paramref name="argsAt"/>), deoptimizes into it and
+    /// continues in the interpreter; returns the call's result.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue DeoptimizeFrameless(Isolate isolate, MaglevCode code, int index, int reason, JSFunction function, int argc,
+        int argsAt)
+    {
+        var bytecode = (BytecodeArray)function.Shared.FunctionData!;
+        int formal = bytecode.ParameterCount - 1;
+        JSValue[] scratch = isolate.MaglevDeoptScratch;
+        ref JSValue fpRef = ref EnterFastFrame(isolate, formal, bytecode.RegisterCount, out int start, out int fp, out int depth);
+        JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset), scratch[argsAt]);
+        for (int i = 0; i < formal; i++) JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i), scratch[argsAt + 1 + i]);
+        Context? saved = InitializeFastFrame(isolate, ref fpRef, fp, function, code.FeedbackVector, bytecode, argc, int.MinValue);
+        var state = new InterpreterState
+        {
+            Isolate = isolate,
+            Accumulator = JSValue.Undefined,
+            Fp = fp,
+            FrameIndex = depth,
+            BaseFrameIndex = depth,
+        };
+        try
+        {
+            V8Sharp.Deoptimizer.Deoptimizer.Deoptimize(isolate, ref state, code, index, reason);
+            return MaglevExecution.ContinueAfterDeopt(isolate, ref state);
+        }
+        finally
+        {
+            LeaveFastFrame(isolate, depth, start, saved);
+        }
+    }
+
     /// <summary>The epilogue of a direct call (EnterFrame's finally).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void LeaveFastFrame(Isolate isolate, int depth, int start, Context? saved)

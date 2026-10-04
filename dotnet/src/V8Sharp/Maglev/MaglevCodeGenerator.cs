@@ -67,9 +67,9 @@ internal sealed class MaglevCodeGenerator
 
     readonly List<(FieldBuilder Field, object? Value)> _staticConstants = [];
     readonly Dictionary<(object, Type), FieldBuilder> _constantFields = new();
-    readonly List<DeoptPoint> _deoptPoints = [];
+    List<DeoptPoint> _deoptPoints = [];
     readonly Dictionary<(DeoptFrame, DeoptimizeReason, int), Label> _eagerExits = new();
-    readonly List<(FeedbackVector Vector, int Slot)> _speculationFeedback = [];
+    List<(FeedbackVector Vector, int Slot)> _speculationFeedback = [];
     // One deopt exit per frame state: the checks of a checkpoint branch to a
     // stub that sets the reason and jumps to it.
     readonly Dictionary<DeoptFrame, Label> _frameExits = new(ReferenceEqualityComparer.Instance);
@@ -102,14 +102,35 @@ internal sealed class MaglevCodeGenerator
     /// concurrent compiles, whose JIT cost is off the main thread.
     /// </param>
     public MaglevCodeGenerator(MaglevCompilationInfo info, MaglevCode code, bool optimizeFully = false)
+        : this(info, code, optimizeFully, null)
+    {
+    }
+
+    /// <summary>
+    /// <paramref name="primary"/> non-null: the frameless direct entry of the
+    /// code <paramref name="primary"/> generates (TryGenerateFramelessEntry),
+    /// sharing its deopt points.
+    /// </summary>
+    MaglevCodeGenerator(MaglevCompilationInfo info, MaglevCode code, bool optimizeFully, MaglevCodeGenerator? primary)
     {
         _optimizeFully = optimizeFully;
         _info = info;
         _graph = info.Graph;
         _code = code;
         string name = "maglev:" + MaglevCompiler.DebugName(info.Function.Shared) + (info.IsOsr ? "@osr" + info.OsrOffset : "");
-        (_type, _method) = BaselineCodeSpace.For(info.Isolate).DefineMethod(name, typeof(JSValue),
-            [typeof(MaglevCode), typeof(Isolate), typeof(InterpreterState).MakeByRefType()]);
+        if (primary is null)
+        {
+            (_type, _method) = BaselineCodeSpace.For(info.Isolate).DefineMethod(name, typeof(JSValue),
+                [typeof(MaglevCode), typeof(Isolate), typeof(InterpreterState).MakeByRefType()]);
+        }
+        else
+        {
+            _frameless = true;
+            _fastCallArity = primary._fastCallArity;
+            _deoptPoints = primary._deoptPoints;
+            _speculationFeedback = primary._speculationFeedback;
+            (_type, _method) = BaselineCodeSpace.For(info.Isolate).DefineMethod(name + ":frameless", typeof(JSValue), FastCallParameterTypes(_fastCallArity));
+        }
         _il = _method.GetILGenerator(4096);
         _fpRef = _il.DeclareLocal(typeof(JSValue).MakeByRefType());
         _fp = _il.DeclareLocal(typeof(int));
@@ -213,6 +234,7 @@ internal sealed class MaglevCodeGenerator
         }
 
         MethodBuilder? fastCall = DefineFastCallEntry();
+        MaglevCodeGenerator? frameless = fastCall is not null ? TryGenerateFramelessEntry() : null;
         MethodImplAttributes bodyFlags = MethodImplAttributes.IL;
         if (_optimizeFully || _il.ILOffset <= s_aggressiveMaxIL || _il.ILOffset > kAggressiveILBytes)
         {
@@ -226,7 +248,7 @@ internal sealed class MaglevCodeGenerator
         if (bodyFlags != MethodImplAttributes.IL) _method.SetImplementationFlags(bodyFlags);
         _code.DeoptPoints = _deoptPoints.ToArray();
         _code.SpeculationFeedback = _speculationFeedback.ToArray();
-        _code.MaxScratchSize = _maxScratch;
+        _code.MaxScratchSize = Math.Max(_maxScratch, frameless?._maxScratch ?? 0);
         long createStart = System.Diagnostics.Stopwatch.GetTimestamp();
         Type type = BaselineCodeSpace.CreateType(_type);
         foreach ((FieldBuilder field, object? value) in _staticConstants)
@@ -237,7 +259,8 @@ internal sealed class MaglevCodeGenerator
         var entry = (MaglevCodeEntry)method.CreateDelegate(typeof(MaglevCodeEntry), _code);
         if (fastCall is not null)
         {
-            _code.FastCall = type.GetMethod(fastCall.Name)!.CreateDelegate(MaglevFastCalls.DelegateTypes[_fastCallArity], _code);
+            _code.FastCall = frameless?.CreateFramelessDelegate() ??
+                             type.GetMethod(fastCall.Name)!.CreateDelegate(MaglevFastCalls.DelegateTypes[_fastCallArity], _code);
             _code.FastCallArity = _fastCallArity;
         }
         CreateTypeMs += System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalMilliseconds;
@@ -485,6 +508,14 @@ internal sealed class MaglevCodeGenerator
     /// <summary>The frame of the outermost function: fpRef, fp, the frame record and its index.</summary>
     void EmitPrologue()
     {
+        if (_frameless)
+        {
+            // No frame yet: the record a deopt pushes is the next one.
+            _il.Emit(OpCodes.Ldarg_1);
+            _il.Emit(OpCodes.Ldfld, s_interpreterFrameDepth);
+            _il.Emit(OpCodes.Stloc, _baseFrameIndex);
+            return;
+        }
         // fp and the frame index come from the frame's builder (EnterFrame, the
         // direct entry, OSR), which checked them against the stacks' limits:
         // the slot and the record are addressed without bounds checks.
@@ -693,6 +724,7 @@ internal sealed class MaglevCodeGenerator
     /// <summary>Pushes the address of register <paramref name="index"/> of <paramref name="unit"/>'s frame.</summary>
     void LoadFrameSlotAddress(MaglevCompilationUnit? unit, int index)
     {
+        if (_frameless && (unit is null || !unit.IsInline)) throw new FramelessUnsupportedException();
         if (unit is null || !unit.IsInline) _il.Emit(OpCodes.Ldloc, _fpRef);
         else _il.Emit(OpCodes.Ldloc, unit.FpRefLocal ?? throw new InvalidOperationException("inlined frame not entered"));
         if (index != 0)
@@ -705,12 +737,14 @@ internal sealed class MaglevCodeGenerator
 
     void LoadFp(MaglevCompilationUnit? unit)
     {
+        if (_frameless && (unit is null || !unit.IsInline)) throw new FramelessUnsupportedException();
         if (unit is null || !unit.IsInline) _il.Emit(OpCodes.Ldloc, _fp);
         else _il.Emit(OpCodes.Ldloc, unit.FpLocal!);
     }
 
     void LoadFrameRecord(MaglevCompilationUnit? unit)
     {
+        if (_frameless && (unit is null || !unit.IsInline)) throw new FramelessUnsupportedException();
         if (unit is null || !unit.IsInline) _il.Emit(OpCodes.Ldloc, _frame);
         else _il.Emit(OpCodes.Ldloc, unit.FrameRecordLocal!);
     }
@@ -1239,6 +1273,11 @@ internal sealed class MaglevCodeGenerator
                 tail--;
                 tailCount++;
             }
+            if (_frameless)
+            {
+                EmitFramelessDeopt(spill);
+                continue;
+            }
             EmitSpill(spill.GetRange(0, tail));
             // Deoptimizer::Deoptimize(isolate, ref state, code, index, reason); return to MaglevExecution.Run.
             _il.Emit(OpCodes.Ldarg_1);
@@ -1407,6 +1446,10 @@ internal sealed class MaglevCodeGenerator
         switch (node.Opcode)
         {
             // ---- Values ---------------------------------------------------------------------------
+            case Opcode.InitialValue when _frameless:
+                EmitFramelessInitialValue(node.Int0);
+                Store(v!);
+                return;
             case Opcode.InitialValue:
                 // (The closure and context included: every entry writes their slots.)
                 LoadFrameSlotAddress(null, node.Int0);
@@ -2682,6 +2725,186 @@ internal sealed class MaglevCodeGenerator
     LocalBuilder? _callResult;
     LocalBuilder? _calleeCode;
     int _fastCallArity;
+
+    // ---- Frameless direct entries ----------------------------------------------------------------------
+    //
+    // V8's optimized frames are not interpreter frames: the deoptimizer builds
+    // those from the translation when it needs them. A direct call into Maglev
+    // code builds the callee's interpreter frame (MaglevCalls, "Direct calls")
+    // because stack walks, arguments materialization and lazy deopts read it;
+    // code that can do none of these (no calls, no throws, no lazy deopts, no
+    // loops with interrupt checks, no frame reads or writes: a leaf) gets a
+    // second direct entry that builds no frame at all. Its parameters are the
+    // entry's arguments, and an eager deopt exit builds the frame first
+    // (MaglevCalls.DeoptimizeFrameless), then continues as any deopt.
+
+    bool _frameless;
+    MaglevCodeGenerator? _framelessPrimary;
+
+    sealed class FramelessUnsupportedException() : Exception("frame access in a frameless entry");
+
+    static Type[] FastCallParameterTypes(int arity)
+    {
+        var parameters = new Type[4 + arity + 1];
+        parameters[0] = typeof(MaglevCode);
+        parameters[1] = typeof(Isolate);
+        parameters[2] = typeof(JSFunction);
+        parameters[3] = typeof(int);
+        for (int i = 4; i < parameters.Length; i++) parameters[i] = typeof(JSValue);
+        return parameters;
+    }
+
+    /// <summary>Whether the graph is a leaf: nothing in it needs the interpreter frame.</summary>
+    bool IsFramelessCandidate()
+    {
+        if (_info.IsOsr || _hasCatchBlocks || Flags_NoFrameless) return false;
+        BytecodeArray bytecode = _info.Toplevel.Bytecode;
+        if (bytecode.IncomingNewTargetOrGeneratorRegister.IsValid) return false;
+        if (_fastCallArity != bytecode.ParameterCount - 1) return false;
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Node node in block.Nodes)
+            {
+                if ((node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0) return false;
+                if (node.ExceptionHandler is not null || node.LazyDeoptInfo is not null) return false;
+                switch (node.Opcode)
+                {
+                    case Opcode.StoreRegister:
+                    case Opcode.LoadRegister:
+                    case Opcode.CallBuiltin:
+                    case Opcode.CallKnownJSFunction:
+                    case Opcode.HandleNoHeapWritesInterrupt:
+                    case Opcode.SetCurrentContext:
+                    case Opcode.LoadGeneratorField:
+                    case Opcode.StoreGeneratorContinuation:
+                    case Opcode.GeneratorStore:
+                    case Opcode.GeneratorRestoreRegister:
+                        return false;
+                    case Opcode.EnterInlinedFrame when ((MaglevCompilationUnit)node.Obj0!).EagerFrame:
+                        return false;
+                }
+            }
+            if (block.Control is { Opcode: Opcode.JumpLoop }) return false;
+        }
+        return true;
+    }
+
+    static readonly bool Flags_NoFrameless = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_FRAMELESS") == "1";
+
+    /// <summary>Generates the frameless direct entry of a leaf graph, or null.</summary>
+    MaglevCodeGenerator? TryGenerateFramelessEntry()
+    {
+        if (!IsFramelessCandidate()) return null;
+        // The second pass over the graph: block labels and inlined frames' locals start again.
+        foreach (BasicBlock block in _graph.Blocks) block.LabelDefined = false;
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            foreach (Node node in block.Nodes)
+            {
+                if (node.Opcode == Opcode.EnterInlinedFrame && node.Obj0 is MaglevCompilationUnit unit)
+                {
+                    unit.FpLocal = null;
+                    unit.FpRefLocal = null;
+                    unit.FrameRecordLocal = null;
+                }
+            }
+        }
+        int deoptPoints = _deoptPoints.Count, feedback = _speculationFeedback.Count;
+        var generator = new MaglevCodeGenerator(_info, _code, _optimizeFully, this) { _framelessPrimary = this };
+        try
+        {
+            generator.GenerateFrameless();
+            return generator;
+        }
+        catch (FramelessUnsupportedException)
+        {
+            _deoptPoints.RemoveRange(deoptPoints, _deoptPoints.Count - deoptPoints);
+            _speculationFeedback.RemoveRange(feedback, _speculationFeedback.Count - feedback);
+            return null;
+        }
+    }
+
+    void GenerateFrameless()
+    {
+        AllocateLocals();
+        EmitPrologue();
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            EmitBlock(block);
+        }
+        EmitEdgeStubs();
+        EmitDeoptExits();
+        if (_optimizeFully || _il.ILOffset > kAggressiveILBytes) _method.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
+    }
+
+    Delegate CreateFramelessDelegate()
+    {
+        Type type = BaselineCodeSpace.CreateType(_type);
+        foreach ((FieldBuilder field, object? value) in _staticConstants) type.GetField(field.Name)!.SetValue(null, value);
+        return type.GetMethod(_method.Name)!.CreateDelegate(MaglevFastCalls.DelegateTypes[_fastCallArity], _code);
+    }
+
+    /// <summary>An InitialValue of a frameless entry: the closure, its context, the receiver or a parameter.</summary>
+    void EmitFramelessInitialValue(int register)
+    {
+        if (register == InterpreterRuntime.kClosureOffset)
+        {
+            _il.Emit(OpCodes.Ldarg_2);
+            _il.Emit(OpCodes.Call, s_jsValueFromObject);
+            return;
+        }
+        if (register == InterpreterRuntime.kContextOffset)
+        {
+            _il.Emit(OpCodes.Ldarg_2);
+            _il.Emit(OpCodes.Ldfld, s_jsFunctionContext);
+            _il.Emit(OpCodes.Call, s_jsValueFromObject);
+            return;
+        }
+        for (int i = 0; i <= _fastCallArity; i++)
+        {
+            if (Register.FromParameterIndex(i).Index == register)
+            {
+                _il.Emit(OpCodes.Ldarg, (short)(4 + i));
+                return;
+            }
+        }
+        throw new FramelessUnsupportedException();
+    }
+
+    static readonly FieldInfo s_jsFunctionContext = typeof(JSFunction).GetField(nameof(JSFunction.Context))!;
+    static readonly MethodInfo s_deoptimizeFrameless = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.DeoptimizeFrameless))!;
+
+    /// <summary>
+    /// A frameless entry's deopt exit: every value to the scratch buffer, the
+    /// receiver and the arguments after them, then MaglevCalls.DeoptimizeFrameless
+    /// builds the frame, deoptimizes and continues in the interpreter.
+    /// </summary>
+    void EmitFramelessDeopt(List<ValueNode?> spill)
+    {
+        EmitSpill(spill);
+        int argsAt = spill.Count;
+        for (int i = 0; i <= _fastCallArity; i++)
+        {
+            _il.Emit(OpCodes.Ldarg_1);
+            _il.Emit(OpCodes.Ldfld, s_deoptScratch);
+            _il.Emit(OpCodes.Ldc_I4, argsAt + i);
+            _il.Emit(OpCodes.Ldelema, typeof(JSValue));
+            _il.Emit(OpCodes.Ldarg, (short)(4 + i));
+            _il.Emit(OpCodes.Stobj, typeof(JSValue));
+        }
+        _maxScratch = Math.Max(_maxScratch, argsAt + _fastCallArity + 1);
+        _il.Emit(OpCodes.Ldarg_1);
+        _il.Emit(OpCodes.Ldarg_0);
+        _il.Emit(OpCodes.Ldloc, _deoptIndex!);
+        _il.Emit(OpCodes.Ldloc, _deoptReason!);
+        _il.Emit(OpCodes.Ldarg_2);
+        _il.Emit(OpCodes.Ldarg_3);
+        _il.Emit(OpCodes.Ldc_I4, argsAt);
+        _il.Emit(OpCodes.Call, s_deoptimizeFrameless);
+        _il.Emit(OpCodes.Ret);
+    }
 
     /// <summary>Bytecodes that read the actual arguments beyond the formal parameters.</summary>
     internal static bool ReadsActualArguments(BytecodeArray bytecode)

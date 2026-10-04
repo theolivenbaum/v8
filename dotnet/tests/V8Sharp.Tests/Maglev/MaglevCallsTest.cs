@@ -195,6 +195,45 @@ public class MaglevCallsTest
         """,
     };
 
+    public static TheoryData<string> FramelessSnippets => new()
+    {
+        // Leaf callees entered without a frame (frameless direct entries):
+        // eager deopts of the leaf (wrong map, overflow, a non-number) build
+        // the frame and continue in the interpreter, from direct calls and
+        // constructs; the caller's frame and stack traces stay exact.
+        """
+        (function() {
+          function get(o) { return o.x * 2 + o.y; }
+          function add(a, b) { return a + b | 0; }
+          function Pt(x, y) { this.x = x; this.y = y; }
+          function where() { try { null.f(); } catch (e) { return e.stack.split('at ').length; } }
+          function caller(o, k) {
+            var r = get(o) + add(k, 1);
+            var p = new Pt(k, r);
+            return r + ':' + p.x + ':' + p.y + ':' + where();
+          }
+          var out = [];
+          for (var k = 0; k < 60; k++) {
+            var o = k < 40 ? { x: k, y: 1 } : k < 50 ? { y: 2, x: k } : { x: 'a' + k, y: 3 };
+            out.push(caller(o, k == 55 ? 2147483647 : k));
+          }
+          return out.join();
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(FramelessSnippets))]
+    public void FramelessEntriesGiveTheSameResults(string source)
+    {
+        MaglevCompilerTest.AssertSameWhenOptimized(source);
+        // With little inlining, so the leaves are called directly.
+        string interpreted = MaglevCompilerTest.Run("--no-maglev --no-sparkplug", source);
+        Assert.Equal(interpreted, MaglevCompilerTest.Run(
+            "--maglev --no-concurrent-recompilation --invocation-count-for-maglev=2 --invocation-count-for-feedback-allocation=1 " +
+            "--max-maglev-inlined-bytecode-size=0 --max-maglev-inlined-bytecode-size-small=0", source));
+    }
+
     [Theory]
     [MemberData(nameof(Snippets))]
     public void SameResultWhenOptimized(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
