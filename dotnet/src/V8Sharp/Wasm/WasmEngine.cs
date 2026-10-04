@@ -158,6 +158,11 @@ namespace V8Sharp.Wasm
         /// Decodes and validates <paramref name="bytes"/>. Throws
         /// <see cref="WasmCompileException"/> with the reason on failure.
         /// </summary>
+        /// <summary>wasm-limits.h kV8MaxWasmFunctionLocals.</summary>
+        const int kV8MaxWasmFunctionLocals = 50_000;
+
+        static WasmEngine() => BinaryModuleParser.MaximumFunctionLocals = kV8MaxWasmFunctionLocals;
+
         public static WasmModule Compile(byte[] bytes)
         {
             WasmModule module;
@@ -177,6 +182,10 @@ namespace V8Sharp.Wasm
                 module.ValidateAndThrow(new RuntimeAttributes
                 {
                     AllowMixedExceptionHandling = Isolate.Current?.Flags.wasm_allow_mixed_eh_for_testing == true,
+                    // V8 allows atomics on unshared memories and up to
+                    // kV8MaxWasmFunctionLocals locals.
+                    RelaxAtomicSharedCheck = true,
+                    MaxFunctionLocals = kV8MaxWasmFunctionLocals,
                 });
             }
             catch (Exception e) when (e is ValidationException or InvalidDataException or FormatException

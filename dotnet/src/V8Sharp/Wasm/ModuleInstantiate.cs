@@ -87,6 +87,13 @@ public sealed class InstanceBuilder
             _thrower.LinkError(e.Message);
             return null!;
         }
+        catch (Exception e) when (e is OutOfMemoryException ||
+                                  e is InstantiationException && e.Message.StartsWith("Cannot allocate memory", StringComparison.Ordinal))
+        {
+            // InstanceBuilder::AllocateMemory.
+            _thrower.RangeError("Out of memory: Cannot allocate Wasm memory for new instance");
+            return null!;
+        }
         catch (Exception e) when (e is InstantiationException or WasmRuntimeException or InvalidDataException)
         {
             _thrower.RuntimeError(e.Message);

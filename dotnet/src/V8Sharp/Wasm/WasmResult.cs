@@ -118,6 +118,7 @@ public static class WasmErrorMessages
         if (e is OutOfBoundsTableAccessException) return MessageTemplate.WasmTrapTableOutOfBounds;
         if (m.Contains("too large", StringComparison.Ordinal)) return MessageTemplate.WasmTrapArrayTooLarge;
         if (m == WasmFutexPolicy.WaitNotAllowed) return MessageTemplate.AtomicsOperationNotAllowed;
+        if (m.Contains("unaligned", StringComparison.OrdinalIgnoreCase)) return MessageTemplate.WasmTrapUnalignedAccess;
         if (m.Contains("element segment out of bounds", StringComparison.Ordinal))
             return MessageTemplate.WasmTrapElementSegmentOutOfBounds;
         if (m.StartsWith("unreachable", StringComparison.Ordinal)) return MessageTemplate.WasmTrapUnreachable;
@@ -192,7 +193,6 @@ public static class WasmErrorMessages
         {
             return MessageTemplate.WasmTrapMemOutOfBounds;
         }
-        if (m.Contains("unaligned", StringComparison.OrdinalIgnoreCase)) return MessageTemplate.WasmTrapUnalignedAccess;
         return MessageTemplate.WasmTrapUnreachable;
     }
 

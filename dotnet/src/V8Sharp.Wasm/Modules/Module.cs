@@ -345,16 +345,35 @@ namespace Wacs.Core
         {
             InstructionOffsetRecorder?.Add((uint)reader.BaseStream.Position);
             //Splice another byte if the first byte is a prefix
-            var opcode = (OpCode)reader.ReadByte() switch {
-                OpCode.FB => new ByteCode((GcCode)reader.ReadLeb128_u32()),
-                OpCode.FC => new ByteCode((ExtCode)reader.ReadLeb128_u32()),
-                OpCode.FD => new ByteCode((SimdCode)reader.ReadLeb128_u32()),
-                OpCode.FE => new ByteCode((AtomCode)reader.ReadLeb128_u32()),
+            var first = (OpCode)reader.ReadByte();
+            bool prefixed = first is OpCode.FB or OpCode.FC or OpCode.FD or OpCode.FE;
+            uint index = prefixed ? reader.ReadLeb128_u32() : 0;
+            var opcode = first switch {
+                OpCode.FB => new ByteCode((GcCode)index),
+                OpCode.FC => new ByteCode((ExtCode)index),
+                OpCode.FD => new ByteCode((SimdCode)index),
+                OpCode.FE => new ByteCode((AtomCode)index),
                 var b => new ByteCode(b)
             };
             try
             {
+                // V8Sharp: an index beyond the opcode enum is no opcode.
+                if (prefixed && first != OpCode.FD && index > 0xFF)
+                    throw new InvalidDataException("Unsupported instruction");
                 return InstructionFactory.CreateInstruction(opcode)?.Parse(reader);
+            }
+            catch (InvalidDataException exc) when (prefixed && exc.Message.StartsWith("Unsupported instruction", StringComparison.Ordinal))
+            {
+                // V8Sharp: V8's message ("invalid %s opcode: 0x%x").
+                string kind = first switch
+                {
+                    OpCode.FB => "gc",
+                    OpCode.FC => "numeric",
+                    OpCode.FD => "simd",
+                    _ => "atomic",
+                };
+                uint full = ((uint)first << (index < 0x100 ? 8 : 12)) | index;
+                throw new FormatException($"invalid {kind} opcode: 0x{full:x}");
             }
             catch (InvalidDataException exc)
             {

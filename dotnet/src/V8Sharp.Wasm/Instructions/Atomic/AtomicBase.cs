@@ -82,9 +82,10 @@ namespace Wacs.Core.Instructions.Atomic
             {
                 1 => 0, 2 => 1, 4 => 2, 8 => 3, _ => -1
             };
+            // V8Sharp: V8's message (function-body-decoder-impl.h).
             context.Assert(M.Align.LogSize() == expectedLog2,
-                "Instruction {0} failed with non-natural alignment 2^{1} (expected exactly 2^{2} = {3} bytes).",
-                Op.GetMnemonic(), M.Align.LogSize(), expectedLog2, WidthBytes);
+                "invalid alignment for atomic operation; expected alignment is {0}, actual alignment is {1}",
+                expectedLog2, M.Align.LogSize());
 
             // Shared memory requirement. Strict by default; hosts may relax
             // via RuntimeAttributes.RelaxAtomicSharedCheck for toolchains
@@ -143,15 +144,16 @@ namespace Wacs.Core.Instructions.Atomic
         protected long CheckEa(long offset)
         {
             long ea = offset + M.Offset;
+            // V8Sharp: V8 checks the alignment before the bounds.
+            if (ea >= 0 && (ea & (WidthBytes - 1)) != 0)
+                throw new TrapException(
+                    $"Instruction {Op.GetMnemonic()} failed. Unaligned atomic access at {ea} (width {WidthBytes}).");
             if (ea < 0)
                 throw new TrapException(
                     $"Instruction {Op.GetMnemonic()} failed. Memory pointer {ea} out of bounds.");
             if ((ulong)ea > (ulong)CachedMem.ByteLength || (ulong)CachedMem.ByteLength - (ulong)ea < (ulong)WidthBytes)
                 throw new TrapException(
                     $"Instruction {Op.GetMnemonic()} failed. Memory pointer {ea}+{WidthBytes} out of bounds ({(long)CachedMem.ByteLength}).");
-            if ((ea & (WidthBytes - 1)) != 0)
-                throw new TrapException(
-                    $"Instruction {Op.GetMnemonic()} failed. Unaligned atomic access at {ea} (width {WidthBytes}).");
             return ea;
         }
     }
