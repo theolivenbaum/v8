@@ -35,7 +35,8 @@ Namespaces: `V8Sharp.<Folder>` (e.g. `V8Sharp.Objects`, `V8Sharp.Interpreter`),
 |---|---|
 | `src/heap` (Orinoco GC, spaces, write barriers, handles) | the .NET GC. Objects are ordinary managed objects. `Handle<T>`/`Tagged<T>` disappear: a C# reference is always valid and GC-safe. `DisallowGarbageCollection` scopes are dropped. |
 | `src/snapshot` | none. The bootstrapper builds the native context at start-up. (A later optimisation may cache it.) |
-| `src/codegen`, the architecture backends, `src/wasm` | none. Machine code comes from RyuJIT: the compiler tiers emit IL (section 9). |
+| `src/codegen`, the architecture backends | none. Machine code comes from RyuJIT: the compiler tiers emit IL (section 9). |
+| `src/wasm` (decoder, Liftoff, TurboFan wasm pipeline, DrumBrake) | WACS, vendored as `src/V8Sharp.Wasm` (decoder, validator, store, interpreter; Apache-2.0, see its README). The JS API on top (`wasm-js.cc`, the JS-facing parts of `wasm-objects.cc` and `module-instantiate.cc`, the JS-to-wasm and wasm-to-JS wrappers) is ported in `src/V8Sharp/Wasm/`. Differences: deviations.md, "WebAssembly". |
 | CSA / Torque builtins | C# methods. The algorithm, the fast paths and the slow paths follow the `.tq`/`-gen.cc` file; the spec text is the tie-breaker. |
 | `src/sandbox`, pointer compression, `src/trap-handler` | not applicable: managed memory is already safe. |
 | ICU (`V8_INTL_SUPPORT`) | not ported. V8Sharp matches V8 built with `v8_enable_i18n_support=false`. Identifier predicates use .NET's Unicode tables (equivalent to V8's ICU path); case mapping uses the ported `unibrow` tables. |

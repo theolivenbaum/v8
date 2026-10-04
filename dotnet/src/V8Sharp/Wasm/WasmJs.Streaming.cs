@@ -22,7 +22,8 @@ public static partial class WasmJs
     {
         var thrower = new ErrorThrower(isolate, "WebAssembly.compileStreaming()");
         JSPromise promise = PromiseBuiltins.NewJSPromise(isolate);
-        StartAsyncCompilationWithResolver(isolate, thrower, args.AtOrUndefined(1), (module, error) =>
+        CompileTimeImports imports = CompileTimeImports.FromArgument(isolate, args.AtOrUndefined(2));
+        StartAsyncCompilationWithResolver(isolate, thrower, args.AtOrUndefined(1), imports, (module, error) =>
         {
             if (module is { } m) JSPromise.Resolve(isolate, promise, m);
             else JSPromise.Reject(isolate, promise, error);
@@ -46,7 +47,8 @@ public static partial class WasmJs
             return promise;
         }
         JSReceiver? imports = ffi.IsUndefined ? null : (JSReceiver)ffi.Object;
-        StartAsyncCompilationWithResolver(isolate, thrower, args.AtOrUndefined(1), (module, error) =>
+        CompileTimeImports compileImports = CompileTimeImports.FromArgument(isolate, args.AtOrUndefined(3));
+        StartAsyncCompilationWithResolver(isolate, thrower, args.AtOrUndefined(1), compileImports, (module, error) =>
         {
             if (module is null)
             {
@@ -63,7 +65,7 @@ public static partial class WasmJs
     /// and hands its value to the streaming callback, which compiles it.
     /// </summary>
     static void StartAsyncCompilationWithResolver(Isolate isolate, ErrorThrower thrower, JSValue responseOrPromise,
-        Action<JSValue?, JSValue> onDone)
+        CompileTimeImports imports, Action<JSValue?, JSValue> onDone)
     {
         if (!IsWasmCodegenAllowed(isolate))
         {
@@ -88,7 +90,7 @@ public static partial class WasmJs
                     onDone(null, e.Value);
                     return JSValue.Undefined;
                 }
-                AsyncCompile(i, thrower, bytes, onDone);
+                AsyncCompile(i, thrower, bytes, imports, onDone);
                 return JSValue.Undefined;
             }, hasPrototype: false);
         // WasmStreamingPromiseFailedCallback: aborts with the rejection.

@@ -115,6 +115,7 @@ public static class WasmErrorMessages
         string op = e.WasmFrames is { Length: > 0 } frames && frames[0].Instruction is { } inst
             ? inst.Op.GetMnemonic()
             : "";
+        if (e is WasmTemplateTrapException templateTrap) return templateTrap.Template;
         if (e is OutOfBoundsTableAccessException) return MessageTemplate.WasmTrapTableOutOfBounds;
         if (m.Contains("too large", StringComparison.Ordinal)) return MessageTemplate.WasmTrapArrayTooLarge;
         if (m == WasmFutexPolicy.WaitNotAllowed) return MessageTemplate.AtomicsOperationNotAllowed;

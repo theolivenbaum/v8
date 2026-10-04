@@ -31,6 +31,9 @@ public sealed class WasmModuleObject(Map map) : JSObject(map)
     /// <summary>The module's script (V8's WasmModuleObject::script), named wasm://wasm/....</summary>
     public Script Script = null!;
 
+    /// <summary>The compile-time imports the module was compiled with (V8: on the NativeModule).</summary>
+    public CompileTimeImports? CompileImports;
+
     /// <summary>Whether <see cref="Module"/> was instantiated (linked) already.</summary>
     internal bool ModuleLinked;
 

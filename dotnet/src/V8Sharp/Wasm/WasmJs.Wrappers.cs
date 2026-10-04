@@ -31,7 +31,9 @@ public static partial class WasmJs
         RecordUnwoundFrames(isolate, trap.WasmFrames);
         JSValue[] arguments = template == MessageTemplate.AtomicsOperationNotAllowed
             ? [isolate.Factory.InternalizeString("Atomics.wait")]
-            : [];
+            : trap is WasmTemplateTrapException { Argument: { } argument }
+                ? [JSValue.FromNumber(argument)]
+                : [];
         JSObject error = isolate.Factory.NewError(isolate.NativeContext.WasmRuntimeErrorFunction, template, arguments);
         JSObject.AddProperty(isolate, error, ReadOnlyRoots.wasm_uncatchable_symbol, JSValue.True, PropertyAttributes.NONE);
         try

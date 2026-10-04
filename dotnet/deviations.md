@@ -1319,3 +1319,91 @@ Date
   reflection over `TemporalBuiltins` (method name = Builtin id) instead of
   233 explicit Register lines.
 
+
+## WebAssembly
+
+The JS API (`src/V8Sharp/Wasm/`) ports V8's `wasm-js.cc`, the JS-API parts of
+`wasm-objects.cc`, `module-instantiate.cc` (InstanceBuilder) and the wrappers.
+Everything below the API is not V8's `src/wasm` but WACS, vendored as
+`src/V8Sharp.Wasm` (`src/V8Sharp.Wasm/README.md`). Changes made to the
+vendored code carry a `V8Sharp:` comment at the site.
+
+- **Execution.** V8 compiles wasm (Liftoff, then TurboFan/Turboshaft) or runs
+  it in DrumBrake; V8Sharp runs it in WACS's polymorphic interpreter over
+  linked instruction objects. There is one tier: `%IsLiftoffFunction`,
+  `%IsTurboFanFunction` and the other tier queries are false,
+  `%IsWasmTieringPredictable()` is false (tests skip tier assertions), tier-up,
+  deopt and code-flushing natives are accepted and do nothing, and the
+  `--trace-wasm*`, `--trace-wasm-inlining`, compilation-hints and
+  `--wasm-*-inlining` outputs are never printed (the message tests that
+  check them fail). The WACS IL transpiler is not used (todo.md).
+- **Compilation is synchronous.** `WebAssembly.compile`/`instantiate` decode
+  and validate at the call and settle the promise from a foreground task (V8
+  compiles on background threads); instantiation is synchronous in both.
+  `compileStreaming`/`instantiateStreaming` exist only with
+  `--wasm-test-streaming` (V8's testing callback) and compile the whole
+  buffer at once. Lazy validation flags are ignored (validation is eager).
+- **Decoding and validation messages.** CompileError messages use V8's frame
+  ("Compiling function #N:\"name\" failed: ... @+offset", the
+  `WebAssembly.X(): ` prefix) and V8's texts for the fallthru arity check,
+  atomic alignment, invalid prefixed opcodes, duplicate exports and the
+  module header; the other texts are WACS's validator's (V8 names the
+  operand and the instruction that produced it, which WACS does not track).
+  Implementation limits follow V8 where WACS checks them (50000 locals);
+  V8's decoder limits on parameter, table and type counts are not checked
+  with V8's messages.
+- **Traps.** WACS raises traps with its own texts; `WasmErrorMessages.TrapTemplate`
+  maps them to V8's `kWasmTrap*` templates (one per trap reason). Where WACS
+  checked in a different order than V8 (array.copy destination bounds before
+  the source reference, atomic alignment before bounds, table.init table
+  range before segment range, array length limit before segment bounds) the
+  vendored code follows V8.
+- **Linear memory is a managed `byte[]`.** V8 reserves address space and
+  commits pages; V8Sharp allocates the memory's bytes, so a memory is bounded
+  by `Array.MaxLength` (about 2 GiB): larger initial sizes (memory64 tests,
+  huge memories) fail with V8's out-of-memory RangeError, and growth beyond
+  it fails. A shared memory reserves its maximum (up to 64 MiB) up front so
+  that the array never moves and SharedArrayBuffers alias it across growth,
+  in this and other isolates; growing past the reservation moves the array
+  (old SharedArrayBuffers then stop aliasing). Resizable buffers
+  (`toResizableBuffer`) follow the memory through its BackingStore.
+- **Modules.** A module is instantiated from its decoded form once; every
+  further instantiation decodes the wire bytes again, because WACS links the
+  instruction objects of a module in place (V8 shares compiled code). A
+  module posted to a Worker is recompiled from its wire bytes in the
+  receiving isolate (d8 shares the CompiledWasmModule).
+  `d8.wasm.serializeModule`/`%SerializeWasmModule` are not provided (there is
+  no machine code to cache).
+- **Wasm frames in stack traces.** V8 walks wasm frames on the machine
+  stack. V8Sharp records each JS-to-wasm call (an activation: the height of
+  the interpreter's call stack) and, where the JS frames show an exported
+  function's wrapper, puts that activation's frames (V8 does not show the
+  wrapper either). Positions are module offsets recorded per instruction
+  while decoding; a stack overflow is reported at the entry of the function
+  that could not be entered, as V8's stack check does. A start function's
+  frames do not appear (it is not called through an exported function).
+- **Interrupts.** Termination and other interrupts are served every 16384
+  interpreted instructions (V8: stack checks at function entries and loop
+  back edges).
+- **Exceptions.** The legacy exception-handling instructions (try, catch,
+  catch_all, delegate, rethrow), which WACS lacks, are implemented in the
+  vendored code (`Instructions/LegacyExceptions.cs`); a module mixing them
+  with try_table/throw_ref is rejected as in V8 (exnref value types in
+  signatures are not detected, only the instructions).
+- **References.** Casts and JS conversions compare a GC object's or a
+  function's own defined type (canonical, across modules); WACS compared the
+  static type the value carried. A JS Number in i31 range or a wasm GC
+  object passed as externref keeps that identity (V8 keeps the JS value; the
+  difference is not observable). Wasm GC objects reach JavaScript as opaque
+  wrapper objects with a null prototype; property writes and other
+  operations V8 rejects with a TypeError ("WasmObjectsAreOpaque") are not
+  rejected.
+- **JSPI.** `WebAssembly.Suspending` and `WebAssembly.promising` exist, but
+  the interpreter cannot suspend a wasm stack: a suspending import that
+  returns a promise throws SuspendError.
+- **Not implemented** (CompileError on use): JS string builtins and imported
+  strings (`wasm:js-string`, `wasm:text-*`), stringref, custom descriptors,
+  shared-everything, stack switching (WasmFX), exact types, fp16, wide
+  arithmetic, compact imports, acquire/release atomics, memory control,
+  source phase imports of wasm modules, the debugger and profiler hooks
+  (`%WasmEnterDebugging` does nothing).

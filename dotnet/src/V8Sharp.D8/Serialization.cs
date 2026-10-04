@@ -23,6 +23,8 @@ public sealed class SerializationData
     /// CompiledWasmModule; V8Sharp compiles again in the receiving isolate).
     /// </summary>
     public List<byte[]> WasmModules { get; } = [];
+    /// <summary>The compile-time imports of each transferred module.</summary>
+    public List<V8Sharp.Wasm.CompileTimeImports?> WasmModuleImports { get; } = [];
     public List<BackingStore> SharedImmutableBackingStores { get; internal set; } = [];
 }
 
@@ -100,6 +102,7 @@ public sealed class Serializer : ValueSerializerDelegate
     {
         if (module is not V8Sharp.Wasm.WasmModuleObject wasmModule) return base.GetWasmModuleTransferId(isolate, module);
         _data!.WasmModules.Add(wasmModule.WireBytes);
+        _data.WasmModuleImports.Add(wasmModule.CompileImports);
         return (uint)(_data.WasmModules.Count - 1);
     }
 
@@ -193,7 +196,8 @@ public sealed class Deserializer : ValueDeserializerDelegate
 
     public override JSObject? GetWasmModuleFromId(Isolate isolate, uint transferId) =>
         transferId < _data.WasmModules.Count
-            ? V8Sharp.Wasm.WasmJs.NewModuleFromWireBytes(isolate, _data.WasmModules[(int)transferId])
+            ? V8Sharp.Wasm.WasmJs.NewModuleFromWireBytes(isolate, _data.WasmModules[(int)transferId],
+                _data.WasmModuleImports[(int)transferId])
             : null;
 
     public override JSArrayBuffer? GetSharedArrayBufferFromId(Isolate isolate, uint cloneId)

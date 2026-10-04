@@ -401,7 +401,7 @@ namespace Wacs.Core.Types.Defs
                 // in no type below any.
                 if (refVal.GcRef is not (null or Wacs.Core.Runtime.GC.StoreStruct or Wacs.Core.Runtime.StoreArray
                         or Wacs.Core.Runtime.Types.ExnInstance or Wacs.Core.Runtime.Concurrency.ContInstance or Wacs.Core.Runtime.VecRef
-                        or Wacs.Core.Runtime.Builtins.JsStringRef or Wacs.Core.Runtime.Concurrency.IDelegateRef))
+                        or Wacs.Core.Runtime.Concurrency.IDelegateRef))
                 {
                     return rt1 is ValType.Any;
                 }

@@ -39,13 +39,19 @@ public sealed class InstanceBuilder
         _moduleObject = moduleObject;
         // V8Sharp: WACS links a module's instruction objects in place, so a
         // second instance gets its own decoded copy of the module.
-        _module = moduleObject.ModuleLinked ? WasmEngine.Compile(moduleObject.WireBytes) : moduleObject.Module;
+        _module = moduleObject.ModuleLinked
+            ? WasmEngine.Compile(moduleObject.WireBytes, moduleObject.CompileImports)
+            : moduleObject.Module;
         moduleObject.ModuleLinked = true;
         _ffi = ffi;
         _typesModule = new ModuleInstance(_module);
         _types = _typesModule.Types;
         _sanitizedImports = new JSValue[_module.Imports.Length];
+        _builtinImports = new bool[_module.Imports.Length];
     }
+
+    /// <summary>The imports that are compile-time imported builtins (wasm:js-string).</summary>
+    readonly bool[] _builtinImports;
 
     /// <summary>
     /// WasmEngine::SyncInstantiate: builds an instance or throws (TypeError,
@@ -119,9 +125,24 @@ public sealed class InstanceBuilder
     /// <summary>InstanceBuilder::SanitizeImports: reads every import from the import object.</summary>
     void SanitizeImports()
     {
+        CompileTimeImports? compileImports = _moduleObject.CompileImports;
         for (int index = 0; index < _module.Imports.Length; index++)
         {
             WasmModule.Import import = _module.Imports[index];
+            // Compile-time imports are not looked up in the import object:
+            // a string constant is the import's name, a builtin is bound to
+            // its implementation.
+            if (WasmStringBuiltins.IsStringConstant(compileImports, import.ModuleName))
+            {
+                _sanitizedImports[index] = _isolate.Factory.NewStringFromUtf16(import.Name);
+                continue;
+            }
+            if (import.Desc is WasmModule.ImportDesc.FuncDesc &&
+                WasmStringBuiltins.IsBuiltin(compileImports, import.ModuleName, import.Name))
+            {
+                _builtinImports[index] = true;
+                continue;
+            }
             if (_ffi is null)
             {
                 // No point in continuing if we don't have an imports object.
@@ -234,6 +255,16 @@ public sealed class InstanceBuilder
     /// <summary>InstanceBuilder::ProcessImportedFunction.</summary>
     FuncAddr ProcessImportedFunction(int index, WasmModule.ImportDesc.FuncDesc funcDesc, JSValue value)
     {
+        if (_builtinImports[index])
+        {
+            // A JS string builtin: a host function of the import's (validated) signature.
+            DefType builtinType = _types[funcDesc.TypeIndex];
+            WasmModule.Import builtinImport = _module.Imports[index];
+            FuncAddr builtin = _engine.Runtime.AllocateHostFunction(builtinImport.ModuleName, builtinImport.Name,
+                (FunctionType)builtinType.Expansion, WasmStringBuiltins.Create(builtinImport.Name));
+            if (_engine.Store[builtin] is HostFunction builtinHost) builtinHost.DefType = builtinType;
+            return builtin;
+        }
         JSReceiver callable;
         bool suspending = false;
         if (value.HeapObjectOrNull is WasmSuspendingObject suspendingObject)
@@ -477,19 +508,31 @@ public static class WasmModuleObjectOps
     {
         Factory f = isolate.Factory;
         WasmModule.Import[] imports = moduleObject.Module.Imports;
-        var elements = f.NewFixedArray(imports.Length);
+        CompileTimeImports? compileImports = moduleObject.CompileImports;
+        var entries = new List<JSValue>(imports.Length);
         JSString moduleString = f.InternalizeString("module");
         JSString nameString = f.InternalizeString("name");
         JSString kindString = f.InternalizeString("kind");
         for (int i = 0; i < imports.Length; i++)
         {
+            // Compile-time imports are not imports of the instance.
+            if (imports[i].Desc is WasmModule.ImportDesc.FuncDesc &&
+                WasmStringBuiltins.IsBuiltin(compileImports, imports[i].ModuleName, imports[i].Name))
+            {
+                continue;
+            }
+            if (imports[i].Desc is WasmModule.ImportDesc.GlobalDesc &&
+                WasmStringBuiltins.IsStringConstant(compileImports, imports[i].ModuleName))
+            {
+                continue;
+            }
             JSObject entry = f.NewJSObject(isolate.NativeContext.ObjectFunction);
             JSObject.AddProperty(isolate, entry, moduleString, f.NewStringFromUtf16(imports[i].ModuleName), PropertyAttributes.NONE);
             JSObject.AddProperty(isolate, entry, nameString, f.NewStringFromUtf16(imports[i].Name), PropertyAttributes.NONE);
             JSObject.AddProperty(isolate, entry, kindString, f.InternalizeString(ExternalKindName(imports[i].Desc)), PropertyAttributes.NONE);
-            elements[i] = entry;
+            entries.Add(entry);
         }
-        return f.NewJSArrayWithElements(elements);
+        return f.NewJSArrayWithElements(f.NewFixedArrayFrom(entries.ToArray()));
     }
 
     /// <summary>wasm::GetExports: [{name, kind}].</summary>

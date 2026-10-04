@@ -510,7 +510,17 @@ public static partial class WasmJs
             RejectLater(isolate, promise, e.Value);
             return promise;
         }
-        AsyncCompile(isolate, thrower, bytes, (module, error) =>
+        CompileTimeImports imports;
+        try
+        {
+            imports = CompileTimeImports.FromArgument(isolate, args.AtOrUndefined(2));
+        }
+        catch (JavaScriptException e)
+        {
+            RejectLater(isolate, promise, e.Value);
+            return promise;
+        }
+        AsyncCompile(isolate, thrower, bytes, imports, (module, error) =>
         {
             if (module is { } m) JSPromise.Resolve(isolate, promise, m);
             else JSPromise.Reject(isolate, promise, error);
@@ -533,7 +543,8 @@ public static partial class WasmJs
             // Clear wasm exceptions; return false instead.
             return JSValue.False;
         }
-        return JSValue.FromBoolean(WasmEngine.Validate(bytes));
+        CompileTimeImports imports = CompileTimeImports.FromArgument(isolate, args.AtOrUndefined(2));
+        return JSValue.FromBoolean(WasmEngine.Validate(bytes, imports));
     }
 
     /// <summary>new WebAssembly.Module(bytes, options) -> WebAssembly.Module.</summary>
@@ -549,36 +560,38 @@ public static partial class WasmJs
             thrower.CompileError(ErrorStringForCodegen(isolate));
         }
         byte[] bytes = GetAndCopyFirstArgumentAsBytes(isolate, args, thrower);
-        WasmModuleObject moduleObj = SyncCompile(isolate, thrower, bytes);
+        CompileTimeImports imports = CompileTimeImports.FromArgument(isolate, args.AtOrUndefined(2));
+        WasmModuleObject moduleObj = SyncCompile(isolate, thrower, bytes, imports);
         TransferPrototype(isolate, moduleObj, args.Receiver);
         return moduleObj;
     }
 
     /// <summary>WasmEngine::SyncCompile: decodes and validates, or throws a CompileError.</summary>
-    internal static WasmModuleObject SyncCompile(Isolate isolate, ErrorThrower thrower, byte[] bytes)
+    internal static WasmModuleObject SyncCompile(Isolate isolate, ErrorThrower thrower, byte[] bytes,
+        CompileTimeImports? imports = null)
     {
         WasmModule module;
         try
         {
-            module = WasmEngine.Compile(bytes);
+            module = WasmEngine.Compile(bytes, imports);
         }
         catch (WasmCompileException e)
         {
             thrower.CompileError(e.Message);
             return null!;
         }
-        return NewModuleObject(isolate, module, bytes);
+        return NewModuleObject(isolate, module, bytes, imports);
     }
 
     /// <summary>
     /// WasmModuleObject::FromCompiledModule for a module transferred from
     /// another isolate: compiles its wire bytes again in this isolate.
     /// </summary>
-    public static WasmModuleObject? NewModuleFromWireBytes(Isolate isolate, byte[] bytes)
+    public static WasmModuleObject? NewModuleFromWireBytes(Isolate isolate, byte[] bytes, CompileTimeImports? imports = null)
     {
         try
         {
-            return NewModuleObject(isolate, WasmEngine.Compile(bytes), bytes);
+            return NewModuleObject(isolate, WasmEngine.Compile(bytes, imports), bytes, imports);
         }
         catch (WasmCompileException)
         {
@@ -586,11 +599,13 @@ public static partial class WasmJs
         }
     }
 
-    internal static WasmModuleObject NewModuleObject(Isolate isolate, WasmModule module, byte[] bytes)
+    internal static WasmModuleObject NewModuleObject(Isolate isolate, WasmModule module, byte[] bytes,
+        CompileTimeImports? imports = null)
     {
         var moduleObj = (WasmModuleObject)JSObject.NewWithMap(isolate, isolate.NativeContext.WasmModuleConstructor.InitialMap);
         moduleObj.Module = module;
         moduleObj.WireBytes = bytes;
+        moduleObj.CompileImports = imports is { IsEmpty: false } ? imports : null;
         moduleObj.Script = WasmStackTraces.CreateScript(isolate, moduleObj);
         return moduleObj;
     }
@@ -599,14 +614,15 @@ public static partial class WasmJs
     /// WasmEngine::AsyncCompile: compiles now and reports the result from a
     /// foreground task, as V8's background compilation does.
     /// </summary>
-    static void AsyncCompile(Isolate isolate, ErrorThrower thrower, byte[] bytes, Action<JSValue?, JSValue> onDone)
+    static void AsyncCompile(Isolate isolate, ErrorThrower thrower, byte[] bytes, CompileTimeImports? imports,
+        Action<JSValue?, JSValue> onDone)
     {
         NativeContext context = isolate.NativeContext;
         WasmModule? module = null;
         string? error = null;
         try
         {
-            module = WasmEngine.Compile(bytes);
+            module = WasmEngine.Compile(bytes, imports);
         }
         catch (WasmCompileException e)
         {
@@ -616,7 +632,7 @@ public static partial class WasmJs
         {
             using (i.EnterContext(context))
             {
-                if (module is not null) onDone(NewModuleObject(i, module, bytes), JSValue.Undefined);
+                if (module is not null) onDone(NewModuleObject(i, module, bytes, imports), JSValue.Undefined);
                 else onDone(null, thrower.Reify(ErrorThrower.ErrorType.CompileError, error!));
             }
         });
@@ -732,7 +748,17 @@ public static partial class WasmJs
             JSPromise.Reject(isolate, promise, thrower.Reify(ErrorThrower.ErrorType.CompileError, ErrorStringForCodegen(isolate)));
             return promise;
         }
-        AsyncCompile(isolate, thrower, bytes, (module, error) =>
+        CompileTimeImports compileImports;
+        try
+        {
+            compileImports = CompileTimeImports.FromArgument(isolate, args.AtOrUndefined(3));
+        }
+        catch (JavaScriptException e)
+        {
+            JSPromise.Reject(isolate, promise, e.Value);
+            return promise;
+        }
+        AsyncCompile(isolate, thrower, bytes, compileImports, (module, error) =>
         {
             if (module is null)
             {

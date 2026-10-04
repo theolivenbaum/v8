@@ -163,7 +163,7 @@ namespace V8Sharp.Wasm
 
         static WasmEngine() => BinaryModuleParser.MaximumFunctionLocals = kV8MaxWasmFunctionLocals;
 
-        public static WasmModule Compile(byte[] bytes)
+        public static WasmModule Compile(byte[] bytes, CompileTimeImports? imports = null)
         {
             WasmModule module;
             try
@@ -195,15 +195,19 @@ namespace V8Sharp.Wasm
             {
                 throw new WasmCompileException(WasmErrorMessages.ValidationError(e, bytes));
             }
+            if (WasmStringBuiltins.ValidateImports(module, bytes, imports) is { } importError)
+            {
+                throw new WasmCompileException(importError);
+            }
             return module;
         }
 
         /// <summary>WasmEngine::SyncValidate.</summary>
-        public static bool Validate(byte[] bytes)
+        public static bool Validate(byte[] bytes, CompileTimeImports? imports = null)
         {
             try
             {
-                Compile(bytes);
+                Compile(bytes, imports);
                 return true;
             }
             catch (WasmCompileException)
@@ -361,6 +365,12 @@ namespace V8Sharp.Wasm
             {
                 i31.Type = type;
                 return i31;
+            }
+            // Strings are the JS String Builtins' operands: a .NET string the
+            // builtins read directly (a JS string's identity is its value).
+            if (value.IsString)
+            {
+                return new Value(type, 0L, new Wacs.Core.Runtime.Builtins.JsStringRef(ObjectOps.ToString(Isolate, value).ToString()));
             }
             JSExternRef reference;
             if (value.HeapObjectOrNull is { } heapObject && !value.IsNumber)
@@ -626,6 +636,8 @@ namespace V8Sharp.Wasm
                     return WrapGCObject(value);
                 case ExnInstance exn:
                     return ExceptionPackageFor(value, exn);
+                case Wacs.Core.Runtime.Builtins.JsStringRef jsString:
+                    return Isolate.Factory.NewStringFromUtf16(jsString.Value);
             }
             // A function reference is the only non-null reference without a
             // heap object (its value is the function's address).
