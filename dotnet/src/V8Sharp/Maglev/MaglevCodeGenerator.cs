@@ -477,24 +477,34 @@ internal sealed class MaglevCodeGenerator
     /// <summary>The frame of the outermost function: fpRef, fp, the frame record and its index.</summary>
     void EmitPrologue()
     {
-        _il.Emit(OpCodes.Ldarg_1);
-        _il.Emit(OpCodes.Ldfld, s_registerStack);
-        _il.Emit(OpCodes.Ldarg_2);
-        _il.Emit(OpCodes.Ldfld, s_stFp);
-        _il.Emit(OpCodes.Ldelema, typeof(JSValue));
-        _il.Emit(OpCodes.Stloc, _fpRef);
+        // fp and the frame index come from the frame's builder (EnterFrame, the
+        // direct entry, OSR), which checked them against the stacks' limits:
+        // the slot and the record are addressed without bounds checks.
         _il.Emit(OpCodes.Ldarg_2);
         _il.Emit(OpCodes.Ldfld, s_stFp);
         _il.Emit(OpCodes.Stloc, _fp);
+        _il.Emit(OpCodes.Ldarg_1);
+        _il.Emit(OpCodes.Ldfld, s_registerStack);
+        _il.Emit(OpCodes.Call, s_arrayDataReference.MakeGenericMethod(typeof(JSValue)));
+        _il.Emit(OpCodes.Ldloc, _fp);
+        _il.Emit(OpCodes.Call, s_unsafeAddInt.MakeGenericMethod(typeof(JSValue)));
+        _il.Emit(OpCodes.Stloc, _fpRef);
         _il.Emit(OpCodes.Ldarg_2);
         _il.Emit(OpCodes.Ldfld, s_stFrameIndex);
         _il.Emit(OpCodes.Stloc, _baseFrameIndex);
         _il.Emit(OpCodes.Ldarg_1);
         _il.Emit(OpCodes.Call, s_interpreterFrames);
+        _il.Emit(OpCodes.Call, s_arrayDataReference.MakeGenericMethod(typeof(InterpreterFrameRecord)));
         _il.Emit(OpCodes.Ldloc, _baseFrameIndex);
-        _il.Emit(OpCodes.Ldelema, typeof(InterpreterFrameRecord));
+        _il.Emit(OpCodes.Call, s_unsafeAddInt.MakeGenericMethod(typeof(InterpreterFrameRecord)));
         _il.Emit(OpCodes.Stloc, _frame);
     }
+
+    static readonly MethodInfo s_arrayDataReference = typeof(System.Runtime.InteropServices.MemoryMarshal).GetMethods()
+        .First(m => m.Name == nameof(System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference) && m.IsGenericMethodDefinition);
+    static readonly MethodInfo s_unsafeAddInt = typeof(Unsafe).GetMethods()
+        .First(m => m.Name == nameof(Unsafe.Add) && m.IsGenericMethodDefinition && m.GetParameters().Length == 2 &&
+                    m.GetParameters()[0].ParameterType.IsByRef && m.GetParameters()[1].ParameterType == typeof(int));
 
     // ---- Constants ------------------------------------------------------------------------------------------
 
@@ -2548,23 +2558,26 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldarg_1);
         LoadConstantObject(unit.Function, typeof(JSFunction));
         LoadConstantObject(unit.Bytecode, typeof(BytecodeArray));
+        LoadConstantObject(unit.Feedback, typeof(FeedbackVector));
         _il.Emit(OpCodes.Ldc_I4, argc);
         _il.Emit(node.Int1 != 0 ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0);
         Call(nameof(MaglevBuiltins.EnterInlinedFrame));
         _il.Emit(OpCodes.Stloc, unit.FpLocal!);
-        // fpRef = ref isolate.RegisterStack[fp]
+        // fpRef = ref isolate.RegisterStack[fp] (EnterInlinedFrame checked the limits)
         _il.Emit(OpCodes.Ldarg_1);
         _il.Emit(OpCodes.Ldfld, s_registerStack);
+        _il.Emit(OpCodes.Call, s_arrayDataReference.MakeGenericMethod(typeof(JSValue)));
         _il.Emit(OpCodes.Ldloc, unit.FpLocal!);
-        _il.Emit(OpCodes.Ldelema, typeof(JSValue));
+        _il.Emit(OpCodes.Call, s_unsafeAddInt.MakeGenericMethod(typeof(JSValue)));
         _il.Emit(OpCodes.Stloc, unit.FpRefLocal!);
-        // frame = ref isolate.InterpreterFrames[base + depth]
+        // frame = ref isolate.InterpreterFrames[base + depth] (pushed by EnterInlinedFrame)
         _il.Emit(OpCodes.Ldarg_1);
         _il.Emit(OpCodes.Call, s_interpreterFrames);
+        _il.Emit(OpCodes.Call, s_arrayDataReference.MakeGenericMethod(typeof(InterpreterFrameRecord)));
         _il.Emit(OpCodes.Ldloc, _baseFrameIndex);
         _il.Emit(OpCodes.Ldc_I4, unit.InliningDepth);
         _il.Emit(OpCodes.Add);
-        _il.Emit(OpCodes.Ldelema, typeof(InterpreterFrameRecord));
+        _il.Emit(OpCodes.Call, s_unsafeAddInt.MakeGenericMethod(typeof(InterpreterFrameRecord)));
         _il.Emit(OpCodes.Stloc, unit.FrameRecordLocal!);
         // The receiver and the arguments (the new.target register of a construct).
         LoadFrameSlotAddress(unit, InterpreterRuntime.kReceiverOffset);
@@ -2734,9 +2747,8 @@ internal sealed class MaglevCodeGenerator
         il.Emit(OpCodes.Ldc_I4, incoming.IsValid ? incoming.Index : int.MinValue);
         il.Emit(OpCodes.Call, s_initializeFastFrame);
         il.Emit(OpCodes.Stloc, saved);
-        // The InterpreterState of the frame (a deopt continues it).
-        il.Emit(OpCodes.Ldloca, state);
-        il.Emit(OpCodes.Initobj, typeof(InterpreterState));
+        // The InterpreterState of the frame (a deopt continues it; the
+        // method's locals start zeroed, .locals init).
         il.Emit(OpCodes.Ldloca, state);
         il.Emit(OpCodes.Ldarg_1);
         il.Emit(OpCodes.Stfld, s_stIsolate);

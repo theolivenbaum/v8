@@ -10,6 +10,7 @@
 // guarantees the object's class), as V8's machine code does: they use
 // Unsafe.As where the check makes the cast valid.
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using V8Sharp.Base.Numbers;
 using V8Sharp.Builtins;
 using V8Sharp.Interpreter;
@@ -944,7 +945,8 @@ public static class MaglevBuiltins
     /// top, and a frame record) and returns its frame pointer. The caller
     /// writes the receiver and arguments.
     /// </summary>
-    public static int EnterInlinedFrame(Isolate isolate, JSFunction function, BytecodeArray bytecode, int argc, bool isConstruct)
+    public static int EnterInlinedFrame(Isolate isolate, JSFunction function, BytecodeArray bytecode, FeedbackVector? vector, int argc,
+        bool isConstruct)
     {
         int formal = bytecode.ParameterCount - 1;
         int paramSlots = argc > formal ? argc : formal;
@@ -953,14 +955,16 @@ public static class MaglevBuiltins
         int end = fp + bytecode.RegisterCount;
         if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
         isolate.RegisterStackTop = end;
-        JSValue[] stack = isolate.RegisterStack;
+        // The slots compared before they are stored: a frame pushed again at
+        // the same position finds the same values (no GC write barrier).
+        ref JSValue fpRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), fp);
         // Missing arguments are undefined (V8's argument adaption).
-        for (int i = argc; i < paramSlots; i++) stack[fp + InterpreterRuntime.kFirstArgumentOffset - i] = default;
+        for (int i = argc; i < paramSlots; i++) JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i), default);
         Context context = function.Context;
-        stack[fp + InterpreterRuntime.kContextOffset] = context;
-        stack[fp + InterpreterRuntime.kClosureOffset] = function;
-        stack[fp + InterpreterRuntime.kFeedbackVectorOffset] = JSValue.FromObject(function.RawFeedbackCell.Value as FeedbackVector);
-        InterpreterRuntime.InitializeFrameSlots(ref stack[fp], bytecode, argc);
+        JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset), context);
+        JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset), function);
+        JSValue.StoreSlot(ref Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset), JSValue.FromObject(vector));
+        InterpreterRuntime.InitializeFrameSlots(ref fpRef, bytecode, argc);
         if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
         ref InterpreterFrameRecord frame = ref isolate.PushFrame();
         frame.Fp = fp;

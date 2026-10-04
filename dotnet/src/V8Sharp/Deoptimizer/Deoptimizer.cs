@@ -82,7 +82,7 @@ public static class Deoptimizer
             if (i > 0 && isolate.InterpreterFrameDepth <= recordIndex)
             {
                 // A lazily pushed inlined frame the code had not needed yet.
-                MaglevBuiltins.EnterInlinedFrame(isolate, f.Function, f.Bytecode, f.Argc, f.IsConstruct);
+                MaglevBuiltins.EnterInlinedFrame(isolate, f.Function, f.Bytecode, f.FeedbackVector, f.Argc, f.IsConstruct);
             }
             ref InterpreterFrameRecord record = ref frames[recordIndex];
             int fp = record.Fp;
