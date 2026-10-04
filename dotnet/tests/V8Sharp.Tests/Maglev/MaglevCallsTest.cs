@@ -156,6 +156,43 @@ public class MaglevCallsTest
           return out.join();
         })()
         """,
+        // Polymorphic method calls (polymorphic load continuations): each map's
+        // arm calls its own method (inlined when small, a direct call
+        // otherwise); argument computations between the load and the call,
+        // throws and deopts in an arm, a new map after optimization, calls
+        // in try blocks, the arms' frames merging after the call.
+        """
+        (function() {
+          function A(v) { this.v = v; } A.prototype.run = function (p, q) { return this.v + p + q; };
+          function B(v) { this.v = v; this.w = 1; }
+          B.prototype.run = function (p, q) { var s = 0; for (var i = 0; i < 3; i++) s += this.v * p + this.w + q; return s; };
+          function C(v) { this.c = 0; this.v = v; } C.prototype.run = function (p) { this.c++; return this.v - p; };
+          function D(v) { this.v = v; } D.prototype.run = function (p) { if (p % 13 === 0) throw new Error('d' + p); return 'd' + p; };
+          function E(v) { this.v = v; } E.prototype.run = function (p) { return this.v.x + p; };
+          function drive(objs, n, base) {
+            var out = [];
+            for (var k = 0; k < n; k++) {
+              var o = objs[k % objs.length];
+              var a = k * 2, b = base + 'x';
+              try {
+                var r = o.run(a + 1, b.length);
+                out.push(r);
+              } catch (e) { out.push('caught:' + e.message); }
+              out.push(o.run(k, 1) + ':' + a);
+            }
+            return out.join();
+          }
+          var objs = [new A(1), new B(2), new C(3)], res = [];
+          for (var j = 0; j < 40; j++) res.push(drive(objs, 12, 'b' + j));
+          objs.push(new D(4));
+          for (var j = 0; j < 10; j++) res.push(drive(objs, 12, 'c'));
+          objs.push(new E({ x: 5 }));
+          for (var j = 0; j < 10; j++) res.push(drive(objs, 12, 'e'));
+          objs[4].v = { y: 1, x: 2.5 };
+          res.push(drive(objs, 12, 'f'));
+          return res.join(';');
+        })()
+        """,
     };
 
     [Theory]

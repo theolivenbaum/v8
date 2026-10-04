@@ -120,7 +120,7 @@ public sealed partial class MaglevGraphBuilder
                 return;
             }
         }
-        else if (feedback.HeapObjectOrNull is JSFunction target && !FeedbackVector.IsCleared(feedback))
+        else if (KnownCallTarget(callee, feedback) is { } target)
         {
             BuildCheckValue(callee, target, DeoptimizeReason.kWrongCallTarget);
             // TryReduceBuiltin's Function.prototype.apply (feedback naming
@@ -191,6 +191,17 @@ public sealed partial class MaglevGraphBuilder
             return;
         }
         SetAccumulator(BuildGenericCall(bytecode, callee, receiver, args, slot));
+    }
+
+    /// <summary>
+    /// The target of a call: a constant callee (ReduceCallForConstant, e.g. the
+    /// method an arm of a polymorphic load continuation loaded), whatever the
+    /// feedback, or the feedback's function (checked by the caller).
+    /// </summary>
+    static JSFunction? KnownCallTarget(ValueNode callee, JSValue feedback)
+    {
+        if (callee.Opcode == Opcode.Constant && callee.Value0.HeapObjectOrNull is JSFunction constant) return constant;
+        return feedback.HeapObjectOrNull is JSFunction target && !FeedbackVector.IsCleared(feedback) ? target : null;
     }
 
     /// <summary>
@@ -594,6 +605,7 @@ public sealed partial class MaglevGraphBuilder
         if (bytecode.HandlerTable.Length != 0) return "exception handlers";
         int length = bytecode.Length;
         bool small = length <= Flags.max_maglev_inlined_bytecode_size_small;
+        if (_onlyInlineSmall && !small) return "polymorphic continuation (small functions only)";
         int depth = _unit.InliningDepth + 1;
         if (depth > Flags.max_maglev_hard_inline_depth) return "too deep";
         if (!small && depth > MaxInlineDepth) return "inline depth";

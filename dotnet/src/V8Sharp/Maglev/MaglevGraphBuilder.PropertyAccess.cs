@@ -127,6 +127,11 @@ public sealed partial class MaglevGraphBuilder
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForGenericNamedAccess);
             return;
         }
+        if (MapsAndHandlers(slot, (Name)name.Object) is { } polymorphic &&
+            TryBuildPolymorphicLoadWithContinuation(receiver, polymorphic, (Name)name.Object))
+        {
+            return;
+        }
         if (MapsAndHandlers(slot, (Name)name.Object) is { } feedback && TryBuildNamedLoad(receiver, feedback, (Name)name.Object) is { } result)
         {
             SetAccumulator(result);
@@ -329,6 +334,234 @@ public sealed partial class MaglevGraphBuilder
         }
         return BuildPolymorphicAccess(receiver, cases, hasResult: true);
     }
+
+    // ---- Polymorphic property load continuations ---------------------------------------------------------
+    //
+    // TryBuildPolymorphicPropertyAccess with FindContinuationForPolymorphicPropertyLoad
+    // (maglev-graph-builder.cc): for a polymorphic load whose value is stored
+    // to a register and called as a method a few bytecodes later
+    //   GetNamedProperty; Star r; <straight-line bytecodes>; CallProperty r ...
+    // each map's arm builds the load and then the bytecodes up to and including
+    // the call, so the callee is the arm's constant and the call is direct (or
+    // inlined, small functions only); the arms' frames merge after the call.
+
+    /// <summary>Calls inside a continuation inline small functions only (only_inline_small_).</summary>
+    bool _onlyInlineSmall;
+
+    bool TryBuildPolymorphicLoadWithContinuation(ValueNode receiver, List<(Map Map, JSValue Handler)> feedback, Name name)
+    {
+        if (feedback.Count < 2 || receiver.Representation != ValueRepresentation.kTagged || _onlyInlineSmall) return false;
+        var groups = new List<(List<Map> Maps, PropertyAccessInfo Info)>();
+        foreach ((Map map, JSValue handler) in feedback)
+        {
+            PropertyAccessInfo? info = LoadAccessInfo(map, handler, name);
+            if (info is null || ICMaps.IsPrimitiveMap(map)) return false;
+            bool merged = false;
+            foreach ((List<Map> maps, PropertyAccessInfo other) in groups)
+            {
+                if (SameLoad(info, other))
+                {
+                    maps.Add(map);
+                    if (!SameFieldInfo(info, other)) other.FieldOwner = null;
+                    merged = true;
+                    break;
+                }
+            }
+            if (!merged) groups.Add(([map], info));
+        }
+        // Only arms that load different constants (methods) make different calls.
+        if (groups.Count < 2 || !groups.TrueForAll(static g => g.Info.AccessKind == PropertyAccessInfo.Kind.DataConstant)) return false;
+        int callOffset = FindContinuationForPolymorphicPropertyLoad();
+        if (callOffset < 0) return false;
+        BuildPolymorphicLoadContinuation(receiver, groups, callOffset);
+        return true;
+    }
+
+    /// <summary>
+    /// FindContinuationForPolymorphicPropertyLoadImpl: the offset of the call
+    /// that ends the continuation after the current GetNamedProperty, or -1.
+    /// </summary>
+    int FindContinuationForPolymorphicPropertyLoad()
+    {
+        // Try block starts and ends end the continuation (the handler stack is
+        // not replayed).
+        int nextHandlerChange = int.MaxValue;
+        byte[] tableBytes = _unit.Bytecode.HandlerTable;
+        if (tableBytes.Length != 0)
+        {
+            var table = new Codegen.HandlerTable(tableBytes);
+            if (_nextHandlerTableIndex < table.NumberOfRangeEntries()) nextHandlerChange = table.GetRangeStart((uint)_nextHandlerTableIndex);
+        }
+        if (_catchBlockStack.Count > 0) nextHandlerChange = Math.Min(nextHandlerChange, _catchBlockStack.Peek().End);
+
+        var it = new BytecodeArrayIterator(_unit.Bytecode);
+        it.SetOffset(_it.CurrentOffset());
+        it.Advance();
+        if (it.Done() || InterruptsContinuation(it.CurrentOffset(), nextHandlerChange)) return -1;
+        if (!Bytecodes.IsShortStar(it.CurrentBytecode())) return -1;
+        Register loaded = Register.FromShortStar(it.CurrentBytecode());
+        for (int limit = 20; --limit > 0;)
+        {
+            it.Advance();
+            if (it.Done() || InterruptsContinuation(it.CurrentOffset(), nextHandlerChange)) return -1;
+            Bytecode bytecode = it.CurrentBytecode();
+            switch (bytecode)
+            {
+                case Bytecode.CallProperty:
+                case Bytecode.CallProperty0:
+                case Bytecode.CallProperty1:
+                case Bytecode.CallProperty2:
+                    if (it.GetRegisterOperand(0).Index == loaded.Index) return it.CurrentOffset();
+                    continue;
+                case Bytecode.Star:
+                    if (it.GetRegisterOperand(0).Index == loaded.Index) return -1;
+                    continue;
+            }
+            if (Bytecodes.IsShortStar(bytecode))
+            {
+                if (Register.FromShortStar(bytecode).Index == loaded.Index) return -1;
+                continue;
+            }
+            if (Bytecodes.IsJump(bytecode) || Bytecodes.IsSwitch(bytecode) || Bytecodes.Returns(bytecode) ||
+                Bytecodes.UnconditionallyThrows(bytecode))
+            {
+                return -1;
+            }
+        }
+        return -1;
+    }
+
+    /// <summary>A merge point, loop header or try block boundary ends a continuation.</summary>
+    bool InterruptsContinuation(int offset, int nextHandlerChange) =>
+        NeedsMergeState(offset) || _catchStates[offset] is not null || _analysis.IsLoopHeader(offset) || offset >= nextHandlerChange;
+
+    /// <summary>
+    /// The arms of a polymorphic load with a continuation: per map group the
+    /// map test, the load, then the bytecodes up to the call at
+    /// <paramref name="callOffset"/>; the arms' frames merge after the call
+    /// (LabelForTrackingInterpreterFrameState), where the builder continues.
+    /// </summary>
+    void BuildPolymorphicLoadContinuation(ValueNode receiver, List<(List<Map> Maps, PropertyAccessInfo Info)> groups, int callOffset)
+    {
+        int startOffset = _it.CurrentOffset();
+        FlushDirtyParameters();
+        ValueNode map = AddNewNode(new ValueNode(Opcode.LoadMap, ValueRepresentation.kTagged)
+        {
+            Inputs = [receiver],
+            Type = NodeType.kOtherHeapObject,
+            Properties = OpProperties.kCanRead,
+        });
+        bool needsMigration = false;
+        foreach ((List<Map> maps, PropertyAccessInfo _) in groups)
+        {
+            foreach (Map m in maps) needsMigration |= m.IsMigrationTarget;
+        }
+        if (needsMigration)
+        {
+            map = AddNewNode(new ValueNode(Opcode.MigrateMapIfNeeded, ValueRepresentation.kTagged)
+            {
+                Inputs = [map, receiver],
+                Type = NodeType.kOtherHeapObject,
+                Properties = OpProperties.kCanWrite | OpProperties.kCanAllocate | OpProperties.kNotIdempotent,
+            });
+        }
+        // What every arm starts from: the frame and checkpoint at the load.
+        var entryValues = (ValueNode?[])_frame.Values.Clone();
+        KnownNodeAspects entryKnown = _frame.Known.Clone();
+        ulong entryDirty = _frame.DirtyParameters;
+        var entryCheckpoint = (ValueNode?[])_frameAtBytecodeStart.Clone();
+        bool entryDeprecated = _hasDeprecatedMapWithoutMigrationTarget;
+        var ends = new List<(BasicBlock Block, InterpreterFrameState Frame, ControlNode Jump)>();
+        for (int c = 0; c < groups.Count; c++)
+        {
+            (List<Map> mapList, PropertyAccessInfo info) = groups[c];
+            Map[] maps = mapList.ToArray();
+            bool last = c == groups.Count - 1;
+            BasicBlock? next = null;
+            if (!last)
+            {
+                BasicBlock caseBlock = _graph.NewBlock();
+                next = _graph.NewBlock();
+                for (int m = 0; m < maps.Length; m++)
+                {
+                    BasicBlock test = _currentBlock!;
+                    BasicBlock otherwise = m == maps.Length - 1 ? next : _graph.NewBlock();
+                    FinishBlock(new ControlNode(Opcode.BranchIfReferenceEqual)
+                    {
+                        Inputs = [map, GetConstant(maps[m])],
+                        Target = caseBlock,
+                        FalseTarget = otherwise,
+                    });
+                    caseBlock.Predecessors.Add(test);
+                    otherwise.Predecessors.Add(test);
+                    if (m < maps.Length - 1)
+                    {
+                        _graph.Blocks.Add(otherwise);
+                        _currentBlock = otherwise;
+                    }
+                }
+                _graph.Blocks.Add(caseBlock);
+                _currentBlock = caseBlock;
+            }
+            // Each arm replays the bytecodes from the load with the entry frame.
+            _it.SetOffset(startOffset);
+            Array.Copy(entryCheckpoint, _frameAtBytecodeStart, entryCheckpoint.Length);
+            _latestCheckpointedFrame = null;
+            _hasDeprecatedMapWithoutMigrationTarget = entryDeprecated;
+            _frame = new InterpreterFrameState(_unit) { Known = entryKnown.Clone(), DirtyParameters = entryDirty };
+            Array.Copy(entryValues, _frame.Values, entryValues.Length);
+            try
+            {
+                if (last) BuildCheckMaps(receiver, maps);
+                else RecordKnownMaps(receiver, maps);
+                SetAccumulator(BuildPropertyLoad(receiver, info));
+                bool saved = _onlyInlineSmall;
+                _onlyInlineSmall = true;
+                try
+                {
+                    while (_currentBlock is not null && _it.CurrentOffset() < callOffset)
+                    {
+                        _it.Advance();
+                        VisitSingleBytecode();
+                    }
+                }
+                finally
+                {
+                    _onlyInlineSmall = saved;
+                }
+                if (_currentBlock is not null)
+                {
+                    var jump = new ControlNode(Opcode.Jump);
+                    BasicBlock end = _currentBlock;
+                    FinishBlock(jump);
+                    ends.Add((end, _frame, jump));
+                }
+            }
+            catch (AbortBytecodeException)
+            {
+            }
+            if (next is not null)
+            {
+                _graph.Blocks.Add(next);
+                _currentBlock = next;
+            }
+        }
+        _it.SetOffset(callOffset);
+        _latestCheckpointedFrame = null;
+        if (ends.Count == 0)
+        {
+            _currentBlock = null;
+            return;
+        }
+        // The arms' frames merge at the bytecode after the call.
+        int nextOffset = _it.NextOffset();
+        var state = new MergePointInterpreterFrameState(_unit, nextOffset, ends.Count, _analysis.GetInLivenessFor(nextOffset), null);
+        foreach ((BasicBlock block, InterpreterFrameState frame, ControlNode _) in ends) state.Merge(this, frame, block);
+        BasicBlock join = StartBlockFromMergeState(state);
+        join.Offset = nextOffset;
+        foreach ((BasicBlock _, InterpreterFrameState _, ControlNode jump) in ends) jump.Target = join;
+    }
+
 
     static bool SameLoad(PropertyAccessInfo a, PropertyAccessInfo b) =>
         a.AccessKind == b.AccessKind && a.StorageIndex == b.StorageIndex && ReferenceEquals(a.Holder, b.Holder) &&
