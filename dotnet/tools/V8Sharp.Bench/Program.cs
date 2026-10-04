@@ -251,7 +251,7 @@ public static partial class Program
                     }
                   }
                   if (iterations) print('@iterations-applied ' + applied);
-                  var measured = {};
+                  var measured = {}, awaited = false;
                   if (__benchSteady) {
                     // octane-steady: within ONE pass, each benchmark first runs its
                     // own iterations unmeasured (as many as it then measures), so
@@ -266,10 +266,17 @@ public static partial class Program
                     for (var s2 = 0; s2 < BenchmarkSuite.suites.length; s2++) {
                       var suite2 = BenchmarkSuite.suites[s2], bs2 = suite2.benchmarks;
                       for (var b2 = 0; b2 < bs2.length; b2++) (function (bm, suiteName) {
-                        var warm = bm.deterministicIterations, n = 0, run = bm.run, last = 0;
-                        bm.deterministicIterations = warm * 2;
+                        var measuredRuns = bm.deterministicIterations, warm = measuredRuns * __benchWarmup, n = 0,
+                            run = bm.run, last = 0;
+                        bm.deterministicIterations = warm + measuredRuns;
                         bm.run = function () {
-                          if (n++ === warm) last = cpuTimeMs();
+                          if (n++ === warm) {
+                            // Background compiles queued while warming up finish
+                            // before measuring: compile time is not scored.
+                            waitForCompilations();
+                            if (!awaited) { print('@compilations-awaited'); awaited = true; }
+                            last = cpuTimeMs();
+                          }
                           var result = run.apply(this, arguments);
                           if (n > warm) {
                             // Every measured run, up to the benchmark's last one.
@@ -299,7 +306,9 @@ public static partial class Program
             return (dir, files.Select(f => Path.Combine(dir, f)).ToArray(),
                 fixedWork
                     ? "var __benchScale = " + int.Parse(scale, CultureInfo.InvariantCulture) + ", __benchIterations = " +
-                      IterationsLiteral(Environment.GetEnvironmentVariable("V8SHARP_BENCH_ITERATIONS")) + ", __benchSteady = " +
+                      IterationsLiteral(Environment.GetEnvironmentVariable("V8SHARP_BENCH_ITERATIONS")) + ", __benchWarmup = " +
+                      int.Parse(Environment.GetEnvironmentVariable("V8SHARP_BENCH_WARMUP") ?? "2", CultureInfo.InvariantCulture) +
+                      ", __benchSteady = " +
                       (steady ? "true" : "false") + ";\n" + fixedDriver
                     : driver);
         }
@@ -503,6 +512,9 @@ public static partial class Program
             if (l.StartsWith("@wall-ms ", StringComparison.Ordinal))
                 wall = double.Parse(l[9..], CultureInfo.InvariantCulture);
         }
+        if ((suite.StartsWith("octane-steady:", StringComparison.Ordinal) || suite.StartsWith("octane-quick:", StringComparison.Ordinal)) &&
+            !stdout.ToString().Contains("@compilations-awaited", StringComparison.Ordinal))
+            error ??= "this V8Sharp.Bench build does not wait for background compiles before measuring; rebuild it from a current tree";
         if (suite.StartsWith("octane-quick:", StringComparison.Ordinal) && !stdout.ToString().Contains("@iterations-applied ", StringComparison.Ordinal))
             error ??= "this V8Sharp.Bench build does not support octane-quick (fixed iterations); rebuild it from a current tree";
         // The shell prints no @wall-ms: the process's wall time (start-up included).

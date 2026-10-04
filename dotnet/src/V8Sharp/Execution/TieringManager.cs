@@ -27,6 +27,18 @@ public sealed partial class Isolate
     public BaselineBatchCompiler BaselineBatchCompiler => _baselineBatchCompiler ??= new BaselineBatchCompiler(this);
 
     /// <summary>
+    /// Waits for every baseline batch and Maglev job running on a background
+    /// thread and installs their code. Not a V8 API: d8's closest are
+    /// %WaitForBackgroundOptimization and %FinalizeOptimization. For hosts that
+    /// measure generated code rather than the .NET JIT compiling it.
+    /// </summary>
+    public void WaitForBackgroundCompilation()
+    {
+        _baselineBatchCompiler?.WaitForBackgroundCompiles();
+        Maglev.MaglevCompiler.WaitForBackgroundOptimization(this);
+    }
+
+    /// <summary>
     /// Isolate::use_optimizer: Maglev is V8Sharp's only optimizing compiler
     /// (there is no Turbofan), enabled with --maglev.
     /// </summary>
