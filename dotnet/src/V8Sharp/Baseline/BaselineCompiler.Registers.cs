@@ -62,9 +62,11 @@ public sealed partial class BaselineCompiler
             if (i < 0 || i >= _registerLocals!.Length) continue;
             _masm.LoadFrameSlotAddress(i);
             Emit(OpCodes.Ldloc, _registerLocals[i]);
-            Emit(OpCodes.Stobj, typeof(JSValue));
+            Emit(OpCodes.Call, s_storeSlot);
         }
     }
+
+    static readonly System.Reflection.MethodInfo s_storeSlot = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.StoreSlot))!;
 
     /// <summary>Loads the cached registers [first, first + count) from their frame slots.</summary>
     void ReloadRegisters(int first, int count)

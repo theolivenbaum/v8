@@ -44,6 +44,13 @@ public static partial class BaselineBuiltins
     public static JSValue BitwiseSmiSlow(Isolate isolate, int operation, JSValue lhs, int rhs, ref byte feedback) =>
         InterpreterOps.Bitwise(isolate, (Operation)operation, lhs, JSValue.FromInt(rhs), ref feedback);
 
+    /// <summary>
+    /// A register spill (JSValue.StoreSlot): the reference half only when it
+    /// changes, so spilling an unchanged register or a number costs no GC write barrier.
+    /// </summary>
+    [MethodImpl(Helper)]
+    public static void StoreSlot(ref JSValue slot, JSValue value) => JSValue.StoreSlot(ref slot, value);
+
     // ---- Typed array elements -----------------------------------------------------------------------
 
     /// <summary>

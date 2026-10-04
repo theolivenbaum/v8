@@ -736,7 +736,7 @@ public sealed partial class BaselineCompiler
             Bytecode.JumpIfToBooleanTrueConstant or Bytecode.JumpIfToBooleanFalseConstant;
         Label isTrue = _il.DefineLabel(), isFalse = _il.DefineLabel();
         EmitCompareBranch(op, isTrue, isFalse);
-        if (fusable && nextOffset < _isJumpTarget.Length && !_isJumpTarget[nextOffset])
+        if (fusable && nextOffset < _chunkEnd && !_isJumpTarget[nextOffset])
         {
             _fusedCompare = (isTrue, isFalse);
             return;
@@ -749,7 +749,7 @@ public sealed partial class BaselineCompiler
     {
         (Label isTrue, Label isFalse) = _fusedCompare!.Value;
         _fusedCompare = null;
-        Label target = _labels[JumpTargetOffset()];
+        Label target = EnsureLabel(JumpTargetOffset());
         Label fallThrough = _il.DefineLabel();
         bool jumpOnTrue = bytecode is Bytecode.JumpIfTrue or Bytecode.JumpIfToBooleanTrue or Bytecode.JumpIfTrueConstant or
             Bytecode.JumpIfToBooleanTrueConstant;
@@ -820,7 +820,7 @@ public sealed partial class BaselineCompiler
     /// <summary>The conditional jumps on the accumulator (V8: JumpIf* in baseline-compiler.cc).</summary>
     void VisitConditionalJump(Bytecode bytecode)
     {
-        Label target = _labels[JumpTargetOffset()];
+        Label target = EnsureLabel(JumpTargetOffset());
         Label next = _il.DefineLabel();
         switch (bytecode)
         {

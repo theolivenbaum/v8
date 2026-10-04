@@ -80,6 +80,27 @@ public sealed partial class BaselineCompiler
     Label _reenter;
     LocalBuilder? _valueTemp;
 
+    // ---- Chunks ----------------------------------------------------------------------------------
+    //
+    // Deviation: V8's Sparkplug compiles a function of any size into one code
+    // object. RyuJIT optimizes a method only below its limits (IL size,
+    // instructions, blocks, local references), so a function whose code would
+    // exceed them is compiled as several methods, each the code of a range of
+    // the bytecode [_chunkStart, _chunkEnd) (BaselineCode.RunChunks runs them).
+    // A jump out of the range goes to an exit stub that spills the cached
+    // registers, leaves the accumulator and the target offset in the state and
+    // returns ChunkExit; the method of the target's range is entered there
+    // through its prologue's dispatch, like an OSR entry.
+
+    readonly int _chunkStart, _chunkEnd;
+    bool IsChunk => _chunkStart != 0 || _chunkEnd != _bytecode.Length;
+    bool InChunk(int offset) => offset >= _chunkStart && offset < _chunkEnd;
+    readonly Dictionary<int, Label> _exitStubs = [];
+
+    /// <summary>The marker a chunk returns when control continues in another chunk (state.Pc).</summary>
+    internal static readonly HeapObject ChunkExitMarker = new FixedArray(0);
+    static readonly FieldInfo s_chunkExitMarker = typeof(BaselineCompiler).GetField(nameof(ChunkExitMarker), BindingFlags.NonPublic | BindingFlags.Static)!;
+
     static readonly Dictionary<string, MethodInfo> s_builtins = LoadBuiltins();
     static readonly Dictionary<string, MethodInfo> s_calls = typeof(BaselineCalls).GetMethods(BindingFlags.Public | BindingFlags.Static)
         .ToDictionary(m => m.Name, StringComparer.Ordinal);
@@ -92,8 +113,11 @@ public sealed partial class BaselineCompiler
     }
 
     public BaselineCompiler(Isolate isolate, SharedFunctionInfo sharedFunctionInfo, BytecodeArray bytecode, bool compact = false,
-        string? methodName = null, bool optimizeFully = false, FeedbackVector? feedback = null, bool outOfLineChecks = false)
+        string? methodName = null, bool optimizeFully = false, FeedbackVector? feedback = null, bool outOfLineChecks = false,
+        int chunkStart = 0, int chunkEnd = -1)
     {
+        _chunkStart = chunkStart;
+        _chunkEnd = chunkEnd < 0 ? bytecode.Length : chunkEnd;
         _outOfLineChecks = outOfLineChecks || s_forceOutOfLineChecks;
         _isolate = isolate;
         // --always-sparkplug compiles before anything ran: no feedback to go by.
@@ -161,6 +185,11 @@ public sealed partial class BaselineCompiler
         _il.BlockBoundaries > kMaxOptimizedBlocks || _il.LocalReferences > kMaxOptimizedLocalReferences);
 
     /// <summary>The emitter's counts (for tracing and tests).</summary>
+    /// <summary>The largest of the emitter's counts as a fraction of its limit (above 1: over the limits).</summary>
+    internal double LimitRatio => Math.Max(
+        Math.Max((double)_il.ILOffset / kMaxOptimizedILBytes, (double)_il.Instructions / kMaxOptimizedInstructions),
+        Math.Max((double)_il.BlockBoundaries / kMaxOptimizedBlocks, (double)_il.LocalReferences / kMaxOptimizedLocalReferences));
+
     internal string Statistics =>
         $"il={_il.ILOffset} instructions={_il.Instructions} blocks<={_il.BlockBoundaries} localrefs={_il.LocalReferences}" +
         (_compact ? " compact" : _outOfLineChecks ? " outofline-checks" : "");
@@ -195,13 +224,14 @@ public sealed partial class BaselineCompiler
     {
         // PreVisit: the exception handlers are entry points (V8: indirect jump
         // targets), and so is every loop header (OSR from the interpreter).
-        _entryOffsets.Add(0);
+        _entryOffsets.Add(_chunkStart);
         if (_bytecode.HandlerTable.Length != 0)
         {
             var table = new HandlerTable(_bytecode.HandlerTable);
             for (uint i = 0; i < table.NumberOfRangeEntries(); ++i)
             {
                 int handler = table.GetRangeHandler(i);
+                if (!InChunk(handler)) continue;
                 _entryOffsets.Add(handler);
                 EnsureLabel(handler);
             }
@@ -211,7 +241,8 @@ public sealed partial class BaselineCompiler
 
         SetUpRegisterCache();
         Prologue();
-        for (; !_iterator.Done(); _iterator.Advance())
+        for (; !_iterator.Done() && _iterator.CurrentOffset() < _chunkStart; _iterator.Advance()) { }
+        for (; !_iterator.Done() && _iterator.CurrentOffset() < _chunkEnd; _iterator.Advance())
         {
             if (s_ilProfile is null)
             {
@@ -228,14 +259,61 @@ public sealed partial class BaselineCompiler
             }
         }
 
-        // Falling off the end is impossible (the bytecode ends in Return, Throw
-        // or a jump), but IL requires a terminated method.
-        _masm.LoadInt(_bytecode.Length);
-        CallBuiltin("Illegal");
-        _masm.Return();
+        if (_chunkEnd < _bytecode.Length)
+        {
+            // The next chunk continues (if the last bytecode falls through).
+            _pendingOffset = -1;
+            Emit(OpCodes.Br, EnsureLabel(_chunkEnd));
+        }
+        else
+        {
+            // Falling off the end is impossible (the bytecode ends in Return, Throw
+            // or a jump), but IL requires a terminated method.
+            _masm.LoadInt(_bytecode.Length);
+            CallBuiltin("Illegal");
+            _masm.Return();
+        }
 
         EmitBackEdgeInterruptStub();
+        EmitChunkExitStubs();
     }
+
+    /// <summary>
+    /// The exit stubs of a chunk: the cached registers to the frame, the
+    /// accumulator and the target offset to the state, and ChunkExit.
+    /// </summary>
+    void EmitChunkExitStubs()
+    {
+        if (_exitStubs.Count == 0) return;
+        _pendingOffset = -1;
+        Label exit = _il.DefineLabel();
+        foreach ((int target, Label stub) in _exitStubs)
+        {
+            _il.MarkLabel(stub);
+            I(target);
+            Emit(OpCodes.Stloc, TInt);
+            Emit(OpCodes.Br, exit);
+        }
+        // One exit sequence per chunk, the target offset in TInt.
+        _il.MarkLabel(exit);
+        if (_registerLocals is not null) SpillRegisters(0, _registerLocals.Length);
+        State();
+        Acc();
+        Emit(OpCodes.Stfld, s_stAccumulator);
+        State();
+        Emit(OpCodes.Ldloc, TInt);
+        Emit(OpCodes.Stfld, s_stPc);
+        EmitReturnChunkExit();
+    }
+
+    void EmitReturnChunkExit()
+    {
+        Emit(OpCodes.Ldsfld, s_chunkExitMarker);
+        Emit(OpCodes.Call, s_fromObject);
+        Emit(OpCodes.Ret);
+    }
+
+    static readonly MethodInfo s_fromObject = typeof(JSValue).GetMethod(nameof(JSValue.FromObject), [typeof(HeapObject)])!;
 
     /// <summary>
     /// BaselineCompiler::Build: the finished method and its IL size. The entry
@@ -264,6 +342,11 @@ public sealed partial class BaselineCompiler
 
     Label EnsureLabel(int offset)
     {
+        if (!InChunk(offset))
+        {
+            if (!_exitStubs.TryGetValue(offset, out Label stub)) _exitStubs[offset] = stub = _il.DefineLabel();
+            return stub;
+        }
         if (!_isJumpTarget[offset])
         {
             _isJumpTarget[offset] = true;
@@ -275,19 +358,30 @@ public sealed partial class BaselineCompiler
     void PreVisitSingleBytecode()
     {
         Bytecode bytecode = _iterator.CurrentBytecode();
+        bool fromOutside = !InChunk(_iterator.CurrentOffset());
         if (bytecode == Bytecode.JumpLoop)
         {
             int target = JumpTargetOffset();
+            if (!InChunk(target)) return;
             EnsureLabel(target);
             _entryOffsets.Add(target);
         }
         else if (Bytecodes.IsJump(bytecode))
         {
-            EnsureLabel(JumpTargetOffset());
+            int target = JumpTargetOffset();
+            if (!InChunk(target)) return;
+            EnsureLabel(target);
+            // Another chunk jumps here (a chunk's exit stub, then its dispatch).
+            if (fromOutside) _entryOffsets.Add(target);
         }
         else if (Bytecodes.IsSwitch(bytecode))
         {
-            foreach ((int _, int target) in JumpTableTargets()) EnsureLabel(target);
+            foreach ((int _, int target) in JumpTableTargets())
+            {
+                if (!InChunk(target)) continue;
+                EnsureLabel(target);
+                if (fromOutside) _entryOffsets.Add(target);
+            }
         }
     }
 
@@ -370,10 +464,19 @@ public sealed partial class BaselineCompiler
                 il.Emit(OpCodes.Beq, target);
             }
         }
-        // Not an entry offset.
-        il.Emit(OpCodes.Ldloc, _masm.Scratch);
-        CallBuiltin("Illegal");
-        _masm.Return();
+        if (IsChunk)
+        {
+            // Not an entry of this chunk (a handler of another chunk, after a
+            // Throw re-entered the dispatch): its chunk runs it.
+            EmitReturnChunkExit();
+        }
+        else
+        {
+            // Not an entry offset.
+            il.Emit(OpCodes.Ldloc, _masm.Scratch);
+            CallBuiltin("Illegal");
+            _masm.Return();
+        }
 
         foreach ((int offset, Label stub) in entryStubs)
         {
@@ -387,7 +490,7 @@ public sealed partial class BaselineCompiler
             }
             else
             {
-                // OSR from the interpreter at a loop header.
+                // OSR from the interpreter at a loop header, or another chunk's exit.
                 ReloadRegisters(0, _registerLocals!.Length);
             }
             il.Emit(OpCodes.Br, _labels[offset]);
@@ -1441,7 +1544,7 @@ public sealed partial class BaselineCompiler
                 break;
             case Bytecode.Jump:
             case Bytecode.JumpConstant:
-                _masm.Jump(_labels[JumpTargetOffset()]);
+                _masm.Jump(EnsureLabel(JumpTargetOffset()));
                 break;
             case Bytecode.JumpIfNullConstant:
             case Bytecode.JumpIfNull:
@@ -1473,7 +1576,7 @@ public sealed partial class BaselineCompiler
                 // index == cache length (both numbers: ForInPrepare / ForInStep).
                 RegNum(RegisterOperand(1));
                 RegNum(RegisterOperand(2));
-                Emit(OpCodes.Beq, _labels[JumpTargetOffset()]);
+                Emit(OpCodes.Beq, EnsureLabel(JumpTargetOffset()));
                 break;
             case Bytecode.SwitchOnSmiNoFeedback:
                 VisitSwitchOnSmiNoFeedback();
@@ -1701,7 +1804,7 @@ public sealed partial class BaselineCompiler
         int weight = Uint(0) + _iterator.CurrentBytecodeSizeWithoutPrefix();
         // JumpLoop clobbers the accumulator.
         SetAccUndefined();
-        EmitUpdateInterruptBudget(weight, backEdge: true, _labels[target]);
+        EmitUpdateInterruptBudget(weight, backEdge: true, EnsureLabel(target));
     }
 
     /// <summary>BaselineCompiler::VisitReturn: BaselineLeaveFrame with the profiling weight.</summary>
@@ -1724,7 +1827,7 @@ public sealed partial class BaselineCompiler
         for (int i = 0; i < tableLength; i++) table[i] = fallThrough;
         foreach ((int caseValue, int target) in JumpTableTargets())
         {
-            table[caseValue - caseValueBase] = _labels[target];
+            table[caseValue - caseValueBase] = EnsureLabel(target);
         }
         Acc();
         I(caseValueBase);
@@ -1753,7 +1856,7 @@ public sealed partial class BaselineCompiler
         for (int i = 0; i < tableLength; i++) table[i] = invalid;
         foreach ((int caseValue, int target) in JumpTableTargets())
         {
-            table[caseValue] = _labels[target];
+            table[caseValue] = EnsureLabel(target);
         }
         Isolate();
         Reg(generator);

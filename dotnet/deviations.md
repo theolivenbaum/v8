@@ -323,9 +323,13 @@ for now, to be revisited when the reason goes away.
   (as the interpreter's handler lookup does). `Function.prototype.call` and
   `apply` with a JSFunction target enter the target without a builtin
   frame (V8 has a builtin frame for them; it is not observable in stack
-  traces, which skip it). The JS stack limit is checked every fourth call
-  depth (every call for functions with more than 1024 bytes of bytecode),
-  not at every entry; the .NET stack is large enough for the slack.
+  traces, which skip it). The frame setup is inlined into the call
+  bytecodes' stubs (`BaselineCalls.EnterInline`), and one compare against
+  `Isolate.RegisterStackInterruptLimit` covers register stack overflow and
+  pending interrupts, as the interpreter's fast entry does. The .NET stack
+  is checked every eighth call depth (every call for functions with more
+  than 1024 bytes of bytecode), not at every entry; the .NET stack is large
+  enough for the slack.
 - Registers: in functions without exception handlers or generator
   resumption, up to 64 interpreter registers live in IL locals; the frame
   copy is written only where something reads it (register lists passed to
@@ -341,13 +345,29 @@ for now, to be revisited when the reason goes away.
   builtin as the slow path, and chooses per bytecode from the feedback at
   compile time which paths to emit (header of BaselineCompiler.Feedback.cs).
   The emitted code records the same feedback as the interpreter.
-- Compact code and size limit: a function whose inline code would exceed
-  RyuJIT's optimization limits (it would compile it with MinOpts) is
-  compiled again with calls to the builtins only. Functions with more than
-  5000 bytes of bytecode do not tier up (batch compilation,
-  `--always-sparkplug`) and stay interpreted unless compiled explicitly with
-  `%CompileBaseline` (`BaselineSupport.TiersUpToBaseline`); V8 tiers up any
-  size.
+- Size: RyuJIT compiles a method beyond its limits (IL size, instructions,
+  blocks, local references; `BaselineILEmitter` counts them, calibrated
+  against RyuJIT's own decisions) with MinOpts, slower than the
+  interpreter. A function whose full code would exceed them is emitted
+  again with the number paths' feedback checks as calls to helpers
+  (`BaselineBuiltins.BinaryFeedbackUnchanged` ..., inlined where RyuJIT
+  still inlines; RyuJIT does not count inlinee IL against the limits) and
+  with no inline paths for IC slots whose feedback is still empty; if that
+  still exceeds them, the function is compiled as several methods, one per
+  range of its bytecode (chunks, `BaselineCode.GenerateChunks`), cut at the
+  least loop depth. A jump out of a chunk spills the cached registers and
+  returns to `BaselineCode.RunChunks`, which enters the target's chunk
+  through its dispatch. V8 compiles a function of any size into one code
+  object; V8Sharp used to keep functions over 5000 bytes of bytecode in the
+  interpreter. Compact code (builtin calls only) remains for a range that
+  exceeds the limits below 256 bytes.
+- Feedback-specialized fast paths: a monomorphic named load or store whose
+  handler was an own field when the function was compiled compares the
+  handler slot's payload (the encoded field index) and accesses the field
+  at its known offset; a keyed access whose feedback map was a typed array
+  calls the element load or store of that kind. Any other feedback at run
+  time takes the general path (the IC), so the behaviour and the feedback
+  are the same; only the speed of a site whose feedback changes differs.
 - Without `--maglev` (V8Sharp's default) `Isolate.UseOptimizer` is false, so
   `TieringManager` behaves as in a V8 built without Turbofan and Maglev
   (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the
@@ -360,7 +380,10 @@ for now, to be revisited when the reason goes away.
   collection) around the shared helpers, so the interpreter needs no
   refactoring. The slow paths of the inline code
   (BaselineBuiltins.SlowPaths.cs) are `NoInlining`, so RyuJIT keeps them out
-  of the baseline methods.
+  of the baseline methods. The out-of-line paths of the IC bytecodes handle
+  the hits of V8's *IC_Baseline builtins first (monomorphic and polymorphic
+  own fields from the handler payload, polymorphic fast elements, typed
+  arrays) before entering the IC.
 - `%CompileBaseline` on a non-user function, or when Sparkplug is disabled,
   throws an InvalidOperationException (V8: CHECK failure).
 
