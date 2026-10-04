@@ -1400,7 +1400,24 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Brfalse, slow);
         Emit(OpCodes.Ldloc, TLoadHandler);
         Emit(OpCodes.Ldfld, s_lhFastElementsMode);
-        Emit(OpCodes.Brfalse, slow);
+        if (SlotFeedbackUnknown(slot))
+        {
+            // Compiled before the feedback named a map: a typed array's element
+            // handler has no fast elements kind, the receiver's kind decides.
+            Label fastElements = _il.DefineLabel();
+            Emit(OpCodes.Brtrue, fastElements);
+            Isolate();
+            Emit(OpCodes.Ldloc, TLoadHandler);
+            Emit(OpCodes.Ldloc, TObj);
+            Emit(OpCodes.Ldloc, TInt2);
+            Emit(OpCodes.Call, s_loadTypedElementBitsAnyKind);
+            EmitSetAccFromTypedBits(slow, done);
+            _il.MarkLabel(fastElements);
+        }
+        else
+        {
+            Emit(OpCodes.Brfalse, slow);
+        }
         // A JSArray: the index is below its length.
         Emit(OpCodes.Ldloc, TLoadHandler);
         Emit(OpCodes.Ldfld, s_lhIsJSArray);
@@ -1492,11 +1509,7 @@ public sealed partial class BaselineCompiler
     ElementsKind? CompileTimeTypedArrayKind(int slot)
     {
         if (_compact || FeedbackUnknown || CompileTimeFeedback(slot) is not Map map) return null;
-        ElementsKind kind = map.ElementsKind;
-        return ElementsKinds.IsTypedArrayElementsKind(kind) && !ElementsKinds.IsBigIntTypedArrayElementsKind(kind) &&
-               kind != ElementsKind.FLOAT16_ELEMENTS
-            ? kind
-            : null;
+        return BaselineBuiltins.IsNumberTypedKind(map.ElementsKind) ? map.ElementsKind : null;
     }
 
     static readonly MethodInfo s_loadTypedElementBits = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.LoadTypedElementBits))!;
@@ -1534,17 +1547,7 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Ldloc, TInt2);
         I((int)kind);
         Emit(OpCodes.Call, s_loadTypedElementBits);
-        Emit(OpCodes.Stloc, TLong);
-        Emit(OpCodes.Ldloc, TLong);
-        Emit(OpCodes.Ldc_I8, BaselineBuiltins.kTypedMissBits);
-        Emit(OpCodes.Beq, slow);
-        Emit(OpCodes.Ldloca, _masm.Acc);
-        Emit(OpCodes.Ldsfld, s_numberTag);
-        Emit(OpCodes.Stfld, s_obj);
-        Emit(OpCodes.Ldloca, _masm.Acc);
-        Emit(OpCodes.Ldloc, TLong);
-        Emit(OpCodes.Stfld, s_bits);
-        Emit(OpCodes.Br, done);
+        EmitSetAccFromTypedBits(slow, done);
         _il.MarkLabel(slow);
         Isolate();
         Fv();
@@ -1555,6 +1558,30 @@ public sealed partial class BaselineCompiler
         SetAcc();
         _il.MarkLabel(done);
     }
+
+    /// <summary>
+    /// The number bits on the stack into the accumulator and on to
+    /// <paramref name="done"/>, or to <paramref name="miss"/> for BaselineBuiltins.kTypedMissBits.
+    /// </summary>
+    void EmitSetAccFromTypedBits(Label miss, Label done)
+    {
+        Emit(OpCodes.Stloc, TLong);
+        Emit(OpCodes.Ldloc, TLong);
+        Emit(OpCodes.Ldc_I8, BaselineBuiltins.kTypedMissBits);
+        Emit(OpCodes.Beq, miss);
+        Emit(OpCodes.Ldloca, _masm.Acc);
+        Emit(OpCodes.Ldsfld, s_numberTag);
+        Emit(OpCodes.Stfld, s_obj);
+        Emit(OpCodes.Ldloca, _masm.Acc);
+        Emit(OpCodes.Ldloc, TLong);
+        Emit(OpCodes.Stfld, s_bits);
+        Emit(OpCodes.Br, done);
+    }
+
+    static readonly MethodInfo s_loadTypedElementBitsAnyKind =
+        typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.LoadTypedElementBitsAnyKind))!;
+    static readonly MethodInfo s_tryStoreTypedElementAnyKind =
+        typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.TryStoreTypedElementAnyKind))!;
 
     /// <summary>SetKeyedProperty on a typed array of the kind the compile-time feedback named.</summary>
     void VisitSetKeyedPropertyTyped(Register receiver, Register key, int slot, ElementsKind kind)
@@ -1604,7 +1631,26 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Brfalse, slow);
         Emit(OpCodes.Ldloc, TStoreHandler);
         Emit(OpCodes.Ldfld, s_shIsSimpleElementStore);
-        Emit(OpCodes.Brfalse, slow);
+        if (SlotFeedbackUnknown(slot))
+        {
+            // Compiled before the feedback named a map: a typed array's element
+            // store (not a simple element store), by the receiver's kind.
+            Label simple = _il.DefineLabel();
+            Emit(OpCodes.Brtrue, simple);
+            Isolate();
+            Emit(OpCodes.Ldloc, TStoreHandler);
+            Emit(OpCodes.Ldloc, TObj);
+            RegNum(key);
+            Acc();
+            Emit(OpCodes.Call, s_tryStoreTypedElementAnyKind);
+            Emit(OpCodes.Brtrue, done);
+            Emit(OpCodes.Br, slow);
+            _il.MarkLabel(simple);
+        }
+        else
+        {
+            Emit(OpCodes.Brfalse, slow);
+        }
         Emit(OpCodes.Ldloc, TObj);
         RegNum(key);
         Acc();

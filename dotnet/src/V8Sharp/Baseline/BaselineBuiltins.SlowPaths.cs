@@ -106,6 +106,28 @@ public static partial class BaselineBuiltins
     }
 
     /// <summary>
+    /// <see cref="LoadTypedElementBits"/> for a site compiled before its feedback
+    /// named a map (the general inline path's element handler without a fast
+    /// elements kind): the receiver's kind read at run time.
+    /// </summary>
+    [MethodImpl(Outline)]
+    public static long LoadTypedElementBitsAnyKind(Isolate isolate, HeapObject? handler, HeapObject receiver, int index) =>
+        receiver is JSTypedArray array && IsNumberTypedKind(array.Map.ElementsKind)
+            ? LoadTypedElementBits(isolate, handler, receiver, index, (int)array.Map.ElementsKind)
+            : kTypedMissBits;
+
+    /// <summary><see cref="TryStoreTypedElement"/> with the receiver's kind read at run time (see <see cref="LoadTypedElementBitsAnyKind"/>).</summary>
+    [MethodImpl(Outline)]
+    public static bool TryStoreTypedElementAnyKind(Isolate isolate, HeapObject? handler, HeapObject receiver, double key, JSValue value) =>
+        receiver is JSTypedArray array && IsNumberTypedKind(array.Map.ElementsKind) && JSValue.TryGetIndex(key, out int index) &&
+        TryStoreTypedElement(isolate, handler, receiver, index, value, (int)array.Map.ElementsKind);
+
+    /// <summary>A typed array kind whose elements are Numbers (not BigInt, not Float16; not length-tracking).</summary>
+    internal static bool IsNumberTypedKind(ElementsKind kind) =>
+        ElementsKinds.IsTypedArrayElementsKind(kind) && !ElementsKinds.IsBigIntTypedArrayElementsKind(kind) &&
+        kind != ElementsKind.FLOAT16_ELEMENTS;
+
+    /// <summary>
     /// SetKeyedProperty's monomorphic typed array hit (KeyedStoreIC.Store's typed
     /// array case): a Number into an in-bounds element of a Number kind; false
     /// when the IC has to do it.
