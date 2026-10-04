@@ -1633,12 +1633,36 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     regress-2618's Turbofan OSR); block coverage (%DebugToggleBlockCoverage,
     code-coverage-block-opt); super property ICs (super-ic-opt's
     const-field dependency: GetNamedPropertyFromSuper records no feedback).
-  - Performance: calls not inlined cost ~60 ns (frame record, register
-    window, write barriers). Deopt exits are a third of the IL (0.55 of the
-    body's in PdfJS after literals, shared spill code and DeoptN). Values
-    share IL locals by live range, so RyuJIT optimizes and inlines big
-    graphs; the tiering limits are 2000 nodes and 36000 bytes of IL. No
-    escape analysis, LICM, loop peeling or CSE of loads.
+  - Performance (2026-10-04): calls between optimized functions enter the
+    callee's direct entry (MaglevCode.FastCall, ~25 ns for a method call
+    from ~45 ns); what is left per call is the interpreter frame the entry
+    builds (fixed slots, frame record, InterpreterState) and the GC write
+    barrier of the receiver slot. Load elimination of fields, elements,
+    lengths and context slots, loop effects by graph restart (no loop
+    peeling), parameter stores sunk to observing nodes, hoisted loop entry
+    untagging, keyed load elements kind transitions, nested literal copies,
+    instanceof without the IC, apply(arguments) forwarding for megamorphic
+    targets, inlining with the --maglev-as-top-tier limits. Open: the
+    graph is built on the main thread (2.8 ms per compile in a cold Box2D
+    run from bin/, mostly tier-0 code of the compiler itself; V8 builds it
+    on a worker); checks of loop-invariant values stay in loop bodies (V8
+    peels only loops whose body invalidates what the header knows, so this
+    is mostly register pressure: Crypto's am3 loop keeps its values in
+    stack slots); polymorphic calls (DeltaBlue) go through MaglevCalls.Call;
+    no escape analysis, CSE or range analysis; zlib's biggest function
+    (6343 nodes, 518 KB of IL) is over the tiering limits (2000 nodes,
+    60000 bytes of IL) and would need function splitting. Deopt exits are
+    a third of the IL.
+  - Conformance with Maglev on by default (2026-10-04, cea743c4): test262
+    0 newly failing (95123 run, also with --maglev before the switch);
+    mjsunit 0 newly failing after the expectations took the six tests that
+    fail with the optimizing tier (code-coverage-block-opt,
+    elide-double-hole-check-12, es6/super-ic-opt, regress/regress-2618,
+    turbolev/holey-double-load-arith, turboshaft/regress-380487911, with
+    reasons) and dropped two maglev/ tests that now pass. Under forced
+    optimization at 05a80780: those six plus five that b57ab231 fixed
+    (context-inverted-generator 1-3, regress-1146013,
+    regress-derived-ctor-tdz-stack-trace; checked one by one).
   - Conformance under forced optimization (`--maglev
     --invocation-count-for-maglev=4 --optimize-on-next-call-optimizes-to-maglev`,
     2026-10-02, after concurrent compilation): test262 0 newly failing
