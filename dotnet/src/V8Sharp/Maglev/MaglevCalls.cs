@@ -22,7 +22,7 @@ public static class MaglevCalls
     [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
     public static JSValue Call(Isolate isolate, JSValue callee, JSValue receiver, int argsStart, int argc, ConvertReceiverMode mode)
     {
-        if (callee._obj is JSFunction function)
+        if (AsJSFunction(callee) is { } function)
         {
             if (function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: { } code } vector)
             {
@@ -134,7 +134,7 @@ public static class MaglevCalls
     static bool TryGetFastCallee(Isolate isolate, JSValue callee, ref JSValue receiver, int argc, out JSFunction function,
         out MaglevCode code)
     {
-        if (callee._obj is JSFunction f && f.RawFeedbackCell.Value is FeedbackVector { MaglevCode: { } c } && argc <= c.FastCallArity)
+        if (AsJSFunction(callee) is { } f && f.RawFeedbackCell.Value is FeedbackVector { MaglevCode: { } c } && argc <= c.FastCallArity)
         {
             SharedFunctionInfo shared = f.Shared;
             if (!shared.IsClassConstructor)
@@ -154,7 +154,12 @@ public static class MaglevCalls
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    static bool IsBuiltin(JSValue callee) => callee._obj is JSFunction f && f.Shared.BuiltinId != Builtins.Builtin.NoBuiltinId;
+    static bool IsBuiltin(JSValue callee) => AsJSFunction(callee) is { } f && f.Shared.BuiltinId != Builtins.Builtin.NoBuiltinId;
+
+    /// <summary>The callee as a JSFunction by its instance type (a type test of the unsealed class is a cast helper call).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static JSFunction? AsJSFunction(JSValue callee) =>
+        callee._obj is { } o && InstanceTypeChecks.IsJSFunction(o.InstanceType) ? Unsafe.As<JSFunction>(o) : null;
 
     /// <summary>A direct entry of any arity called with at most three arguments.</summary>
     static JSValue InvokeFastCallValues(Isolate isolate, MaglevCode code, JSFunction function, JSValue receiver, int argc, JSValue a0,
