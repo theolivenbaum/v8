@@ -380,6 +380,8 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | 2026-10-04 | mjsunit | 7404 | 7602 | 97.4% | baseline pass 2 (out-of-line checks, chunks, code cache, specialized paths), default flags (Sparkplug on): 0 newly failing |
 | 2026-10-04 | mjsunit | 7393 | 7587 | 97.4% | baseline pass 2, --always-sparkplug: -2, both failing in the interpreter too with --no-lazy-feedback-allocation: regress-class-initializer-eval, es6/for-of-array-iterator-optimization-maglev-eager-next-call (assertMaglevved) |
 | 2026-10-04 | test262 | 94881 | 95123 | 99.75% | baseline pass 2, default flags and --always-sparkplug: 0 newly failing, 0 newly passing (one staging/sm TypedArray test failed before the elements kind check, 57147b31) |
+| 2026-10-04 | mjsunit | 7399 | 7602 | 97.3% | baseline pass 2 merged with Maglev on by default (75d8926c), default flags: 0 newly failing (regress-331074427 crashed under memory pressure from a concurrent run; passes alone, with regress-1189077 and regress-3359) |
+| 2026-10-04 | mjsunit | 7389 | 7587 | 97.4% | baseline pass 2 merged (75d8926c), --always-sparkplug: the same 2 as above (fail in the interpreter with --no-lazy-feedback-allocation) |
 
 Octane, interpreter only, after the interpreter performance pass
 (2026-09-28, 4-core container shared with a test262 run; mean of 4 runs,
@@ -1333,6 +1335,45 @@ Baseline is 1.8x the interpreter (geomean; 2.2-2.7x on Richards, DeltaBlue,
 Crypto, RegExp). RayTrace, Splay and EarleyBoyer are dominated by allocation
 and GC (object = JSObject + JSValue[] fields) and by runtime paths
 (instanceof's @@hasInstance lookup), which the tier does not change.
+
+Baseline pass 2 (2026-10-04, merged with Maglev on by default; the baseline
+tier measured as `v8sharp:sparkplug`, which passes --no-maglev). Changes: call
+stubs inline the frame entry (one register-stack compare for overflow and
+interrupts), polymorphic FixedArray hits in GetKeyedPropertySlow, RyuJIT
+limits recalibrated, offset stores through a ref, unchecked constant/feedback
+reads, out-of-line number checks for big functions, compile-time own-field
+and typed array specialization, chunked compilation, a code cache by
+bytecode. Parity publishes (R2R composite, self-contained), octane-steady,
+mean of 2 interleaved runs; "main" is 57d945ce. The host was shared with
+other agents' builds and unlocked test runs (load 4-12 at the end of the
+second session and the cold one), so the cross-engine ratios are the
+evidence, not the absolute scores.
+
+| benchmark | interpreter | baseline (main) | baseline (pass 2) | V8 --jitless | V8 sparkplug |
+|---|---|---|---|---|---|
+| Richards | 480 | 523 | 684 | 798 | 986 |
+| DeltaBlue | 414 | 456 | 549 | 888 | 1076 |
+| Crypto | 56.0 | 56.0 | 73.2 | 101 | 136 |
+| RayTrace | 234 | 265 | 286 | 462 | 604 |
+| EarleyBoyer | 92.2 | 99.4 | 110 | 196 | 246 |
+| RegExp | 232 | 299 | 318 | 508 | 960 |
+| Splay | 3593 | 3647 | 3774 | 4614 | 4933 |
+| NavierStokes | 244 | 351 | 376 | 226 | 266 |
+| PdfJS | 814 | 947 | 979 | 1975 | 2599 |
+| Mandreel | 84.8 | 74.5 | 85.2 | 146 | 198 |
+| Gameboy | 380 | 401 | 462 | 727 | 1023 |
+| CodeLoad | 3289 | 3194 | 3355 | 4318 | 4400 |
+| Box2D | 707 | 575 | 962 | 938 | 1153 |
+| zlib | 19.6 | 19.9 | 23.2 | 42.1 | 1747 |
+| Typescript | 306 | 278 | 325 | 639 | 904 |
+| geomean | 304 | 320 | 372 | 532 | 865 |
+
+Pass 2 / main baseline: 1.16x; baseline / interpreter: 1.22x (now ahead on
+every benchmark); baseline / V8 sparkplug: 0.43 (0.55 without zlib, which V8
+runs as asm.js through wasm). Cold (`octane`, the same publishes): geomean
+interpreter 1929, main 1931, pass 2 2153, V8 --jitless 3338, V8 sparkplug
+5151; CodeLoad (7143 vs 9580), Box2D (1816 vs 2560) and Typescript (6383 vs
+7467) are still below the interpreter cold, from RyuJIT compile time.
 
 Performance with the baseline tier after the baseline performance pass
 (2026-10-02; the interpreter had meanwhile had three performance passes, so
