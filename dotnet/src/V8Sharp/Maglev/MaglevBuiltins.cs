@@ -341,6 +341,14 @@ public static class MaglevBuiltins
         Unsafe.As<JSObject>(obj._obj!).FieldAt(storageIndex) = value;
     }
 
+    /// <summary>StoreDoubleField's payload: the double's bits, NaNs canonicalized (StoreIC's CanonicalizeDouble).</summary>
+    [MethodImpl(Inline)]
+    public static long DoubleFieldBits(double value) => double.IsNaN(value) ? JSValue.NaN._bits : BitConverter.DoubleToInt64Bits(value);
+
+    /// <summary>StoreDoubleField without an inline field address.</summary>
+    public static void StoreDoubleFieldFloat64(JSValue obj, int storageIndex, double value) =>
+        JSValue.StoreSlot(ref Unsafe.As<JSObject>(obj._obj!).FieldAt(storageIndex), double.IsNaN(value) ? JSValue.NaN : new JSValue(value));
+
     /// <summary>
     /// A field-adding map transition (StoreMap + ExtendPropertiesBackingStore +
     /// StoreTaggedField, as StoreIC's TryStoreTransition does it).

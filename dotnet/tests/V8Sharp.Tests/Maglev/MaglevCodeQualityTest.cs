@@ -183,6 +183,84 @@ public class MaglevCodeQualityTest
     [MemberData(nameof(LoadEliminationSnippets))]
     public void LoadEliminationGivesTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
 
+    public static TheoryData<string> FieldRepresentationSnippets => new()
+    {
+        // Double fields loaded and stored untagged (LoadDoubleField,
+        // StoreDoubleField): NaN, -0, integers stored into them, the field
+        // generalized to Tagged while the code runs (map deprecation).
+        """
+        (function() {
+          function V(x, y) { this.x = x; this.y = y; }
+          function step(v, w, k) { v.x = v.x * 0.5 + w.y; v.y = v.y - w.x / k; return v.x + v.y; }
+          var out = [], v = new V(1.5, 2.5), w = new V(0.25, -1.75);
+          for (var k = 1; k < 60; k++) {
+            out.push(step(v, w, k).toFixed(9));
+            if (k == 20) w.x = NaN;
+            if (k == 25) { w.x = 0.125; w.y = -0; }
+            if (k == 30) v.x = 7;
+            if (k == 40) { var t = new V(1.5, 2.5); t.x = 'str'; out.push(step(t, w, 1)); }
+          }
+          var z = new V(0.5, 0.5); z.x = NaN; out.push(Object.is(z.x, NaN), step(z, w, 2));
+          var f = new Float64Array(2); var g = new V(0.5, 1.5); g.x = 0 / 0; f[0] = g.x;
+          out.push(new Uint32Array(f.buffer)[1]);
+          return out.join();
+        })()
+        """,
+        // Smi fields (an unchecked untag) generalized to Double and Tagged in
+        // place or by deprecation after the code was optimized.
+        """
+        (function() {
+          function C(n) { this.n = n; this.m = n + 1; }
+          function f(c) { return (c.n | 0) + c.m * 2 + (c.n << 1); }
+          var out = [], cs = [];
+          for (var k = 0; k < 50; k++) {
+            var c = new C(k);
+            cs.push(c);
+            out.push(f(c));
+            if (k == 20) c.n = 2.5;
+            if (k == 30) c.m = 'x';
+            if (k == 40) c.n = {};
+          }
+          for (var c of cs) out.push(f(c));
+          return out.join();
+        })()
+        """,
+        // HeapObject fields with a class field type (the loaded value's map
+        // is known): the field type generalized in place by storing an object
+        // of another shape, or null, after the code was optimized.
+        """
+        (function() {
+          function Vec(x, y) { this.x = x; this.y = y; }
+          function Body(p, v) { this.pos = p; this.vel = v; }
+          function move(b) { b.pos.x += b.vel.x; b.pos.y += b.vel.y; return b.pos.x * 10 + b.pos.y; }
+          var out = [], bodies = [];
+          for (var k = 0; k < 8; k++) bodies.push(new Body(new Vec(k, 1), new Vec(1, k)));
+          for (var k = 0; k < 60; k++) {
+            for (var b of bodies) out.push(move(b));
+            if (k == 25) bodies[3].vel = { y: 2, x: 3 };
+            if (k == 35) bodies[4].pos = { x: 1, y: 1, z: 0 };
+            if (k == 45) { bodies[5].vel = null; try { move(bodies[5]); } catch (e) { out.push(e.constructor.name); } bodies[5].vel = new Vec(0, 0); }
+          }
+          return out.join();
+        })()
+        """,
+        // Polymorphic loads of one field index with different representations
+        // (merged maps load it tagged).
+        """
+        (function() {
+          function A(v) { this.v = v; } function B(v) { this.v = v; } function D(v) { this.v = v; }
+          function get(o) { return o.v; }
+          var out = [], os = [new A(1), new B(1.5), new D({ k: 1 }), new A(2), new B(-0)];
+          for (var k = 0; k < 60; k++) for (var o of os) { var r = get(o); out.push(typeof r === 'object' ? r.k : r); }
+          return out.join();
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(FieldRepresentationSnippets))]
+    public void FieldRepresentationsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
     [Fact]
     public void UndetectableComparesFollowTheProtector()
     {

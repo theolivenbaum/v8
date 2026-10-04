@@ -830,6 +830,7 @@ public sealed partial class MaglevGraphBuilder
             switch (node.Opcode)
             {
                 case Opcode.StoreTaggedField:
+                case Opcode.StoreDoubleField:
                     known.ForgetPropertyKey(node.Int0);
                     _info.RecordLoopEffect(propertyKey: node.Int0);
                     known.LoadedProperties[(node.Inputs[0], node.Int0)] = node.Inputs[1];
@@ -1187,8 +1188,11 @@ public sealed partial class MaglevGraphBuilder
                 if (value.Opcode is Opcode.Int32ToNumber) return value.Inputs[0];
                 NodeInfo info = _frame.Known.GetOrCreateInfoFor(value);
                 if (info.Int32Alternative is { } alt) return alt;
-                ValueNode untagged = AddConversion(Opcode.CheckedSmiUntag, ValueRepresentation.kInt32, value, NodeType.kSmi,
-                    OpProperties.kEagerDeopt, DeoptimizeReason.kNotASmi);
+                // A value known to be a Smi (a Smi field's value) needs no check.
+                ValueNode untagged = NodeTypes.Is(GetType(value), NodeType.kSmi)
+                    ? AddConversion(Opcode.UnsafeSmiUntag, ValueRepresentation.kInt32, value, NodeType.kSmi)
+                    : AddConversion(Opcode.CheckedSmiUntag, ValueRepresentation.kInt32, value, NodeType.kSmi,
+                        OpProperties.kEagerDeopt, DeoptimizeReason.kNotASmi);
                 info = _frame.Known.GetOrCreateInfoFor(value);
                 info.Int32Alternative = untagged;
                 info.Type &= NodeType.kNumber;

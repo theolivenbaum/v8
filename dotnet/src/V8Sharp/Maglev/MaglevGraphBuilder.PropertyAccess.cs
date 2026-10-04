@@ -35,6 +35,12 @@ public sealed partial class MaglevGraphBuilder
         public Representation Representation = Representation.Tagged;
         public Map? FieldTypeClass;
         public Map? TransitionMap;
+        /// <summary>
+        /// Loads: the map whose descriptor owns the field (Map::FindFieldOwner),
+        /// when the field's representation and type are known from the
+        /// descriptor (ComputeDataFieldAccessInfo); null otherwise.
+        /// </summary>
+        public Map? FieldOwner;
     }
 
     /// <summary>
@@ -121,7 +127,7 @@ public sealed partial class MaglevGraphBuilder
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForGenericNamedAccess);
             return;
         }
-        if (MapsAndHandlers(slot, (Name)name.Object) is { } feedback && TryBuildNamedLoad(receiver, feedback) is { } result)
+        if (MapsAndHandlers(slot, (Name)name.Object) is { } feedback && TryBuildNamedLoad(receiver, feedback, (Name)name.Object) is { } result)
         {
             SetAccumulator(result);
             return;
@@ -131,7 +137,7 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>ComputePropertyAccessInfo for a load handler, or null when Maglev does not handle it.</summary>
-    PropertyAccessInfo? LoadAccessInfo(Map map, JSValue handlerValue)
+    PropertyAccessInfo? LoadAccessInfo(Map map, JSValue handlerValue, Name? name)
     {
         if (handlerValue.HeapObjectOrNull is not LoadHandler h) return null;
         if (h.LookupOnLookupStartObject) return null;
@@ -143,6 +149,7 @@ public sealed partial class MaglevGraphBuilder
                 info.AccessKind = PropertyAccessInfo.Kind.DataField;
                 info.StorageIndex = h.FieldIndex;
                 info.Holder = h.Holder;
+                if (name is not null) ComputeDataFieldInfo(info, h.Holder?.Map ?? map, name);
                 return info;
             case LoadHandler.Kind.kConstantFromPrototype:
                 info.AccessKind = PropertyAccessInfo.Kind.DataConstant;
@@ -176,6 +183,81 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>
+    /// AccessInfoFactory::ComputeDataFieldAccessInfo: the representation and
+    /// field type of the field the handler loads, from the descriptor of
+    /// <paramref name="map"/> (the receiver's map, or the holder's), and its
+    /// field owner (where the dependencies on them are registered).
+    /// </summary>
+    static void ComputeDataFieldInfo(PropertyAccessInfo info, Map map, Name name)
+    {
+        if (map.IsDictionaryMap || map.IsDeprecated) return;
+        DescriptorArray descriptors = map.InstanceDescriptors;
+        InternalIndex descriptor = descriptors.Search(name, map);
+        if (!descriptor.IsFound) return;
+        PropertyDetails details = descriptors.GetDetails(descriptor);
+        if (details.Kind != PropertyKind.Data || details.Location != PropertyLocation.Field) return;
+        if (FieldIndex.ForDescriptor(map, descriptor).StorageIndex != info.StorageIndex) return;
+        Representation rep = details.Representation;
+        if (!(rep.IsSmi || rep.IsDouble || rep.IsHeapObject || rep.IsTagged)) return;
+        info.Representation = rep;
+        info.FieldOwner = map.FindFieldOwner(descriptor);
+        if (rep.IsHeapObject && descriptors.GetFieldType(descriptor) is Map fieldClass) info.FieldTypeClass = fieldClass;
+    }
+
+    /// <summary>
+    /// BuildLoadField: the load of a data field of <paramref name="holder"/>,
+    /// with what its descriptor says about the value: a Double field is
+    /// loaded untagged (LoadDoubleField, no number check); a Smi field's
+    /// value is a Smi; a HeapObject field with a stable class field type has
+    /// that map (no map check), with the field representation and field type
+    /// dependencies of the access info.
+    /// </summary>
+    ValueNode BuildLoadField(ValueNode holder, PropertyAccessInfo info)
+    {
+        Map? owner = info.FieldOwner;
+        Representation rep = info.Representation;
+        if (owner is not null && rep.IsDouble)
+        {
+            _info.AddDependency(owner, Objects.DependentCode.DependencyGroups.FieldRepresentation);
+            return AddNewNode(new ValueNode(Opcode.LoadDoubleField, ValueRepresentation.kFloat64)
+            {
+                Inputs = [holder],
+                Int0 = info.StorageIndex,
+                Type = NodeType.kNumber,
+                Properties = OpProperties.kCanRead,
+            });
+        }
+        var value = AddNewNode(new ValueNode(Opcode.LoadTaggedField, ValueRepresentation.kTagged)
+        {
+            Inputs = [holder],
+            Int0 = info.StorageIndex,
+            Properties = OpProperties.kCanRead,
+        });
+        if (owner is null) return value;
+        if (rep.IsSmi)
+        {
+            _info.AddDependency(owner, Objects.DependentCode.DependencyGroups.FieldRepresentation);
+            value.Type = NodeType.kSmi;
+        }
+        else if (rep.IsHeapObject)
+        {
+            _info.AddDependency(owner, Objects.DependentCode.DependencyGroups.FieldRepresentation |
+                                       Objects.DependentCode.DependencyGroups.FieldType);
+            if (info.FieldTypeClass is { IsStable: true, IsDeprecated: false } fieldMap &&
+                fieldMap.InstanceType >= InstanceTypeChecks.FirstJSReceiver)
+            {
+                value.Type = NodeType.kAnyHeapObject;
+                RecordKnownMaps(value, [fieldMap]);
+            }
+            else
+            {
+                value.Type = NodeType.kAnyHeapObject;
+            }
+        }
+        return value;
+    }
+
+    /// <summary>
     /// CompilationDependencies::DependOnStablePrototypeChain: the maps of the
     /// prototypes of <paramref name="map"/> up to <paramref name="holder"/> stay
     /// stable (false when one is not stable now).
@@ -195,12 +277,12 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>TryBuildNamedAccess for loads: map checks and the access per map (polymorphic: a map dispatch).</summary>
-    ValueNode? TryBuildNamedLoad(ValueNode receiver, List<(Map Map, JSValue Handler)> feedback)
+    ValueNode? TryBuildNamedLoad(ValueNode receiver, List<(Map Map, JSValue Handler)> feedback, Name? name)
     {
         var infos = new List<PropertyAccessInfo>(feedback.Count);
         foreach ((Map map, JSValue handler) in feedback)
         {
-            PropertyAccessInfo? info = LoadAccessInfo(map, handler);
+            PropertyAccessInfo? info = LoadAccessInfo(map, handler, name);
             if (info is null) return null;
             infos.Add(info);
         }
@@ -225,6 +307,9 @@ public sealed partial class MaglevGraphBuilder
                 if (SameLoad(info, other))
                 {
                     maps.Add(info.Map);
+                    // PropertyAccessInfo::Merge: a field known differently for
+                    // the merged maps is loaded as a plain tagged field.
+                    if (!SameFieldInfo(info, other)) other.FieldOwner = null;
                     merged = true;
                     break;
                 }
@@ -239,7 +324,8 @@ public sealed partial class MaglevGraphBuilder
         var cases = new List<(Map[] Maps, Func<ValueNode?> Build)>();
         foreach ((List<Map> maps, PropertyAccessInfo info) in groups)
         {
-            cases.Add((maps.ToArray(), () => BuildPropertyLoad(receiver, info)));
+            // The results merge in a phi of tagged inputs.
+            cases.Add((maps.ToArray(), () => GetTaggedValue(BuildPropertyLoad(receiver, info))));
         }
         return BuildPolymorphicAccess(receiver, cases, hasResult: true);
     }
@@ -247,6 +333,10 @@ public sealed partial class MaglevGraphBuilder
     static bool SameLoad(PropertyAccessInfo a, PropertyAccessInfo b) =>
         a.AccessKind == b.AccessKind && a.StorageIndex == b.StorageIndex && ReferenceEquals(a.Holder, b.Holder) &&
         a.Constant.IsIdenticalTo(b.Constant) && ReferenceEquals(a.ValidityCell, b.ValidityCell);
+
+    static bool SameFieldInfo(PropertyAccessInfo a, PropertyAccessInfo b) =>
+        a.FieldOwner is not null && ReferenceEquals(a.FieldOwner, b.FieldOwner) && a.Representation.Equals(b.Representation) &&
+        ReferenceEquals(a.FieldTypeClass, b.FieldTypeClass);
 
     /// <summary>A map check for a primitive stand-in map (string, number, symbol receivers).</summary>
     bool BuildCheckPrimitiveMap(ValueNode receiver, Map map)
@@ -276,12 +366,7 @@ public sealed partial class MaglevGraphBuilder
             case PropertyAccessInfo.Kind.DataField:
             {
                 ValueNode holder = GetTaggedValue(info.Holder is null ? receiver : GetConstant(info.Holder));
-                return BuildLoadProperty(holder, info.StorageIndex, () => AddNewNode(new ValueNode(Opcode.LoadTaggedField, ValueRepresentation.kTagged)
-                {
-                    Inputs = [holder],
-                    Int0 = info.StorageIndex,
-                    Properties = OpProperties.kCanRead,
-                }));
+                return BuildLoadProperty(holder, info.StorageIndex, () => BuildLoadField(holder, info));
             }
             case PropertyAccessInfo.Kind.DataConstant:
                 return GetConstant(info.Constant);
@@ -568,6 +653,19 @@ public sealed partial class MaglevGraphBuilder
     void BuildPropertyStore(ValueNode receiver, ValueNode value, PropertyAccessInfo info)
     {
         if (info.ValidityCell is { } cell && info.AccessKind == PropertyAccessInfo.Kind.TransitionStore) BuildCheckValidityCell(cell);
+        if (info.AccessKind == PropertyAccessInfo.Kind.FieldStore && info.Representation.IsDouble)
+        {
+            // BuildStoreField of a Double field: StoreDoubleField writes the
+            // untagged value into the field (V8: the field's HeapNumber), no
+            // tagging and no write barrier; a non-number deoptimizes.
+            AddNewNode(new Node(Opcode.StoreDoubleField)
+            {
+                Inputs = [receiver, GetFloat64(value)],
+                Int0 = info.StorageIndex,
+                Properties = OpProperties.kCanWrite | OpProperties.kNotIdempotent,
+            });
+            return;
+        }
         ValueNode stored = BuildCheckedFieldValue(value, info);
         switch (info.AccessKind)
         {
@@ -624,7 +722,7 @@ public sealed partial class MaglevGraphBuilder
             {
                 if (name is JSString nameString) BuildCheckInternalizedStringValueOrByReference(key, nameString, DeoptimizeReason.kKeyedAccessChanged);
                 else BuildCheckValue(key, name, DeoptimizeReason.kKeyedAccessChanged);
-                if (TryBuildNamedLoad(obj, namedFeedback) is { } named)
+                if (TryBuildNamedLoad(obj, namedFeedback, name as Name) is { } named)
                 {
                     SetAccumulator(named);
                     return;

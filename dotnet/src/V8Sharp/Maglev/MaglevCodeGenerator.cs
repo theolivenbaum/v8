@@ -1904,6 +1904,50 @@ internal sealed class MaglevCodeGenerator
                 Load(node.Inputs[1], ValueRepresentation.kTagged);
                 Call(node.Int1 != 0 ? nameof(MaglevBuiltins.StoreDoubleField) : nameof(MaglevBuiltins.StoreField));
                 return;
+            case Opcode.LoadDoubleField:
+                // The field holds a number (a Double field's value or the hole NaN).
+                if (TryLoadFieldAddress(node.Inputs[0], node.Int0))
+                {
+                    _il.Emit(OpCodes.Ldfld, s_bits);
+                    _il.Emit(OpCodes.Call, s_int64BitsToDouble);
+                }
+                else
+                {
+                    Load(node.Inputs[0], ValueRepresentation.kTagged);
+                    _il.Emit(OpCodes.Ldc_I4, node.Int0);
+                    Call(nameof(MaglevBuiltins.LoadField));
+                    EmitLoadNumber();
+                }
+                Store(v!);
+                return;
+            case Opcode.StoreDoubleField:
+                if (TryLoadFieldAddress(node.Inputs[0], node.Int0))
+                {
+                    // The slot already holds a number: only its payload is
+                    // written (no write barrier), as V8 writes the value of
+                    // the field's HeapNumber.
+                    _storeAddress ??= _il.DeclareLocal(typeof(JSValue).MakeByRefType());
+                    _il.Emit(OpCodes.Stloc, _storeAddress);
+                    Label tagged = _il.DefineLabel();
+                    _il.Emit(OpCodes.Ldloc, _storeAddress);
+                    _il.Emit(OpCodes.Ldfld, s_obj);
+                    _il.Emit(OpCodes.Ldsfld, s_numberTag);
+                    _il.Emit(OpCodes.Beq, tagged);
+                    _il.Emit(OpCodes.Ldloc, _storeAddress);
+                    _il.Emit(OpCodes.Ldsfld, s_numberTag);
+                    _il.Emit(OpCodes.Stfld, s_obj);
+                    _il.MarkLabel(tagged);
+                    _il.Emit(OpCodes.Ldloc, _storeAddress);
+                    Load(node.Inputs[1], ValueRepresentation.kFloat64);
+                    Call(nameof(MaglevBuiltins.DoubleFieldBits));
+                    _il.Emit(OpCodes.Stfld, s_bits);
+                    return;
+                }
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                _il.Emit(OpCodes.Ldc_I4, node.Int0);
+                Load(node.Inputs[1], ValueRepresentation.kFloat64);
+                Call(nameof(MaglevBuiltins.StoreDoubleFieldFloat64));
+                return;
             case Opcode.StoreMapTransition:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 LoadConstantObject(node.Obj0, typeof(Map));

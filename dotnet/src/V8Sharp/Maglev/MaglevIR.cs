@@ -240,6 +240,10 @@ public enum Opcode : ushort
     MigrateMapIfNeeded,
     LoadTaggedField,
     StoreTaggedField,
+    /// <summary>LoadDoubleField: the number in a Double field, untagged (Int0 is the storage index).</summary>
+    LoadDoubleField,
+    /// <summary>StoreDoubleField: a Float64 value into a Double field (NaNs canonicalized; Int0 is the storage index).</summary>
+    StoreDoubleField,
     /// <summary>A field-adding map transition: grows the PropertyArray if needed, stores the value, then the map.</summary>
     StoreMapTransition,
     LoadElements,
