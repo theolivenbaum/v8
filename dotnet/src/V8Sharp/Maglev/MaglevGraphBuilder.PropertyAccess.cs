@@ -41,6 +41,9 @@ public sealed partial class MaglevGraphBuilder
         /// descriptor (ComputeDataFieldAccessInfo); null otherwise.
         /// </summary>
         public Map? FieldOwner;
+        /// <summary>Loads: the map the field's descriptor was read from, and whether the field is const (IsFastDataConstant).</summary>
+        public Map? DescriptorMap;
+        public bool IsConstField;
     }
 
     /// <summary>
@@ -206,6 +209,8 @@ public sealed partial class MaglevGraphBuilder
         if (!(rep.IsSmi || rep.IsDouble || rep.IsHeapObject || rep.IsTagged)) return;
         info.Representation = rep;
         info.FieldOwner = map.FindFieldOwner(descriptor);
+        info.DescriptorMap = map;
+        info.IsConstField = details.Constness == PropertyConstness.Const;
         if (rep.IsHeapObject && descriptors.GetFieldType(descriptor) is Map fieldClass) info.FieldTypeClass = fieldClass;
     }
 
@@ -221,6 +226,7 @@ public sealed partial class MaglevGraphBuilder
     {
         Map? owner = info.FieldOwner;
         Representation rep = info.Representation;
+        if (owner is not null && TryFoldLoadConstantDataField(holder, info) is { } folded) return folded;
         if (owner is not null && rep.IsDouble)
         {
             _info.AddDependency(owner, Objects.DependentCode.DependencyGroups.FieldRepresentation);
@@ -260,6 +266,24 @@ public sealed partial class MaglevGraphBuilder
             }
         }
         return value;
+    }
+
+    /// <summary>
+    /// TryGetConstantDataFieldHolder + TryFoldLoadConstantDataField
+    /// (maglev-graph-builder.cc): a const field (PropertyConstness::kConst) of
+    /// a constant object is its current value, with a dependency on the
+    /// field's constness (a store of another value generalizes it to mutable
+    /// and deoptimizes the code).
+    /// </summary>
+    ValueNode? TryFoldLoadConstantDataField(ValueNode holder, PropertyAccessInfo info)
+    {
+        if (!info.IsConstField || holder.Opcode != Opcode.Constant || holder.Value0.HeapObjectOrNull is not JSObject obj) return null;
+        if (!ReferenceEquals(obj.Map, info.DescriptorMap)) return null;
+        JSValue value = obj.FieldAt(info.StorageIndex);
+        if (ReferenceEquals(value._obj, Oddball.Uninitialized) || value.IsTheHole) return null;
+        _info.AddDependency(info.FieldOwner!, Objects.DependentCode.DependencyGroups.FieldConst);
+        if (info.Representation.IsDouble) return GetFloat64Constant(value.Number);
+        return GetConstant(value);
     }
 
     /// <summary>

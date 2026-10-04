@@ -244,6 +244,24 @@ public class MaglevCodeQualityTest
           return out.join();
         })()
         """,
+        // Const fields of constant objects folded (TryFoldLoadConstantDataField):
+        // the field changed after optimization (constness generalized, the
+        // code deoptimized), a double const field, a prototype's const field.
+        """
+        (function() {
+          var Dir = { FWD: 1, BACK: -1, scale: 0.5 };
+          function P() {} P.prototype = { k: 10 };
+          function f(x) { return (x == Dir.FWD ? 'f' : 'b') + x * Dir.scale + new P().k; }
+          var out = [];
+          for (var k = 0; k < 60; k++) {
+            out.push(f(k & 1 ? 1 : -1));
+            if (k == 30) Dir.FWD = -1;
+            if (k == 40) Dir.scale = 2.25;
+            if (k == 50) P.prototype.k = 'changed';
+          }
+          return out.join();
+        })()
+        """,
         // Polymorphic loads of one field index with different representations
         // (merged maps load it tagged).
         """
@@ -348,6 +366,23 @@ public class MaglevCodeQualityTest
     [Theory]
     [MemberData(nameof(IndexSnippets))]
     public void ObjectKeysGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
+    [Fact]
+    public void InlineElementStoreKeepsItsUntaggedValueLive()
+    {
+        // The store writes x + 1's int32 (under its tagging): its IL local
+        // must not be shared with the values defined between the two.
+        Assert.Equal("6,6", MaglevCompilerTest.Run("--maglev", """
+            function f(a, b, i) { var x = a[i]; b[i] = x + 1; var y = a[i]; return y; }
+            function make() { var a = new Array(4); a[2] = 5; return a; }
+            %PrepareFunctionForOptimization(f);
+            var w = make(); f(w, w, 2);
+            var e = make(); var expected = f(e, e, 2);
+            %OptimizeMaglevOnNextCall(f);
+            var r = make();
+            [expected, f(r, r, 2)].join();
+            """));
+    }
 
     [Theory]
     [MemberData(nameof(StoreSnippets))]
