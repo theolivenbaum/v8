@@ -831,6 +831,21 @@ public static class MaglevBuiltins
     /// actual arguments are passed; otherwise CallWithArrayLike.
     /// </summary>
     [MethodImpl(Outline)]
+    /// <summary>
+    /// CreateMappedArguments / CreateUnmappedArguments in an inlined function:
+    /// the arguments object of its frame (pushed before this call), whose
+    /// receiver slot is the register stack index <paramref name="receiverIndex"/>.
+    /// </summary>
+    public static JSValue CreateInlinedArguments(Isolate isolate, int receiverIndex, JSFunction function, bool mapped)
+    {
+        int fp = receiverIndex - InterpreterRuntime.kReceiverOffset;
+        int argc = InterpreterRuntime.FrameArgc(isolate, fp);
+        return mapped
+            ? InterpreterArguments.NewSloppyArguments(isolate, function,
+                isolate.RegisterStack[fp + InterpreterRuntime.kContextOffset].As<Context>(), fp, argc)
+            : InterpreterArguments.NewStrictArguments(isolate, function, fp, argc);
+    }
+
     public static JSValue CallForwardArguments(Isolate isolate, ref InterpreterState state, JSValue target, JSValue receiver,
         JSValue argumentsObject)
     {

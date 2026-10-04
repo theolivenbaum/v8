@@ -681,7 +681,10 @@ public sealed partial class MaglevGraphBuilder
         {
             EmitUnconditionalDeoptAndAbort(DeoptimizeReason.kWrongMap);
         }
+        // V8Sharp: a cell checked since the last node that could invalidate it holds.
+        if (_frame.Known.CheckedValidityCells.Contains(cell)) return;
         AddNewNode(new Node(Opcode.CheckValidityCell) { Obj0 = cell, Properties = OpProperties.kEagerDeopt }, DeoptimizeReason.kWrongMap);
+        _frame.Known.CheckedValidityCells.Add(cell);
     }
 
     /// <summary>
@@ -840,7 +843,9 @@ public sealed partial class MaglevGraphBuilder
                 info.AccessKind = PropertyAccessInfo.Kind.ConstFieldStore;
                 break;
             case StoreHandler.Kind.kTransitionToField:
-                if (h.TransitionMap is null || h.TransitionMap.IsDeprecated) return null;
+                // (A prototype's transitions would invalidate validity cells; the
+                // builder assumes StoreMapTransition does not.)
+                if (h.TransitionMap is null || h.TransitionMap.IsDeprecated || map.IsPrototypeMap) return null;
                 info.AccessKind = PropertyAccessInfo.Kind.TransitionStore;
                 info.TransitionMap = h.TransitionMap;
                 break;

@@ -206,6 +206,7 @@ internal static class MaglevEscapeAnalysis
             foreach (Node node in block.Nodes)
             {
                 if (node.Opcode == Opcode.EnterInlinedFrame && node.Obj0 is MaglevCompilationUnit { EagerFrame: true } eager) pushed.Add(eager);
+                if (node.Obj0 is CallBuiltinInfo { Elided: true }) continue;
                 if (node.Unit is not { IsInline: true } unit || !MaglevCodeGenerator.NeedsFrame(node)) continue;
                 for (MaglevCompilationUnit? u = unit; u is { IsInline: true } && pushed.Add(u); u = u.Caller)
                 {
@@ -222,6 +223,8 @@ internal static class MaglevEscapeAnalysis
             }
             foreach (Node node in block.Nodes)
             {
+                // (An elided arguments object's parameter stores do not run.)
+                if (node.Obj0 is CallBuiltinInfo { Elided: true }) continue;
                 for (int i = 0; i < node.Inputs.Length; i++)
                 {
                     if (node.Inputs[i] is not InlinedAllocation) continue;
@@ -258,6 +261,38 @@ internal static class MaglevEscapeAnalysis
                 node.TrackedStore && node.Inputs[0] is InlinedAllocation { IsElided: true });
         }
         return true;
+    }
+
+    /// <summary>
+    /// V8Sharp: a map transition whose map is overwritten by the next
+    /// transition of the same object before anything can observe the object
+    /// (a deopt, a call, a throw) writes only its field (Int2 = 1): a
+    /// constructor's this.x = ...; this.y = ... writes the map once. V8
+    /// writes each map (its stores are cheap, without write barriers for
+    /// objects of the current allocation block).
+    /// </summary>
+    public static void MarkOverwrittenMapStores(Graph graph)
+    {
+        foreach (BasicBlock block in graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            List<Node> nodes = block.Nodes;
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                Node store = nodes[i];
+                if (store.Opcode != Opcode.StoreMapTransition) continue;
+                for (int j = i + 1; j < nodes.Count; j++)
+                {
+                    Node next = nodes[j];
+                    if (next.Opcode == Opcode.StoreMapTransition && ReferenceEquals(next.Inputs[0], store.Inputs[0]))
+                    {
+                        store.Int2 = 1;
+                        break;
+                    }
+                    if ((next.Properties & ~(OpProperties.kCanRead | OpProperties.kCanAllocate)) != 0 || next.Opcode == Opcode.LoadMap) break;
+                }
+            }
+        }
     }
 
     static void Escape(ValueNode value)

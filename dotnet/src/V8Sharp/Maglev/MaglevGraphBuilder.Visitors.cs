@@ -607,7 +607,11 @@ public sealed partial class MaglevGraphBuilder
             // ---- Arguments ----------------------------------------------------------------------------------
             case Bytecode.CreateMappedArguments:
             {
-                RequireOutermostFrame();
+                if (_unit.IsInline)
+                {
+                    SetAccumulator(BuildInlinedArgumentsObject(mapped: true));
+                    break;
+                }
                 ValueNode arguments = CallBaseline("CreateMappedArguments", [_frame.Context],
                     [BuiltinArg.Isolate, BuiltinArg.State, BuiltinArg.In(0)], ParameterStores())!;
                 // Elidable when no parameter is context-allocated (no aliasing):
@@ -622,7 +626,11 @@ public sealed partial class MaglevGraphBuilder
             }
             case Bytecode.CreateUnmappedArguments:
             {
-                RequireOutermostFrame();
+                if (_unit.IsInline)
+                {
+                    SetAccumulator(BuildInlinedArgumentsObject(mapped: false));
+                    break;
+                }
                 ValueNode arguments = CallBaseline("CreateUnmappedArguments", [], [BuiltinArg.Isolate, BuiltinArg.State], ParameterStores())!;
                 if (!_info.IsOsr && !WritesParameters(_unit.Bytecode)) ((CallBuiltinInfo)arguments.Obj0!).ArgumentsKind = ArgumentsObjectKind.Unmapped;
                 arguments.Type = NodeType.kOtherJSReceiver;
@@ -847,16 +855,43 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>Stores of the parameters into the frame (for builtins that read them from the frame).</summary>
-    (Register, ValueNode)[] ParameterStores()
+    (Register, ValueNode)[] ParameterStores(bool withReceiver = true)
     {
-        var stores = new (Register, ValueNode)[_unit.ParameterCount];
-        for (int i = 0; i < stores.Length; i++)
+        int first = withReceiver ? 0 : 1;
+        var stores = new (Register, ValueNode)[_unit.ParameterCount - first];
+        for (int i = first; i < _unit.ParameterCount; i++)
         {
             Register r = Register.FromParameterIndex(i);
-            stores[i] = (r, _frame.Get(r));
+            stores[i - first] = (r, _frame.Get(r));
         }
         return stores;
     }
+
+    /// <summary>
+    /// BuildVirtualArgumentsObject for an inlined function: the arguments
+    /// object of its (lazily pushed) frame, elided as the outermost
+    /// function's when its only uses are deopt frames and
+    /// f.apply(thisArg, arguments), which calls f with the call's arguments
+    /// (V8 builds an InlinedAllocation of the arguments object from the
+    /// caller's arguments and escape-analyses it).
+    /// </summary>
+    ValueNode BuildInlinedArgumentsObject(bool mapped)
+    {
+        ValueNode arguments = BuildCallBuiltin(s_maglevBuiltins["CreateInlinedArguments"], "CreateInlinedArguments", [],
+            [BuiltinArg.Isolate, BuiltinArg.RegIndex(Register.FromParameterIndex(0)), BuiltinArg.C(_unit.Function), BuiltinArg.B(mapped)],
+            ParameterStores(withReceiver: false), OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!;
+        if (!WritesParameters(_unit.Bytecode) && (!mapped || !HasContextAllocatedParameters(_unit.SharedFunctionInfo.ScopeInfo)))
+        {
+            ((CallBuiltinInfo)arguments.Obj0!).ArgumentsKind = mapped ? ArgumentsObjectKind.Mapped : ArgumentsObjectKind.Unmapped;
+        }
+        arguments.Type = NodeType.kOtherJSReceiver;
+        return arguments;
+    }
+
+    /// <summary>Whether <paramref name="value"/> is the arguments object of this inlined function (its arguments are the call's).</summary>
+    bool IsInlinedArgumentsObject(ValueNode value) =>
+        _unit.IsInline && value.Opcode == Opcode.CallBuiltin && ReferenceEquals(value.Unit, _unit) &&
+        value.Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None, Method.Name: "CreateInlinedArguments" };
 
     /// <summary>The stores of a register list into the frame (the builtin reads it there).</summary>
     (Register, ValueNode)[] RegisterListStores(Register first, int count)

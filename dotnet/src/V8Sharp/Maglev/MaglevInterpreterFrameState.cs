@@ -69,6 +69,12 @@ public sealed class KnownNodeAspects
     public readonly Dictionary<(ValueNode Context, int Depth, int Slot), ValueNode> LoadedContextSlots;
     /// <summary>loaded_context_constants: immutable slots (never forgotten).</summary>
     public readonly Dictionary<(ValueNode Context, int Depth, int Slot), ValueNode> LoadedContextConstants;
+    /// <summary>
+    /// V8Sharp: the prototype validity cells checked on this path since the
+    /// last node that could invalidate one (a call or an unknown write; field
+    /// stores and map transitions of non-prototype objects cannot).
+    /// </summary>
+    public readonly HashSet<Cell> CheckedValidityCells;
     /// <summary>virtual_objects: the current versions of the tracked allocations (immutable, shared by clones).</summary>
     public VirtualObjectList VirtualObjects = VirtualObjectList.Empty;
 
@@ -78,6 +84,7 @@ public sealed class KnownNodeAspects
         LoadedProperties = new();
         LoadedContextSlots = new();
         LoadedContextConstants = new();
+        CheckedValidityCells = new(ReferenceEqualityComparer.Instance);
     }
 
     KnownNodeAspects(Dictionary<ValueNode, NodeInfo> infos, KnownNodeAspects from)
@@ -86,6 +93,7 @@ public sealed class KnownNodeAspects
         LoadedProperties = new(from.LoadedProperties);
         LoadedContextSlots = new(from.LoadedContextSlots);
         LoadedContextConstants = new(from.LoadedContextConstants);
+        CheckedValidityCells = new(from.CheckedValidityCells, ReferenceEqualityComparer.Instance);
         VirtualObjects = from.VirtualObjects;
     }
 
@@ -97,10 +105,11 @@ public sealed class KnownNodeAspects
     }
 
     /// <summary>After a call or an unknown write: every mutable loaded property and context slot.</summary>
-    public void ClearLoaded()
+    public void ClearLoaded(bool keepValidityCells = false)
     {
         LoadedProperties.Clear();
         LoadedContextSlots.Clear();
+        if (!keepValidityCells) CheckedValidityCells.Clear();
     }
 
     /// <summary>A store to <paramref name="key"/> of some object: loads of that key of any object (aliasing) are forgotten.</summary>
@@ -225,6 +234,7 @@ public sealed class KnownNodeAspects
         Intersect(LoadedContextSlots, other.LoadedContextSlots);
         Intersect(LoadedContextConstants, other.LoadedContextConstants);
         VirtualObjects = VirtualObjects.Intersect(other.VirtualObjects);
+        CheckedValidityCells.IntersectWith(other.CheckedValidityCells);
     }
 
     /// <summary>Forgets the loaded values that are <paramref name="values"/> or have them as object (a loop's phis).</summary>

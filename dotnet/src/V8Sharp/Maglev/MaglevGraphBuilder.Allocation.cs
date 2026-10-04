@@ -102,6 +102,9 @@ public sealed partial class MaglevGraphBuilder
     void NoteAllocationUses(Node node)
     {
         ValueNode[] inputs = node.Inputs;
+        // An inlined function's elidable arguments object: whether it needs
+        // the frame is decided after the graph is built (MaglevEscapeAnalysis).
+        if (node.Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None }) return;
         if (node.Opcode != Opcode.EnterInlinedFrame)
         {
             for (int i = node.TrackedStore ? 1 : 0; i < inputs.Length; i++) EscapeDuringBuild(inputs[i]);
@@ -116,6 +119,18 @@ public sealed partial class MaglevGraphBuilder
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// V8Sharp: the arguments of an inlined call beyond the callee's formal
+    /// parameters, as parameter registers of its deopt frames (V8's inlined
+    /// frames carry all their arguments): the Deoptimizer writes them when it
+    /// pushes the frame, so the frame need not be pushed on entry.
+    /// </summary>
+    void AppendExtraArguments(List<(Register, ValueNode)> values)
+    {
+        if (_inlinedArguments is not { } args) return;
+        for (int i = _unit.ParameterCount - 1; i < args.Length; i++) values.Add((Register.FromParameterIndex(i + 1), args[i]));
     }
 
     /// <summary>A use that lets the object escape (a phi input, a call argument ...): its fields are no longer tracked.</summary>

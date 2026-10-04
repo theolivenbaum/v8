@@ -96,44 +96,54 @@ public static class Deoptimizer
             Context? context = null;
             Register[] registers = f.Registers;
             int[] slots = f.ScratchSlots;
+            ArgumentsObjectKind[]? materialize = f.Materialize;
+            // The registers, then the elided arguments objects (translated-state.cc's
+            // captured objects), from the frame's arguments: the translation
+            // writes those of a frame pushed here (an inlined frame's arguments
+            // beyond its formal parameters among them). One object, whichever
+            // registers hold it.
             JSValue materialized = default;
-            if (f.Materialize is { } materialize)
+            bool materializedOnce = false;
+            for (int pass = 0; pass < (materialize is null ? 1 : 2); pass++)
             {
-                // Materialize the elided arguments objects (translated-state.cc's
-                // captured objects) from the frame's arguments, which the code never
-                // writes, before the registers are written. One object, whichever
-                // registers hold it.
                 for (int k = 0; k < registers.Length; k++)
                 {
-                    if (materialize[k] == ArgumentsObjectKind.None) continue;
-                    var frameContext = stack[fp + InterpreterRuntime.kContextOffset].As<Context>();
-                    materialized = materialize[k] == ArgumentsObjectKind.Mapped
-                        ? InterpreterArguments.NewSloppyArguments(isolate, f.Function, frameContext, fp, InterpreterRuntime.FrameArgc(isolate, fp))
-                        : InterpreterArguments.NewStrictArguments(isolate, f.Function, fp, InterpreterRuntime.FrameArgc(isolate, fp));
-                    break;
-                }
-            }
-            for (int k = 0; k < registers.Length; k++)
-            {
-                // A spilled value, a literal of the translation, a captured
-                // object, or the materialized arguments object.
-                JSValue value = slots[k] >= 0 ? scratch[slots[k]]
-                    : f.IsConstant is { } isConstant && isConstant[k] ? f.Constants![k]
-                    : f.Captured is { } capturedRefs && capturedRefs[k] >= 0 ? captured![capturedRefs[k]]
-                    : materialized;
-                Register r = registers[k];
-                if (r == Register.VirtualAccumulator())
-                {
-                    accumulator = value;
-                }
-                else if (r == Register.CurrentContext())
-                {
-                    stack[fp + InterpreterRuntime.kContextOffset] = value;
-                    context = value.As<Context>();
-                }
-                else
-                {
-                    stack[fp + r.Index] = value;
+                    bool isArguments = materialize is not null && materialize[k] != ArgumentsObjectKind.None;
+                    if (isArguments != (pass == 1)) continue;
+                    JSValue value;
+                    if (isArguments)
+                    {
+                        if (!materializedOnce)
+                        {
+                            var frameContext = stack[fp + InterpreterRuntime.kContextOffset].As<Context>();
+                            materialized = materialize![k] == ArgumentsObjectKind.Mapped
+                                ? InterpreterArguments.NewSloppyArguments(isolate, f.Function, frameContext, fp, InterpreterRuntime.FrameArgc(isolate, fp))
+                                : InterpreterArguments.NewStrictArguments(isolate, f.Function, fp, InterpreterRuntime.FrameArgc(isolate, fp));
+                            materializedOnce = true;
+                        }
+                        value = materialized;
+                    }
+                    else
+                    {
+                        // A spilled value, a literal of the translation, or a captured object.
+                        value = slots[k] >= 0 ? scratch[slots[k]]
+                            : f.IsConstant is { } isConstant && isConstant[k] ? f.Constants![k]
+                            : captured![f.Captured![k]];
+                    }
+                    Register r = registers[k];
+                    if (r == Register.VirtualAccumulator())
+                    {
+                        accumulator = value;
+                    }
+                    else if (r == Register.CurrentContext())
+                    {
+                        stack[fp + InterpreterRuntime.kContextOffset] = value;
+                        context = value.As<Context>();
+                    }
+                    else
+                    {
+                        stack[fp + r.Index] = value;
+                    }
                 }
             }
             context ??= stack[fp + InterpreterRuntime.kContextOffset].As<Context>();

@@ -2154,6 +2154,8 @@ internal sealed partial class MaglevCodeGenerator
                 {
                     EmitStoreTagged(UntaggedNumberSource(node.Inputs[1]));
                 }
+                // (The next transition of the object writes the map: MarkOverwrittenMapStores.)
+                if (node.Int2 != 0) return;
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 _il.Emit(OpCodes.Ldfld, s_obj);
                 LoadConstantObject(node.Obj0, typeof(Map));

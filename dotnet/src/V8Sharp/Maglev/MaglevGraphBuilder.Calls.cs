@@ -225,6 +225,17 @@ public sealed partial class MaglevGraphBuilder
             return TryBuildInlinedCall(target, targetNode, args[0], [], ConvertReceiverMode.Any, nexus, isConstruct: false, null) ??
                    BuildCall(targetNode, args[0], [], Register.InvalidValue(), ConvertReceiverMode.Any);
         }
+        if (args.Length == 2 && IsInlinedArgumentsObject(args[1]))
+        {
+            // The applied function gets the inlined call's arguments.
+            ValueNode? inlined = TryBuildInlinedCall(target, targetNode, args[0], _inlinedArguments!, ConvertReceiverMode.Any, nexus,
+                isConstruct: false, null);
+            if (inlined is not null) return inlined;
+            if (_inlinedArguments!.Length < s_callWithValues.Length)
+            {
+                return BuildCall(targetNode, args[0], _inlinedArguments, Register.InvalidValue(), ConvertReceiverMode.Any);
+            }
+        }
         if (args.Length == 2 && !_unit.IsInline && args[1].Opcode == Opcode.CallBuiltin &&
             args[1].Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None } && ReferenceEquals(args[1].Unit, _unit))
         {
@@ -252,6 +263,10 @@ public sealed partial class MaglevGraphBuilder
         if (args.Length == 1 || args[1].Opcode == Opcode.RootConstant && args[1].ConstantValue().IsNullOrUndefined)
         {
             return BuildCall(function, GetTaggedValue(args[0]), [], Register.InvalidValue(), ConvertReceiverMode.Any);
+        }
+        if (args.Length == 2 && IsInlinedArgumentsObject(args[1]) && _inlinedArguments!.Length < s_callWithValues.Length)
+        {
+            return BuildCall(function, GetTaggedValue(args[0]), _inlinedArguments, Register.InvalidValue(), ConvertReceiverMode.Any);
         }
         if (args.Length == 2 && !_unit.IsInline && args[1].Opcode == Opcode.CallBuiltin &&
             args[1].Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None } && ReferenceEquals(args[1].Unit, _unit))
@@ -668,8 +683,8 @@ public sealed partial class MaglevGraphBuilder
         {
             switch (it.CurrentBytecode())
             {
-                case Bytecode.CreateMappedArguments:
-                case Bytecode.CreateUnmappedArguments:
+                // (An inlined function's arguments object is built from its
+                // pushed frame: BuildInlinedArgumentsObject.)
                 case Bytecode.CreateRestParameter:
                 case Bytecode.ConstructForwardAllArgs:
                     return false;
@@ -745,7 +760,10 @@ public sealed partial class MaglevGraphBuilder
         unit.IsConstruct = isConstruct;
         // Arguments beyond the formal parameters are in no deopt frame (they are
         // only in the frame), so such a frame is pushed on entry.
-        unit.EagerFrame = args.Length > unit.Bytecode.ParameterCount - 1;
+        // V8Sharp: the arguments beyond the formal parameters are in the deopt
+        // frames (AppendExtraArguments), so the frame is pushed lazily too
+        // (EagerFrame stays false; it pushed such frames on entry before).
+        unit.EagerFrame = false;
         // A frame pushed on entry holds the receiver and the arguments.
         if (unit.EagerFrame) foreach (ValueNode input in unit.EntryNode.Inputs) EscapeDuringBuild(input);
 

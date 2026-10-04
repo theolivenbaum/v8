@@ -160,6 +160,38 @@ public class MaglevEscapeAnalysisTest
           return out.join();
         })()
         """,
+        // Inlined functions with arguments objects: apply(this, arguments)
+        // forwards the call's arguments (Class.create's constructors), and
+        // escaping arguments objects; deopts inside them with more arguments
+        // than formal parameters (the extra ones are in the deopt frames).
+        """
+        (function() {
+          var Class = { create: function() { return function() { this.initialize.apply(this, arguments); } } };
+          var V = Class.create();
+          V.prototype = { initialize: function(x, y, z) { this.x = x ? x : 0; this.y = y ? y : 0; this.z = z; } };
+          function mk(a) { return new V(a, a + 1); }
+          function len() { return arguments.length + ':' + arguments[arguments.length - 1]; }
+          function strict() { 'use strict'; return Array.prototype.join.call(arguments, '-'); }
+          function extra(a) { var t = a * 2; return t + ',' + arguments[1] + ',' + arguments.length; }
+          function g(k) { var v = mk(k); return v.x + v.y + ':' + v.z + ';' + len(k, k + 1, 'e') + ';' + strict(k, 2) + ';' + extra(k, 'b', 'c'); }
+          var out = [];
+          for (var k = 0; k < 40; k++) out.push(g(k));
+          out.push(g('s'), g(1.5), g(null));
+          return out.join('|');
+        })()
+        """,
+        // A deopt in an inlined callee called with extra arguments, which
+        // the interpreter then reads through arguments.
+        """
+        (function() {
+          function callee(a) { var t = a - 1; return t + ':' + arguments.length + ':' + arguments[2]; }
+          function caller(a, b, c) { return callee(a, b, c, 4); }
+          var out = [];
+          for (var k = 0; k < 40; k++) out.push(caller(k, 'b', 'c' + k));
+          out.push(caller('x', 1, 2), caller({}, 3, 4));
+          return out.join();
+        })()
+        """,
     };
 
     [Theory]

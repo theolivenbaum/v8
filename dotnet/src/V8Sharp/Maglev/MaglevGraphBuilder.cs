@@ -811,6 +811,7 @@ public sealed partial class MaglevGraphBuilder
             if (_frame.Values[slot] is not { } v) continue;
             entryValues.Add((InterpreterFrameState.RegisterOf(_unit, slot), v));
         }
+        AppendExtraArguments(entryValues);
         state.LoopEntryDeoptFrame = new InterpretedDeoptFrame(_unit, offset, offset, entryValues.ToArray(), ClosureNode, _callerDeoptFrame)
         {
             VirtualObjects = _frame.Known.VirtualObjects,
@@ -1074,6 +1075,14 @@ public sealed partial class MaglevGraphBuilder
                         _info.RecordLoopEffect(propertyKey: key);
                     }
                     return;
+                case Opcode.StoreMapTransition:
+                    // A transition of a non-prototype object (the feedback's map is
+                    // not a prototype map): what the default clears, but no
+                    // prototype chain changes (the checked validity cells hold).
+                    known.ClearUnstableMaps(keepUnescapedAllocations: true);
+                    known.ClearLoaded(keepValidityCells: true);
+                    _info.RecordLoopEffect(clearsAll: true);
+                    return;
                 case Opcode.StoreFixedArrayElement:
                 case Opcode.StoreFixedDoubleArrayElement:
                 case Opcode.StoreTypedArrayElement:
@@ -1136,6 +1145,7 @@ public sealed partial class MaglevGraphBuilder
             if (v is null) continue;
             values.Add((InterpreterFrameState.RegisterOf(_unit, slot), v));
         }
+        AppendExtraArguments(values);
         return _latestCheckpointedFrame = new InterpretedDeoptFrame(_unit, offset, _it.NextOffset(), values.ToArray(),
             ClosureNode, _callerDeoptFrame) { VirtualObjects = _frame.Known.VirtualObjects };
     }
@@ -1163,6 +1173,7 @@ public sealed partial class MaglevGraphBuilder
             if (v is null) continue;
             values.Add((InterpreterFrameState.RegisterOf(_unit, slot), v));
         }
+        AppendExtraArguments(values);
         return new InterpretedDeoptFrame(_unit, offset, _it.NextOffset(), values.ToArray(), ClosureNode, _callerDeoptFrame)
         {
             VirtualObjects = _frame.Known.VirtualObjects,
@@ -1187,6 +1198,7 @@ public sealed partial class MaglevGraphBuilder
             if (v is null) continue;
             values.Add((InterpreterFrameState.RegisterOf(_unit, slot), v));
         }
+        AppendExtraArguments(values);
         return new InterpretedDeoptFrame(_unit, offset, _it.NextOffset(), values.ToArray(), ClosureNode, _callerDeoptFrame)
         {
             VirtualObjects = _frame.Known.VirtualObjects,

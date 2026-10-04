@@ -178,6 +178,7 @@ public static class MaglevCompiler
             // The removed stores' values may be dead now.
             ComputeUseCounts(info.Graph);
         }
+        MaglevEscapeAnalysis.MarkOverwrittenMapStores(info.Graph);
         CheckStackSlots(info.Graph);
         if (isolate.Flags.print_maglev_graph) MaglevGraphPrinter.Print(info, Console.Out);
         return info;
