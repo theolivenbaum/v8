@@ -30,6 +30,13 @@ namespace Wacs.Core.Runtime.Exceptions
         /// </summary>
         public WasmStackFrame[]? WasmFrames { get; internal set; }
 
+        /// <summary>
+        /// V8Sharp: the exception reference (an exnref whose GcRef is the
+        /// ExnInstance) that was thrown, so that a host can rethrow the same
+        /// exception (the JS API's WebAssembly.Exception identity).
+        /// </summary>
+        public Value ExnRef { get; set; }
+
         public UnhandledWasmException(string message) : base(message) { }
 
         public UnhandledWasmException(string message, WasmStackFrame[] wasmFrames)

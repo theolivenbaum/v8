@@ -303,7 +303,9 @@ namespace Wacs.Core.Instructions
             var preUnwindFrames = context.SnapshotCallStack(throwingInstruction);
 
             //Traverse the control stack
-            while (context.StackHeight > 0)
+            // V8Sharp: stop at the invocation's floor (frames below belong to
+            // an outer invocation suspended in a host call).
+            while (context.StackHeight > context.UnwindFloor)
             {
                 var blockTarget = context.FindLabel(0);
                 //Enumerate all the blocks to find catch clauses
@@ -353,7 +355,7 @@ namespace Wacs.Core.Instructions
             // snapshot taken before the loop.
             throw new UnhandledWasmException(
                 $"Unhandled exception {exn}",
-                preUnwindFrames);
+                preUnwindFrames) { ExnRef = exnref };
         }
     }
 }

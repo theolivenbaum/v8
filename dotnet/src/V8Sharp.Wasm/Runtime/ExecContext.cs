@@ -100,6 +100,35 @@ namespace Wacs.Core.Runtime
         public int InstructionPointer;
 
         /// <summary>
+        /// V8Sharp: the call-stack height below which exception unwinding
+        /// (throw / throw_ref) must not go: the frames there belong to an
+        /// outer invocation that is suspended in a host call
+        /// (<see cref="WasmRuntime.Invoke"/>). An exception that is not caught
+        /// above it leaves the inner invocation as an UnhandledWasmException.
+        /// </summary>
+        public int UnwindFloor;
+
+        /// <summary>
+        /// V8Sharp: pops the frames above <paramref name="height"/> without
+        /// returning values (an invocation that ended in an exception).
+        /// </summary>
+        public void UnwindCallStackTo(int height)
+        {
+            while (_callStack.Count > height)
+            {
+                var frame = _callStack.Pop();
+                frame.Locals = null;
+                _framePool.Return(frame);
+            }
+            Frame = _callStack.Count > 0 ? _callStack.Peek() : NullFrame;
+            while (ActiveResumeHandlers.Count > 0
+                   && ActiveResumeHandlers.Peek().InstallFrameDepth > _callStack.Count)
+            {
+                ActiveResumeHandlers.Pop();
+            }
+        }
+
+        /// <summary>
         /// Optional cancellation signal observed at function-call boundaries
         /// (Layer 1f). When set and cancelled, the invoke path throws
         /// <see cref="InterruptedException"/> with <see cref="InterruptReason"/>

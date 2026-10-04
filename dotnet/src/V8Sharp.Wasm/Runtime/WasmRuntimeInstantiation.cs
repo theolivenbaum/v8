@@ -155,8 +155,9 @@ namespace Wacs.Core.Runtime
             var moduleInstance = new ModuleInstance(module);
 
             //Resolve Imports
-            foreach (var import in module.Imports)
+            for (int importIndex = 0; importIndex < module.Imports.Length; importIndex++)
             {
+                var import = module.Imports[importIndex];
                 var entityId = (module: import.ModuleName, entity: import.Name);
                 switch (import.Desc)
                 {
@@ -166,7 +167,7 @@ namespace Wacs.Core.Runtime
                         var funcSig = type.Expansion as FunctionType;
                         if (funcSig is null)
                             throw new InvalidDataException($"Function had invalid type:{type}");
-                        if (GetBoundEntity(entityId) is not FuncAddr funcAddr)
+                        if (ResolveImport(importIndex, entityId) is not FuncAddr funcAddr)
                             throw new NotSupportedException(
                                 $"The imported Function was not provided by the environment: {entityId.module}.{entityId.entity} {funcSig.ToNotation()}");
                         var functionInstance = Store[funcAddr];
@@ -185,7 +186,7 @@ namespace Wacs.Core.Runtime
                         break;
                     case Module.ImportDesc.TableDesc tableDesc:
                         var tableType = tableDesc.TableDef;
-                        if (GetBoundEntity(entityId) is not TableAddr tableAddr)
+                        if (ResolveImport(importIndex, entityId) is not TableAddr tableAddr)
                             throw new NotSupportedException(
                                 $"The imported Table was not provided by the environment: {entityId.module}.{entityId.entity}");
                         var tableInstance = Store[tableAddr];
@@ -197,7 +198,7 @@ namespace Wacs.Core.Runtime
                         break;
                     case Module.ImportDesc.MemDesc memDesc:
                         var memType = memDesc.MemDef;
-                        if (GetBoundEntity(entityId) is not MemAddr memAddr)
+                        if (ResolveImport(importIndex, entityId) is not MemAddr memAddr)
                             throw new NotSupportedException(
                                 $"The imported Memory was not provided by the environment: {entityId.module}.{entityId.entity}");
                         var memInstance = Store[memAddr];
@@ -209,7 +210,7 @@ namespace Wacs.Core.Runtime
                         break;
                     case Module.ImportDesc.GlobalDesc globalDesc:
                         var globalType = globalDesc.GlobalDef;
-                        if (GetBoundEntity(entityId) is not GlobalAddr globalAddr)
+                        if (ResolveImport(importIndex, entityId) is not GlobalAddr globalAddr)
                             throw new NotSupportedException(
                                 $"The imported Global was not provided by the environment: {entityId.module}.{entityId.entity}");
                         var globalInstance = Store[globalAddr];
@@ -228,7 +229,7 @@ namespace Wacs.Core.Runtime
                         moduleInstance.GlobalAddrs.Add(globalAddr);
                         break;
                     case Module.ImportDesc.TagDesc tagDesc:
-                        if (GetBoundEntity(entityId) is not TagAddr tagAddr)
+                        if (ResolveImport(importIndex, entityId) is not TagAddr tagAddr)
                             throw new NotSupportedException(
                                 $"The imported Tag was not provided by the environment: {entityId.module}.{entityId.entity}");
                         var tagInstance = Store[tagAddr];

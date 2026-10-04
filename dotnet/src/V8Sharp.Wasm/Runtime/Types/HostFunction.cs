@@ -35,7 +35,16 @@ namespace Wacs.Core.Runtime.Types
         /// </summary>
         private readonly Delegate _hostFunction;
 
-        private readonly MethodInfo _invoker;
+        private readonly MethodInfo _invoker = null!;
+
+        /// <summary>
+        /// V8Sharp: a host function that takes and returns wasm <see cref="Value"/>s
+        /// directly (the JS API's imported JS functions, V8's WasmToJS wrapper),
+        /// with no reflection or boxing. Arguments are in parameter order.
+        /// </summary>
+        public delegate void RawHostFunc(ExecContext context, Value[] arguments, Value[] results);
+
+        private readonly RawHostFunc? _raw;
 
         private ConversionHelper?[] _parameterConversions = null!;
         private ConversionHelper?[] _resultConversions = null!;
@@ -90,6 +99,22 @@ namespace Wacs.Core.Runtime.Types
             ParameterBuffer = new object[parameterCount];
             BuildConversionHelpers();
         }
+
+        /// <summary>V8Sharp: a raw host function (see <see cref="RawHostFunc"/>).</summary>
+        public HostFunction((string module, string entity) id, FunctionType type, RawHostFunc raw)
+        {
+            Type = type;
+            _hostFunction = raw;
+            _raw = raw;
+            (ModuleName, Name) = id;
+            ParameterBuffer = Array.Empty<object>();
+        }
+
+        /// <summary>V8Sharp: the raw delegate, or null for a reflection-bound host function.</summary>
+        public RawHostFunc? Raw => _raw;
+
+        /// <summary>V8Sharp: an object the embedder associates with the function (the JS callable).</summary>
+        public object? HostData { get; set; }
 
         public bool PassExecContext { get; set; }
 
@@ -273,6 +298,20 @@ namespace Wacs.Core.Runtime.Types
         /// </summary>
         public void Invoke(ExecContext context)
         {
+            if (_raw != null)
+            {
+                // V8Sharp: buffers are per call, as a raw host function may
+                // re-enter wasm, which may call it again.
+                var parameterTypes = Type.ParameterTypes;
+                var args = parameterTypes.Arity == 0 ? Array.Empty<Value>() : new Value[parameterTypes.Arity];
+                for (int i = args.Length - 1; i >= 0; --i)
+                    args[i] = context.OpStack.PopAny();
+                var results = Type.ResultType.Arity == 0 ? Array.Empty<Value>() : new Value[Type.ResultType.Arity];
+                _raw(context, args, results);
+                for (int i = 0; i < results.Length; ++i)
+                    context.OpStack.PushValue(results[i]);
+                return;
+            }
             if (IsAsync)
                 throw new WasmRuntimeException("Cannot call asynchronous function synchronously");
 

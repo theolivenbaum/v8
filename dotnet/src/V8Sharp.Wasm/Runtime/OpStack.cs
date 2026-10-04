@@ -45,9 +45,14 @@ namespace Wacs.Core.Runtime
 
         public void PushResults(Stack<Value> vals)
         {
-            for (int i = 0, l = vals.Count; i < l; ++i)
+            // V8Sharp: push without popping. WACS consumed the stack, which
+            // emptied an exception's fields at the first catch, so a
+            // rethrown exception (catch_ref + throw_ref, or one that crossed
+            // JavaScript) lost its values. Enumeration is top-first, the
+            // order Pop() returned.
+            foreach (var val in vals)
             {
-                PushValue(vals.Pop());
+                PushValue(val);
             }
         }
 
