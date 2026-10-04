@@ -590,7 +590,11 @@ namespace Wacs.Core.Instructions
             {
                 //8. 
                 case OpCode.Func:
-                    context.InstructionPointer = label.ContinuationAddress;
+                    // V8Sharp: a branch to the function's label returns
+                    // from the function. WACS jumped to the caller's
+                    // continuation without popping the frame, leaving the
+                    // callee's frame (and its locals) active in the caller.
+                    context.FunctionReturn();
                     break;
                 case OpCode.Loop:
                     //loop targets the loop head
