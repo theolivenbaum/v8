@@ -1,0 +1,359 @@
+// Copyright 2025 Kelvin Nishikawa
+// 
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+// 
+//     http://www.apache.org/licenses/LICENSE-2.0
+// 
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using Wacs.Core.OpCodes;
+using Wacs.Core.Runtime;
+using Wacs.Core.Runtime.Exceptions;
+using Wacs.Core.Runtime.Types;
+using Wacs.Core.Types;
+using Wacs.Core.Types.Defs;
+using Wacs.Core.Utilities;
+using Wacs.Core.Validation;
+
+namespace Wacs.Core.Instructions
+{
+    public class InstTryTable : BlockTarget, IBlockInstruction, IExnHandler
+    {
+        public InstTryTable() : base(ByteCode.TryTable) { }
+        
+        private Block Block = null!;
+        public CatchType[] Catches = null!;
+        public BlockTarget?[] CatchTargets = null!;
+
+        public ValType BlockType => Block.BlockType;
+        public int Count => 1;
+        public int BlockSize => 1 + Block.Size;
+        public Block GetBlock(int idx) => Block;
+
+        public override void Validate(IWasmValidationContext context)
+        {
+            try
+            {
+                var funcType = context.Types.ResolveBlockType(Block.BlockType);
+                context.Assert(funcType,  "Invalid BlockType: {0}",Block.BlockType);
+                
+                //Check the parameters [t1*] and discard
+                context.OpStack.DiscardValues(funcType.ParameterTypes);
+                
+                //Exn Handlers
+                context.ValidateCatches(Catches);
+                foreach (var handler in Catches)
+                {
+                    context.Assert(context.ContainsLabel(handler.L.Value),
+                        "Catch Label {0} does not exist in the context.", handler.L);
+                    var labelFrame = context.ControlStack.PeekAt((int)handler.L.Value);
+                    var labelType = new FunctionType(ResultType.Empty, labelFrame.EndTypes);
+                    context.PushControlFrame(ByteCode.Catch, labelType);
+                    switch (handler.Mode)
+                    {
+                        case CatchFlags.None: //catch x
+                        {
+                            var tag = context.Tags[handler.X];
+                            var tagType = context.Types[tag.TypeIndex];
+                            var compType = tagType.Expansion;
+                            var functionType = compType as FunctionType;
+                            context.OpStack.PushResult(functionType!.ParameterTypes);
+                        } break;
+                        case CatchFlags.CatchRef: //catch_ref x
+                        {
+                            // Spec: catch_ref/catch_all_ref capture the exception
+                            // as a NON-NULLABLE (ref exn) — the value is always
+                            // present in the catch handler.
+                            var tag = context.Tags[handler.X];
+                            var tagType = context.Types[tag.TypeIndex];
+                            var compType = tagType.Expansion;
+                            var functionType = compType as FunctionType;
+                            context.OpStack.PushResult(functionType!.ParameterTypes);
+                            context.OpStack.PushType(ValType.ExnNN);
+                        } break;
+                        case CatchFlags.CatchAll: //catch_all
+                            break;
+                        case CatchFlags.CatchAllRef: //catch_all_ref
+                            context.OpStack.PushType(ValType.ExnNN);
+                            break;
+                    }
+                    context.PopControlFrame();
+                }
+                
+                //ControlStack will push the values back on (Control Frame is our Label)
+                context.PushControlFrame(ByteCode.TryTable, funcType);
+                context.ValidateBlock(Block);
+            }
+            catch (IndexOutOfRangeException exc)
+            {
+                _ = exc;
+                //Types didn't hit
+                context.Assert(false,
+                    "Instruction block was invalid. BlockType {0} did not exist in the Context.",Block.BlockType);
+            }
+        }
+
+        public override InstructionBase Link(ExecContext context, int pointer)
+        {
+            _ = base.Link(context, pointer);
+            CatchTargets = Catches.Select(catchType => InstBranch.PrecomputeStack(context, catchType.L + 1)).ToArray();
+            return this;
+        }
+
+        public override void Execute(ExecContext context)
+        {
+            // context.Frame.PushLabel(this);
+        }
+
+        public override InstructionBase Parse(BinaryReader reader)
+        {
+            var blockType = ValTypeParser.Parse(reader, parseBlockIndex: true, parseStorageType: false);
+            Catches = reader.ParseVector(CatchType.Parse);
+            Block = new Block(
+                blockType: blockType,
+                seq: new InstructionSequence(reader.ParseUntil(BinaryModuleParser.ParseInstruction, IsEnd))
+            );
+            return this;
+        }
+
+        public override void RenderBinary(BinaryWriter writer)
+        {
+            // Same shape as Parse: blocktype + catches-vector. The
+            // inner instruction sequence is emitted by the surrounding
+            // BinaryModuleWriter walk.
+            ValTypeWriter.WriteBlockType(writer, Block.BlockType);
+            writer.WriteLeb128_u32((uint)Catches.Length);
+            foreach (var c in Catches)
+                WriteCatchType(writer, c);
+        }
+
+        private static void WriteCatchType(BinaryWriter writer, CatchType c)
+        {
+            writer.Write((byte)c.Mode);
+            switch (c.Mode)
+            {
+                case CatchFlags.None:
+                case CatchFlags.CatchRef:
+                    writer.WriteLeb128_u32(c.X.Value);
+                    writer.WriteLeb128_u32(c.L.Value);
+                    break;
+                case CatchFlags.CatchAll:
+                case CatchFlags.CatchAllRef:
+                    writer.WriteLeb128_u32(c.L.Value);
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Internal factory for the text parser. Populates Block + Catches
+        /// directly so the try_table keyword round-trips as an
+        /// InstTryTable (not lowered to InstBlock).
+        /// </summary>
+        internal InstTryTable Immediate(ValType blockType, InstructionSequence body, CatchType[] catches)
+        {
+            Block = new Block(blockType, body);
+            Catches = catches;
+            return this;
+        }
+    }
+    
+    public class InstThrow : InstructionBase
+    {
+        public InstThrow() : base(ByteCode.Throw) { }
+
+        private TagIdx X;
+        public int TagIndex => (int)X.Value;
+
+        public override void Validate(IWasmValidationContext context)
+        {
+            context.Assert(context.Tags.Contains(X), 
+                "Tag {0} does not exist in the context.", X);
+            var tag = context.Tags[X];
+            var tagType = context.Types[tag.TypeIndex];
+            var compType = tagType.Expansion;
+            var functionType = compType as FunctionType;
+            context.Assert(functionType,
+                "Tag {0} is not a function type.", X);
+            context.Assert(functionType.ResultType.Arity == 0,
+                "Tag {0} ResultType is not empty.", X);
+            
+            context.OpStack.DiscardValues(functionType.ParameterTypes);
+            context.SetUnreachable();
+        }
+
+        public override InstructionBase Link(ExecContext context, int pointer)
+        {
+            var ta = context.Frame.Module.TagAddrs[X];
+            var ti = context.Store[ta];
+            var tagType = ti.Type;
+            var compType = tagType.Expansion;
+            var funcType = compType as FunctionType;
+
+            int stackDiff = +1 -funcType!.ParameterTypes.Arity;
+            context.DeltaStack(stackDiff, 0);
+            
+            context.LinkUnreachable = true;
+            return this;
+        }
+
+        public override void Execute(ExecContext context)
+        {
+            //2.
+            context.Assert(context.Frame.Module.TagAddrs.Contains(X), 
+                $"Tag {X} does not exist in the context.");
+            //3.
+            var ta = context.Frame.Module.TagAddrs[X];
+            //4.
+            context.Assert(context.Store.Contains(ta), 
+                $"Tag {X} does not exist in the store.");
+            //5.
+            var ti = context.Store[ta];
+            //6.
+            var tagType = ti.Type;
+            var compType = tagType.Expansion;
+            var funcType = compType as FunctionType;
+            //7.
+            context.Assert(context.OpStack.Count >= funcType!.ParameterTypes.Arity,
+                $"Tag {X} expected {funcType.ParameterTypes.Arity} parameters, but only {context.OpStack.Count} were provided.");
+            //8.
+            var valn = new Stack<Value>();
+            context.OpStack.PopResults(funcType.ParameterTypes, ref valn);
+            //9.
+            var ea = context.Store.AllocateExn(ta, valn);
+            //10.
+            var exn = context.Store[ea];
+            //11.
+            context.OpStack.PushValue(new Value(ValType.Exn, exn));
+
+            // Pass `this` as the throwing instruction so the
+            // unhandled-exception frame chain identifies the source
+            // `throw` site (not the implementation-detail
+            // throw_ref) at the top frame.
+            InstThrowRef.ExecuteInstruction(context, this);
+        }
+
+        public override InstructionBase Parse(BinaryReader reader)
+        {
+            X = (TagIdx)reader.ReadLeb128_u32();
+            return this;
+        }
+
+        public override void RenderBinary(BinaryWriter writer) =>
+            writer.WriteLeb128_u32(X.Value);
+    }
+
+    public class InstThrowRef : InstructionBase
+    {
+        public InstThrowRef() : base(ByteCode.ThrowRef, -1) { }
+
+        public override void Validate(IWasmValidationContext context)
+        {
+            context.OpStack.PopType(ValType.Exn);
+            context.SetUnreachable();
+        }
+
+        public override InstructionBase Link(ExecContext context, int pointer)
+        {
+            context.LinkUnreachable = true;
+            return base.Link(context, pointer);
+        }
+
+        public override void Execute(ExecContext context)
+        {
+            ExecuteInstruction(context, throwingInstruction: this);
+        }
+
+        public static void ExecuteInstruction(
+            ExecContext context, InstructionBase? throwingInstruction = null)
+        {
+            //1.
+            context.Assert(context.OpStack.Peek().IsType(ValType.Exn),
+                "Expected (exnref) on top of the stack.");
+            //2.
+            var exnref = context.OpStack.PopType(ValType.Exn);
+            //3.
+            if (exnref.IsNullRef)
+                throw new TrapException($"Exception reference is null.");
+            //4,5,6,7.
+            var exn = exnref.GcRef as ExnInstance;
+            context.Assert(exn, "Expected (exnref) on top of the stack.");
+            //8.
+            var a = exn.Tag;
+            //9.
+
+            // Snapshot the WASM call stack BEFORE the unwind search
+            // below — context.FunctionReturn() inside the loop pops
+            // frames, so a snapshot taken after the search wouldn't
+            // reflect where the exception originated. Captured
+            // unconditionally; only used when no handler matches.
+            // throwingInstruction (when supplied by the caller) is
+            // the source-level `throw` / `throw_ref` site, threaded
+            // through so the top frame's Instruction is the
+            // user-visible op, not the dispatcher.
+            var preUnwindFrames = context.SnapshotCallStack(throwingInstruction);
+
+            //Traverse the control stack
+            while (context.StackHeight > 0)
+            {
+                var blockTarget = context.FindLabel(0);
+                //Enumerate all the blocks to find catch clauses
+                while ((blockTarget?.LabelHeight??0) > 1)
+                {
+                    if (blockTarget is InstTryTable tryTable)
+                    {
+                        foreach (var (handler,idx) in tryTable.Catches.Select((c,i)=>(c,i)))
+                        {
+                            switch (handler.Mode)
+                            {
+                                case CatchFlags.None:
+                                    if (a.Equals(context.Frame.Module.TagAddrs[handler.X]))
+                                    {
+                                        context.OpStack.PushResults(exn.Fields);
+                                        InstBranch.ExecuteInstruction(context, tryTable.CatchTargets[idx]);
+                                        return;
+                                    }
+                                    break;
+                                case CatchFlags.CatchRef:
+                                    if (a.Equals(context.Frame.Module.TagAddrs[handler.X]))
+                                    {
+                                        context.OpStack.PushResults(exn.Fields);
+                                        context.OpStack.PushValue(exnref);
+                                        InstBranch.ExecuteInstruction(context, tryTable.CatchTargets[idx]);
+                                        return;
+                                    }
+                                    break;
+                                case CatchFlags.CatchAll:
+                                    InstBranch.ExecuteInstruction(context, tryTable.CatchTargets[idx]);
+                                    return;
+                                case CatchFlags.CatchAllRef:
+                                    context.OpStack.PushValue(exnref);
+                                    InstBranch.ExecuteInstruction(context, tryTable.CatchTargets[idx]);
+                                    return;
+                            }
+                        }
+                    }
+                    blockTarget = blockTarget!.EnclosingBlock;
+                }
+                context.FunctionReturn();
+            }
+
+            // Report the captured pre-unwind frame chain. The search
+            // loop above has emptied context's call stack via
+            // repeated FunctionReturn() — so we have to use the
+            // snapshot taken before the loop.
+            throw new UnhandledWasmException(
+                $"Unhandled exception {exn}",
+                preUnwindFrames);
+        }
+    }
+}
