@@ -173,6 +173,7 @@ internal sealed class MaglevCodeGenerator
     static readonly FieldInfo s_markedForDeoptimization = typeof(MaglevCode).GetField(nameof(MaglevCode.MarkedForDeoptimization))!;
     static readonly FieldInfo s_deoptScratch = typeof(Isolate).GetField(nameof(Isolate.MaglevDeoptScratch))!;
     static readonly FieldInfo s_propertyCellValue = typeof(PropertyCell).GetField(nameof(PropertyCell.Value))!;
+    static readonly MethodInfo s_storeSlot = typeof(Baseline.BaselineBuiltins).GetMethod(nameof(Baseline.BaselineBuiltins.StoreSlot))!;
     static readonly MethodInfo s_doubleToInt64Bits = typeof(BitConverter).GetMethod(nameof(BitConverter.DoubleToInt64Bits), [typeof(double)])!;
 
     /// <summary>Time spent creating the code's type and delegate (V8SHARP_JIT_STATS).</summary>
@@ -1478,6 +1479,16 @@ internal sealed class MaglevCodeGenerator
     /// </remarks>
     void EmitStoreTagged(ValueNode value)
     {
+        if (_hasCatchBlocks)
+        {
+            // Deviation (RyuJIT, not V8): in a method with exception handlers
+            // the shared byref and value locals below make RyuJIT take seconds
+            // (mjsunit compiler/constructor-inlining: 15 s per compile of a
+            // 20 KB method); the inlined helper keeps them JIT temporaries.
+            Load(value, ValueRepresentation.kTagged);
+            _il.Emit(OpCodes.Call, s_storeSlot);
+            return;
+        }
         _storeAddress ??= _il.DeclareLocal(typeof(JSValue).MakeByRefType());
         _il.Emit(OpCodes.Stloc, _storeAddress);
         bool untaggedNumber = !value.IsConstant &&
@@ -2109,7 +2120,7 @@ internal sealed class MaglevCodeGenerator
                 Load(node.Inputs[1], ValueRepresentation.kFloat64);
                 Call(nameof(MaglevBuiltins.StoreDoubleFieldFloat64));
                 return;
-            case Opcode.StoreMapTransition when node.Int0 < JSObject.kPropertyArrayStorageBase && InObjectLayout.IsContiguous && !s_noInlineTransitions:
+            case Opcode.StoreMapTransition when node.Int0 < JSObject.kPropertyArrayStorageBase && InObjectLayout.IsContiguous && !s_noInlineTransitions && !_hasCatchBlocks:
             {
                 // An in-object field (a constructor's this.x = ...): the value
                 // into the slot the map already has, then the map (StoreMap +

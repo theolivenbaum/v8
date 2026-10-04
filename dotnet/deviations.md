@@ -614,6 +614,12 @@ for now, to be revisited when the reason goes away.
 - Code bodies of at most 1200 bytes of IL without exception handlers are
   AggressiveInlining, so RyuJIT compiles them into their direct entry (one
   .NET call per direct call); V8's call is one jump to the code.
+- Element, context slot and in-object transition stores are written inline
+  through the slot's address (V8's StoreTaggedField nodes), except in code
+  with exception handlers: there they call the inlined
+  `BaselineBuiltins.StoreSlot` and transitions their helper, because the
+  shared address locals make RyuJIT take seconds per compile in such
+  methods (mjsunit compiler/constructor-inlining: 15 s for 20 KB of IL).
 
 ## Interpreter execution, ICs, runtime, compiler and modules
 

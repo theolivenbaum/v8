@@ -405,6 +405,31 @@ public class MaglevCodeQualityTest
     }
 
     [Fact]
+    public void StoresInAFunctionWithACatchBlock()
+    {
+        // With exception handlers, transition, element and context stores go
+        // through the inlined StoreSlot helper (RyuJIT is very slow on the
+        // shared address locals there): same results, optimized.
+        Assert.Equal("1,2,3,4,8", MaglevCompilerTest.Run("--maglev", """
+            function P(a, b) { this.a = a; this.b = b; }
+            function f(arr, n) {
+              var c = 0;
+              function inc() { c++; }
+              var p = new P(n, n + 1);
+              arr[0] = p.a; arr[1] = p.b;
+              inc(); inc(); inc();
+              try { if (n > 100) throw new Error(); } catch (e) { return -1; }
+              return arr.concat([c, c + 1]);
+            }
+            %PrepareFunctionForOptimization(f);
+            f([0, 0], 1); f([0, 0], 1);
+            %OptimizeMaglevOnNextCall(f);
+            var r = f([0, 0], 1);
+            r.join() === "1,2,3,4" ? [r.join(), %GetOptimizationStatus(f) & 8].join() : r.join();
+            """));
+    }
+
+    [Fact]
     public void InlineElementStoreKeepsItsUntaggedValueLive()
     {
         // The store writes x + 1's int32 (under its tagging): its IL local
