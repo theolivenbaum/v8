@@ -243,6 +243,8 @@ public sealed class FeedbackVector : HeapObject
 
     public int InvocationCount;
     public byte InvocationCountBeforeStable;
+    /// <summary>FeedbackVector::interrupt_budget_reset_by_ic_change.</summary>
+    public bool InterruptBudgetResetByICChange;
     public byte OsrState;
     /// <summary>
     /// The Maglev code of the closures sharing this vector (V8's

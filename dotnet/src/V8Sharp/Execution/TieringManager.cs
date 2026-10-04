@@ -380,8 +380,10 @@ public sealed class TieringManager(Isolate isolate)
     }
 
     /// <summary>
-    /// TieringManager::NotifyICChanged. Without an optimizing tier ShouldOptimize
-    /// never says yes, so the budget is never reset by an IC change.
+    /// TieringManager::NotifyICChanged: an IC change delays the tier-up
+    /// (minimum_invocations_after_ic_update), and with
+    /// profile_guided_optimization records how stable the feedback was for the
+    /// cached tiering decision.
     /// </summary>
     public void NotifyICChanged(FeedbackVector vector)
     {
@@ -401,6 +403,56 @@ public sealed class TieringManager(Isolate isolate)
         int invocations = Math.Max(1, isolate.Flags.minimum_invocations_after_ic_update);
         int bytecodes = Math.Max(1, Math.Min(bytecodeLength, kMaxInterruptBudget / invocations));
         int newBudget = ScaleInterruptBudget((long)invocations, bytecodes);
-        if (newBudget > cell.InterruptBudget) cell.InterruptBudget = newBudget;
+        int currentBudget = cell.InterruptBudget;
+        FlagList flags = isolate.Flags;
+        if (flags.profile_guided_optimization && shared.CachedTieringDecision <= CachedTieringDecision.kEarlySparkplug)
+        {
+            if (vector.InvocationCountBeforeStable < flags.invocation_count_for_early_optimization)
+            {
+                // Record how many invocation count were consumed before the last IC change.
+                int newInvocationCountBeforeStable;
+                if (vector.InterruptBudgetResetByICChange)
+                {
+                    // Initial interrupt budget is minimum_invocations_after_ic_update * bytecodes.
+                    long newConsumedBudget = (long)newBudget - currentBudget;
+                    newInvocationCountBeforeStable = SaturatedInt(vector.InvocationCountBeforeStable + Math.Ceiling((double)newConsumedBudget / bytecodes));
+                }
+                else
+                {
+                    // Initial interrupt budget is invocation_count_for_{maglev|turbofan} * bytecodes.
+                    long totalConsumedBudget = (long)(IsMaglevEnabled(isolate) ? flags.invocation_count_for_maglev : flags.invocation_count_for_turbofan) *
+                                               bytecodes - currentBudget;
+                    newInvocationCountBeforeStable = SaturatedInt(Math.Ceiling((double)totalConsumedBudget / bytecodes));
+                }
+                if (newInvocationCountBeforeStable >= flags.invocation_count_for_early_optimization)
+                {
+                    vector.InvocationCountBeforeStable = (byte)flags.invocation_count_for_early_optimization;
+                    shared.CachedTieringDecision = CachedTieringDecision.kNormal;
+                }
+                else
+                {
+                    vector.InvocationCountBeforeStable = (byte)Math.Max(0, newInvocationCountBeforeStable);
+                }
+            }
+            else
+            {
+                shared.CachedTieringDecision = CachedTieringDecision.kNormal;
+            }
+        }
+        if (!flags.profile_guided_optimization || ShouldResetInterruptBudgetByICChange(shared.CachedTieringDecision))
+        {
+            if (newBudget > currentBudget)
+            {
+                if (flags.trace_opt_verbose) Console.WriteLine($"[delaying optimization of {Maglev.MaglevCompiler.DebugName(shared)}, IC changed]");
+                vector.InterruptBudgetResetByICChange = true;
+                cell.InterruptBudget = newBudget;
+            }
+        }
     }
+
+    static int SaturatedInt(double value) => value >= int.MaxValue ? int.MaxValue : value <= int.MinValue ? int.MinValue : (int)value;
+
+    /// <summary>ShouldResetInterruptBudgetByICChange (tiering-manager.cc).</summary>
+    static bool ShouldResetInterruptBudgetByICChange(CachedTieringDecision decision) =>
+        decision is not (CachedTieringDecision.kEarlyMaglev or CachedTieringDecision.kEarlyTurbofan);
 }
