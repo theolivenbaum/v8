@@ -693,15 +693,57 @@ calls (`MaglevCalls.Call`) and constructs (`ConstructWithReceiver`, argc's
 sign bit set, new.target in `Isolate.MaglevNewTarget`) use it too.
 Parameters assigned by the code stay in IL locals and reach the frame only
 before nodes that can observe it (`InterpreterFrameState.DirtyParameters`).
+A code body of at most 1200 bytes of IL without exception handlers is
+AggressiveInlining, so RyuJIT compiles it into the direct entry (one .NET
+call per JS call). Generic calls with up to three arguments pass them as
+values (`MaglevCalls.CallWithValuesN`): a callee with Maglev code is
+entered through its direct entry without going through the register stack.
+The concurrent compile job prepares (JITs) the direct entry as well.
+
+**Frameless entries.** As V8's optimized frames are not interpreter
+frames, code that cannot observe its frame (a leaf: no calls, throws, lazy
+deopts, interrupt checks or frame reads and writes; eagerly pushed inlined
+frames excluded) gets a second code generation pass from the same graph
+(`MaglevCodeGenerator.TryGenerateFramelessEntry`): a method with the direct
+entry's signature that builds no frame and no frame record. Its InitialValues
+are the entry's arguments (the closure, its context, the receiver and the
+parameters), and its eager deopt exits spill the translation and the
+arguments to the deopt scratch buffer and call
+`MaglevCalls.DeoptimizeFrameless`, which builds the frame the direct entry
+would have built, deoptimizes into it and continues in the interpreter. The
+two passes share the code's deopt points. When the graph turns out to
+need the frame (the second pass touches it), the frameful direct entry is
+used.
 
 **Load elimination.** KnownNodeAspects keeps loaded fields (by object and
 storage index), elements, array and FixedArray lengths, and context slots;
 stores update their own key and forget aliases of it, and nodes that can
-run arbitrary code clear everything (MarkPossibleSideEffect). For loops,
-V8 peels the first iteration to learn what the body changes; V8Sharp
+run arbitrary code clear everything (MarkPossibleSideEffect). V8Sharp
 assumes a loop without calls changes nothing, checks that at the back edge
 (`LoopEffects`) and, when it did change something known at the header,
 builds the graph again with those effects (`MaglevRestartException`).
+Innermost loops without calls under 400 bytes of bytecode (900 per
+compilation) are peeled (`PeelLoop`, V8's non-optimistic mode): the first
+iteration is built as straight-line code from the merged forward edges,
+its back edge enters the loop, and the loop's interior merge states start
+again, so the checks and loads of loop-invariant values happen once, in the
+peeled iteration.
+
+**Property access.** Loads of fields take the field's representation and
+field type from the descriptor of the receiver's (or holder's) map
+(ComputeDataFieldAccessInfo): a Double field is `LoadDoubleField` (the
+payload, no number check), a Smi field's value is untagged unchecked, and a
+HeapObject field with a stable class field type has that map, with field
+representation, field type and stable map dependencies; a const field of a
+constant object is folded to its value (FieldConst dependency). Double field
+stores are `StoreDoubleField` (the payload of the Float64 value, no write
+barrier). A polymorphic load of methods followed by a call of the loaded
+value (`GetNamedProperty; Star r; ...; CallProperty r`) builds one arm per
+map group that loads its constant and replays the bytecodes up to the call,
+which then has a constant target (inlined if small, a direct call
+otherwise); the arms' frames merge after the call (V8's polymorphic load
+continuations). Element, context slot and in-object transition stores are
+written inline through the slot's address, numbers as payloads.
 
 **Deoptimization.** A deopt exit stores the values of the frame state of
 its checkpoint (V8's translation: every live register, the context and the

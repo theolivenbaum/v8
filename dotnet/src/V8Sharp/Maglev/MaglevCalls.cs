@@ -73,6 +73,8 @@ public static class MaglevCalls
                 _ => InvokeFastCallValues(isolate, code, function, receiver, 0, default, default, default),
             };
         }
+        // A builtin's fast path on entry (BuiltinFastPaths, as MaglevCalls.Call).
+        if (IsBuiltin(callee) && Builtins.BuiltinFastPaths.TryCall0(isolate, callee, receiver, out JSValue builtinResult)) return builtinResult;
         return CallValues0(isolate, callee, receiver, mode);
     }
 
@@ -90,6 +92,8 @@ public static class MaglevCalls
                 _ => InvokeFastCallValues(isolate, code, function, receiver, 1, a0, default, default),
             };
         }
+        // A builtin's fast path on entry (BuiltinFastPaths, as MaglevCalls.Call).
+        if (IsBuiltin(callee) && Builtins.BuiltinFastPaths.TryCall1(isolate, callee, receiver, a0, out JSValue builtinResult)) return builtinResult;
         return CallValues1(isolate, callee, receiver, a0, mode);
     }
 
@@ -106,6 +110,8 @@ public static class MaglevCalls
                 _ => InvokeFastCallValues(isolate, code, function, receiver, 2, a0, a1, default),
             };
         }
+        // A builtin's fast path on entry (BuiltinFastPaths, as MaglevCalls.Call).
+        if (IsBuiltin(callee) && Builtins.BuiltinFastPaths.TryCall2(isolate, callee, receiver, a0, a1, out JSValue builtinResult)) return builtinResult;
         return CallValues2(isolate, callee, receiver, a0, a1, mode);
     }
 
@@ -146,6 +152,9 @@ public static class MaglevCalls
         code = null!;
         return false;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsBuiltin(JSValue callee) => callee._obj is JSFunction f && f.Shared.BuiltinId != Builtins.Builtin.NoBuiltinId;
 
     /// <summary>A direct entry of any arity called with at most three arguments.</summary>
     static JSValue InvokeFastCallValues(Isolate isolate, MaglevCode code, JSFunction function, JSValue receiver, int argc, JSValue a0,
