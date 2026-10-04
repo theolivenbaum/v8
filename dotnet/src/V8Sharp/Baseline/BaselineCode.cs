@@ -142,6 +142,25 @@ public sealed class BaselineCode
         Bytecodes = Bytecode.Bytecodes;
         bool optimizeFully = prepare && !s_tieredConcurrentCode;
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        object? cacheKey = BaselineCodeCache.KeyFor(this);
+        if (BaselineCodeCache.Get(cacheKey) is { } cached)
+        {
+            if (_isolate.Flags.trace_baseline)
+            {
+                Console.WriteLine("[baseline code for " + methodName + ": bytecode=" + Bytecode.Length + " from the code cache" +
+                                  (cached.ChunkStarts is null ? "" : " chunks=" + cached.ChunkStarts.Length) + "]");
+            }
+            _ilSize = cached.ILSize;
+            if (cached.ChunkStarts is null) return _entry = (BaselineCodeEntry)cached.Methods[0].CreateDelegate(typeof(BaselineCodeEntry), this);
+            var cachedChunks = new BaselineCodeEntry[cached.Methods.Length];
+            for (int i = 0; i < cachedChunks.Length; i++)
+            {
+                cachedChunks[i] = (BaselineCodeEntry)cached.Methods[i].CreateDelegate(typeof(BaselineCodeEntry), this);
+            }
+            _chunkStarts = cached.ChunkStarts;
+            _chunks = cachedChunks;
+            return _entry = RunChunks;
+        }
         BaselineCompiler compiler;
         string? fullStatistics = null;
         if (BaselineCompiler.s_forceCompact is not null)
@@ -160,13 +179,14 @@ public sealed class BaselineCode
                 // fit with the out-of-line checks (about a third less than the
                 // full form's counts); a range still over the limits is split again.
                 int pieces = Math.Max(2, (int)Math.Ceiling(fullRatio / 0.8));
-                return GenerateChunks(methodName, prepare, optimizeFully, vector, t0, fullStatistics ?? compiler.Statistics, pieces);
+                return GenerateChunks(methodName, prepare, optimizeFully, vector, t0, fullStatistics ?? compiler.Statistics, pieces, cacheKey);
             }
         }
         long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
         (BaselineCodeEntry entry, int ilSize) = compiler.Build(this);
         long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
         if (prepare && compiler.CompiledMethod is { } method) RuntimeHelpers.PrepareMethod(method.MethodHandle);
+        if (compiler.CompiledMethod is { } compiled) BaselineCodeCache.Add(cacheKey, new BaselineCodeCache.Entry([compiled], null, ilSize));
         if (_isolate.Flags.trace_baseline)
         {
             long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -216,7 +236,7 @@ public sealed class BaselineCode
     public int ChunkCount => _chunks?.Length ?? 1;
 
     BaselineCodeEntry GenerateChunks(string methodName, bool prepare, bool optimizeFully, FeedbackVector? vector, long t0,
-        string fullStatistics, int pieces)
+        string fullStatistics, int pieces, object? cacheKey)
     {
         int[] loopDepth = LoopDepths(Bytecode);
         int[] boundaries = BytecodeBoundaries(Bytecode);
@@ -276,6 +296,10 @@ public sealed class BaselineCode
         _chunkStarts = starts.ToArray();
         _chunks = chunks;
         _ilSize = ilSize;
+        if (compilers.TrueForAll(c => c.CompiledMethod is not null))
+        {
+            BaselineCodeCache.Add(cacheKey, new BaselineCodeCache.Entry(compilers.ConvertAll(c => c.CompiledMethod!).ToArray(), _chunkStarts, ilSize));
+        }
         return _entry = RunChunks;
     }
 
