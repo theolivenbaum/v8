@@ -30,13 +30,18 @@ internal sealed class BaselineAssembler
     readonly BaselineILEmitter _il;
 
     public readonly LocalBuilder FpRef;       // ref JSValue: the slot at fp
-    public readonly LocalBuilder Frame;       // ref InterpreterFrameRecord
+    public readonly LocalBuilder PcRef;       // ref int: the bytecode offset slot's payload (low half)
     public readonly LocalBuilder Acc;         // JSValue
     public readonly LocalBuilder Context;     // Context
     public readonly LocalBuilder Fv;          // FeedbackVector
-    public readonly LocalBuilder FeedbackSlots; // JSValue[]: Fv.Slots
-    public readonly LocalBuilder Constants;   // JSValue[]
-    public readonly LocalBuilder Code;        // byte[] (the bytecodes, for embedded feedback)
+    // The feedback slots, the constant pool and the bytecodes are read through
+    // refs to their first elements, computed once in the prologue: the operands
+    // index them with offsets from the bytecode, which are in bounds by
+    // construction, so the accesses need no bounds checks (as V8's code reads
+    // the feedback vector, constant pool and bytecode array at fixed offsets).
+    public readonly LocalBuilder FeedbackSlots; // ref JSValue: Fv.Slots[0]
+    public readonly LocalBuilder Constants;   // ref JSValue: the constant pool's [0]
+    public readonly LocalBuilder Code;        // ref byte: the bytecodes' [0] (for embedded feedback)
     public readonly LocalBuilder Function;    // JSFunction
     public readonly LocalBuilder Fp;          // int
     public readonly LocalBuilder Scratch;     // int
@@ -45,13 +50,13 @@ internal sealed class BaselineAssembler
     {
         _il = il;
         FpRef = il.DeclareLocal(typeof(JSValue).MakeByRefType());
-        Frame = il.DeclareLocal(typeof(InterpreterFrameRecord).MakeByRefType());
+        PcRef = il.DeclareLocal(typeof(int).MakeByRefType());
         Acc = il.DeclareLocal(typeof(JSValue));
         Context = il.DeclareLocal(typeof(Context));
         Fv = il.DeclareLocal(typeof(FeedbackVector));
-        FeedbackSlots = il.DeclareLocal(typeof(JSValue[]));
-        Constants = il.DeclareLocal(typeof(JSValue[]));
-        Code = il.DeclareLocal(typeof(byte[]));
+        FeedbackSlots = il.DeclareLocal(typeof(JSValue).MakeByRefType());
+        Constants = il.DeclareLocal(typeof(JSValue).MakeByRefType());
+        Code = il.DeclareLocal(typeof(byte).MakeByRefType());
         Function = il.DeclareLocal(typeof(JSFunction));
         Fp = il.DeclareLocal(typeof(int));
         Scratch = il.DeclareLocal(typeof(int));
@@ -142,25 +147,47 @@ internal sealed class BaselineAssembler
     /// <summary>Pushes constant pool entry <paramref name="index"/> as a JSValue.</summary>
     public void LoadConstant(int index)
     {
-        _il.Emit(OpCodes.Ldloc, Constants);
-        _il.Emit(OpCodes.Ldc_I4, index);
-        _il.Emit(OpCodes.Ldelem, typeof(JSValue));
+        LoadElementAddress(Constants, index * kJSValueSize);
+        _il.Emit(OpCodes.Ldobj, typeof(JSValue));
     }
 
+    /// <summary>Pushes a ref to feedback slot <paramref name="slot"/>.</summary>
+    public void LoadFeedbackSlotAddress(int slot) => LoadElementAddress(FeedbackSlots, slot * kJSValueSize);
+
     /// <summary>Pushes a ref to the embedded feedback byte at <paramref name="byteOffset"/> of the bytecode array.</summary>
-    public void LoadEmbeddedFeedbackAddress(int byteOffset)
-    {
-        _il.Emit(OpCodes.Ldloc, Code);
-        _il.Emit(OpCodes.Ldc_I4, byteOffset);
-        _il.Emit(OpCodes.Ldelema, typeof(byte));
-    }
+    public void LoadEmbeddedFeedbackAddress(int byteOffset) => LoadElementAddress(Code, byteOffset);
 
     /// <summary>Pushes the embedded feedback byte at <paramref name="byteOffset"/> of the bytecode array (as an int).</summary>
     public void LoadEmbeddedFeedback(int byteOffset)
     {
-        _il.Emit(OpCodes.Ldloc, Code);
-        _il.Emit(OpCodes.Ldc_I4, byteOffset);
-        _il.Emit(OpCodes.Ldelem_U1);
+        LoadElementAddress(Code, byteOffset);
+        _il.Emit(OpCodes.Ldind_U1);
+    }
+
+    /// <summary>Pushes <paramref name="elementRef"/> + <paramref name="byteOffset"/>.</summary>
+    void LoadElementAddress(LocalBuilder elementRef, int byteOffset)
+    {
+        _il.Emit(OpCodes.Ldloc, elementRef);
+        if (byteOffset != 0)
+        {
+            _il.Emit(OpCodes.Ldc_I4, byteOffset);
+            _il.Emit(OpCodes.Add);
+        }
+    }
+
+    static readonly MethodInfo s_jsValueArrayData = ArrayDataReference(typeof(JSValue));
+    static readonly MethodInfo s_byteArrayData = ArrayDataReference(typeof(byte));
+
+    static MethodInfo ArrayDataReference(Type element) =>
+        typeof(System.Runtime.InteropServices.MemoryMarshal).GetMethods()
+            .Single(m => m.Name == nameof(System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference) && m.IsGenericMethodDefinition)
+            .MakeGenericMethod(element);
+
+    /// <summary>Stores a ref to the first element of the JSValue[] on the stack in <paramref name="elementRef"/>.</summary>
+    public void StoreArrayDataReference(LocalBuilder elementRef, bool bytes = false)
+    {
+        _il.Emit(OpCodes.Call, bytes ? s_byteArrayData : s_jsValueArrayData);
+        _il.Emit(OpCodes.Stloc, elementRef);
     }
 
     // ---- The bytecode offset --------------------------------------------------------------------------
@@ -175,32 +202,22 @@ internal sealed class BaselineAssembler
     /// count limit), and a call per bytecode that can throw was a few percent
     /// of the time of the big functions (Mandreel, Box2D).
     /// </summary>
-    public void StoreBytecodeOffset(int offset) => EmitStoreBytecodeOffset(_il, FpRef, offset);
-
-    /// <summary>fpRef[kBytecodeOffsetOffset]._bits = offset.</summary>
-    internal static void EmitStoreBytecodeOffset(ILGenerator il, LocalBuilder fpRef, int offset)
+    public void StoreBytecodeOffset(int offset)
     {
-        il.Emit(OpCodes.Ldloc, fpRef);
-        il.Emit(OpCodes.Ldc_I4, InterpreterRuntime.kBytecodeOffsetOffset * kJSValueSize);
-        il.Emit(OpCodes.Conv_I);
-        il.Emit(OpCodes.Add);
-        il.Emit(OpCodes.Ldflda, s_bits);
-        il.Emit(OpCodes.Ldc_I4, offset);
-        il.Emit(OpCodes.Conv_I8);
-        il.Emit(OpCodes.Stind_I8);
+        // A 4-byte store through PcRef (the prologue's ref to the slot's payload):
+        // the offset is read back as (int)_bits (InterpreterRuntime.FramePc),
+        // and the slot's upper half is zero (InitializeFrameSlots).
+        _il.Emit(OpCodes.Ldloc, PcRef);
+        _il.Emit(OpCodes.Ldc_I4, offset);
+        _il.Emit(OpCodes.Stind_I4);
     }
 
-    /// <summary>The same, through a BaselineILEmitter (which counts what RyuJIT's limits count).</summary>
-    static void EmitStoreBytecodeOffset(BaselineILEmitter il, LocalBuilder fpRef, int offset)
+    /// <summary>The prologue's PcRef = ref the low half of fpRef[kBytecodeOffsetOffset]._bits.</summary>
+    public void InitializePcRef()
     {
-        il.Emit(OpCodes.Ldloc, fpRef);
-        il.Emit(OpCodes.Ldc_I4, InterpreterRuntime.kBytecodeOffsetOffset * kJSValueSize);
-        il.Emit(OpCodes.Conv_I);
-        il.Emit(OpCodes.Add);
-        il.Emit(OpCodes.Ldflda, s_bits);
-        il.Emit(OpCodes.Ldc_I4, offset);
-        il.Emit(OpCodes.Conv_I8);
-        il.Emit(OpCodes.Stind_I8);
+        LoadFrameSlotAddress(InterpreterRuntime.kBytecodeOffsetOffset);
+        _il.Emit(OpCodes.Ldflda, s_bits);
+        _il.Emit(OpCodes.Stloc, PcRef);
     }
 
     // ---- Calls ------------------------------------------------------------------------------------------

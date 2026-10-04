@@ -57,7 +57,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new NoArguments());
+            return EnterInline(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new NoArguments());
         }
         return CallSlow0(isolate, callee, receiver, ConvertReceiverMode.NotNullOrUndefined);
     }
@@ -68,7 +68,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new OneArgument(arg0));
+            return EnterInline(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new OneArgument(arg0));
         }
         return CallSlow1(isolate, callee, receiver, arg0, ConvertReceiverMode.NotNullOrUndefined);
     }
@@ -80,7 +80,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new TwoArguments(arg0, arg1));
+            return EnterInline(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new TwoArguments(arg0, arg1));
         }
         return CallSlow2(isolate, callee, receiver, arg0, arg1, ConvertReceiverMode.NotNullOrUndefined);
     }
@@ -91,7 +91,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return Enter(isolate, function, code, vector, UndefinedReceiver(function, code), new NoArguments());
+            return EnterInline(isolate, function, code, vector, UndefinedReceiver(function, code), new NoArguments());
         }
         return CallSlow0(isolate, callee, JSValue.Undefined, ConvertReceiverMode.NullOrUndefined);
     }
@@ -102,7 +102,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return Enter(isolate, function, code, vector, UndefinedReceiver(function, code), new OneArgument(arg0));
+            return EnterInline(isolate, function, code, vector, UndefinedReceiver(function, code), new OneArgument(arg0));
         }
         return CallSlow1(isolate, callee, JSValue.Undefined, arg0, ConvertReceiverMode.NullOrUndefined);
     }
@@ -114,7 +114,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return Enter(isolate, function, code, vector, UndefinedReceiver(function, code), new TwoArguments(arg0, arg1));
+            return EnterInline(isolate, function, code, vector, UndefinedReceiver(function, code), new TwoArguments(arg0, arg1));
         }
         return CallSlow2(isolate, callee, JSValue.Undefined, arg0, arg1, ConvertReceiverMode.NullOrUndefined);
     }
@@ -127,7 +127,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new RegisterArguments(first + 1, count - 1));
+            return EnterInline(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new RegisterArguments(first + 1, count - 1));
         }
         return CallSlowRegisters(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.NotNullOrUndefined);
     }
@@ -139,7 +139,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee, receiver);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return Enter(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new RegisterArguments(first + 1, count - 1));
+            return EnterInline(isolate, function, code, vector, ConvertReceiver(isolate, function, code, receiver), new RegisterArguments(first + 1, count - 1));
         }
         return CallSlowRegisters(isolate, callee, receiver, first + 1, count - 1, ConvertReceiverMode.Any);
     }
@@ -150,7 +150,7 @@ public static class BaselineCalls
         InterpreterCalls.CollectCallFeedback(isolate, fv, slot, callee);
         if (TryGetBaselineCallee(callee, out JSFunction function, out BaselineCode code, out FeedbackVector vector))
         {
-            return Enter(isolate, function, code, vector, UndefinedReceiver(function, code), new RegisterArguments(first, count));
+            return EnterInline(isolate, function, code, vector, UndefinedReceiver(function, code), new RegisterArguments(first, count));
         }
         return CallSlowRegisters(isolate, callee, JSValue.Undefined, first, count, ConvertReceiverMode.NullOrUndefined);
     }
@@ -184,7 +184,7 @@ public static class BaselineCalls
     /// <summary>The receiver of a call with an undefined receiver (CallFunction's ConvertReceiverMode::kNullOrUndefined).</summary>
     [MethodImpl(Inline)]
     static JSValue UndefinedReceiver(JSFunction function, BaselineCode code) =>
-        code.ConvertsReceiver ? function.Context.NativeContext.GlobalProxyObject : JSValue.Undefined;
+        code.ConvertsReceiver ? function.Context.NativeContext.Slots[(int)Context.Field.GLOBAL_PROXY_INDEX] : JSValue.Undefined;
 
     [MethodImpl(Inline)]
     static JSValue ConvertReceiver(Isolate isolate, JSFunction function, BaselineCode code, JSValue receiver) =>
@@ -635,25 +635,39 @@ public static class BaselineCalls
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     static JSValue Enter<TArgs>(Isolate isolate, JSFunction function, BaselineCode code, FeedbackVector vector, JSValue receiver,
+        TArgs args, JSValue newTarget = default, bool isConstruct = false) where TArgs : struct, ICallArguments =>
+        EnterInline(isolate, function, code, vector, receiver, args, newTarget, isConstruct);
+
+    /// <summary>
+    /// <see cref="Enter"/> inlined into the call bytecodes' entry points: the
+    /// frame setup is part of the Call builtin, as V8's Call_*_Baseline jump to
+    /// the callee's code with no call in between.
+    /// </summary>
+    [MethodImpl(Inline)]
+    static JSValue EnterInline<TArgs>(Isolate isolate, JSFunction function, BaselineCode code, FeedbackVector vector, JSValue receiver,
         TArgs args, JSValue newTarget = default, bool isConstruct = false) where TArgs : struct, ICallArguments
     {
-        // The interrupt check of the prologue's stack check, as on the
-        // interpreter's entry (InterpreterInlineCalls.EnterInlineCore).
-        if (isolate.StackGuard.HasPendingInterrupts) isolate.StackGuard.HandleInterrupts();
+        // The prologue's stack check (V8's BaselineOutOfLinePrologue: one
+        // compare against the interrupt limit covers register stack overflow
+        // and pending interrupts, as on the interpreter's fast entry,
+        // InterpreterInlineCalls.TryEnterFast), and the native stack check.
+        // Each level costs two .NET frames (the call stub and the callee's
+        // code); checking every eighth level stays well inside the 128 KB the
+        // check guarantees, except for large functions, which check on every call.
         int depth = isolate.InterpreterFrameDepth;
-        // The native stack check of the prologue (V8's StackOverflow on entry).
-        // Each level costs two .NET frames (this one and the callee's code);
-        // checking every fourth level stays well inside the 128 KB the check
-        // guarantees, except for large functions, which check on every call.
-        if (((depth & 3) == 0 || code.CheckStackOnEveryCall) && !RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        int argc = args.Count;
+        int formal = code.FormalParameterCount;
+        int end = isolate.RegisterStackTop + (argc > formal ? argc : formal) + InterpreterRuntime.kFixedSlotsAboveParams + code.RegisterCount;
+        if ((uint)end > (uint)isolate.RegisterStackInterruptLimit ||
+            ((depth & 7) == 0 || code.CheckStackOnEveryCall) && !RuntimeHelpers.TryEnsureSufficientExecutionStack())
         {
-            isolate.StackOverflow();
+            EntryStackCheckSlow(isolate, end);
         }
         BytecodeArray bytecode = code.Bytecode;
         Context? savedContext = isolate.Context;
         int start = isolate.RegisterStackTop;
-        int fp = PushFrame(isolate, function, bytecode, code.FormalParameterCount, code.RegisterCount, code.IncomingNewTargetRegister,
-            receiver, args, newTarget, isConstruct, true, vector);
+        int fp = PushFrame(isolate, function, bytecode, formal, code.RegisterCount, code.IncomingNewTargetRegister,
+            receiver, args, newTarget, isConstruct, true, vector, limitChecked: true);
         vector.InvocationCount++;
 
         var state = new InterpreterState
@@ -666,6 +680,20 @@ public static class BaselineCalls
         JSValue result = code.HasHandlers ? BaselineExecution.Run(isolate, ref state, code) : code.EntryFor(vector)(isolate, ref state);
         LeaveFrame(isolate, depth, start, savedContext);
         return result;
+    }
+
+    /// <summary>
+    /// The failed entry check of <see cref="EnterInline"/>: serves pending
+    /// interrupts (StackGuard::HandleInterrupts, which may run JavaScript and
+    /// returns with the register stack as it was), resynchronizes a stale
+    /// interrupt limit, and throws on register or native stack overflow.
+    /// </summary>
+    [MethodImpl(Outline)]
+    static void EntryStackCheckSlow(Isolate isolate, int end)
+    {
+        if (isolate.StackGuard.HasPendingInterrupts) isolate.StackGuard.HandleInterrupts();
+        else if (isolate.RegisterStackInterruptLimit != isolate.RegisterStackLimit) isolate.StackGuard.SyncInterruptLimit();
+        if ((uint)end > (uint)isolate.RegisterStackLimit || !RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
     }
 
     /// <summary>
@@ -754,14 +782,14 @@ public static class BaselineCalls
     [MethodImpl(Inline)]
     static int PushFrame<TArgs>(Isolate isolate, JSFunction function, BytecodeArray bytecode, int formal, int registerCount,
         int incomingNewTargetRegister, JSValue receiver, TArgs args, JSValue newTarget, bool isConstruct, bool isBaseline,
-        FeedbackVector? vector) where TArgs : struct, ICallArguments
+        FeedbackVector? vector, bool limitChecked = false) where TArgs : struct, ICallArguments
     {
         int argc = args.Count;
         int paramSlots = argc > formal ? argc : formal;
         int start = isolate.RegisterStackTop;
         int fp = start + paramSlots + InterpreterRuntime.kFixedSlotsAboveParams;
         int end = fp + registerCount;
-        if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
+        if (!limitChecked && (uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
         isolate.RegisterStackTop = end;
 
         ref JSValue stack0 = ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack);
