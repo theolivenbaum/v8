@@ -1401,8 +1401,14 @@ vendored code carry a `V8Sharp:` comment at the site.
 - **JSPI.** `WebAssembly.Suspending` and `WebAssembly.promising` exist, but
   the interpreter cannot suspend a wasm stack: a suspending import that
   returns a promise throws SuspendError.
-- **Not implemented** (CompileError on use): JS string builtins and imported
-  strings (`wasm:js-string`, `wasm:text-*`), stringref, custom descriptors,
+- **JS String Builtins.** V8 implements the `wasm:js-string` imports as JS
+  builtins that its compilers call or inline; V8Sharp binds each to a host
+  function of the import's signature (`WasmStringBuiltins.cs`, after
+  `wasm-strings.tq`). JS strings cross into wasm as .NET strings the
+  builtins read directly and come back as new JS strings (a string's
+  identity is its value). The `wasm:text-encoder`/`text-decoder` builtins
+  (--wasm-imported-strings-utf8) are not implemented.
+- **Not implemented** (CompileError on use): stringref, custom descriptors,
   shared-everything, stack switching (WasmFX), exact types, fp16, wide
   arithmetic, compact imports, acquire/release atomics, memory control,
   source phase imports of wasm modules, the debugger and profiler hooks

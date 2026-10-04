@@ -274,4 +274,100 @@ public class WasmJsApiTests
             "0\n",
             output);
     }
+
+    [Fact]
+    public void LegacyExceptionHandling()
+    {
+        string output = Run("""
+            let builder = new WasmModuleBuilder();
+            let tag = builder.addTag(kSig_v_i);
+            let thrower = builder.addFunction('thrower', kSig_v_i).addBody([kExprLocalGet, 0, kExprThrow, tag]);
+            builder.addFunction('catcher', kSig_i_i).addBody([
+              kExprTry, kWasmI32,
+                kExprLocalGet, 0, kExprCallFunction, thrower.index,
+                kExprI32Const, 0,
+              kExprCatch, tag,
+                kExprI32Const, 1, kExprI32Add,
+              kExprEnd]).exportFunc();
+            builder.addFunction('rethrower', kSig_v_i).addBody([
+              kExprTry, kWasmVoid,
+                kExprLocalGet, 0, kExprThrow, tag,
+              kExprCatchAll,
+                kExprRethrow, 0,
+              kExprEnd]).exportFunc();
+            builder.addFunction('delegator', kSig_i_i).addBody([
+              kExprTry, kWasmI32,
+                kExprTry, kWasmI32,
+                  kExprLocalGet, 0, kExprThrow, tag,
+                kExprDelegate, 0,
+              kExprCatch, tag,
+              kExprEnd]).exportFunc();
+            let e = builder.instantiate().exports;
+            print(e.catcher(41), e.delegator(7));
+            try { e.rethrower(3); } catch (x) { print(x instanceof WebAssembly.Exception); }
+            """);
+        Assert.Equal("42 7\ntrue\n", output);
+    }
+
+    [Fact]
+    public void BranchToFunctionLabelReturns()
+    {
+        string output = Run("""
+            let builder = new WasmModuleBuilder();
+            let callee = builder.addFunction('callee', kSig_i_i).addBody([
+              kExprBlock, kWasmVoid,
+                kExprI32Const, 7, kExprLocalGet, 0, kExprBrIf, 1, kExprDrop,
+              kExprEnd,
+              kExprI32Const, 9]);
+            builder.addFunction('caller', kSig_i_i).addBody([
+              kExprLocalGet, 0, kExprCallFunction, callee.index, ...wasmI32Const(100), kExprI32Add]).exportFunc();
+            let e = builder.instantiate().exports;
+            print(e.caller(0), e.caller(1));
+            """);
+        Assert.Equal("109 107\n", output);
+    }
+
+    [Fact]
+    public void WasmFramesInStackTraces()
+    {
+        string output = Run("""
+            let builder = new WasmModuleBuilder();
+            let imp = builder.addImport('m', 'f', kSig_v_v);
+            builder.addFunction('dummy', kSig_i_v).addBody([kExprI32Const, 0]);
+            let inner = builder.addFunction('inner', kSig_v_v).addBody([kExprCallFunction, imp]);
+            builder.addFunction('main', kSig_v_v).addBody([kExprCallFunction, inner.index]).exportFunc();
+            builder.addFunction('trap', kSig_i_v).addBody([kExprI32Const, 2, kExprI32Const, 0, kExprI32DivU]).exportFunc();
+            let e = builder.instantiate({m: {f() { throw new Error('boom'); }}}).exports;
+            try { e.main(); } catch (x) { print(x.stack.split('\n').slice(2, 4).join('|')); }
+            try { e.trap(); } catch (x) { print(x.stack.split('\n').slice(0, 2).join('|')); }
+            """);
+        Assert.Equal(
+            "    at inner (wasm://wasm/52ee5c12:wasm-function[2]:0x47)|    at main (wasm://wasm/52ee5c12:wasm-function[3]:0x4c)\n" +
+            "RuntimeError: divide by zero|    at trap (wasm://wasm/52ee5c12:wasm-function[4]:0x55)\n",
+            output);
+    }
+
+    [Fact]
+    public void JsStringBuiltins()
+    {
+        string output = Run("""
+            let builder = new WasmModuleBuilder();
+            let kRefExtern = wasmRefType(kWasmExternRef);
+            let concat = builder.addImport('wasm:js-string', 'concat', makeSig([kWasmExternRef, kWasmExternRef], [kRefExtern]));
+            let length = builder.addImport('wasm:js-string', 'length', makeSig([kWasmExternRef], [kWasmI32]));
+            let charCodeAt = builder.addImport('wasm:js-string', 'charCodeAt', makeSig([kWasmExternRef, kWasmI32], [kWasmI32]));
+            builder.addExport('concat', concat);
+            builder.addFunction('len', makeSig([kWasmExternRef], [kWasmI32])).addBody([kExprLocalGet, 0, kExprCallFunction, length]).exportFunc();
+            builder.addFunction('at', makeSig([kWasmExternRef, kWasmI32], [kWasmI32])).addBody([kExprLocalGet, 0, kExprLocalGet, 1, kExprCallFunction, charCodeAt]).exportFunc();
+            let module = new WebAssembly.Module(builder.toBuffer(), {builtins: ['js-string']});
+            print(WebAssembly.Module.imports(module).length);
+            let e = new WebAssembly.Instance(module).exports;
+            print(e.concat('ab', 'cd'), e.len('hello'), e.at('A', 0));
+            try { e.len(5); } catch (x) { print(x); }
+            try { e.at('A', 1); } catch (x) { print(x); }
+            """);
+        Assert.Equal(
+            "0\nabcd 5 65\nRuntimeError: illegal cast\nRuntimeError: string offset out of bounds\n",
+            output);
+    }
 }
