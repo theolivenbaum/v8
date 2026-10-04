@@ -36,8 +36,12 @@ public static class MaglevCompiler
         return name.Length != 0 ? name : shared.InferredName().ToString();
     }
 
-    /// <summary>The deopts after which a function is not optimized again (V8Sharp's guard against deopt loops).</summary>
-    public const int kMaxDeoptCount = 8;
+    /// <summary>
+    /// The deopts after which the tiering manager does not optimize a function
+    /// again: none by default, as in V8 (the deopts' feedback updates and
+    /// kDelayMaglev end deopt loops); V8SHARP_MAGLEV_MAX_DEOPTS sets a limit.
+    /// </summary>
+    public static readonly int kMaxDeoptCount = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_DEOPTS"), out int maxDeopts) ? maxDeopts : int.MaxValue;
 
     sealed class SharedState
     {

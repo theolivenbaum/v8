@@ -718,8 +718,9 @@ continue at the bytecode whose check failed; lazy deopts (after a call,
 when the code was invalidated meanwhile: the IL tests
 `MaglevCode.MarkedForDeoptimization` after every call) continue after the
 call with its result. An eager deopt invalidates the code (except OSR early
-exits, and OSR code deopting outside its loop); after `kMaxDeoptCount`
-invalidations the tiering manager does not optimize the function again. A
+exits, and OSR code deopting outside its loop); as in V8 the function is
+optimized again after any number of deopts (`V8SHARP_MAGLEV_MAX_DEOPTS` sets
+a limit). A
 deopt of a check made while reducing a builtin call disallows speculation
 on the call's feedback (out of bounds first only disallows bounds-check
 speculation), as V8's feedback_to_update.

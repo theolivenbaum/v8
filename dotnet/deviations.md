@@ -475,10 +475,10 @@ for now, to be revisited when the reason goes away.
 - Protectors are bools (Protectors.cs), not PropertyCells: code depending on
   one registers on a stand-in Cell per protector, invalidated through
   `Protectors.OnInvalidate`.
-- `MaglevCompiler.kMaxDeoptCount` (8) eager deopts stop the tiering manager
-  from optimizing a function (V8 counts deopts with `--max-deopt-count` per
-  feedback vector only for Turbofan and lets Maglev re-optimize). Explicit
-  requests (`%OptimizeFunctionOnNextCall`) still compile, as in V8.
+- `MaglevCompiler.kMaxDeoptCount`: no limit by default, as in V8, which
+  lets Maglev re-optimize after any number of deopts (its `--max-deopt-count`
+  is Turbofan's); `V8SHARP_MAGLEV_MAX_DEOPTS` sets one (V8Sharp stopped at 8
+  until 2026-10-04: Gameboy's executeIteration reached it in every cold run).
 - Size limits are V8's (max_maglev_optimized_bytecode_size, 512 KB, in
   PrepareJob; max_optimized_bytecode_size, 60 KB, stops the ticks). A
   method beyond RyuJIT's optimization limits (60000 IL bytes, 20000
