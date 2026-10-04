@@ -1276,7 +1276,7 @@ public sealed partial class MaglevGraphBuilder
     /// JavaScript.
     /// </remarks>
     static bool ObservesFrameParameters(Node node) =>
-        node.Opcode is Opcode.CallBuiltin or Opcode.LoadRegister or Opcode.EnterInlinedFrame or Opcode.GeneratorStore ||
+        node.Opcode is Opcode.CallBuiltin && node.Obj0 is not CallBuiltinInfo { NoFrame: true } or Opcode.LoadRegister or Opcode.EnterInlinedFrame or Opcode.GeneratorStore ||
         node.Opcode is not (Opcode.StoreRegister or Opcode.HandleNoHeapWritesInterrupt) &&
         (node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0;
 

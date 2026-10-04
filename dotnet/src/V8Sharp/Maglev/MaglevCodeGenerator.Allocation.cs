@@ -40,6 +40,15 @@ internal sealed partial class MaglevCodeGenerator
     /// <summary>InlinedAllocation: new JSObjectInObjectN(map, FixedArray.Empty).</summary>
     void EmitInlinedAllocation(InlinedAllocation node)
     {
+        if (node.InitialFields is { } fields)
+        {
+            // An object literal: the object with the boilerplate's fields.
+            LoadConstantObject(node.AllocatedMap, typeof(Map));
+            LoadConstantObject(fields, typeof(JSValue[]));
+            Call(nameof(MaglevBuiltins.AllocateObjectLiteral));
+            Store(node);
+            return;
+        }
         LoadConstantObject(node.AllocatedMap, typeof(Map));
         _il.Emit(OpCodes.Ldsfld, s_fixedArrayEmpty);
         _il.Emit(OpCodes.Newobj, InObjectClassConstructor(node.InObjectCount));

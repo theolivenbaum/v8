@@ -192,6 +192,44 @@ public class MaglevEscapeAnalysisTest
           return out.join();
         })()
         """,
+        // Object literals (boilerplate fields, computed fields, empty
+        // literals), elided or escaping, and deopts that materialize them.
+        """
+        (function() {
+          function f(a, b) {
+            var o = { x: 1, y: a, z: 'z', w: 2.5 };
+            var e = {};
+            e.k = b;
+            o.y = o.y + 1;
+            return o.x + o.y + o.z + o.w + e.k;
+          }
+          function g(a) { var o = { p: a, q: [a] }; return o; }
+          function h(a) { var o = { p: a, q: 0 }; o.q = o.p * 2; return [o.p, o.q, Object.keys(o).join()].join(); }
+          var out = [];
+          for (var k = 0; k < 40; k++) out.push(f(k, 'b'), g(k).q[0], h(k));
+          out.push(f('a', 1), f(0.5, {}), h('s'), h(1.5));
+          return out.join();
+        })()
+        """,
+        // Closures and contexts allocated by the code: function and block
+        // contexts (let in loops), closures in inlined functions, strict
+        // and sloppy, arrow functions, a deopt with a context live.
+        """
+        (function() {
+          function adder(n) { return function(x) { return x + n; }; }
+          function counters(k) {
+            var fs = [];
+            for (let i = 0; i < 3; i++) fs.push(() => i * k);
+            return fs.map(f => f()).join('');
+          }
+          function use(k) { var a = adder(k); var b = adder('s'); return a(1) + b(k) + counters(k); }
+          function ctx(a) { var x = a; function g() { return x * 2; } x = x - 1; return g() + (a - 0.5); }
+          var out = [];
+          for (var k = 0; k < 40; k++) out.push(use(k), ctx(k));
+          out.push(ctx('q'), use(0.5), ctx({}));
+          return out.join();
+        })()
+        """,
     };
 
     [Theory]

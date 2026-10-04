@@ -23,7 +23,7 @@ public sealed partial class MaglevGraphBuilder
     /// The allocation's fields start undefined and are tracked in its
     /// VirtualObject while it has not escaped.
     /// </summary>
-    InlinedAllocation? TryBuildInlinedAllocation(Map map)
+    InlinedAllocation? TryBuildInlinedAllocation(Map map, JSValue[]? initialFields = null)
     {
         if (!Flags.inline_new) return null;
         if (map.InstanceType != InstanceType.JSObjectType || map.IsDictionaryMap || !map.HasFastElements || map.IsDeprecated) return null;
@@ -34,14 +34,77 @@ public sealed partial class MaglevGraphBuilder
         int count = map.GetInObjectProperties();
         if (count > 0 && !map.HasInObjectSlots) return null;
         _info.InstanceSizePredictions.Add((map, count));
-        var allocation = new InlinedAllocation(map, count) { Loop = CurrentLoop };
+        var allocation = new InlinedAllocation(map, count) { Loop = CurrentLoop, InitialFields = initialFields };
         AddNewNode(allocation);
         var slots = new ValueNode[count];
         ValueNode undefined = GetRootConstant(RootIndex.kUndefinedValue);
-        Array.Fill(slots, undefined);
+        for (int i = 0; i < count; i++) slots[i] = initialFields is null || initialFields[i].IsUndefined ? undefined : GetConstant(initialFields[i]);
         _frame.Known.VirtualObjects = _frame.Known.VirtualObjects.With(new VirtualObject(allocation, map, slots));
         RecordKnownMaps(allocation, [map]);
         return allocation;
+    }
+
+    /// <summary>
+    /// TryBuildFastCreateObjectOrArrayLiteral for a boilerplate whose fields
+    /// are primitives, all in-object, without elements: an InlinedAllocation
+    /// of the boilerplate's map with its field values (V8 reads the
+    /// boilerplate into a VirtualObject, TryReadBoilerplateForFastLiteral).
+    /// </summary>
+    InlinedAllocation? TryBuildInlinedObjectLiteral(JSObject boilerplate)
+    {
+        Map map = boilerplate.Map;
+        if (map.InstanceType != InstanceType.JSObjectType || !map.HasInObjectSlots || map.IsDeprecated || map.IsDictionaryMap) return null;
+        if (boilerplate.Elements.Length != 0 || boilerplate._fields.Length != 0) return null;
+        int count = map.GetInObjectProperties();
+        var fields = new JSValue[count];
+        for (int i = 0; i < count; i++)
+        {
+            JSValue value = boilerplate.InObjectSlot(i);
+            // (Nested boilerplates are copied: not this path. A computed
+            // field holds the uninitialized sentinel until its define store,
+            // as in the copy the runtime makes.)
+            if (value.HeapObjectOrNull is JSReceiver) return null;
+            fields[i] = value;
+        }
+        return TryBuildInlinedAllocation(map, fields);
+    }
+
+    /// <summary>
+    /// VisitCreateClosure's FastCreateClosure: the closure of the site's
+    /// feedback cell, of its function map, allocated without a runtime call.
+    /// </summary>
+    ValueNode? TryBuildFastCreateClosure()
+    {
+        if (Constant(ConstantPoolIndex(0)).HeapObjectOrNull is not SharedFunctionInfo shared) return null;
+        if (_unit.Feedback.ClosureFeedbackCellArray is not { } cells || (uint)FeedbackSlot(1) >= (uint)cells.Length) return null;
+        FeedbackCell cell = cells.Get(FeedbackSlot(1));
+        NativeContext native = (_unit.Function ?? _info.Function).Context.NativeContext;
+        if (native.Slots[shared.FunctionMapIndex].HeapObjectOrNull is not Map map || map.GetInObjectProperties() != 0) return null;
+        ValueNode closure = BuildCallBuiltin(s_maglevBuiltins["FastNewClosure"], "FastNewClosure", [_frame.Context],
+            [BuiltinArg.C(map), BuiltinArg.C(shared), BuiltinArg.In(0), BuiltinArg.C(cell)], null,
+            OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!;
+        ((CallBuiltinInfo)closure.Obj0!).NoFrame = true;
+        closure.Type = NodeType.kJSFunction;
+        return closure;
+    }
+
+    /// <summary>
+    /// TryBuildInlinedAllocatedContext: a function or block context of at
+    /// most kContextAllocationLimit slots allocated by the code.
+    /// </summary>
+    ValueNode? TryBuildInlinedAllocatedContext(ScopeInfo? scopeInfo, ContextKind kind)
+    {
+        const int kContextAllocationLimit = 16;
+        if (scopeInfo is null || !Flags.inline_new) return null;
+        if (kind == ContextKind.FunctionContext && scopeInfo.ScopeType != ScopeType.FUNCTION_SCOPE) return null;
+        int length = scopeInfo.ContextLength();
+        if (length > kContextAllocationLimit) return null;
+        ValueNode context = BuildCallBuiltin(s_maglevBuiltins["NewContext"], "NewContext", [_frame.Context],
+            [BuiltinArg.In(0), BuiltinArg.C(scopeInfo), BuiltinArg.I((int)kind), BuiltinArg.I(length)], null,
+            OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!;
+        ((CallBuiltinInfo)context.Obj0!).NoFrame = true;
+        context.Type = NodeType.kContext;
+        return context;
     }
 
     /// <summary>

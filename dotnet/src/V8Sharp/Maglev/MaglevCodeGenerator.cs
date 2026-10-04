@@ -898,7 +898,7 @@ internal sealed partial class MaglevCodeGenerator
     /// reads or writes the frame's slots.
     /// </summary>
     internal static bool NeedsFrame(Node node) =>
-        node.Opcode is Opcode.CallBuiltin or Opcode.LoadRegister or Opcode.StoreRegister or Opcode.SetCurrentContext or
+        node.Opcode is Opcode.CallBuiltin && node.Obj0 is not CallBuiltinInfo { NoFrame: true } or Opcode.LoadRegister or Opcode.StoreRegister or Opcode.SetCurrentContext or
             Opcode.HandleNoHeapWritesInterrupt ||
         node.Opcode != Opcode.EnterInlinedFrame &&
         (node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0;
@@ -2893,6 +2893,8 @@ internal sealed partial class MaglevCodeGenerator
                 if (node.ExceptionHandler is not null || node.LazyDeoptInfo is not null) return false;
                 switch (node.Opcode)
                 {
+                    case Opcode.CallBuiltin when node.Obj0 is CallBuiltinInfo { NoFrame: true }:
+                        break;
                     case Opcode.StoreRegister:
                     case Opcode.LoadRegister:
                     case Opcode.CallBuiltin:

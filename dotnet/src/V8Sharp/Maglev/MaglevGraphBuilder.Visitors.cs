@@ -527,6 +527,11 @@ public sealed partial class MaglevGraphBuilder
                     _unit.Feedback.Slots[FeedbackSlot(1)].HeapObjectOrNull is AllocationSite { Boilerplate: { } boilerplate } &&
                     LiteralShape.TryCreate(boilerplate, 0) is { } shape)
                 {
+                    if (shape.Nested.Length == 0 && TryBuildInlinedObjectLiteral(boilerplate) is { } literal)
+                    {
+                        SetAccumulator(literal);
+                        break;
+                    }
                     // TryBuildFastCreateObjectOrArrayLiteral for a boilerplate whose nested
                     // values are such boilerplates or arrays of primitives: copies of them
                     // (MaglevBuiltins.CloneObjectLiteral).
@@ -557,6 +562,12 @@ public sealed partial class MaglevGraphBuilder
             }
             case Bytecode.CreateEmptyObjectLiteral:
             {
+                // VisitCreateEmptyObjectLiteral: BuildInlinedAllocation(CreateJSObject(Object's initial map)).
+                if (TryBuildInlinedAllocation((_unit.Function ?? _info.Function).Context.NativeContext.ObjectFunction.InitialMap) is { } empty)
+                {
+                    SetAccumulator(empty);
+                    break;
+                }
                 ValueNode result = CallBaseline("CreateEmptyObjectLiteral", [_frame.Context], [BuiltinArg.Isolate, BuiltinArg.In(0)],
                     properties: OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!;
                 result.Type = NodeType.kOtherJSReceiver;
@@ -573,6 +584,11 @@ public sealed partial class MaglevGraphBuilder
                 break;
             case Bytecode.CreateClosure:
             {
+                if (TryBuildFastCreateClosure() is { } fast)
+                {
+                    SetAccumulator(fast);
+                    break;
+                }
                 ValueNode result = CallBaseline("CreateClosure", [_frame.Context, ClosureNode],
                     [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.C(Constant(ConstantPoolIndex(0))),
                      BuiltinArg.I(FeedbackSlot(1))], properties: OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!;
@@ -583,6 +599,11 @@ public sealed partial class MaglevGraphBuilder
 
             // ---- Contexts ----------------------------------------------------------------------------------
             case Bytecode.CreateBlockContext:
+                if (TryBuildInlinedAllocatedContext(Constant(ConstantPoolIndex(0)).HeapObjectOrNull as ScopeInfo, ContextKind.BlockContext) is { } block)
+                {
+                    SetAccumulator(block);
+                    break;
+                }
                 SetAccumulator(WithType(CallBaseline("CreateBlockContext", [_frame.Context],
                     [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.C(Constant(ConstantPoolIndex(0)))],
                     properties: OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!, NodeType.kContext));
@@ -590,6 +611,12 @@ public sealed partial class MaglevGraphBuilder
             case Bytecode.CreateFunctionContext:
             case Bytecode.CreateFunctionContextWithCells:
             case Bytecode.CreateEvalContext:
+                if (bytecode != Bytecode.CreateEvalContext &&
+                    TryBuildInlinedAllocatedContext(Constant(ConstantPoolIndex(0)).HeapObjectOrNull as ScopeInfo, ContextKind.FunctionContext) is { } function)
+                {
+                    SetAccumulator(function);
+                    break;
+                }
                 SetAccumulator(WithType(CallBaseline("CreateFunctionContext", [_frame.Context],
                     [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.C(Constant(ConstantPoolIndex(0))),
                      BuiltinArg.B(bytecode == Bytecode.CreateEvalContext)],

@@ -693,6 +693,12 @@ public sealed class CallBuiltinInfo(MethodInfo method, BuiltinArg[] args, string
     public bool Elided;
     /// <summary>CallForwardArguments: the arguments object input.</summary>
     public bool ForwardsArguments;
+    /// <summary>
+    /// V8Sharp: an allocation helper that neither calls out nor reads the
+    /// frame (V8's inlined allocations and FastCreateClosure): it needs no
+    /// pushed inlined frame and does not stop frameless entries.
+    /// </summary>
+    public bool NoFrame;
 }
 
 /// <summary>

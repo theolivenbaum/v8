@@ -62,6 +62,11 @@ public sealed class InlinedAllocation : ValueNode
     /// <summary>The in-object property count of the allocated map (the fields a VirtualObject models).</summary>
     public readonly int InObjectCount;
     /// <summary>
+    /// The initial field values (an object literal's boilerplate fields), or
+    /// null: all undefined.
+    /// </summary>
+    public JSValue[]? InitialFields;
+    /// <summary>
     /// The allocation had an escaping use when the builder last looked
     /// (V8: InlinedAllocation::HasEscapingUses while building): its fields
     /// are no longer tracked.
