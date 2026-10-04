@@ -92,6 +92,16 @@ namespace Wacs.Core.Runtime
             HostFunction.RawHostFunc function, object? hostData = null) =>
             Allocate(store => store.AddFunction(new HostFunction((module, name), type, function) { HostData = hostData }));
 
+        /// <summary>The height of the wasm call stack.</summary>
+        public int CallStackHeight => GetExecContext().StackHeight;
+
+        /// <summary>The linked instruction index being executed (the call of a host function in progress).</summary>
+        public int CurrentInstructionPointer => GetExecContext().InstructionPointer;
+
+        /// <summary>The frames between two call-stack heights, top first (for stack traces).</summary>
+        public WasmStackFrame[] SnapshotFrames(int baseHeight, int topHeight, int topPc) =>
+            GetExecContext().SnapshotFrames(baseHeight, topHeight, topPc);
+
         /// <summary>Adds an existing memory (a shared memory of another runtime).</summary>
         public MemAddr AddMemory(MemoryInstance memory) =>
             Allocate(store => store.AddMemory(memory));

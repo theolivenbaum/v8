@@ -133,7 +133,15 @@ namespace Wacs.Core.Runtime.Types
             var frame = context.ReserveFrame(Module, funcType.ResultType.Arity);
             frame.FuncAddr = (ushort)Address.Value;
             frame.Locals = context.OpStack.ReserveLocals(ParameterCount, TotalCount);
-            context.OpStack.GuardExhaust(MaxStack);
+            try
+            {
+                context.OpStack.GuardExhaust(MaxStack);
+            }
+            catch (Wacs.Core.Runtime.Exceptions.WasmRuntimeException e) when (e.CalleeFuncAddr < 0)
+            {
+                e.CalleeFuncAddr = Address.Value;
+                throw;
+            }
                 
             //Return the stack to this height after the function returns
             frame.ReturnLabel.StackHeight += LocalCount;
@@ -146,7 +154,15 @@ namespace Wacs.Core.Runtime.Types
             }
 
             //9.
-            context.PushFrame(frame);
+            try
+            {
+                context.PushFrame(frame);
+            }
+            catch (Wacs.Core.Runtime.Exceptions.WasmRuntimeException e) when (e.CalleeFuncAddr < 0)
+            {
+                e.CalleeFuncAddr = Address.Value;
+                throw;
+            }
             
             //10.
             frame.ReturnLabel.Arity = funcType.ResultType.Arity;
@@ -173,7 +189,15 @@ namespace Wacs.Core.Runtime.Types
             context.OpStack.ShiftResults(ParameterCount, resultsHeight);
 
             frame.Locals = context.OpStack.ReserveLocals(ParameterCount, TotalCount);
-            context.OpStack.GuardExhaust(MaxStack);
+            try
+            {
+                context.OpStack.GuardExhaust(MaxStack);
+            }
+            catch (Wacs.Core.Runtime.Exceptions.WasmRuntimeException e) when (e.CalleeFuncAddr < 0)
+            {
+                e.CalleeFuncAddr = Address.Value;
+                throw;
+            }
             
             //Return the stack to this height after the function returns
             frame.ReturnLabel.StackHeight = resultsHeight + LocalCount;

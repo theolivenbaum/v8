@@ -27,6 +27,15 @@ public sealed class WasmModuleObject(Map map) : JSObject(map)
 
     /// <summary>The number of instances created (%WasmGetNumberOfInstances).</summary>
     public int InstanceCount;
+
+    /// <summary>The module's script (V8's WasmModuleObject::script), named wasm://wasm/....</summary>
+    public Script Script = null!;
+
+    /// <summary>Whether <see cref="Module"/> was instantiated (linked) already.</summary>
+    internal bool ModuleLinked;
+
+    /// <summary>The decoded name section, lazily.</summary>
+    internal WasmNames? Names;
 }
 
 /// <summary>V8's WasmInstanceObject.</summary>

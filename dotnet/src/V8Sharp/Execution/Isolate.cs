@@ -534,8 +534,21 @@ public sealed partial class Isolate
         IJavaScriptFrames? frames = isolate.Frames;
         if (frames is not null)
         {
+            int wasmActivation = 0;
             for (int i = 0; !builder.Full && frames.TryGetFrame(i, out JavaScriptFrameSummary summary); i++)
             {
+                // V8Sharp: an exported wasm function's frame stands for the
+                // wasm frames of its call (V8 shows the wasm frames, not the
+                // JS-to-wasm wrapper).
+                if (summary.Function.Shared.FunctionData is Wasm.WasmExportedFunctionData)
+                {
+                    foreach (Wasm.WasmStackTraces.Frame wasmFrame in Wasm.WasmStackTraces.CollectFrames(isolate, wasmActivation++))
+                    {
+                        if (builder.Full) break;
+                        builder.AppendWasmFrame(wasmFrame, summary.Function);
+                    }
+                    continue;
+                }
                 builder.AppendJavaScriptFrame(summary);
             }
         }
@@ -741,6 +754,16 @@ public sealed partial class Isolate
             // The source position is resolved by the frame provider.
             flags |= CallSiteInfo.kIsSourcePositionComputed;
             _elements.Add(new CallSiteInfo(summary.Receiver, function, summary.SourcePosition, flags));
+        }
+
+        /// <summary>CallSiteBuilder::AppendWasmFrame (wasm frames bypass the frame filters).</summary>
+        public void AppendWasmFrame(in Wasm.WasmStackTraces.Frame frame, JSFunction wrapper)
+        {
+            _elements.Add(new CallSiteInfo(frame.Instance, wrapper, frame.Offset,
+                CallSiteInfo.kIsWasm | CallSiteInfo.kIsSourcePositionComputed)
+            {
+                WasmFunctionIndex = frame.FunctionIndex,
+            });
         }
 
         public void AppendAsyncFrame(JSGeneratorObject generatorObject)

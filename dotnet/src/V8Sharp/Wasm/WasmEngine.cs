@@ -94,6 +94,59 @@ namespace V8Sharp.Wasm
 
         public WasmRuntime Runtime { get; }
 
+        // ---- Activations (stack traces) -----------------------------------------------
+
+        /// <summary>A JS-to-wasm call in progress: the wasm frames above its base height are its own.</summary>
+        internal sealed class Activation
+        {
+            public int BaseHeight;
+            /// <summary>The instruction the enclosing activation was executing when this one began.</summary>
+            public int OuterPc;
+            /// <summary>The frames a trap unwound, while its error is created.</summary>
+            public WasmStackFrame[]? TrapFrames;
+        }
+
+        readonly List<Activation> _activations = [];
+        readonly ConditionalWeakTable<ModuleInstance, WasmInstanceObject> _instanceObjects = new();
+
+        internal Activation EnterActivation()
+        {
+            var activation = new Activation
+            {
+                BaseHeight = Runtime.CallStackHeight,
+                OuterPc = Runtime.CurrentInstructionPointer,
+            };
+            _activations.Add(activation);
+            return activation;
+        }
+
+        internal void LeaveActivation(Activation activation)
+        {
+            int index = _activations.LastIndexOf(activation);
+            if (index >= 0) _activations.RemoveAt(index);
+        }
+
+        internal Activation? CurrentActivation => _activations.Count > 0 ? _activations[^1] : null;
+
+        /// <summary>The wasm frames of an activation, top first (0 is the innermost).</summary>
+        internal WasmStackFrame[] ActivationFrames(int activationFromTop)
+        {
+            int index = _activations.Count - 1 - activationFromTop;
+            if (index < 0) return [];
+            Activation activation = _activations[index];
+            if (activation.TrapFrames is { } trapFrames) return trapFrames;
+            bool innermost = index == _activations.Count - 1;
+            int topHeight = innermost ? Runtime.CallStackHeight : _activations[index + 1].BaseHeight;
+            int topPc = innermost ? Runtime.CurrentInstructionPointer : _activations[index + 1].OuterPc;
+            return Runtime.SnapshotFrames(activation.BaseHeight, topHeight, topPc);
+        }
+
+        internal void RegisterInstanceObject(WasmInstanceObject instance) =>
+            _instanceObjects.AddOrUpdate(instance.Instance, instance);
+
+        internal WasmInstanceObject? InstanceObjectFor(ModuleInstance module) =>
+            _instanceObjects.TryGetValue(module, out WasmInstanceObject? instance) ? instance : null;
+
         public Store Store => Runtime.RuntimeStore;
 
         /// <summary>The isolate's engine.</summary>

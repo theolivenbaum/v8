@@ -591,6 +591,7 @@ public static partial class WasmJs
         var moduleObj = (WasmModuleObject)JSObject.NewWithMap(isolate, isolate.NativeContext.WasmModuleConstructor.InitialMap);
         moduleObj.Module = module;
         moduleObj.WireBytes = bytes;
+        moduleObj.Script = WasmStackTraces.CreateScript(isolate, moduleObj);
         return moduleObj;
     }
 

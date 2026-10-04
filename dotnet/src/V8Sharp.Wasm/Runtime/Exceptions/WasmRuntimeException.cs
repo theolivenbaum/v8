@@ -28,6 +28,13 @@ namespace Wacs.Core.Runtime.Exceptions
         /// </summary>
         public WasmStackFrame[]? WasmFrames { get; internal set; }
 
+        /// <summary>
+        /// V8Sharp: the function whose frame could not be pushed when the
+        /// call stack or operand stack was exhausted, or -1. V8 reports the
+        /// overflow at that function's entry.
+        /// </summary>
+        public int CalleeFuncAddr { get; set; } = -1;
+
         public WasmRuntimeException(string message) : base(message) { }
 
         public WasmRuntimeException(string message, WasmStackFrame[] wasmFrames)

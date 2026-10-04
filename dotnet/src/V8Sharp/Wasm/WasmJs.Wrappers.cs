@@ -28,6 +28,7 @@ public static partial class WasmJs
     internal static JavaScriptException TrapToJS(Isolate isolate, TrapException trap)
     {
         MessageTemplate template = WasmErrorMessages.TrapTemplate(trap);
+        RecordUnwoundFrames(isolate, trap.WasmFrames);
         JSValue[] arguments = template == MessageTemplate.AtomicsOperationNotAllowed
             ? [isolate.Factory.InternalizeString("Atomics.wait")]
             : [];
@@ -69,6 +70,8 @@ public static partial class WasmJs
         }
         catch (Exception e) when (WasmErrorMessages.IsStackExhaustion(e))
         {
+            RecordUnwoundFrames(isolate, (e as WasmRuntimeException)?.WasmFrames,
+                (e as WasmRuntimeException)?.CalleeFuncAddr ?? -1);
             isolate.StackOverflow();
             throw;
         }
@@ -79,6 +82,23 @@ public static partial class WasmJs
             isolate.Throw(error);
             throw;
         }
+    }
+
+    /// <summary>
+    /// The frames an exception unwound, for the stack of the error created
+    /// for it (V8 creates the error while the wasm frames are on the stack).
+    /// </summary>
+    static void RecordUnwoundFrames(Isolate isolate, WasmStackFrame[]? frames, int calleeFuncAddr = -1)
+    {
+        if (isolate.WasmEngineField?.CurrentActivation is not { } activation || frames is null) return;
+        int own = frames.Length - activation.BaseHeight;
+        WasmStackFrame[] result = own <= 0 ? [] : frames[..own];
+        if (calleeFuncAddr >= 0)
+        {
+            // A stack overflow shows the function that could not be entered.
+            result = [new WasmStackFrame((uint)calleeFuncAddr, null, -1, WasmStackTraces.FunctionEntryPc), .. result];
+        }
+        activation.TrapFrames = result;
     }
 
     static Exception ExceptionLeavingWasm(WasmEngine engine, Value exnRef)
@@ -129,6 +149,21 @@ public static partial class WasmJs
     }
 
     static Value[] CallWasm(Isolate isolate, WasmExportedFunctionData data, ReadOnlySpan<JSValue> arguments)
+    {
+        // The activation covers the argument conversions too, so that every
+        // exported function frame on the JS stack has one.
+        WasmEngine.Activation activation = data.Engine.EnterActivation();
+        try
+        {
+            return CallWasmInActivation(isolate, data, arguments);
+        }
+        finally
+        {
+            data.Engine.LeaveActivation(activation);
+        }
+    }
+
+    static Value[] CallWasmInActivation(Isolate isolate, WasmExportedFunctionData data, ReadOnlySpan<JSValue> arguments)
     {
         WasmEngine engine = data.Engine;
         FunctionType signature = data.Signature;

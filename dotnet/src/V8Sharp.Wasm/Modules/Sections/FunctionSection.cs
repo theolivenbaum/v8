@@ -50,6 +50,15 @@ namespace Wacs.Core
             public ValType[] Locals { get; internal set; } = null!;
             public Expression Body { get; internal set; } = null!;
 
+            /// <summary>
+            /// V8Sharp: the module offset of each instruction of the body, in
+            /// linked order (for wasm frames in stack traces).
+            /// </summary>
+            public uint[] InstructionOffsets { get; internal set; } = System.Array.Empty<uint>();
+
+            /// <summary>V8Sharp: the module offset of the body (its locals declarations).</summary>
+            public uint BodyOffset { get; internal set; }
+
             public int Size => (Locals.Length > 0?1:0) + Body.Size;
 
             public bool RenderStack { get; set; } = false;

@@ -420,6 +420,9 @@ namespace Wacs.Core.Runtime
             // intuitive — index 0 = top of stack, index n-1 = root —
             // we walk top-first.
             int idx = 0;
+            // V8Sharp: each frame's pc is the top's instruction pointer, or the
+            // call instruction its callee returns to.
+            int pc = InstructionPointer;
             foreach (var frame in _callStack)
             {
                 // Only the top frame is the one currently executing,
@@ -430,8 +433,39 @@ namespace Wacs.Core.Runtime
                 frames[idx] = new WasmStackFrame(
                     funcAddr: frame.FuncAddr,
                     instruction: instr,
-                    resumeContinuationAddress: frame.ReturnLabel.ContinuationAddress);
+                    resumeContinuationAddress: frame.ReturnLabel.ContinuationAddress,
+                    pc: pc);
+                pc = frame.ReturnLabel.ContinuationAddress;
                 idx++;
+            }
+            return frames;
+        }
+
+        /// <summary>
+        /// V8Sharp: the frames between call-stack heights
+        /// <paramref name="baseHeight"/> (exclusive) and
+        /// <paramref name="topHeight"/> (inclusive), top first, with
+        /// <paramref name="topPc"/> as the top frame's pc.
+        /// </summary>
+        public WasmStackFrame[] SnapshotFrames(int baseHeight, int topHeight, int topPc)
+        {
+            topHeight = System.Math.Min(topHeight, _callStack.Count);
+            int n = topHeight - baseHeight;
+            if (n <= 0) return System.Array.Empty<WasmStackFrame>();
+            var frames = new WasmStackFrame[n];
+            int skip = _callStack.Count - topHeight;
+            int idx = 0;
+            int pc = topPc;
+            foreach (var frame in _callStack)
+            {
+                if (skip > 0)
+                {
+                    skip--;
+                    continue;
+                }
+                if (idx == n) break;
+                frames[idx++] = new WasmStackFrame(frame.FuncAddr, null, frame.ReturnLabel.ContinuationAddress, pc);
+                pc = frame.ReturnLabel.ContinuationAddress;
             }
             return frames;
         }

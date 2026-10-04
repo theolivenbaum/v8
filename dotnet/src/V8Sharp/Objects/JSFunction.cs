@@ -44,6 +44,9 @@ public sealed partial class Script : HeapObject
 
     public JSValue Source;
     public JSValue Name;
+
+    /// <summary>The module of a wasm script (Script::wasm_native_module).</summary>
+    public Wasm.WasmModuleObject? WasmModuleObject;
     public int Id;
     public int LineOffset;
     public int ColumnOffset;

@@ -37,7 +37,10 @@ public sealed class InstanceBuilder
         _engine = WasmEngine.Get(isolate);
         _thrower = thrower;
         _moduleObject = moduleObject;
-        _module = moduleObject.Module;
+        // V8Sharp: WACS links a module's instruction objects in place, so a
+        // second instance gets its own decoded copy of the module.
+        _module = moduleObject.ModuleLinked ? WasmEngine.Compile(moduleObject.WireBytes) : moduleObject.Module;
+        moduleObject.ModuleLinked = true;
         _ffi = ffi;
         _typesModule = new ModuleInstance(_module);
         _types = _typesModule.Types;
@@ -94,6 +97,7 @@ public sealed class InstanceBuilder
             _isolate.NativeContext.WasmInstanceConstructor.InitialMap);
         instanceObject.ModuleObject = _moduleObject;
         instanceObject.Instance = instance;
+        _engine.RegisterInstanceObject(instanceObject);
         _moduleObject.InstanceCount++;
         ProcessExports(instanceObject, imports);
 

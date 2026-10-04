@@ -335,8 +335,15 @@ namespace Wacs.Core
         /// @Spec 5.4 Instructions
         /// Parse an instruction sequence, return null for End (0x0B)
         /// </summary>
+        /// <summary>
+        /// V8Sharp: while a function body is parsed, the module offset of each
+        /// instruction in parse order (which is the flattened, linked order).
+        /// </summary>
+        [ThreadStatic] internal static List<uint>? InstructionOffsetRecorder;
+
         public static InstructionBase? ParseInstruction(BinaryReader reader)
         {
+            InstructionOffsetRecorder?.Add((uint)reader.BaseStream.Position);
             //Splice another byte if the first byte is a prefix
             var opcode = (OpCode)reader.ReadByte() switch {
                 OpCode.FB => new ByteCode((GcCode)reader.ReadLeb128_u32()),

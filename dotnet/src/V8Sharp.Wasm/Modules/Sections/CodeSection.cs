@@ -13,6 +13,7 @@
 // limitations under the License.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Wacs.Core.Types;
@@ -50,10 +51,31 @@ namespace Wacs.Core
                 return (count, expr);
             }
 
+            /// <summary>V8Sharp: the module offset of each instruction, in linked order.</summary>
+            public uint[] InstructionOffsets { get; private set; } = Array.Empty<uint>();
+
+            /// <summary>V8Sharp: the module offset of the body (its locals declarations).</summary>
+            public uint BodyOffset { get; private set; }
+
             public static FuncLocalsBody Parse(BinaryReader reader)
             {
+                uint bodyOffset = (uint)reader.BaseStream.Position;
                 var locals = reader.ParseVector(ParseCompressedLocal);
-                return new FuncLocalsBody(locals, Expression.ParseFunc(reader));
+                var saved = BinaryModuleParser.InstructionOffsetRecorder;
+                var offsets = new List<uint>();
+                BinaryModuleParser.InstructionOffsetRecorder = offsets;
+                try
+                {
+                    return new FuncLocalsBody(locals, Expression.ParseFunc(reader))
+                    {
+                        InstructionOffsets = offsets.ToArray(),
+                        BodyOffset = bodyOffset,
+                    };
+                }
+                finally
+                {
+                    BinaryModuleParser.InstructionOffsetRecorder = saved;
+                }
             }
         }
 
@@ -100,6 +122,8 @@ namespace Wacs.Core
                 
                 module.Funcs[i].Locals = localsbody.Locals;
                 module.Funcs[i].Body = localsbody.Body;
+                module.Funcs[i].InstructionOffsets = localsbody.InstructionOffsets;
+                module.Funcs[i].BodyOffset = localsbody.BodyOffset;
             }
 
             module.Codes = Array.Empty<Module.CodeDesc>();

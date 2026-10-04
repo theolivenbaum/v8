@@ -52,14 +52,22 @@ namespace Wacs.Core.Runtime
         /// </summary>
         public readonly int ResumeContinuationAddress;
 
+        /// <summary>
+        /// V8Sharp: the linked instruction index executing in this frame
+        /// (the trapping instruction at the top, the call below), or -1.
+        /// </summary>
+        public readonly int Pc;
+
         public WasmStackFrame(
             uint funcAddr,
             InstructionBase? instruction,
-            int resumeContinuationAddress)
+            int resumeContinuationAddress,
+            int pc = -1)
         {
             FuncAddr = funcAddr;
             Instruction = instruction;
             ResumeContinuationAddress = resumeContinuationAddress;
+            Pc = pc;
         }
 
         public override string ToString() =>
