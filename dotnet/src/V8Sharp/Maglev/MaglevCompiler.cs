@@ -225,8 +225,16 @@ public static class MaglevCompiler
             return false;
         }
         // JSFunction::SetTieringInProgress.
-        if (osrOffset < 0) vector.TieringInProgress = true;
-        else vector.OsrTieringInProgress = true;
+        if (osrOffset < 0)
+        {
+            vector.TieringInProgress = true;
+            vector.MaglevJob = job;
+        }
+        else
+        {
+            vector.OsrTieringInProgress = true;
+            vector.MaglevOsrJob = job;
+        }
         isolate.MaglevConcurrentDispatcher.EnqueueJob(job);
         s_codegenMs += job.PrepareMs;
         if (isolate.Flags.trace_opt)
@@ -255,10 +263,12 @@ public static class MaglevCompiler
         if (job.IsOsr)
         {
             vector.OsrTieringInProgress = false;
+            vector.MaglevOsrJob = null;
         }
         else
         {
             vector.TieringInProgress = false;
+            vector.MaglevJob = null;
             JSFunctionFeedback.SetInterruptBudget(isolate, function, raise: false);
         }
         MaglevCode? code = job.Code;

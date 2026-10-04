@@ -323,6 +323,9 @@ public sealed class FeedbackVector : HeapObject
     /// <summary>FeedbackVector::osr_tiering_in_progress: a concurrent OSR job is compiling one of the function's loops.</summary>
     public bool OsrTieringInProgress;
 
+    /// <summary>The concurrent Maglev jobs in progress (regular and OSR), for MaglevConcurrentDispatcher.Prioritize.</summary>
+    internal Maglev.MaglevCompilationJob? MaglevJob, MaglevOsrJob;
+
     /// <summary>
     /// The write sequence of the (feedback, extra) pairs (odd while a pair is
     /// written; V8Sharp's form of V8's feedback_vector_access mutex): a

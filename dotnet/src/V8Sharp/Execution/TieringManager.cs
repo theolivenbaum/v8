@@ -291,6 +291,15 @@ public sealed class TieringManager(Isolate isolate)
     void MaybeOptimizeFrame(JSFunction function, CodeKind currentCodeKind)
     {
         if (JSFunctionFeedback.GetFeedbackVector(function) is not { } vector) return;
+        if (vector.TieringInProgress || vector.OsrTieringInProgress)
+        {
+            // concurrent_recompilation_front_running (MaglevConcurrentDispatcher.Prioritize).
+            if (isolate.Flags.concurrent_recompilation_front_running)
+            {
+                if (vector.MaglevOsrJob is { } osrJob) Maglev.MaglevConcurrentDispatcher.Prioritize(osrJob);
+                if (vector.MaglevJob is { } job) Maglev.MaglevConcurrentDispatcher.Prioritize(job);
+            }
+        }
         // Note: This effectively disables further tiering actions (e.g. OSR, or
         // tiering up into Maglev) for the function while it is being compiled.
         if (vector.OsrTieringInProgress)

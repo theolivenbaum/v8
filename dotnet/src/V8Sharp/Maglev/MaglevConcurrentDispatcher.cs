@@ -91,6 +91,8 @@ public sealed class MaglevCompilationJob
     /// <summary>The time from EnqueueJob to the start of ExecuteJob (waiting for a worker).</summary>
     public double QueuedMs { get; private set; }
     internal long EnqueuedAt;
+    /// <summary>The job's node in the dispatcher's incoming queue while it waits for a worker.</summary>
+    internal LinkedListNode<MaglevCompilationJob>? QueueNode;
     public double ExecuteMs { get; private set; }
     public double FinalizeMs { get; private set; }
     public double GraphMs { get; private set; }
@@ -319,7 +321,11 @@ public sealed class MaglevConcurrentDispatcher
 
     // ---- The worker threads (V8: the platform's workers running JobTask) ------------------------------
 
-    static readonly System.Collections.Concurrent.BlockingCollection<MaglevCompilationJob> s_incoming = [];
+    // The incoming queue (V8: a LockedQueue per dispatcher; the workers are the
+    // platform's): process-wide, so the workers serve every isolate, in order
+    // except for the jobs Prioritize moved to the front.
+    static readonly LinkedList<MaglevCompilationJob> s_incoming = [];
+    static readonly SemaphoreSlim s_incomingCount = new(0);
     static readonly Lock s_threadsLock = new();
     static int s_threads;
 
@@ -347,8 +353,16 @@ public sealed class MaglevConcurrentDispatcher
     /// <summary>JobTask::Run: executes the incoming jobs and queues them for finalization.</summary>
     static void RunWorker()
     {
-        foreach (MaglevCompilationJob job in s_incoming.GetConsumingEnumerable())
+        while (true)
         {
+            s_incomingCount.Wait();
+            MaglevCompilationJob job;
+            lock (s_incoming)
+            {
+                job = s_incoming.First!.Value;
+                s_incoming.RemoveFirst();
+                job.QueueNode = null;
+            }
             job.ExecuteJob();
             MaglevConcurrentDispatcher dispatcher = job.Isolate.MaglevConcurrentDispatcher;
             dispatcher._outgoing.Enqueue(job);
@@ -384,7 +398,27 @@ public sealed class MaglevConcurrentDispatcher
         job.EnqueuedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         EnsureWorkers(_isolate);
         lock (_inFlightLock) _inFlight++;
-        s_incoming.Add(job);
+        lock (s_incoming) job.QueueNode = s_incoming.AddLast(job);
+        s_incomingCount.Release();
+    }
+
+    /// <summary>
+    /// OptimizingCompileDispatcher::Prioritize (V8's
+    /// --concurrent-recompilation-front-running, which V8 applies to Turbofan
+    /// jobs): a function that keeps getting budget interrupts while its job
+    /// waits for a worker moves to the front of the queue. V8Sharp applies it
+    /// to Maglev jobs, whose RyuJIT compiles queue for hundreds of
+    /// milliseconds at start-up (V8 found two priorities not worth it for its
+    /// own, much faster, Maglev compiles).
+    /// </summary>
+    public static void Prioritize(MaglevCompilationJob job)
+    {
+        lock (s_incoming)
+        {
+            if (job.QueueNode is not { } node || ReferenceEquals(s_incoming.First, node)) return;
+            s_incoming.Remove(node);
+            s_incoming.AddFirst(node);
+        }
     }
 
     /// <summary>MaglevConcurrentDispatcher::FinalizeFinishedJobs (main thread, INSTALL_MAGLEV_CODE).</summary>
