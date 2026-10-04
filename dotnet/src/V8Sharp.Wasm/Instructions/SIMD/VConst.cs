@@ -1,0 +1,69 @@
+// Copyright 2024 Kelvin Nishikawa
+// 
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+// 
+//     http://www.apache.org/licenses/LICENSE-2.0
+// 
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System.IO;
+using System.Runtime.InteropServices;
+using Wacs.Core.OpCodes;
+using Wacs.Core.Runtime;
+using Wacs.Core.Validation;
+
+namespace Wacs.Core.Instructions.Simd
+{
+    //0x41
+    public class InstV128Const : InstructionBase, IConstInstruction
+    {
+        public InstV128Const() : base(ByteCode.V128Const, +1) { }
+        
+        private V128 V128;
+        public V128 Value => V128;
+
+        /// <summary>
+        /// @Spec 3.3.1.1 t.const
+        /// </summary>
+        /// <param name="context"></param>
+        public override void Validate(IWasmValidationContext context) =>
+            context.OpStack.PushV128(V128);
+
+        /// <summary>
+        /// @Spec 4.4.1.1. t.const c
+        /// </summary>
+        public override void Execute(ExecContext context)
+        {
+            context.OpStack.PushV128(V128);
+        }
+
+        public override InstructionBase Parse(BinaryReader reader)
+        {
+            V128 = new V128(reader.ReadBytes(16));
+            return this;
+        }
+
+        public override void RenderBinary(BinaryWriter writer)
+        {
+            // V128 has explicit FieldOffset layout; reinterpret as 16
+            // contiguous bytes and write them through.
+            V128 v = V128;
+            var span = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref v, 1));
+            byte[] tmp = new byte[16];
+            span.CopyTo(tmp);
+            writer.Write(tmp);
+        }
+
+        public InstructionBase Immediate(V128 value)
+        {
+            V128 = value;
+            return this;
+        }
+    }
+}

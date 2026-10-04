@@ -1,0 +1,50 @@
+// Copyright 2024 Kelvin Nishikawa
+// 
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+// 
+//     http://www.apache.org/licenses/LICENSE-2.0
+// 
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System;
+
+namespace Wacs.Core.Attributes
+{
+    /// <summary>
+    /// Attribute to associate metadata with opcodes, such as WAT mnemonics.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field)]
+    public sealed class OpCodeAttribute : Attribute
+    {
+        /// <summary>
+        /// Initializes a new instance of the <see cref="OpCodeAttribute"/> class.
+        /// </summary>
+        /// <param name="mnemonic">The WAT mnemonic associated with the opcode.</param>
+        /// <param name="category">Optional marker used to filter variant
+        /// entries. "prototype" tags legacy SIMD opcode aliases that share
+        /// their mnemonic with the canonical form.</param>
+        public OpCodeAttribute(string mnemonic, string category = "")
+        {
+            Mnemonic = mnemonic;
+            Category = category;
+        }
+
+        /// <summary>
+        /// The mnemonic used in the WebAssembly Text Format (WAT).
+        /// </summary>
+        public string Mnemonic { get; }
+
+        /// <summary>
+        /// Category marker. Empty for canonical entries; "prototype" marks
+        /// legacy SIMD aliases that share the canonical mnemonic but encode
+        /// to a non-canonical opcode value.
+        /// </summary>
+        public string Category { get; }
+    }
+}

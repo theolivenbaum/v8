@@ -561,7 +561,10 @@ public sealed class StoreIC : IC
         // present. We can also skip this for private names since they are not
         // bound by configurability or extensibility checks, and errors would've
         // been thrown if the private field already exists in the object.
-        if (IsAnyDefineOwn && !name.IsAnyPrivateName && obj.HeapObjectOrNull is JSObject)
+        // Wasm objects are JSObjects in V8Sharp but not in V8 (IsJSObject is
+        // false): they reach the WASM_OBJECT lookup state below and throw.
+        if (IsAnyDefineOwn && !name.IsAnyPrivateName && obj.HeapObjectOrNull is JSObject jsObj &&
+            !Map.IsWasmObjectMap(jsObj.Map))
         {
             if (!JSObject.CheckIfCanDefineAsConfigurable(_isolate, ref it, value, null)) return JSValue.Undefined;
         }

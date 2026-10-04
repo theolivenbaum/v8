@@ -256,4 +256,5 @@ public sealed record JsExceptionInfo(
     int StartColumn = -1,
     int EndColumn = -1,
     string? SourceLine = null,
-    bool IsSyntaxError = false);
+    bool IsSyntaxError = false,
+    int WasmFunctionIndex = -1);

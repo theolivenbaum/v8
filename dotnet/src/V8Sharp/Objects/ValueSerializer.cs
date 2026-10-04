@@ -86,6 +86,17 @@ public class ValueSerializerDelegate
     public virtual void WriteHostObject(Isolate isolate, JSObject obj, ValueSerializer serializer) =>
         isolate.Throw(isolate.Factory.NewError(isolate.NativeContext.ErrorFunction, MessageTemplate.DataCloneError, [obj]));
 
+    /// <summary>
+    /// The transfer id of a WebAssembly.Module, or null (the default throws
+    /// the DataCloneError, as the API's does).
+    /// </summary>
+    public virtual uint? GetWasmModuleTransferId(Isolate isolate, JSObject module)
+    {
+        isolate.Throw(isolate.Factory.NewError(isolate.NativeContext.ErrorFunction, MessageTemplate.DataCloneError,
+            [module]));
+        return null;
+    }
+
     /// <summary>The id of a SharedArrayBuffer (the default throws the DataCloneError).</summary>
     public virtual uint GetSharedArrayBufferId(Isolate isolate, JSArrayBuffer sharedArrayBuffer)
     {
@@ -105,6 +116,9 @@ public class ValueDeserializerDelegate
             ReadOnlySpan<JSValue>.Empty));
         return null;
     }
+
+    /// <summary>The WebAssembly.Module for an id from GetWasmModuleTransferId; null fails the read.</summary>
+    public virtual JSObject? GetWasmModuleFromId(Isolate isolate, uint transferId) => null;
 
     /// <summary>The SharedArrayBuffer for an id from GetSharedArrayBufferId; null fails the read.</summary>
     public virtual JSArrayBuffer? GetSharedArrayBufferFromId(Isolate isolate, uint cloneId) => null;
@@ -451,8 +465,42 @@ public sealed class ValueSerializer
                 else WriteJSError(jsError);
                 return;
             }
+            case InstanceType.WasmModuleObjectType:
+                WriteWasmModule((JSObject)receiver);
+                return;
+            case InstanceType.WasmMemoryObjectType:
+                WriteWasmMemory((V8Sharp.Wasm.WasmMemoryObject)receiver);
+                return;
         }
         ThrowDataCloneError(MessageTemplate.DataCloneError, receiver);
+    }
+
+    void WriteWasmModule(JSObject module)
+    {
+        if (_delegate is null)
+        {
+            ThrowDataCloneError(MessageTemplate.DataCloneError, module);
+            return;
+        }
+        if (_delegate.GetWasmModuleTransferId(_isolate, module) is { } id)
+        {
+            WriteTag(SerializationTag.kWasmModuleTransfer);
+            WriteVarint(id);
+        }
+    }
+
+    void WriteWasmMemory(V8Sharp.Wasm.WasmMemoryObject memory)
+    {
+        JSArrayBuffer sharedBuffer = V8Sharp.Wasm.WasmMemoryObjectOps.GetArrayBuffer(_isolate, memory);
+        if (!sharedBuffer.IsShared)
+        {
+            ThrowDataCloneError(MessageTemplate.DataCloneError, memory);
+            return;
+        }
+        WriteTag(SerializationTag.kWasmMemoryTransfer);
+        WriteZigZag(memory.HasMaximumPages ? (int)memory.MaximumPages : -1);
+        WriteByte(memory.IsMemory64 ? (byte)1 : (byte)0);
+        WriteJSReceiver(sharedBuffer);
     }
 
     void WriteJSObject(JSObject obj)
@@ -1264,6 +1312,10 @@ public sealed class ValueDeserializer
                 return ReadJSArrayBuffer(true, false, false);
             case SerializationTag.kError:
                 return ReadJSError();
+            case SerializationTag.kWasmModuleTransfer:
+                return ReadWasmModuleTransfer();
+            case SerializationTag.kWasmMemoryTransfer:
+                return ReadWasmMemory();
             case SerializationTag.kHostObject:
                 return ReadHostObject();
             default:
@@ -1276,6 +1328,39 @@ public sealed class ValueDeserializer
                 }
                 return null;
         }
+    }
+
+    JSValue? ReadWasmModuleTransfer()
+    {
+        if (ReadVarint32() is not { } transferId || _delegate is null ||
+            _delegate.GetWasmModuleFromId(_isolate, transferId) is not { } module)
+        {
+            return null;
+        }
+        uint id = _nextId++;
+        AddObjectWithID(id, module);
+        return module;
+    }
+
+    JSValue? ReadWasmMemory()
+    {
+        uint id = _nextId++;
+        if (ReadZigZag32() is not { } maximumPages) return null;
+        if (!ReadByte(out byte memory64Byte) || memory64Byte > 1) return null;
+        bool memory64 = memory64Byte != 0;
+        ulong maxSupportedPages = memory64 ? 1UL << 48 : 65536;
+        if (maximumPages != -1 && (maximumPages < 0 || (ulong)maximumPages > maxSupportedPages)) return null;
+        // V8 allocates the memory object before reading the buffer to break a
+        // cycle; the buffer cannot refer back to the memory, so V8Sharp reads
+        // it first and creates the memory over its store.
+        if (ReadObjectInternal() is not { } bufferObject || bufferObject.HeapObjectOrNull is not JSArrayBuffer buffer ||
+            !buffer.IsShared)
+        {
+            return null;
+        }
+        if (V8Sharp.Wasm.WasmMemoryObjectOps.FromSharedBuffer(_isolate, buffer) is not { } memory) return null;
+        AddObjectWithID(id, memory);
+        return memory;
     }
 
     JSValue? ReadString()
