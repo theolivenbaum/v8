@@ -162,6 +162,7 @@ public static partial class WasmJs
             JSObject.AddProperty(isolate, nativeContext.GlobalObject, isolate.Factory.InternalizeString("WebAssembly"),
                 webassembly, PropertyAttributes.DONT_ENUM);
         }
+        InstallStreaming(isolate, webassembly);
     }
 
     // ---- API function creation (CreateFunc, InstallFunc, InstallGetter, SetupConstructor) ----
@@ -567,6 +568,22 @@ public static partial class WasmJs
             return null!;
         }
         return NewModuleObject(isolate, module, bytes);
+    }
+
+    /// <summary>
+    /// WasmModuleObject::FromCompiledModule for a module transferred from
+    /// another isolate: compiles its wire bytes again in this isolate.
+    /// </summary>
+    public static WasmModuleObject? NewModuleFromWireBytes(Isolate isolate, byte[] bytes)
+    {
+        try
+        {
+            return NewModuleObject(isolate, WasmEngine.Compile(bytes), bytes);
+        }
+        catch (WasmCompileException)
+        {
+            return null;
+        }
     }
 
     internal static WasmModuleObject NewModuleObject(Isolate isolate, WasmModule module, byte[] bytes)

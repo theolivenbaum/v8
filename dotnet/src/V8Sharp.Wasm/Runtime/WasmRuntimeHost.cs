@@ -92,6 +92,10 @@ namespace Wacs.Core.Runtime
             HostFunction.RawHostFunc function, object? hostData = null) =>
             Allocate(store => store.AddFunction(new HostFunction((module, name), type, function) { HostData = hostData }));
 
+        /// <summary>Adds an existing memory (a shared memory of another runtime).</summary>
+        public MemAddr AddMemory(MemoryInstance memory) =>
+            Allocate(store => store.AddMemory(memory));
+
         /// <summary>Allocates a memory (WebAssembly.Memory).</summary>
         public MemAddr AllocateMemory(MemoryType type) =>
             Allocate(store => store.AddMemory(new MemoryInstance(type, MemoryStorageMode.ManagedArray)));
@@ -138,7 +142,7 @@ namespace Wacs.Core.Runtime
             try
             {
                 ctx.InvokeResolved(funcInst);
-                RunUntilReturn(ctx);
+                RunUntilReturn(ctx, InterruptPoll);
 
                 var results = funcType.ResultType.Arity == 0
                     ? Array.Empty<Value>()
@@ -167,11 +171,26 @@ namespace Wacs.Core.Runtime
         /// without gas, statistics or async host functions: runs until the
         /// invoked function returns to <see cref="ExecContext.AbortSequence"/>.
         /// </summary>
-        private static void RunUntilReturn(ExecContext ctx)
+        /// <summary>
+        /// Called every <see cref="InterruptPollInterval"/> instructions, so
+        /// the embedder can serve interrupts (termination) in long-running
+        /// code, as V8's stack checks at function entries and loop back edges do.
+        /// </summary>
+        public Action? InterruptPoll { get; set; }
+
+        public const int InterruptPollInterval = 1 << 14;
+
+        private static void RunUntilReturn(ExecContext ctx, Action? interruptPoll)
         {
             InstructionBase inst;
+            int budget = InterruptPollInterval;
             while (++ctx.InstructionPointer >= 0)
             {
+                if (--budget == 0)
+                {
+                    budget = InterruptPollInterval;
+                    interruptPoll?.Invoke();
+                }
                 inst = ctx._currentSequence[ctx.InstructionPointer];
                 if (inst.PointerAdvance > 0)
                     ctx.InstructionPointer += inst.PointerAdvance;

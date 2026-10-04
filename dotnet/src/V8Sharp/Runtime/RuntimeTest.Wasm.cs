@@ -33,9 +33,8 @@ public static partial class RuntimeTable
         // runs on its own schedule and is precise, so there is nothing to
         // provoke.
         Register(FunctionId.ScheduleGCInStackCheck, Undefined);
-        // Runtime_IsAtomicsWaitAllowed: d8 allows Atomics.wait on the main
-        // thread, and so does the V8Sharp shell.
-        Register(FunctionId.IsAtomicsWaitAllowed, static (i, a) => JSValue.True);
+        // Runtime_IsAtomicsWaitAllowed.
+        Register(FunctionId.IsAtomicsWaitAllowed, static (i, a) => JSValue.FromBoolean(i.AllowAtomicsWait));
 
         // runtime-test-wasm.cc: tiers and code.
         Register(FunctionId.IsWasmCode, static (i, a) =>

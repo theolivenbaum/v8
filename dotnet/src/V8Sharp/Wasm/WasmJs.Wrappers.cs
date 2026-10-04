@@ -28,7 +28,10 @@ public static partial class WasmJs
     internal static JavaScriptException TrapToJS(Isolate isolate, TrapException trap)
     {
         MessageTemplate template = WasmErrorMessages.TrapTemplate(trap);
-        JSObject error = isolate.Factory.NewError(isolate.NativeContext.WasmRuntimeErrorFunction, template, []);
+        JSValue[] arguments = template == MessageTemplate.AtomicsOperationNotAllowed
+            ? [isolate.Factory.InternalizeString("Atomics.wait")]
+            : [];
+        JSObject error = isolate.Factory.NewError(isolate.NativeContext.WasmRuntimeErrorFunction, template, arguments);
         JSObject.AddProperty(isolate, error, ReadOnlyRoots.wasm_uncatchable_symbol, JSValue.True, PropertyAttributes.NONE);
         try
         {

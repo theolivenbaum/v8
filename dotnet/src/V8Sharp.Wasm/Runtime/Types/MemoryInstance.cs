@@ -30,8 +30,8 @@ namespace Wacs.Core.Runtime.Types
     // memories above 2 GiB; V8Sharp keeps the engine free of unsafe code
     // (dotnet/CLAUDE.md rule 5), so memories are bounded by Array.MaxLength,
     // as V8Sharp's ArrayBuffers are (deviations.md, "WebAssembly").
-    // Shared memories reserve their maximum size up front (when it is small
-    // enough) so that the byte[] never moves: SharedArrayBuffers handed to
+    // Shared memories reserve their maximum size up front (up to
+    // SharedReservationLimit) so that the byte[] does not move: SharedArrayBuffers handed to
     // JavaScript alias it across growth, as V8's do.
     public class MemoryInstance : IDisposable
     {
@@ -77,8 +77,10 @@ namespace Wacs.Core.Runtime.Types
             long reserved = initialSize;
             if (type.Limits.Shared && type.Limits.Maximum is long max)
             {
+                // Reserve up to the limit even when the maximum is larger, so
+                // that growth within the reservation keeps the array in place.
                 long maxBytes = Math.Min(max, MaxPages) * Constants.PageSize;
-                if (maxBytes <= SharedReservationLimit) reserved = maxBytes;
+                reserved = Math.Max(initialSize, Math.Min(maxBytes, SharedReservationLimit));
             }
             Data = new byte[reserved];
             _byteLength = initialSize;

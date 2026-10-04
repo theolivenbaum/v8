@@ -512,6 +512,12 @@ public static class FutexEmulation
     // promise-resolving task has not run yet.
     static readonly List<Waiter> s_toResolve = [];
 
+    // V8 keys waiters by the address of the memory cell. A wasm memory shared
+    // between isolates has one byte array but a BackingStore per isolate, so
+    // locations compare by the array.
+    static bool SameLocation(BackingStore a, BackingStore b) =>
+        ReferenceEquals(a, b) || ReferenceEquals(a.Buffer, b.Buffer);
+
     internal static long LoadValue(BackingStore store, long addr, bool is64)
     {
         Span<byte> bytes = store.Buffer.AsSpan((int)addr, is64 ? 8 : 4);
@@ -633,7 +639,7 @@ public static class FutexEmulation
         {
             foreach (Waiter node in s_toResolve)
             {
-                if (ReferenceEquals(node.Store, store) && node.Address == addr) count++;
+                if (SameLocation(node.Store, store) && node.Address == addr) count++;
             }
         }
         return count;
@@ -647,7 +653,7 @@ public static class FutexEmulation
         {
             foreach (Waiter waiter in s_waitList)
             {
-                if (!waiter.Waiting || !ReferenceEquals(waiter.Store, store) || waiter.Address != addr) continue;
+                if (!waiter.Waiting || !SameLocation(waiter.Store, store) || waiter.Address != addr) continue;
                 if (asyncOnly && !waiter.IsAsync) continue;
                 count++;
             }
@@ -665,7 +671,7 @@ public static class FutexEmulation
             foreach (Waiter waiter in s_waitList)
             {
                 if (numWaitersToWake == 0) break;
-                if (!waiter.Waiting || !ReferenceEquals(waiter.Store, store) || waiter.Address != addr) continue;
+                if (!waiter.Waiting || !SameLocation(waiter.Store, store) || waiter.Address != addr) continue;
                 waiter.Waiting = false;
                 if (waiter.IsAsync) woken.Add(waiter);
                 wokenCount++;

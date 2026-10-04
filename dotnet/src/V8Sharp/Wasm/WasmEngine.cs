@@ -71,8 +71,17 @@ namespace V8Sharp.Wasm
                 // by frame and operand counts.
                 MaxCallStack = 32768,
                 MaxOpStack = 1 << 17,
+                // memory.atomic.wait/notify share V8's futex wait list with
+                // Atomics.wait/notify.
+                ConcurrencyPolicy = WasmFutexPolicy.Instance,
             };
-            Runtime = new WasmRuntime(attributes);
+            Runtime = new WasmRuntime(attributes)
+            {
+                InterruptPoll = () =>
+                {
+                    if (isolate.StackGuard.HasPendingInterrupts) isolate.StackGuard.HandleInterrupts();
+                },
+            };
         }
 
         public Isolate Isolate { get; }
@@ -222,7 +231,9 @@ namespace V8Sharp.Wasm
             var obj = (WasmMemoryObject)JSObject.NewWithMap(Isolate, Isolate.NativeContext.WasmMemoryConstructor.InitialMap);
             obj.Address = address;
             obj.Memory = Store[address];
-            obj.Memory.OnGrow = (_, _) => WasmMemoryObjectOps.OnMemoryGrown(Isolate, obj);
+            // A shared memory may grow on another isolate's thread; its buffer
+            // is refreshed when read (GetArrayBuffer compares the length).
+            if (!obj.IsShared) obj.Memory.OnGrow = (_, _) => WasmMemoryObjectOps.OnMemoryGrown(Isolate, obj);
             _memoryObjects[address.Value] = obj;
             return obj;
         }

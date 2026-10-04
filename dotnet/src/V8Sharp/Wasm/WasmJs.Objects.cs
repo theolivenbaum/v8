@@ -717,6 +717,25 @@ public static class WasmMemoryObjectOps
         return engine.GetOrCreateMemoryObject(address);
     }
 
+    /// <summary>
+    /// ValueDeserializer::ReadWasmMemory: a memory object of this isolate over
+    /// the shared memory that <paramref name="buffer"/> views, or null.
+    /// </summary>
+    public static WasmMemoryObject? FromSharedBuffer(Isolate isolate, JSArrayBuffer buffer)
+    {
+        if (buffer.GetBackingStore()?.WasmMemory is not MemoryInstance mem || !mem.Type.Limits.Shared) return null;
+        WasmEngine engine = WasmEngine.Get(isolate);
+        MemAddr address = engine.Runtime.AddMemory(mem);
+        WasmMemoryObject memory = engine.GetOrCreateMemoryObject(address);
+        // The buffer is current unless the memory grew since it was written.
+        if (buffer.GetByteLength() == (ulong)mem.ByteLength)
+        {
+            JSReceiver.SetIntegrityLevel(isolate, buffer, JSReceiver.IntegrityLevel.FROZEN, ShouldThrow.DontThrow);
+            memory.ArrayBuffer = buffer;
+        }
+        return memory;
+    }
+
     /// <summary>WasmMemoryObject::GetArrayBuffer: the current buffer, created lazily.</summary>
     public static JSArrayBuffer GetArrayBuffer(Isolate isolate, WasmMemoryObject memory)
     {
@@ -728,16 +747,51 @@ public static class WasmMemoryObjectOps
         return memory.ArrayBuffer = NewBuffer(isolate, memory, resizable: false);
     }
 
+    // array_buffer_wasm_memory_symbol: the memory of a resizable buffer.
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<JSArrayBuffer, WasmMemoryObject> s_resizableBufferMemory = new();
+
     static JSArrayBuffer NewBuffer(Isolate isolate, WasmMemoryObject memory, bool resizable)
     {
         MemoryInstance mem = memory.Memory;
         bool shared = memory.IsShared;
-        BackingStore store = BackingStore.WrapWasmMemory(mem.Data, (ulong)mem.ByteLength, shared);
+        BackingStore store = resizable
+            ? BackingStore.WrapResizableWasmMemory(mem.Data, (ulong)mem.ByteLength,
+                // V8: the declared maximum, or the engine's (the byte[] that
+                // holds the memory may be smaller; growth beyond it fails).
+                memory.MaximumPages * WasmPageSize, shared, mem,
+                () => (ulong)mem.ByteLength)
+            : BackingStore.WrapWasmMemory(mem.Data, (ulong)mem.ByteLength, shared, mem);
         JSArrayBuffer buffer = shared ? isolate.Factory.NewJSSharedArrayBuffer(store) : isolate.Factory.NewJSArrayBuffer(store);
         // Wasm memory buffers are not detachable from JavaScript.
         buffer.IsDetachable = false;
+        // WasmMemoryObject::SetNewBuffer: per spec, a shared buffer is frozen.
+        if (shared) JSReceiver.SetIntegrityLevel(isolate, buffer, JSReceiver.IntegrityLevel.FROZEN, ShouldThrow.DontThrow);
         memory.BufferIsResizable = resizable;
+        if (resizable) s_resizableBufferMemory.AddOrUpdate(buffer, memory);
         return buffer;
+    }
+
+    const ulong WasmPageSize = 65536;
+
+    /// <summary>
+    /// The wasm branch of ArrayBuffer.prototype.resize and
+    /// SharedArrayBuffer.prototype.grow (builtins-arraybuffer.cc ResizeHelper):
+    /// a memory grows by whole pages and never shrinks.
+    /// </summary>
+    public static JSValue ResizeBuffer(Isolate isolate, JSArrayBuffer buffer, ulong newByteLength, string methodName)
+    {
+        ulong oldByteLength = buffer.GetBackingStore()!.ByteLength;
+        if (newByteLength < oldByteLength || newByteLength % WasmPageSize != 0 ||
+            !s_resizableBufferMemory.TryGetValue(buffer, out WasmMemoryObject? memory))
+        {
+            return isolate.ThrowRangeError(MessageTemplate.InvalidArrayBufferResizeLength,
+                isolate.Factory.NewStringFromAsciiChecked(methodName));
+        }
+        if (Grow(isolate, memory, (newByteLength - oldByteLength) / WasmPageSize) == -1)
+        {
+            return isolate.ThrowRangeError(MessageTemplate.OutOfMemory, isolate.Factory.NewStringFromAsciiChecked(methodName));
+        }
+        return JSValue.Undefined;
     }
 
     /// <summary>
@@ -748,6 +802,15 @@ public static class WasmMemoryObjectOps
     public static void OnMemoryGrown(Isolate isolate, WasmMemoryObject memory)
     {
         if (memory.ArrayBuffer is not { } old) return;
+        if (memory.BufferIsResizable && !memory.IsShared && !old.WasDetached)
+        {
+            // WasmMemoryObject::RefreshBuffer: a resizable buffer stays, with
+            // the new length.
+            ulong length = (ulong)memory.Memory.ByteLength;
+            old.GetBackingStore()!.UpdateWasmMemory(memory.Memory.Data, length);
+            old.ByteLength = length;
+            return;
+        }
         if (!memory.IsShared)
         {
             JSArrayBuffer.Detach(isolate, old, forceForWasmMemory: true);
@@ -772,7 +835,7 @@ public static class WasmMemoryObjectOps
         if (!grown) return -1;
         // MemoryInstance.OnGrow refreshed the buffer; V8 also refreshes it
         // when the size did not change (grow(0) of a non-shared memory).
-        if (deltaPages == 0 && !memory.IsShared && memory.ArrayBuffer is { } old)
+        if (deltaPages == 0 && !memory.IsShared && !memory.BufferIsResizable && memory.ArrayBuffer is { } old)
         {
             JSArrayBuffer.Detach(isolate, old, forceForWasmMemory: true);
             memory.ArrayBuffer = null;

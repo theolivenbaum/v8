@@ -55,7 +55,12 @@ public sealed class BackingStore
     public bool IsImmutable { get; set; }
 
     /// <summary>BackingStore::byte_length (seq_cst for shared stores).</summary>
-    public ulong ByteLength => IsShared ? (ulong)Volatile.Read(ref _byteLength) : (ulong)_byteLength;
+    public ulong ByteLength =>
+        _liveByteLength is { } live ? live() : IsShared ? (ulong)Volatile.Read(ref _byteLength) : (ulong)_byteLength;
+
+    // The length of a growable SharedArrayBuffer over a wasm memory, which may
+    // grow in another isolate (V8 keeps one BackingStore for all of them).
+    Func<ulong>? _liveByteLength;
 
     public bool IsEmpty => _buffer.Length == 0;
 
@@ -112,11 +117,39 @@ public sealed class BackingStore
     /// bytes are the memory. A shared memory reserves its maximum, so the
     /// array is longer than the memory and stays in place when it grows.
     /// </summary>
-    public static BackingStore WrapWasmMemory(byte[] buffer, ulong byteLength, bool shared) =>
-        new(buffer, byteLength, byteLength, shared, resizable: false) { IsWasmMemory = true };
+    public static BackingStore WrapWasmMemory(byte[] buffer, ulong byteLength, bool shared, object? wasmMemory = null) =>
+        new(buffer, byteLength, byteLength, shared, resizable: false) { IsWasmMemory = true, WasmMemory = wasmMemory };
+
+    /// <summary>
+    /// The store of a wasm memory's resizable buffer (Memory.toResizableBuffer):
+    /// JavaScript grows it through the memory; a growable shared one reads the
+    /// memory's live length.
+    /// </summary>
+    public static BackingStore WrapResizableWasmMemory(byte[] buffer, ulong byteLength, ulong maxByteLength, bool shared,
+        object wasmMemory, Func<ulong>? liveByteLength) =>
+        new(buffer, byteLength, maxByteLength, shared, resizable: true)
+        {
+            IsWasmMemory = true,
+            WasmMemory = wasmMemory,
+            _liveByteLength = shared ? liveByteLength : null,
+        };
+
+    /// <summary>The wasm memory of a resizable non-shared buffer grew (in place or into a new array).</summary>
+    public void UpdateWasmMemory(byte[] buffer, ulong byteLength)
+    {
+        _buffer = buffer;
+        _byteLength = (long)byteLength;
+    }
 
     /// <summary>BackingStore::is_wasm_memory.</summary>
     public bool IsWasmMemory { get; private init; }
+
+    /// <summary>
+    /// The wasm memory (a Wacs.Core.Runtime.MemoryInstance) a wasm memory
+    /// buffer views, so another isolate can share it (V8 registers the
+    /// isolates of a shared memory's backing store instead).
+    /// </summary>
+    public object? WasmMemory { get; private init; }
 
     /// <summary>A store over existing memory (the empty store of a zero-length transfer, API wrapping).</summary>
     public static BackingStore WrapAllocation(byte[] buffer, bool shared) =>
