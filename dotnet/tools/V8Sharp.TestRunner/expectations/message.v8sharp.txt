@@ -3,3 +3,18 @@
 # sorted, with an optional reason after '#'. Hand-written reasons and glob
 # lines (a failure class: '**' spans directories) are kept.
 js-wasm-wrapper-inlining-turbolev*  # SKIP: WebAssembly with Turbolev inlining traces (--trace-turbo-inlining, --trace-deopt); V8Sharp has neither WebAssembly nor Turbolev, and message.status only skips it in the jitless variant
+wasm-compilation-hints-inlining  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-compilation-hints-inlining-no-liftoff  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-dataview-imports  # FAIL: --trace-wasm-inlining output (DataView imports inlined by TurboFan)
+wasm-debug-trace-minimal  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-generate-compilation-hints  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-speculative-inlining  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-trace-deopt-64  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-trace-globals  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-trace-globals-liftoff  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-trace-liftoff  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-trace-memory  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-trace-memory-liftoff  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-trace-memory64  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-trace-memory64-liftoff  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
+wasm-trace-turbofan  # FAIL: --trace-wasm* and tiering output are not printed (interpreter only)
