@@ -1700,12 +1700,111 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     peeling), parameter stores sunk to observing nodes, hoisted loop entry
     untagging, keyed load elements kind transitions, nested literal copies,
     instanceof without the IC, apply(arguments) forwarding for megamorphic
-    targets, inlining with the --maglev-as-top-tier limits. Open:
-    checks of loop-invariant values stay in loop bodies (V8
-    peels only loops whose body invalidates what the header knows, so this
-    is mostly register pressure: Crypto's am3 loop keeps its values in
-    stack slots); polymorphic calls (DeltaBlue) go through MaglevCalls.Call;
-    no escape analysis, CSE or range analysis.
+    targets, inlining with the --maglev-as-top-tier limits. Open: no
+    escape analysis, CSE or range analysis (see "Code quality on warm code"
+    for what came since).
+  - Code quality on warm code (2026-10-04, 28765f36..a6367b6c; V8 files:
+    maglev-graph-builder.cc, access-info.cc, maglev-ir.cc,
+    maglev-code-generator.cc): field representations and field types from
+    the descriptor (LoadDoubleField / StoreDoubleField payloads, Smi fields
+    untagged unchecked, stable class field types as known maps, with
+    FieldRepresentation / FieldType / stable map dependencies); const fields
+    of constant objects folded (TryFoldLoadConstantDataField, FieldConst);
+    generic calls with up to three arguments pass them as values and enter
+    Maglev callees through their direct entry, builtins through their fast
+    paths; bodies up to 1200 bytes of IL inlined into the direct entry;
+    element, context slot and in-object transition stores inline through the
+    slot address; CheckedObjectToIndex inline for numbers; polymorphic load
+    continuations (FindContinuationForPolymorphicPropertyLoad: one arm per
+    map group up to the call, constant call targets); a constant callee wins
+    over call feedback; loop peeling of innermost call-free loops (PeelLoop,
+    under 400 bytes, 900 per compilation); frameless direct entries for leaf
+    code (no frame, no frame record; deopt builds the frame from the
+    scratch buffer, MaglevCalls.DeoptimizeFrameless). Switches for A/B:
+    V8SHARP_MAGLEV_NO_FRAMELESS, _NO_CONTINUATIONS, _NO_INLINE_TRANSITIONS,
+    V8SHARP_MAGLEV_INLINE_BODY_IL=0, --no-maglev-loop-peeling.
+    Effect of each (warm octane-quick, interleaved, 3 runs, switch off vs
+    on): frameless entries RayTrace +18%, DeltaBlue +10%, Box2D +8%;
+    continuations Richards +14%; peeling NavierStokes +21% (Box2D and
+    Crypto within noise either way; peeling loops with calls cost DeltaBlue,
+    EarleyBoyer and Box2D, hence call-free only); inline transitions
+    Richards +7%; inlined bodies within noise warm. Before the warm
+    methodology (compile time included): field representations Box2D +21%,
+    RayTrace +4%; value calls Richards +10%, DeltaBlue +11%, Crypto +20%.
+    All of it against main 9e48c4b5 (octane-quick, 3 runs): Richards +24%,
+    DeltaBlue +31%, RayTrace +39%, Crypto +19%, EarleyBoyer +3%,
+    NavierStokes +15%, Box2D +18%.
+    octane-steady (warm, compile time excluded; parity publishes, 3
+    interleaved runs, two sessions: load 5.9/2.6 and 7.4/6.5, steal 0-1%,
+    cpu-cal 1665/1726 and 1805/1713 ms, mem-bw 30.3/30.7 and 33.4/31.4 GB/s;
+    v8:jit crashed (exit 139) once on Richards, RayTrace, EarleyBoyer and
+    NavierStokes; latency rows omitted):
+
+    | benchmark | main 9e48c4b5 | v8sharp (default) | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 1112 | 1525 | 8903 | 12333 |
+    | DeltaBlue | 1364 | 1750 | 10733 | 20648 |
+    | Crypto | 306 | 365 | 1344 | 2086 |
+    | RayTrace | 328 | 413 | 3807 | 6289 |
+    | EarleyBoyer | 158 | 161 | 904 | 1143 |
+    | RegExp | 231 | 252 | 1040 | 1112 |
+    | Splay | 2582 | 2698 | 10581 | 11293 |
+    | NavierStokes | 1463 | 1736 | 2068 | 3008 |
+    | PdfJS | 1484 | 1391 | 8575 | 8972 |
+    | Mandreel | 607 | 624 | 4215 | 5789 |
+    | Gameboy | 1413 | 1897 | 7436 | 6168 |
+    | CodeLoad | 3490 | 3863 | 3828 | 4208 |
+    | Box2D | 2543 | 3283 | 17417 | 18993 |
+    | zlib | 174 | 184 | 1831 | 1830 |
+    | Typescript | 447 | 513 | 2448 | 2484 |
+
+    Cold Octane (start-up, compile time included; wall clock, same
+    publishes, 3 interleaved runs, load 8.4/3.1, steal 0-1%, cpu-cal
+    1770/1706 ms, mem-bw 28.9/29.9 GB/s; V8 crashed (exit 139) once on 11
+    benchmark/engine pairs, their means are over two runs):
+
+    | benchmark | main 9e48c4b5 | v8sharp (default) | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 2330 | 3376 | 24142 | 37129 |
+    | DeltaBlue | 3158 | 4133 | 30289 | 59449 |
+    | Crypto | 4414 | 5978 | 22234 | 34310 |
+    | RayTrace | 2702 | 3284 | 34262 | 54175 |
+    | EarleyBoyer | 4699 | 4845 | 29856 | 42277 |
+    | RegExp | 1215 | 1147 | 5872 | 6777 |
+    | Splay | 3374 | 3620 | 5212 | 4050 |
+    | SplayLatency | 2358 | 2291 | 3403 | 2785 |
+    | NavierStokes | 14434 | 15316 | 21073 | 29434 |
+    | PdfJS | 3820 | 3765 | 30334 | 32021 |
+    | Mandreel | 3400 | 3383 | 24459 | 35232 |
+    | MandreelLatency | 6436 | 6511 | 34780 | 42652 |
+    | Gameboy | 7078 | 9322 | 69564 | 73202 |
+    | CodeLoad | 8392 | 8956 | 16956 | 17328 |
+    | Box2D | 5194 | 5504 | 72326 | 82496 |
+    | zlib | 7051 | 7385 | 71382 | 75443 |
+    | Typescript | 8834 | 8997 | 57004 | 54903 |
+    | geomean | 4416 | 4871 | 24166 | 29196 |
+
+    Warm geomean of the 15 (latency rows out): 881 from 766 at main (+15%),
+    22.5% of v8:maglev from 19.5%; cold geomean +10%. PdfJS -6% warm is
+    the one decrease (within its run-to-run noise; open). Conformance at 30152ab1:
+    V8Sharp.Tests 1101/1101 (bytecode goldens included); test262 0 newly
+    failing, default and forced (95123 run each); mjsunit forced 0 newly
+    failing, 0 newly passing (7565 run); mjsunit default 1 newly failing,
+    regress-1236560 (TIMEOUT: a stack overflow through a typed array store,
+    74 s alone and as slow with --no-maglev; it times out on main 9e48c4b5
+    too). compiler/constructor-inlining timed out with inline stores in
+    code with catch blocks (RyuJIT, see deviations.md); those go through
+    the StoreSlot helper now (after the measurements above, which it does
+    not affect but for functions with handlers).
+    Open, by size of the gap to v8:maglev: zlib (10x; one function of
+    6343 nodes, MinOpts above RyuJIT's limits, needs function splitting or
+    smaller deopt metadata), RayTrace and Box2D (allocation of short-lived
+    vectors: escape analysis and inlined allocation), DeltaBlue and
+    Richards (call frames: the frameful entry's frame and frame record for
+    every non-leaf call; polymorphic calls through MaglevCalls.Call),
+    EarleyBoyer (closures and cons cells: allocation), Splay (tree
+    allocation, GC write barriers), and a quarter of the basic blocks are
+    map checks of values not known to be receivers (main's measurement).
   - Compile pipeline and tier-up (2026-10-04, f93817c5..dbf2af5b):
     concurrent jobs (MaglevConcurrentDispatcher.cs, maglev-concurrent-
     dispatcher.cc) build the graph on two worker threads (the main thread

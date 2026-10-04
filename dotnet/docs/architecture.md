@@ -708,9 +708,9 @@ frames excluded) gets a second code generation pass from the same graph
 (`MaglevCodeGenerator.TryGenerateFramelessEntry`): a method with the direct
 entry's signature that builds no frame and no frame record. Its InitialValues
 are the entry's arguments (the closure, its context, the receiver and the
-parameters), and its eager deopt exits spill the translation and the
-arguments to the deopt scratch buffer and call
-`MaglevCalls.DeoptimizeFrameless`, which builds the frame the direct entry
+parameters), and its eager deopt exits spill the translation to the deopt
+scratch buffer (the receiver and the arguments in its first slots, at the
+end of each spill chain) and call `MaglevCalls.DeoptimizeFrameless`, which builds the frame the direct entry
 would have built, deoptimizes into it and continues in the interpreter. The
 two passes share the code's deopt points. When the graph turns out to
 need the frame (the second pass touches it), the frameful direct entry is
