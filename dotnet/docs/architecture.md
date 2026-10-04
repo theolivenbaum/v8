@@ -701,7 +701,7 @@ Deopt exits spill only non-constant values (constants are literals of the
 deopt point), share spill code between exits with the same values, and end
 in one call that takes the last values (`MaglevBuiltins.Deopt0-4`).
 
-**Tiering.** `--maglev` (off by default in V8Sharp) makes
+**Tiering.** `--maglev` (on by default, as in V8) makes
 `Isolate.UseOptimizer` true; `TieringManager.OnInterruptTick` requests a
 compile once a function's invocation count reaches
 `--invocation-count-for-maglev` (400, V8's). With `--concurrent-recompilation` (the

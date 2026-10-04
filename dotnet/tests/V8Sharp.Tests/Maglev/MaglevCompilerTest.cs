@@ -503,9 +503,18 @@ public class MaglevCompilerTest
     }
 
     [Fact]
-    public void MaglevIsOffByDefault()
+    public void MaglevIsOnByDefault()
     {
-        Assert.Equal("false,false", Run("", """
+        // As V8 on x64; --no-maglev and --jitless turn it off.
+        Assert.Equal("false,false", Run("--no-maglev", """
+            function f() { return 1; }
+            %PrepareFunctionForOptimization(f);
+            f();
+            %OptimizeFunctionOnNextCall(f);
+            f();
+            [%ActiveTierIsMaglev(f), %IsMaglevEnabled()].join();
+            """));
+        Assert.Equal("true,true", Run("", """
             function f() { return 1; }
             %PrepareFunctionForOptimization(f);
             f();

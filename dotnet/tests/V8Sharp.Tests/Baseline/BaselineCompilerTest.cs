@@ -219,7 +219,7 @@ public class BaselineCompilerTest
     public void CompileBaselineNative()
     {
         // As test/mjsunit/baseline/test-baseline.js: run, %CompileBaseline, run again.
-        Assert.Equal("false,true,42,20483", Run("--sparkplug --no-always-sparkplug", """
+        Assert.Equal("false,true,42,20483", Run("--sparkplug --no-always-sparkplug --no-maglev", """
             function f(o) { return o.a; }
             var before = %ActiveTierIsSparkplug(f);
             f({a: 1});
@@ -278,7 +278,7 @@ public class BaselineCompilerTest
         // The caller runs in the interpreter and calls inner inline
         // (InterpreterInlineCalls); inner tiers up during its loop, continues in
         // baseline code, and returns (or throws) to the caller's dispatch loop.
-        Assert.Equal("499500,499500,true,caught 7", Run("--sparkplug --no-baseline-batch-compilation", """
+        Assert.Equal("499500,499500,true,caught 7", Run("--sparkplug --no-baseline-batch-compilation --no-maglev", """
             function inner(n, t) {
               var s = 0;
               for (var i = 0; i < n; i++) { s += i; if (i == t) throw 'caught ' + t; }

@@ -1512,8 +1512,8 @@ default barrier). See "Ninth interpreter performance pass" above.
 Order (decided 2026-09-28): the interpreter is finished first — correctness
 (test262/mjsunit) and interpreter performance (target: within 2x of V8
 --jitless) — before any further work on the IL tiers. The baseline tier is
-on by default since 2026-10-03; the optimizing tier (Maglev) is in
-progress, off by default.
+on by default since 2026-10-03; the optimizing tier (Maglev) since
+2026-10-04.
 
 - [x] TieringManager: interrupt budget, OnInterruptTick, feedback allocation
       and the Sparkplug tier-up, InterruptBudgetFor with V8's flag defaults,
@@ -1569,7 +1569,7 @@ progress, off by default.
     BaselineCalls.Enter and the write barrier); a leaner frame protocol
     shared with the interpreter would help both tiers.
 - [~] Optimizing compiler (Maglev analogue), src/V8Sharp/Maglev/ and
-      Deoptimizer/ (architecture.md 9.2). OFF by default (`--maglev`):
+      Deoptimizer/ (architecture.md 9.2). On by default since 2026-10-04 (`--no-maglev` turns it off):
       - Graph builder from bytecode + feedback: abstract frame, merge
         points and loop phis, liveness (BytecodeAnalysis), Int32/Float64
         speculation with overflow/-0 checks and kSignedSmall Smi
@@ -1685,8 +1685,9 @@ progress, off by default.
     thread), Splay and Gameboy (allocation- and call-heavy code that is
     still generic). The rest of the gap to V8 --jitless is the interpreter
     (V8Sharp's interpreter is 42% of V8's on this run).
-  - The tier stays off by default until it is conformance-clean under
-    forced optimization and a net win on Octane.
+  - On by default since 2026-10-04 (conformance-clean under forced
+    optimization but for the six listed below, and a net win on
+    octane-steady and cold Octane; see "Maglev on by default").
 - Phase 2 measurements (2026-10-03; V8Sharp.Bench `compare`, octane-steady
   (thread CPU after a warm pass), 3 interleaved runs, parity publishes,
   bench-session.sh under the lock; host load 1.1-1.8, steal 0%, cpu-cal

@@ -348,7 +348,7 @@ for now, to be revisited when the reason goes away.
   `--always-sparkplug`) and stay interpreted unless compiled explicitly with
   `%CompileBaseline` (`BaselineSupport.TiersUpToBaseline`); V8 tiers up any
   size.
-- Without `--maglev` (V8Sharp's default) `Isolate.UseOptimizer` is false, so
+- With `--no-maglev` (or `--jitless`) `Isolate.UseOptimizer` is false, so
   `TieringManager` behaves as in a V8 built without Turbofan and Maglev
   (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the
   baseline bits). The interrupt budget after tier-up is
@@ -366,9 +366,9 @@ for now, to be revisited when the reason goes away.
 
 ## Optimizing compiler (Maglev) and deoptimizer
 
-- Temporary: `--maglev` is off by default (V8's x64 default is on) until the
-  tier is conformance-clean under forced optimization and a net win
-  (`todo.md`). `Isolate.UseOptimizer` is `--maglev && !--jitless`.
+- `--maglev` is on by default, as V8's x64 default (since 2026-10-04);
+  `Isolate.UseOptimizer` is `--maglev && !--jitless`. There is no
+  Turbofan: Maglev is the top tier.
 - Code generation: IL in the baseline code space instead of machine code
   (architecture.md section 9.2); values live in IL locals rather than
   registers and stack slots, and no safepoint table. In place of the register

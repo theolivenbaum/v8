@@ -3,8 +3,8 @@
 # sorted, with an optional reason after '#'. Hand-written reasons and glob
 # lines (a failure class: '**' spans directories) are kept.
 array-buffer-limit  # FAIL
-array-destructuring-iterator-close  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-array-destructuring-lazy-deopt  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
+array-destructuring-iterator-close  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+array-destructuring-lazy-deopt  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
 async-hooks/api-methods  # FAIL
 async-hooks/async-await-tree  # FAIL
 async-hooks/chained-promises  # FAIL
@@ -16,13 +16,14 @@ baseline/cross-realm  # FAIL
 baseline/flush-baseline-code  # FAIL
 baseline/flush-only-baseline-code  # FAIL
 baseline/test-osr  # FAIL
-baseline/test-osr-maglev-tf  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
+baseline/test-osr-maglev-tf  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
 baseline/verify-bytecode-offsets  # FAIL
 call-intrinsic-fuzzing  # FAIL
 code-coverage-ad-hoc  # FAIL
 code-coverage-block  # FAIL
 code-coverage-block-async  # FAIL
 code-coverage-block-noopt  # FAIL
+code-coverage-block-opt  # FAIL: block coverage (%DebugToggleBlockCoverage) is not supported by the optimizing tier
 code-coverage-class-fields  # FAIL
 code-coverage-precise  # FAIL
 compiler/array-prototype-map-elements-kinds  # FAIL
@@ -58,11 +59,13 @@ debug-osr-step-in-blackboxed  # FAIL
 debug-osr-step-on-throw  # FAIL
 debug-osr-step-on-throw-blackboxed  # FAIL
 debug-osr-step-out  # FAIL
+elide-double-hole-check-12  # FAIL: Turbofan behaviour (no-elements protector across realms)
 es6/classes-subclass-builtins  # FAIL
-es6/for-of-array-iterator-maglev-no-elements-protector-invalidated  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-es6/for-of-array-iterator-optimization-maglev-elements-kinds  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-es6/for-of-array-iterator-optimization-maglev-iterated-map-check  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-es6/for-of-array-iterator-optimization-maglev-non-array-object  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
+es6/for-of-array-iterator-maglev-no-elements-protector-invalidated  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+es6/for-of-array-iterator-optimization-maglev-elements-kinds  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+es6/for-of-array-iterator-optimization-maglev-iterated-map-check  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+es6/for-of-array-iterator-optimization-maglev-non-array-object  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+es6/super-ic-opt  # FAIL: super property ICs record no feedback (GetNamedPropertyFromSuper), so no const-field dependency
 es6/unicode-regexp-ignore-case  # PASS
 es6/unicode-regexp-ignore-case-noi18n  # FAIL
 es7/regexp-ui-word  # PASS
@@ -78,22 +81,20 @@ ic-callable-obj  # FAIL
 ic-megadom  # FAIL
 ic-megadom-2  # FAIL
 ic-megadom-3  # FAIL
-maglev/bounds-check-smi-size-fold  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/extras-cped  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/float64-conversions  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/omit-default-ctors  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/osr-from-ml-to-tf  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/osr-from-ml-to-tf-mode-1  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/osr-multiple-loops  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/osr-only-interrupt  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/osr-to-tf  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/regress-330427711  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/regress-525732296  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/regress-536945254  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/regress-539121142  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/string-compare  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typed-array-length-store-script-context  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
-maglev/typedarray-bounds-check-elimination  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
+maglev/extras-cped  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/float64-conversions  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/omit-default-ctors  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/osr-from-ml-to-tf  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/osr-from-ml-to-tf-mode-1  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/osr-multiple-loops  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/osr-only-interrupt  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/osr-to-tf  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/regress-330427711  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/regress-525732296  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/regress-536945254  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/regress-539121142  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/string-compare  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
+maglev/typed-array-length-store-script-context  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
 measure-memory  # FAIL
 measure-memory-multiple-realms  # FAIL
 mutable-int32-slot  # FAIL
@@ -107,6 +108,7 @@ regress/regress-13652  # FAIL
 regress/regress-1394663  # FAIL
 regress/regress-1494164  # FAIL
 regress/regress-1502014  # TIMEOUT
+regress/regress-2618  # FAIL: Turbofan OSR (V8Sharp has no Turbofan)
 regress/regress-351926098  # FAIL
 regress/regress-353628445  # FAIL
 regress/regress-354626177  # FAIL
@@ -172,7 +174,7 @@ regress/regress-crbug-866315  # FAIL
 regress/regress-crbug-896700  # FAIL
 regress/regress-crbug-897406  # FAIL
 regress/regress-double-toStringTag  # FAIL
-regress/regress-homomorphic-maglev  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
+regress/regress-homomorphic-maglev  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
 regress/regress-homomorphic-unoptimized  # FAIL
 regress/regress-rab-proto-oob  # FAIL
 regress/regress-report-exception-terminate  # FAIL
@@ -191,11 +193,13 @@ turbolev/array-prototype-map-elements-kinds  # FAIL
 turbolev/assert-not-peeled-fail  # PASS
 turbolev/assert-peeled-fail  # PASS
 turbolev/dataview-deopt-oob  # FAIL
+turbolev/holey-double-load-arith  # FAIL: undefined in double arrays (V8_ENABLE_UNDEFINED_DOUBLE)
 turbolev/instanceof  # FAIL
 turbolev/osr  # FAIL
 turbolev/regress-488090094  # FAIL
 turbolev/static-assert-fail  # PASS
-turboshaft/regress-539984773  # FAIL: optimizing-tier fidelity (Maglev port is off by default; the test asserts V8's optimize/deopt decisions)
+turboshaft/regress-380487911  # FAIL: 65536 locals exceed what the IL code generator compiles
+turboshaft/regress-539984773  # FAIL: optimizing-tier fidelity (the test asserts V8's optimize/deopt decisions)
 typedarray-resizablearraybuffer-atomics  # FAIL
 verify-assert-false  # FAIL
 weakrefs/finalizationregistry-independent-lifetime  # FAIL
