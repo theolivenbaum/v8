@@ -839,6 +839,12 @@ public sealed partial class Isolate
 
         readonly bool IsNotHidden(JSFunction function)
         {
+            // TODO(szuend): Remove this check once the flag is enabled
+            //               by default.
+            if (!isolate.Flags.experimental_stack_trace_frames && function.Shared.IsApiFunction)
+            {
+                return false;
+            }
             // Functions defined not in user scripts are not visible unless directly
             // exposed, in which case the native flag is set.
             // The --builtins-in-stack-traces command line flag allows including
