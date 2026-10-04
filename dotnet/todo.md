@@ -377,6 +377,11 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | 2026-10-02 | mjsunit | 7378 | 7587 | 97.2% | baseline performance pass, --always-sparkplug: +3 (opt-proto-seq/**, private_fields/test_private_fields, regress-484904778), -3: regress-class-initializer-eval (fails in the interpreter too with --no-lazy-feedback-allocation), unicode-case-overoptimization0/1 (timeouts under load; 40 s alone in both tiers) |
 | 2026-10-02 | mjsunit | 7386 | 7600 | 97.2% | baseline performance pass, --sparkplug (tiering with concurrent compilation, feedback-guided code): +3 as above, -1 baseline/test-baseline (fixed since: the size limit no longer applies to %CompileBaseline) |
 | 2026-10-02 | mjsunit | 7330 | 7602 | 96.4% | baseline performance pass, default flags (Sparkplug off): 0 newly failing, +1 regress-484904778 |
+| 2026-10-04 | mjsunit | 7404 | 7602 | 97.4% | baseline pass 2 (out-of-line checks, chunks, code cache, specialized paths), default flags (Sparkplug on): 0 newly failing |
+| 2026-10-04 | mjsunit | 7393 | 7587 | 97.4% | baseline pass 2, --always-sparkplug: -2, both failing in the interpreter too with --no-lazy-feedback-allocation: regress-class-initializer-eval, es6/for-of-array-iterator-optimization-maglev-eager-next-call (assertMaglevved) |
+| 2026-10-04 | test262 | 94881 | 95123 | 99.75% | baseline pass 2, default flags and --always-sparkplug: 0 newly failing, 0 newly passing (one staging/sm TypedArray test failed before the elements kind check, 57147b31) |
+| 2026-10-04 | mjsunit | 7399 | 7602 | 97.3% | baseline pass 2 merged with Maglev on by default (75d8926c), default flags: 0 newly failing (regress-331074427 crashed under memory pressure from a concurrent run; passes alone, with regress-1189077 and regress-3359) |
+| 2026-10-04 | mjsunit | 7389 | 7587 | 97.4% | baseline pass 2 merged (75d8926c), --always-sparkplug: the same 2 as above (fail in the interpreter with --no-lazy-feedback-allocation) |
 
 Octane, interpreter only, after the interpreter performance pass
 (2026-09-28, 4-core container shared with a test262 run; mean of 4 runs,
@@ -1331,6 +1336,45 @@ Crypto, RegExp). RayTrace, Splay and EarleyBoyer are dominated by allocation
 and GC (object = JSObject + JSValue[] fields) and by runtime paths
 (instanceof's @@hasInstance lookup), which the tier does not change.
 
+Baseline pass 2 (2026-10-04, merged with Maglev on by default; the baseline
+tier measured as `v8sharp:sparkplug`, which passes --no-maglev). Changes: call
+stubs inline the frame entry (one register-stack compare for overflow and
+interrupts), polymorphic FixedArray hits in GetKeyedPropertySlow, RyuJIT
+limits recalibrated, offset stores through a ref, unchecked constant/feedback
+reads, out-of-line number checks for big functions, compile-time own-field
+and typed array specialization, chunked compilation, a code cache by
+bytecode. Parity publishes (R2R composite, self-contained), octane-steady,
+mean of 2 interleaved runs; "main" is 57d945ce. The host was shared with
+other agents' builds and unlocked test runs (load 4-12 at the end of the
+second session and the cold one), so the cross-engine ratios are the
+evidence, not the absolute scores.
+
+| benchmark | interpreter | baseline (main) | baseline (pass 2) | V8 --jitless | V8 sparkplug |
+|---|---|---|---|---|---|
+| Richards | 480 | 523 | 684 | 798 | 986 |
+| DeltaBlue | 414 | 456 | 549 | 888 | 1076 |
+| Crypto | 56.0 | 56.0 | 73.2 | 101 | 136 |
+| RayTrace | 234 | 265 | 286 | 462 | 604 |
+| EarleyBoyer | 92.2 | 99.4 | 110 | 196 | 246 |
+| RegExp | 232 | 299 | 318 | 508 | 960 |
+| Splay | 3593 | 3647 | 3774 | 4614 | 4933 |
+| NavierStokes | 244 | 351 | 376 | 226 | 266 |
+| PdfJS | 814 | 947 | 979 | 1975 | 2599 |
+| Mandreel | 84.8 | 74.5 | 85.2 | 146 | 198 |
+| Gameboy | 380 | 401 | 462 | 727 | 1023 |
+| CodeLoad | 3289 | 3194 | 3355 | 4318 | 4400 |
+| Box2D | 707 | 575 | 962 | 938 | 1153 |
+| zlib | 19.6 | 19.9 | 23.2 | 42.1 | 1747 |
+| Typescript | 306 | 278 | 325 | 639 | 904 |
+| geomean | 304 | 320 | 372 | 532 | 865 |
+
+Pass 2 / main baseline: 1.16x; baseline / interpreter: 1.22x (now ahead on
+every benchmark); baseline / V8 sparkplug: 0.43 (0.55 without zlib, which V8
+runs as asm.js through wasm). Cold (`octane`, the same publishes): geomean
+interpreter 1929, main 1931, pass 2 2153, V8 --jitless 3338, V8 sparkplug
+5151; CodeLoad (7143 vs 9580), Box2D (1816 vs 2560) and Typescript (6383 vs
+7467) are still below the interpreter cold, from RyuJIT compile time.
+
 Performance with the baseline tier after the baseline performance pass
 (2026-10-02; the interpreter had meanwhile had three performance passes, so
 the 2026-09-28 ratios above no longer hold). Changes: the interpreter's fast
@@ -1530,8 +1574,10 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
       the conditional jumps, monomorphic named/keyed loads and stores, global
       loads, context slots), chosen per bytecode from the feedback at compile
       time; registers in IL locals; lean baseline-to-baseline calls
-      (BaselineCalls, also through Function.prototype.call/apply); compact
-      code for functions beyond RyuJIT's optimization limits; concurrent
+      (BaselineCalls, also through Function.prototype.call/apply);
+      feedback-specialized own-field and typed array accesses; out-of-line
+      checks, chunks and compact code for functions beyond RyuJIT's
+      optimization limits; a code cache by bytecode; concurrent
       compilation on a background thread (--concurrent-sparkplug, on as in
       V8). Tests: tests/V8Sharp.Tests/Baseline (interpreter vs
       --always-sparkplug, and the same feedback in both tiers).
@@ -1557,17 +1603,29 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     short run. On an idle 4-core host cold Octane runs are now within noise of
     the interpreter (the compile threads use idle cores); on a loaded host
     they are still slower.
-  - Functions with more than 5000 bytes of bytecode stay in the interpreter
-    (one IL method beyond RyuJIT's limits even in compact form): TypeScript's
-    and zlib's biggest functions. Splitting a function into several IL
-    methods would let them tier up.
+  - Functions over RyuJIT's limits are emitted in the out-of-line form, then
+    in chunks (one IL method per bytecode range, 2026-10-04); functions over
+    100000 bytes of bytecode still stay in the interpreter unless
+    %CompileBaseline asks (mjsunit regress-crbug-808192 builds one of 4 MB).
+    A chunk exit spills the cached registers and re-enters through the
+    dispatch: a hot loop that crosses a chunk boundary would pay it per
+    iteration (cuts are placed at the least loop depth to avoid that).
+  - Compile cost: functions with the same bytecode share their methods
+    (BaselineCodeCache; CodeLoad: 62 of 71 compiles are hits). Typescript and
+    PdfJS still pay RyuJIT for each distinct function.
   - In big methods RyuJIT stops inlining (inline budget, 512 locals): what
     the code relies on being inlined must be IL (the bytecode offset store,
     Smi constants are; FieldAt, Map.IsUndetectable, FromNumber are calls).
   - Performance: calls still pay the interpreter frame's setup (register
-    file clear, frame record, write barriers: about 20% of DeltaBlue in
-    BaselineCalls.Enter and the write barrier); a leaner frame protocol
-    shared with the interpreter would help both tiers.
+    file clear, frame record, write barriers: about 20% of DeltaBlue and
+    Richards in BaselineCalls.EnterInline, PushFrame and the write barrier,
+    after the 2026-10-04 pass); a leaner frame protocol shared with the
+    interpreter would help both tiers. Skipping the register clear for
+    register-cached callees was measured and gave nothing.
+  - SignedSmall feedback needs an explicit Smi check per operand (JSValue has
+    no tagged Smis): integral, 31-bit, not -0.
+  - zlib: V8 runs it as asm.js through wasm (about 70x the baseline score);
+    out of scope for the baseline tier.
 - [~] Optimizing compiler (Maglev analogue), src/V8Sharp/Maglev/ and
       Deoptimizer/ (architecture.md 9.2). On by default since 2026-10-04 (`--no-maglev` turns it off):
       - Graph builder from bytecode + feedback: abstract frame, merge

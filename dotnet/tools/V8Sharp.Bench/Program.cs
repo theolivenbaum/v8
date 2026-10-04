@@ -314,6 +314,12 @@ public static partial class Program
                 : [name + ".js"];
             return (dir, [Path.Combine(dir, "harness.js"), .. names.Select(n => Path.Combine(dir, n))], null);
         }
+        if (suite.StartsWith("file:", StringComparison.Ordinal))
+        {
+            // file:<path>: one script (an ad hoc micro-benchmark that prints its own results).
+            string path = Path.GetFullPath(suite[5..]);
+            return (Path.GetDirectoryName(path)!, [path], null);
+        }
         if (suite.StartsWith("perf:", StringComparison.Ordinal))
         {
             string dir = Path.Combine(Paths.JsPerfTest, suite[5..]);

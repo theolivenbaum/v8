@@ -68,7 +68,7 @@ public sealed partial class BaselineCompiler
     static readonly FieldInfo s_feedbackSlots = typeof(FeedbackVector).GetField(nameof(FeedbackVector.Slots))!;
     static readonly FieldInfo s_cellValue = typeof(PropertyCell).GetField(nameof(PropertyCell.Value))!;
     static readonly FieldInfo s_cellDetails = typeof(PropertyCell).GetField(nameof(PropertyCell.PropertyDetails))!;
-    static readonly MethodInfo s_detailsKind = typeof(PropertyDetails).GetProperty(nameof(PropertyDetails.Kind))!.GetMethod!;
+    static readonly FieldInfo s_detailsValue = typeof(PropertyDetails).GetField("_value", kAnyInstance)!;
     static readonly FieldInfo s_lhOwnFieldIndex = typeof(LoadHandler).GetField(nameof(LoadHandler.OwnFieldIndex))!;
     static readonly FieldInfo s_lhIsPrototypeConstant = typeof(LoadHandler).GetField(nameof(LoadHandler.IsPrototypeConstant))!;
     static readonly FieldInfo s_lhData = typeof(LoadHandler).GetField(nameof(LoadHandler.Data))!;
@@ -91,7 +91,14 @@ public sealed partial class BaselineCompiler
     static readonly FieldInfo s_stackGuard = typeof(V8Sharp.Isolate).GetField(nameof(V8Sharp.Isolate.StackGuard))!;
     static readonly MethodInfo s_hasPendingInterrupts =
         typeof(StackGuard).GetProperty(nameof(StackGuard.HasPendingInterrupts))!.GetMethod!;
-    static readonly MethodInfo s_truncate = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.TruncateToInt32))!;
+    // double.ConvertToIntegerNative<int> (cvttsd2si) itself: a JIT intrinsic,
+    // expanded even where RyuJIT's inlining limits leave a wrapper called.
+    static readonly MethodInfo s_truncate = typeof(double).GetMethod(nameof(double.ConvertToIntegerNative))!.MakeGenericMethod(typeof(int));
+    static readonly MethodInfo s_binaryFeedbackUnchanged = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.BinaryFeedbackUnchanged))!;
+    static readonly MethodInfo s_binaryFeedbackUnchangedSmiRhs =
+        typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.BinaryFeedbackUnchangedSmiRhs))!;
+    static readonly MethodInfo s_compareFeedbackUnchanged = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.CompareFeedbackUnchanged))!;
+    static readonly MethodInfo s_isSmiNumber = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.IsSmiNumber))!;
     static readonly MethodInfo s_doubleToBits = typeof(BitConverter).GetMethod(nameof(BitConverter.DoubleToInt64Bits))!;
     static readonly MethodInfo s_fromNumber = typeof(JSValue).GetMethod(nameof(JSValue.FromNumber))!;
 
@@ -100,8 +107,12 @@ public sealed partial class BaselineCompiler
     LocalBuilder? _tObj, _tVal, _tInt, _tInt2, _tDouble, _tLoadHandler, _tStoreHandler, _tCell, _tFeedbackCell, _tValues, _tDoubles;
 
     LocalBuilder TObj => _tObj ??= _il.DeclareLocal(typeof(HeapObject));
+    LocalBuilder? _tValueRef;
+    LocalBuilder TValueRef => _tValueRef ??= _il.DeclareLocal(typeof(JSValue).MakeByRefType());
     LocalBuilder TVal => _tVal ??= _il.DeclareLocal(typeof(JSValue));
     LocalBuilder TInt => _tInt ??= _il.DeclareLocal(typeof(int));
+    LocalBuilder? _tLong;
+    LocalBuilder TLong => _tLong ??= _il.DeclareLocal(typeof(long));
     LocalBuilder TInt2 => _tInt2 ??= _il.DeclareLocal(typeof(int));
     LocalBuilder TDouble => _tDouble ??= _il.DeclareLocal(typeof(double));
     LocalBuilder TLoadHandler => _tLoadHandler ??= _il.DeclareLocal(typeof(LoadHandler));
@@ -382,10 +393,22 @@ public sealed partial class BaselineCompiler
         // (Feedback that was saturated at compile time still is.)
         if (BinaryOpSite(1) != NumberSite.Saturated)
         {
-            BranchOnBinaryFeedback(feedbackOffset, unchanged, slow);
-            BranchIfNotSmi(lhs, TInt, slow);
-            if (!smiForm) BranchIfNotSmi(rhs, TInt, slow);
-            BranchIfNotSmi(() => Emit(OpCodes.Ldloc, TDouble), TInt, slow);
+            if (_outOfLineChecks)
+            {
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                lhs();
+                if (!smiForm) rhs();
+                Emit(OpCodes.Ldloc, TDouble);
+                Emit(OpCodes.Call, smiForm ? s_binaryFeedbackUnchangedSmiRhs : s_binaryFeedbackUnchanged);
+                Emit(OpCodes.Brfalse, slow);
+            }
+            else
+            {
+                BranchOnBinaryFeedback(feedbackOffset, unchanged, slow);
+                BranchIfNotSmi(lhs, TInt, slow);
+                if (!smiForm) BranchIfNotSmi(rhs, TInt, slow);
+                BranchIfNotSmi(() => Emit(OpCodes.Ldloc, TDouble), TInt, slow);
+            }
         }
 
         _il.MarkLabel(unchanged);
@@ -430,11 +453,23 @@ public sealed partial class BaselineCompiler
         // SignedSmall stays when the input is a Smi and the result is one.
         if (BinaryOpSite(0) != NumberSite.Saturated)
         {
-            BranchOnBinaryFeedback(feedbackOffset, unchanged, slow);
-            BranchIfNotSmi(AccNum, TInt, slow);
-            Emit(OpCodes.Ldloc, TInt);
-            Emit(OpCodes.Ldc_I4, increment ? JSValue.SmiMaxValue : JSValue.SmiMinValue);
-            Emit(OpCodes.Beq, slow);
+            // SignedSmall stays when the input and the result are Smis.
+            if (_outOfLineChecks)
+            {
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                AccNum();
+                Emit(OpCodes.Ldloc, TDouble);
+                Emit(OpCodes.Call, s_binaryFeedbackUnchangedSmiRhs);
+                Emit(OpCodes.Brfalse, slow);
+            }
+            else
+            {
+                BranchOnBinaryFeedback(feedbackOffset, unchanged, slow);
+                BranchIfNotSmi(AccNum, TInt, slow);
+                Emit(OpCodes.Ldloc, TInt);
+                Emit(OpCodes.Ldc_I4, increment ? JSValue.SmiMaxValue : JSValue.SmiMinValue);
+                Emit(OpCodes.Beq, slow);
+            }
         }
         _il.MarkLabel(unchanged);
         SetAccNumber(TDouble);
@@ -514,34 +549,46 @@ public sealed partial class BaselineCompiler
         // (-0 is not), as InterpreterBitwise computes it.
         if (BinaryOpSite(1) != NumberSite.Saturated)
         {
-            Label checkOperands = _il.DefineLabel();
-            _masm.LoadEmbeddedFeedback(feedbackOffset);
-            Emit(OpCodes.Dup);
-            Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.SignedSmall);
-            Emit(OpCodes.Beq, checkOperands);
-            Emit(OpCodes.Dup);
-            Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.Any);
-            Label popUnchanged = _il.DefineLabel();
-            Emit(OpCodes.Beq, popUnchanged);
-            Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.Number);
-            Emit(OpCodes.Sub);
-            Emit(OpCodes.Ldc_I4_1);
-            Emit(OpCodes.Ble_Un, unchanged);
-            Emit(OpCodes.Br, slow);
-            _il.MarkLabel(popUnchanged);
-            Emit(OpCodes.Pop);
-            Emit(OpCodes.Br, unchanged);
-            _il.MarkLabel(checkOperands);
-            Emit(OpCodes.Pop);
-            BranchIfIntegralNotSmi(lhs, TInt, slow);
-            if (!smiForm) BranchIfIntegralNotSmi(AccNum, TInt2, slow);
-            // The result is an integer (never -0): its range.
-            Emit(OpCodes.Ldloc, TDouble);
-            Emit(OpCodes.Ldc_R8, (double)JSValue.SmiMaxValue);
-            Emit(OpCodes.Bgt_Un, slow);
-            Emit(OpCodes.Ldloc, TDouble);
-            Emit(OpCodes.Ldc_R8, (double)JSValue.SmiMinValue);
-            Emit(OpCodes.Blt_Un, slow);
+            if (_outOfLineChecks)
+            {
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                lhs();
+                if (!smiForm) AccNum();
+                Emit(OpCodes.Ldloc, TDouble);
+                Emit(OpCodes.Call, smiForm ? s_binaryFeedbackUnchangedSmiRhs : s_binaryFeedbackUnchanged);
+                Emit(OpCodes.Brfalse, slow);
+            }
+            else
+            {
+                Label checkOperands = _il.DefineLabel();
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                Emit(OpCodes.Dup);
+                Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.SignedSmall);
+                Emit(OpCodes.Beq, checkOperands);
+                Emit(OpCodes.Dup);
+                Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.Any);
+                Label popUnchanged = _il.DefineLabel();
+                Emit(OpCodes.Beq, popUnchanged);
+                Emit(OpCodes.Ldc_I4, (int)BOF.TypeIndex.Number);
+                Emit(OpCodes.Sub);
+                Emit(OpCodes.Ldc_I4_1);
+                Emit(OpCodes.Ble_Un, unchanged);
+                Emit(OpCodes.Br, slow);
+                _il.MarkLabel(popUnchanged);
+                Emit(OpCodes.Pop);
+                Emit(OpCodes.Br, unchanged);
+                _il.MarkLabel(checkOperands);
+                Emit(OpCodes.Pop);
+                BranchIfIntegralNotSmi(lhs, TInt, slow);
+                if (!smiForm) BranchIfIntegralNotSmi(AccNum, TInt2, slow);
+                // The result is an integer (never -0): its range.
+                Emit(OpCodes.Ldloc, TDouble);
+                Emit(OpCodes.Ldc_R8, (double)JSValue.SmiMaxValue);
+                Emit(OpCodes.Bgt_Un, slow);
+                Emit(OpCodes.Ldloc, TDouble);
+                Emit(OpCodes.Ldc_R8, (double)JSValue.SmiMinValue);
+                Emit(OpCodes.Blt_Un, slow);
+            }
         }
 
         _il.MarkLabel(unchanged);
@@ -577,7 +624,7 @@ public sealed partial class BaselineCompiler
     /// </summary>
     void EmitCompareBranch(Operation op, Label isTrue, Label isFalse)
     {
-        Label slow = _il.DefineLabel(), compare = _il.DefineLabel(), feedbackSlow = _il.DefineLabel();
+        Label slow = _il.DefineLabel(), compare = _il.DefineLabel();
         int feedbackOffset = EmbeddedFeedbackOffset(1);
         Reg(RegisterOperand(0));
         Emit(OpCodes.Stloc, TVal);
@@ -592,23 +639,35 @@ public sealed partial class BaselineCompiler
         // NumberOrOddball, Any), or SignedSmall with two Smis, is left as it is.
         if (CompareSite(1) != NumberSite.Saturated)
         {
-            _masm.LoadEmbeddedFeedback(feedbackOffset);
-            Emit(OpCodes.Stloc, TInt2);
-            Emit(OpCodes.Ldloc, TInt2);
-            Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.Number);
-            Emit(OpCodes.Sub);
-            Emit(OpCodes.Ldc_I4_2);
-            Emit(OpCodes.Ble_Un, compare);
-            Emit(OpCodes.Ldloc, TInt2);
-            Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.Any);
-            Emit(OpCodes.Beq, compare);
-            Emit(OpCodes.Ldloc, TInt2);
-            Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.SignedSmall);
-            Emit(OpCodes.Bne_Un, feedbackSlow);
-            BranchIfNotSmi(() => LocalNum(TVal), TInt, feedbackSlow);
-            BranchIfNotSmi(AccNum, TInt, feedbackSlow);
-            Emit(OpCodes.Br, compare);
-            _il.MarkLabel(feedbackSlow);
+            if (_outOfLineChecks)
+            {
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                LocalNum(TVal);
+                AccNum();
+                Emit(OpCodes.Call, s_compareFeedbackUnchanged);
+                Emit(OpCodes.Brtrue, compare);
+            }
+            else
+            {
+                Label feedbackSlow = _il.DefineLabel();
+                _masm.LoadEmbeddedFeedback(feedbackOffset);
+                Emit(OpCodes.Stloc, TInt2);
+                Emit(OpCodes.Ldloc, TInt2);
+                Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.Number);
+                Emit(OpCodes.Sub);
+                Emit(OpCodes.Ldc_I4_2);
+                Emit(OpCodes.Ble_Un, compare);
+                Emit(OpCodes.Ldloc, TInt2);
+                Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.Any);
+                Emit(OpCodes.Beq, compare);
+                Emit(OpCodes.Ldloc, TInt2);
+                Emit(OpCodes.Ldc_I4, (int)COF.TypeIndex.SignedSmall);
+                Emit(OpCodes.Bne_Un, feedbackSlow);
+                BranchIfNotSmi(() => LocalNum(TVal), TInt, feedbackSlow);
+                BranchIfNotSmi(AccNum, TInt, feedbackSlow);
+                Emit(OpCodes.Br, compare);
+                _il.MarkLabel(feedbackSlow);
+            }
             LocalNum(TVal);
             AccNum();
             Feedback(1);
@@ -677,7 +736,7 @@ public sealed partial class BaselineCompiler
             Bytecode.JumpIfToBooleanTrueConstant or Bytecode.JumpIfToBooleanFalseConstant;
         Label isTrue = _il.DefineLabel(), isFalse = _il.DefineLabel();
         EmitCompareBranch(op, isTrue, isFalse);
-        if (fusable && nextOffset < _isJumpTarget.Length && !_isJumpTarget[nextOffset])
+        if (fusable && nextOffset < _chunkEnd && !_isJumpTarget[nextOffset])
         {
             _fusedCompare = (isTrue, isFalse);
             return;
@@ -690,7 +749,7 @@ public sealed partial class BaselineCompiler
     {
         (Label isTrue, Label isFalse) = _fusedCompare!.Value;
         _fusedCompare = null;
-        Label target = _labels[JumpTargetOffset()];
+        Label target = EnsureLabel(JumpTargetOffset());
         Label fallThrough = _il.DefineLabel();
         bool jumpOnTrue = bytecode is Bytecode.JumpIfTrue or Bytecode.JumpIfToBooleanTrue or Bytecode.JumpIfTrueConstant or
             Bytecode.JumpIfToBooleanTrueConstant;
@@ -761,7 +820,7 @@ public sealed partial class BaselineCompiler
     /// <summary>The conditional jumps on the accumulator (V8: JumpIf* in baseline-compiler.cc).</summary>
     void VisitConditionalJump(Bytecode bytecode)
     {
-        Label target = _labels[JumpTargetOffset()];
+        Label target = EnsureLabel(JumpTargetOffset());
         Label next = _il.DefineLabel();
         switch (bytecode)
         {
@@ -954,9 +1013,13 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Ldsfld, s_propertyCellHole);
         Emit(OpCodes.Beq, slow);
         Emit(OpCodes.Ldloc, TCell);
+        // PropertyDetails' KindField (bit 0; PropertyKind.Data is 0), read
+        // directly: the Kind getter is a call where RyuJIT stops inlining.
         Emit(OpCodes.Ldflda, s_cellDetails);
-        Emit(OpCodes.Call, s_detailsKind);
-        Emit(OpCodes.Brtrue, slow); // PropertyKind.Data is 0.
+        Emit(OpCodes.Ldfld, s_detailsValue);
+        Emit(OpCodes.Ldc_I4_1);
+        Emit(OpCodes.And);
+        Emit(OpCodes.Brtrue, slow);
         Emit(OpCodes.Ldloc, TVal);
         SetAcc();
         Emit(OpCodes.Br, done);
@@ -976,9 +1039,7 @@ public sealed partial class BaselineCompiler
     /// <summary>Pushes the heap object part of feedback slot <paramref name="slot"/>.</summary>
     void FeedbackSlotObj(int slot)
     {
-        Emit(OpCodes.Ldloc, _masm.FeedbackSlots);
-        Emit(OpCodes.Ldc_I4, slot);
-        Emit(OpCodes.Ldelema, typeof(JSValue));
+        _masm.LoadFeedbackSlotAddress(slot);
         Emit(OpCodes.Ldfld, s_obj);
     }
 
@@ -1015,6 +1076,19 @@ public sealed partial class BaselineCompiler
         int slot = FeedbackSlot(2);
         NamedLoadPaths paths = GetNamedPropertySite(slot);
         EmitMonomorphicMapCheck(receiver, slot, slow);
+        if (CompileTimeOwnField(slot) is int fieldIndex)
+        {
+            // The own field the feedback named when the function was compiled:
+            // the handler half of the pair carries its index (FeedbackNexus.EncodeHandler),
+            // so a hit is the payload compare and a load at a fixed offset.
+            EmitHandlerPayloadCheck(slot, fieldIndex + 1, slow);
+            EmitFieldAddress(fieldIndex);
+            Emit(OpCodes.Ldobj, typeof(JSValue));
+            SetAcc();
+            Emit(OpCodes.Br, done);
+            EmitGetNamedPropertySlow(slow, done, receiver, slot);
+            return;
+        }
         FeedbackSlotObj(slot + 1);
         Emit(OpCodes.Isinst, typeof(LoadHandler));
         Emit(OpCodes.Stloc, TLoadHandler);
@@ -1068,6 +1142,59 @@ public sealed partial class BaselineCompiler
             Emit(OpCodes.Br, done);
         }
 
+        EmitGetNamedPropertySlow(slow, done, receiver, slot);
+    }
+
+    /// <summary>Whether the IC slot's feedback was polymorphic when the function was compiled.</summary>
+    bool CompileTimePolymorphic(int slot) => !_compact && !FeedbackUnknown && CompileTimeFeedback(slot) is FixedArray;
+
+    static readonly MethodInfo s_loadPolymorphicOwnField = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.LoadPolymorphicOwnField))!;
+    static readonly MethodInfo s_tryStorePolymorphicOwnField =
+        typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.TryStorePolymorphicOwnField))!;
+    static readonly FieldInfo s_missMarker = typeof(BaselineBuiltins).GetField(nameof(BaselineBuiltins.MissMarker))!;
+
+    /// <summary>GetNamedProperty with polymorphic feedback at compile time: the own-field hit of any of its maps.</summary>
+    void VisitGetNamedPropertyPolymorphic()
+    {
+        Label slow = _il.DefineLabel(), done = _il.DefineLabel();
+        Register receiver = RegisterOperand(0);
+        int slot = FeedbackSlot(2);
+        FeedbackSlotObj(slot);
+        RegObj(receiver);
+        Emit(OpCodes.Call, s_loadPolymorphicOwnField);
+        Emit(OpCodes.Stloc, TVal);
+        LocalObj(TVal);
+        Emit(OpCodes.Ldsfld, s_missMarker);
+        Emit(OpCodes.Beq, slow);
+        Emit(OpCodes.Ldloc, TVal);
+        SetAcc();
+        Emit(OpCodes.Br, done);
+        EmitGetNamedPropertySlow(slow, done, receiver, slot);
+    }
+
+    /// <summary>SetNamedProperty with polymorphic feedback at compile time: the field store of any of its maps.</summary>
+    void VisitSetNamedPropertyPolymorphic()
+    {
+        Label done = _il.DefineLabel();
+        Register receiver = RegisterOperand(0);
+        int slot = FeedbackSlot(2);
+        FeedbackSlotObj(slot);
+        RegObj(receiver);
+        Acc();
+        Emit(OpCodes.Call, s_tryStorePolymorphicOwnField);
+        Emit(OpCodes.Brtrue, done);
+        Isolate();
+        Fv();
+        I(slot);
+        Reg(receiver);
+        Const(ConstantPoolIndex(1));
+        Acc();
+        CallBuiltin("SetNamedPropertySlow");
+        _il.MarkLabel(done);
+    }
+
+    void EmitGetNamedPropertySlow(Label slow, Label done, Register receiver, int slot)
+    {
         _il.MarkLabel(slow);
         Isolate();
         Fv();
@@ -1079,6 +1206,78 @@ public sealed partial class BaselineCompiler
         _il.MarkLabel(done);
     }
 
+    /// <summary>
+    /// The own field index of a monomorphic load whose handler was an own
+    /// field when the function was compiled, when the field can be addressed
+    /// at a fixed offset (in-object slots laid out contiguously, or the property array).
+    /// </summary>
+    int? CompileTimeOwnField(int slot)
+    {
+        if (_compact || FeedbackUnknown) return null;
+        if (CompileTimeFeedback(slot) is not Map || CompileTimeFeedback(slot + 1) is not LoadHandler { OwnFieldIndex: >= 0 } handler) return null;
+        int index = handler.OwnFieldIndex;
+        return index >= JSObject.kPropertyArrayStorageBase || InObjectLayout.IsContiguous ? index : null;
+    }
+
+    /// <summary>
+    /// The store counterpart: the encoded field store (StoreIC.EncodeFieldStore)
+    /// of a monomorphic store whose handler was a field store at compile time.
+    /// </summary>
+    long CompileTimeEncodedFieldStore(int slot)
+    {
+        if (_compact || FeedbackUnknown) return 0;
+        if (CompileTimeFeedback(slot) is not Map || CompileTimeFeedback(slot + 1) is not StoreHandler handler) return 0;
+        long encoded = StoreIC.EncodeFieldStore(handler);
+        int index = (int)encoded - 1;
+        return encoded != 0 && (index >= JSObject.kPropertyArrayStorageBase || InObjectLayout.IsContiguous) ? encoded : 0;
+    }
+
+    /// <summary>
+    /// Branches to <paramref name="miss"/> unless the payload of feedback slot
+    /// <paramref name="handlerSlot"/>'s handler (after the map check of its pair) is <paramref name="payload"/>.
+    /// </summary>
+    void EmitHandlerPayloadCheck(int handlerSlot, long payload, Label miss)
+    {
+        _masm.LoadFeedbackSlotAddress(handlerSlot + 1);
+        Emit(OpCodes.Ldflda, s_bits);
+        if (payload == (int)payload)
+        {
+            Emit(OpCodes.Ldind_I4);
+            Emit(OpCodes.Ldc_I4, (int)payload);
+        }
+        else
+        {
+            Emit(OpCodes.Ldind_I8);
+            Emit(OpCodes.Ldc_I8, payload);
+        }
+        Emit(OpCodes.Bne_Un, miss);
+    }
+
+    static readonly FieldInfo s_inObjectSlots0 = typeof(JSObjectInObject1).GetField(nameof(JSObjectInObject1._slots0), kAnyInstance)!;
+    static readonly FieldInfo s_propertyArray = typeof(JSObject).GetField(nameof(JSObject._fields), kAnyInstance)!;
+
+    /// <summary>
+    /// Pushes the address of field <paramref name="index"/> of the JSObject in
+    /// TObj (JSObject.FieldAt at a known index: the map check established the layout).
+    /// </summary>
+    void EmitFieldAddress(int index)
+    {
+        Emit(OpCodes.Ldloc, TObj);
+        if (index >= JSObject.kPropertyArrayStorageBase)
+        {
+            Emit(OpCodes.Ldfld, s_propertyArray);
+            Emit(OpCodes.Ldc_I4, index - JSObject.kPropertyArrayStorageBase);
+            Emit(OpCodes.Ldelema, typeof(JSValue));
+            return;
+        }
+        Emit(OpCodes.Ldflda, s_inObjectSlots0);
+        if (index != 0)
+        {
+            Emit(OpCodes.Ldc_I4, index * System.Runtime.CompilerServices.Unsafe.SizeOf<JSValue>());
+            Emit(OpCodes.Add);
+        }
+    }
+
     /// <summary>SetNamedProperty: StoreIC's monomorphic hits (a field store or a field-adding transition).</summary>
     void VisitSetNamedProperty()
     {
@@ -1086,6 +1285,65 @@ public sealed partial class BaselineCompiler
         Register receiver = RegisterOperand(0);
         int slot = FeedbackSlot(2);
         EmitMonomorphicMapCheck(receiver, slot, slow);
+        if (CompileTimeEncodedFieldStore(slot) is var encoded && encoded != 0)
+        {
+            // The field store the feedback named at compile time (StoreIC.TryStoreEncodedField
+            // with the representation known): the payload compare, the value's
+            // representation check, and the store at a fixed offset.
+            EmitHandlerPayloadCheck(slot, encoded, slow);
+            switch ((Representation.Kind)(encoded >> 32))
+            {
+                case Representation.Kind.Smi:
+                    AccObj();
+                    Emit(OpCodes.Ldsfld, s_numberTag);
+                    Emit(OpCodes.Bne_Un, slow);
+                    AccNum();
+                    Emit(OpCodes.Call, s_isSmiNumber);
+                    Emit(OpCodes.Brfalse, slow);
+                    break;
+                case Representation.Kind.Double:
+                    // A number other than NaN (the general store canonicalizes NaN).
+                    AccObj();
+                    Emit(OpCodes.Ldsfld, s_numberTag);
+                    Emit(OpCodes.Bne_Un, slow);
+                    AccNum();
+                    AccNum();
+                    Emit(OpCodes.Bne_Un, slow);
+                    break;
+                case Representation.Kind.HeapObject:
+                    AccObj();
+                    Emit(OpCodes.Ldsfld, s_numberTag);
+                    Emit(OpCodes.Beq, slow);
+                    break;
+            }
+            EmitFieldAddress((int)encoded - 1);
+            Emit(OpCodes.Stloc, TValueRef);
+            // JSValue.StoreSlot: the reference half only when it changes.
+            Label skipReference = _il.DefineLabel();
+            Emit(OpCodes.Ldloc, TValueRef);
+            Emit(OpCodes.Ldfld, s_obj);
+            AccObj();
+            Emit(OpCodes.Beq, skipReference);
+            Emit(OpCodes.Ldloc, TValueRef);
+            AccObj();
+            Emit(OpCodes.Stfld, s_obj);
+            _il.MarkLabel(skipReference);
+            Emit(OpCodes.Ldloc, TValueRef);
+            Emit(OpCodes.Ldloca, _masm.Acc);
+            Emit(OpCodes.Ldfld, s_bits);
+            Emit(OpCodes.Stfld, s_bits);
+            Emit(OpCodes.Br, done);
+            _il.MarkLabel(slow);
+            Isolate();
+            Fv();
+            I(slot);
+            Reg(receiver);
+            Const(ConstantPoolIndex(1));
+            Acc();
+            CallBuiltin("SetNamedPropertySlow");
+            _il.MarkLabel(done);
+            return;
+        }
         FeedbackSlotObj(slot + 1);
         Emit(OpCodes.Isinst, typeof(StoreHandler));
         Emit(OpCodes.Stloc, TStoreHandler);
@@ -1112,7 +1370,9 @@ public sealed partial class BaselineCompiler
         AccObj();
         Emit(OpCodes.Ldsfld, s_numberTag);
         Emit(OpCodes.Bne_Un, notTaggedField);
-        BranchIfNotSmi(AccNum, TInt2, notTaggedField);
+        AccNum();
+        Emit(OpCodes.Call, s_isSmiNumber);
+        Emit(OpCodes.Brfalse, notTaggedField);
         Emit(OpCodes.Br, store);
         _il.MarkLabel(notSmiField);
         Emit(OpCodes.Ldloc, TInt);
@@ -1160,6 +1420,11 @@ public sealed partial class BaselineCompiler
         Label slow = _il.DefineLabel(), done = _il.DefineLabel(), doubles = _il.DefineLabel(), elements = _il.DefineLabel();
         Register receiver = RegisterOperand(0);
         int slot = FeedbackSlot(1);
+        if (CompileTimeTypedArrayKind(slot) is ElementsKind typedKind)
+        {
+            VisitGetKeyedPropertyTyped(receiver, slot, typedKind);
+            return;
+        }
         // The key: an int32 index >= 0 (TInt2).
         AccObj();
         Emit(OpCodes.Ldsfld, s_numberTag);
@@ -1183,7 +1448,24 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Brfalse, slow);
         Emit(OpCodes.Ldloc, TLoadHandler);
         Emit(OpCodes.Ldfld, s_lhFastElementsMode);
-        Emit(OpCodes.Brfalse, slow);
+        if (SlotFeedbackUnknown(slot))
+        {
+            // Compiled before the feedback named a map: a typed array's element
+            // handler has no fast elements kind, the receiver's kind decides.
+            Label fastElements = _il.DefineLabel();
+            Emit(OpCodes.Brtrue, fastElements);
+            Isolate();
+            Emit(OpCodes.Ldloc, TLoadHandler);
+            Emit(OpCodes.Ldloc, TObj);
+            Emit(OpCodes.Ldloc, TInt2);
+            Emit(OpCodes.Call, s_loadTypedElementBitsAnyKind);
+            EmitSetAccFromTypedBits(slow, done);
+            _il.MarkLabel(fastElements);
+        }
+        else
+        {
+            Emit(OpCodes.Brfalse, slow);
+        }
         // A JSArray: the index is below its length.
         Emit(OpCodes.Ldloc, TLoadHandler);
         Emit(OpCodes.Ldfld, s_lhIsJSArray);
@@ -1268,6 +1550,112 @@ public sealed partial class BaselineCompiler
         _il.MarkLabel(done);
     }
 
+    /// <summary>
+    /// The elements kind of a monomorphic keyed access whose feedback map was a
+    /// typed array of a Number kind when the function was compiled.
+    /// </summary>
+    ElementsKind? CompileTimeTypedArrayKind(int slot)
+    {
+        if (_compact || FeedbackUnknown || CompileTimeFeedback(slot) is not Map map) return null;
+        return BaselineBuiltins.IsNumberTypedKind(map.ElementsKind) ? map.ElementsKind : null;
+    }
+
+    static readonly MethodInfo s_loadTypedElementBits = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.LoadTypedElementBits))!;
+    static readonly MethodInfo s_tryStoreTypedElement = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.TryStoreTypedElement))!;
+
+    /// <summary>
+    /// Pushes the key in TInt2 when the accumulator (or <paramref name="key"/>)
+    /// holds an int32 number, else branches to <paramref name="slow"/>.
+    /// </summary>
+    void EmitInt32Key(Register? key, Label slow)
+    {
+        Action push = key is { } k ? () => RegNum(k) : AccNum;
+        if (key is { } r) RegObj(r);
+        else AccObj();
+        Emit(OpCodes.Ldsfld, s_numberTag);
+        Emit(OpCodes.Bne_Un, slow);
+        push();
+        Emit(OpCodes.Call, s_truncate);
+        Emit(OpCodes.Stloc, TInt2);
+        Emit(OpCodes.Ldloc, TInt2);
+        Emit(OpCodes.Conv_R8);
+        push();
+        Emit(OpCodes.Bne_Un, slow);
+    }
+
+    /// <summary>GetKeyedProperty on a typed array of the kind the compile-time feedback named.</summary>
+    void VisitGetKeyedPropertyTyped(Register receiver, int slot, ElementsKind kind)
+    {
+        Label slow = _il.DefineLabel(), done = _il.DefineLabel();
+        EmitInt32Key(null, slow);
+        EmitMonomorphicMapCheck(receiver, slot, slow);
+        Isolate();
+        FeedbackSlotObj(slot + 1);
+        Emit(OpCodes.Ldloc, TObj);
+        Emit(OpCodes.Ldloc, TInt2);
+        I((int)kind);
+        Emit(OpCodes.Call, s_loadTypedElementBits);
+        EmitSetAccFromTypedBits(slow, done);
+        _il.MarkLabel(slow);
+        Isolate();
+        Fv();
+        I(slot);
+        Reg(receiver);
+        Acc();
+        CallBuiltin("GetKeyedPropertySlow");
+        SetAcc();
+        _il.MarkLabel(done);
+    }
+
+    /// <summary>
+    /// The number bits on the stack into the accumulator and on to
+    /// <paramref name="done"/>, or to <paramref name="miss"/> for BaselineBuiltins.kTypedMissBits.
+    /// </summary>
+    void EmitSetAccFromTypedBits(Label miss, Label done)
+    {
+        Emit(OpCodes.Stloc, TLong);
+        Emit(OpCodes.Ldloc, TLong);
+        Emit(OpCodes.Ldc_I8, BaselineBuiltins.kTypedMissBits);
+        Emit(OpCodes.Beq, miss);
+        Emit(OpCodes.Ldloca, _masm.Acc);
+        Emit(OpCodes.Ldsfld, s_numberTag);
+        Emit(OpCodes.Stfld, s_obj);
+        Emit(OpCodes.Ldloca, _masm.Acc);
+        Emit(OpCodes.Ldloc, TLong);
+        Emit(OpCodes.Stfld, s_bits);
+        Emit(OpCodes.Br, done);
+    }
+
+    static readonly MethodInfo s_loadTypedElementBitsAnyKind =
+        typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.LoadTypedElementBitsAnyKind))!;
+    static readonly MethodInfo s_tryStoreTypedElementAnyKind =
+        typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.TryStoreTypedElementAnyKind))!;
+
+    /// <summary>SetKeyedProperty on a typed array of the kind the compile-time feedback named.</summary>
+    void VisitSetKeyedPropertyTyped(Register receiver, Register key, int slot, ElementsKind kind)
+    {
+        Label slow = _il.DefineLabel(), done = _il.DefineLabel();
+        EmitInt32Key(key, slow);
+        EmitMonomorphicMapCheck(receiver, slot, slow);
+        Isolate();
+        FeedbackSlotObj(slot + 1);
+        Emit(OpCodes.Ldloc, TObj);
+        Emit(OpCodes.Ldloc, TInt2);
+        Acc();
+        I((int)kind);
+        Emit(OpCodes.Call, s_tryStoreTypedElement);
+        Emit(OpCodes.Brtrue, done);
+        _il.MarkLabel(slow);
+        Isolate();
+        Fv();
+        I(slot);
+        Reg(receiver);
+        Reg(key);
+        Acc();
+        CallBuiltin("SetKeyedPropertySlow");
+        _il.MarkLabel(done);
+    }
+
     /// <summary>SetKeyedProperty: KeyedStoreIC's monomorphic in-bounds element store.</summary>
     void VisitSetKeyedProperty()
     {
@@ -1275,6 +1663,11 @@ public sealed partial class BaselineCompiler
         Register receiver = RegisterOperand(0);
         Register key = RegisterOperand(1);
         int slot = FeedbackSlot(2);
+        if (CompileTimeTypedArrayKind(slot) is ElementsKind typedKind)
+        {
+            VisitSetKeyedPropertyTyped(receiver, key, slot, typedKind);
+            return;
+        }
         RegObj(key);
         Emit(OpCodes.Ldsfld, s_numberTag);
         Emit(OpCodes.Bne_Un, slow);
@@ -1286,7 +1679,26 @@ public sealed partial class BaselineCompiler
         Emit(OpCodes.Brfalse, slow);
         Emit(OpCodes.Ldloc, TStoreHandler);
         Emit(OpCodes.Ldfld, s_shIsSimpleElementStore);
-        Emit(OpCodes.Brfalse, slow);
+        if (SlotFeedbackUnknown(slot))
+        {
+            // Compiled before the feedback named a map: a typed array's element
+            // store (not a simple element store), by the receiver's kind.
+            Label simple = _il.DefineLabel();
+            Emit(OpCodes.Brtrue, simple);
+            Isolate();
+            Emit(OpCodes.Ldloc, TStoreHandler);
+            Emit(OpCodes.Ldloc, TObj);
+            RegNum(key);
+            Acc();
+            Emit(OpCodes.Call, s_tryStoreTypedElementAnyKind);
+            Emit(OpCodes.Brtrue, done);
+            Emit(OpCodes.Br, slow);
+            _il.MarkLabel(simple);
+        }
+        else
+        {
+            Emit(OpCodes.Brfalse, slow);
+        }
         Emit(OpCodes.Ldloc, TObj);
         RegNum(key);
         Acc();

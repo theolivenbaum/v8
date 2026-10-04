@@ -446,10 +446,13 @@ builds it on the register stack and pushes the frame record, then runs the
 SharedFunctionInfo's baseline code instead of the dispatch loop. Registers are
 accessed as `ref JSValue` at `fpRef + index` (a managed pointer local), so
 generators, `arguments`, stack traces and the frame walker see the same slots.
-The accumulator, the current context, the feedback vector and its slot
-array, the constant pool and the bytecode array live in IL locals; the
-context is also written to its frame slot and to `isolate.Context` where the
-interpreter does it. In functions without exception handlers that are not
+The accumulator, the current context and the feedback vector live in IL
+locals, and the feedback slots, the constant pool and the bytecodes as refs
+to their first elements (read at the operands' fixed offsets without bounds
+checks); the prologue takes the closure, context and feedback vector from
+their frame slots and the constant pool and bytecodes from the code object
+(the method's first argument). The context is also written to its frame slot
+and to `isolate.Context` where the interpreter does it. In functions without exception handlers that are not
 resumable, the registers r0..rN (up to 64) live in IL locals too, and the
 frame copy is written only where something reads it (register lists passed
 to calls, the back edges' interrupt call) and reloaded where a builtin
@@ -461,7 +464,8 @@ the value is unchanged. The record's `IsBaseline` flag tells
 
 **Bytecode offset.** Before every bytecode that can throw or call out, the
 code stores the bytecode offset (after any prefix, as the interpreter does)
-in the frame record. V8 recovers the offset from the return address through
+in the frame's offset slot, a 4-byte store through a ref the prologue
+computes (`PcRef`). V8 recovers the offset from the return address through
 the bytecode offset table; V8Sharp's frame walker, handler lookup and
 source positions read the record, as for interpreted frames.
 
@@ -489,7 +493,18 @@ operation. Which paths are emitted is decided per bytecode from the feedback
 at compile time (BaselineCompiler.Feedback.cs): an operation that never ran,
 or whose feedback rules the fast path out, gets only the builtin call; for
 an operation whose feedback is already Number, the feedback check is left
-out. `--always-sparkplug` emits every fast path.
+out. `--always-sparkplug` emits every fast path. Some paths are specialized
+to the compile-time feedback, each guarded at run time so that any other
+feedback takes the general path: a monomorphic own-field load or store
+compares the handler slot's payload (the encoded field index,
+`FeedbackNexus.EncodeHandler` / `StoreIC.EncodeFieldStore`) and accesses
+the field at its offset; a keyed access on a typed array calls the element
+load or store of the feedback map's kind (`LoadTypedElementBits`,
+`TryStoreTypedElement`); a polymorphic named access calls
+`LoadPolymorphicOwnField` / `TryStorePolymorphicOwnField`. These helpers
+and the number paths' feedback checks of the out-of-line form (below) are
+`AggressiveInlining | AggressiveOptimization`: inlined where RyuJIT inlines,
+fully optimized where it leaves them called.
 
 **Calling helpers.** Every other bytecode calls a static method of
 `BaselineBuiltins` that does what the interpreter's case does (the same IC
@@ -497,30 +512,56 @@ entry points, runtime functions, `InterpreterOps`, `InterpreterCalls`).
 The slow paths of the inline code are `NoInlining` so that RyuJIT does not
 grow the baseline method with them; all builtins are
 `AggressiveOptimization` (at RyuJIT's tier 0 they were slower than the
-interpreter).
+interpreter). The out-of-line paths of the IC bytecodes try the hits of
+V8's *IC_Baseline builtins first (own fields from the handler payload,
+monomorphic or polymorphic; polymorphic fast elements; typed arrays)
+before entering the IC.
 
 **Calls.** `BaselineCalls` handles the call bytecodes. A JSFunction callee
 whose SharedFunctionInfo has baseline code (and no exception handlers) is
-entered directly: `Enter<TArgs>` pushes the frame record and the register
-window, copies the arguments from IL locals or a register list
-(`ICallArguments` structs, so the copy is specialized per form), and calls
-the callee's entry delegate; the teardown is not in a `finally` (a throw
+entered directly: `EnterInline<TArgs>`, inlined into each call bytecode's
+stub (`CallProperty0` ...), checks the register stack against
+`Isolate.RegisterStackInterruptLimit` (overflow and pending interrupts in
+one compare), pushes the frame record and the register window, copies the
+arguments from IL locals or a register list (`ICallArguments` structs, so
+the copy is specialized per form), and calls the callee's entry delegate; the teardown is not in a `finally` (a throw
 leaves the frame stack to the catching frame's handler lookup, which
 restores it). Interpreted callees enter the interpreter's `Run` on the same
 frame protocol. `Function.prototype.call` and `apply` with a JSFunction
 target enter the target without a builtin frame. Anything else (bound
 functions, proxies, API functions, builtins without a fast path) goes
-through `InterpreterCalls`. The JS stack limit is checked every
-fourth call depth, or every call for functions with more than 1024 bytes of
-bytecode.
+through `InterpreterCalls`. The .NET stack is checked every eighth call
+depth, or every call for functions with more than 1024 bytes of bytecode.
 
-**Compact code.** RyuJIT compiles a method beyond its limits (IL size,
-instructions, basic blocks, local references) with MinOpts, which is slower
-than the interpreter. `BaselineILEmitter` counts them while the method is
-emitted; a function that would exceed them is compiled again without inline
-fast paths and register locals (compact code). Functions with more than 5000
-bytes of bytecode do not tier up by themselves (`BaselineSupport.TiersUpToBaseline`;
-`%CompileBaseline` still compiles them).
+**Size: out-of-line checks, chunks, compact code.** RyuJIT compiles a method
+beyond its limits (IL size, instructions, basic blocks, local references)
+with MinOpts, which is slower than the interpreter. `BaselineILEmitter`
+counts them while the method is emitted (calibrated against RyuJIT's own
+decisions: `V8SHARP_BASELINE_IGNORE_LIMITS=1` with `DOTNET_JitDisasmSummary`).
+A function that would exceed them is emitted again in the out-of-line form:
+the number paths' feedback checks call `BaselineBuiltins.BinaryFeedbackUnchanged`
+/ `CompareFeedbackUnchanged` (about a third of the IL; RyuJIT counts a
+method's own IL, not its inlinees'), and IC sites whose feedback is still
+empty get only the builtin call. If that still exceeds the limits, the
+function is compiled as several methods, one per range of its bytecode
+(chunks, `BaselineCode.GenerateChunks`; ranges sized from the full form's
+counts and cut at the least loop depth). A jump out of a chunk goes to its
+exit sequence, which spills the cached registers (skipping unchanged
+references), leaves the accumulator and the target offset in the state and
+returns `BaselineCompiler.ChunkExitMarker`; `BaselineCode.RunChunks` then
+enters the target's chunk, whose prologue dispatches to the offset as for
+an OSR entry. A range still over the limits below 256 bytes is compiled
+without fast paths and register locals (compact code). Functions with more
+than 100000 bytes of bytecode do not tier up by themselves
+(`BaselineSupport.TiersUpToBaseline`; `%CompileBaseline` still compiles them).
+`V8SHARP_BASELINE_OUT_OF_LINE_CHECKS=1` and `V8SHARP_BASELINE_CHUNK=n` force
+the forms for testing.
+
+**Code cache.** Baseline methods read everything not in the bytecode at run
+time, so functions with the same bytecode (embedded feedback masked out),
+handler table, register file shape, resumable kind and number constants
+share the compiled methods (`BaselineCodeCache`): code evaluated again
+(Octane CodeLoad) gets its code without IL emission or RyuJIT.
 
 **Tiering.** `TieringManager.OnInterruptTick` is ported: the first budget
 interrupt allocates the feedback vector (budget `invocation_count_for_feedback_allocation`

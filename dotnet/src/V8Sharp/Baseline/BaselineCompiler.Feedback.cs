@@ -107,8 +107,11 @@ public sealed partial class BaselineCompiler
     {
         if (FeedbackUnknown) return true;
         HeapObject? feedback = CompileTimeFeedback(slot);
-        return feedback is null || ReferenceEquals(feedback, ReadOnlyRoots.uninitialized_symbol) ||
-               ReferenceEquals(feedback, FeedbackVector.ClearedValue);
+        bool empty = feedback is null || ReferenceEquals(feedback, ReadOnlyRoots.uninitialized_symbol) ||
+                     ReferenceEquals(feedback, FeedbackVector.ClearedValue);
+        // A function over RyuJIT's limits (the out-of-line form) spends its IL
+        // on the operations that ran: an empty slot gets the builtin call only.
+        return empty && !_outOfLineChecks;
     }
 
     /// <summary>The kinds of GetNamedProperty hit inlined.</summary>
@@ -138,18 +141,23 @@ public sealed partial class BaselineCompiler
     bool SetNamedPropertyInline(int slot) =>
         !_compact && (SlotFeedbackUnknown(slot) || (CompileTimeFeedback(slot) is Map && CompileTimeFeedback(slot + 1) is StoreHandler));
 
-    /// <summary>The fast elements kinds (1: FixedArray, 2: FixedDoubleArray) GetKeyedProperty inlines: 3 both, 0 none.</summary>
+    /// <summary>
+    /// The fast elements kinds (1: FixedArray, 2: FixedDoubleArray) GetKeyedProperty
+    /// inlines: 3 both, 0 none; 4 for a typed array of the feedback map's kind.
+    /// </summary>
     int GetKeyedPropertySite(int slot)
     {
         if (_compact) return 0;
         if (SlotFeedbackUnknown(slot)) return 3;
         if (CompileTimeFeedback(slot) is not Map || CompileTimeFeedback(slot + 1) is not LoadHandler handler) return 0;
+        // A typed array (VisitGetKeyedPropertyTyped).
+        if (CompileTimeTypedArrayKind(slot) is not null) return 4;
         return handler.FastElementsMode;
     }
 
     /// <summary>Whether SetKeyedProperty's monomorphic element store is inlined.</summary>
     bool SetKeyedPropertyInline(int slot) =>
-        !_compact && (SlotFeedbackUnknown(slot) ||
+        !_compact && (SlotFeedbackUnknown(slot) || CompileTimeTypedArrayKind(slot) is not null ||
                       (CompileTimeFeedback(slot) is Map && CompileTimeFeedback(slot + 1) is StoreHandler { IsSimpleElementStore: true }));
 
     /// <summary>Whether LdaGlobal's PropertyCell hit is inlined.</summary>
