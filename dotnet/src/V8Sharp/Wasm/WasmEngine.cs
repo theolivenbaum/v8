@@ -112,7 +112,10 @@ namespace V8Sharp.Wasm
             }
             try
             {
-                module.ValidateAndThrow();
+                module.ValidateAndThrow(new RuntimeAttributes
+                {
+                    AllowMixedExceptionHandling = Isolate.Current?.Flags.wasm_allow_mixed_eh_for_testing == true,
+                });
             }
             catch (Exception e) when (e is ValidationException or InvalidDataException or FormatException
                                           or NotSupportedException or InvalidOperationException

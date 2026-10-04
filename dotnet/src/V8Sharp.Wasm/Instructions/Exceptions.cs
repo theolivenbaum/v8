@@ -42,6 +42,7 @@ namespace Wacs.Core.Instructions
 
         public override void Validate(IWasmValidationContext context)
         {
+            WasmValidationContext.DetectExceptionHandling(context, legacy: false);
             try
             {
                 var funcType = context.Types.ResolveBlockType(Block.BlockType);
@@ -258,6 +259,7 @@ namespace Wacs.Core.Instructions
 
         public override void Validate(IWasmValidationContext context)
         {
+            WasmValidationContext.DetectExceptionHandling(context, legacy: false);
             context.OpStack.PopType(ValType.Exn);
             context.SetUnreachable();
         }
@@ -311,6 +313,25 @@ namespace Wacs.Core.Instructions
                 //Enumerate all the blocks to find catch clauses
                 while ((blockTarget?.LabelHeight??0) > 1)
                 {
+                    // V8Sharp: legacy try blocks. The IP is in the body (a
+                    // handler finds its InstCatch instead).
+                    if (blockTarget is InstTry legacyTry)
+                    {
+                        if (legacyTry.Delegate != null)
+                        {
+                            blockTarget = legacyTry.Delegate.DelegateTarget;
+                            continue;
+                        }
+                        foreach (var handler in legacyTry.Handlers)
+                        {
+                            if (handler is InstCatchAll
+                                || a.Equals(context.Frame.Module.TagAddrs[handler.X]))
+                            {
+                                legacyTry.EnterHandler(context, handler, exnref, exn);
+                                return;
+                            }
+                        }
+                    }
                     if (blockTarget is InstTryTable tryTable)
                     {
                         foreach (var (handler,idx) in tryTable.Catches.Select((c,i)=>(c,i)))
@@ -346,6 +367,13 @@ namespace Wacs.Core.Instructions
                     }
                     blockTarget = blockTarget!.EnclosingBlock;
                 }
+                // V8Sharp: the frame is abandoned, not returned from: its
+                // results were never pushed, and FunctionReturn would copy
+                // them from below the frame (a negative index when the stack
+                // is shallower than the arity). Expose the result slots so the
+                // copy is a no-op; the handler that catches resets the height.
+                var abandoned = context.Frame.ReturnLabel;
+                context.OpStack.Count = abandoned.StackHeight + abandoned.Arity - context.Frame.Locals.Length;
                 context.FunctionReturn();
             }
 

@@ -458,11 +458,33 @@ namespace Wacs.Core.Runtime
                     // Spec tail-call to host: equivalent to a plain host
                     // call followed by a return — host functions don't have
                     // a wasm frame to grow, so frame reuse is unnecessary.
-                    hostFunc.Invoke(this);
-                    FunctionReturn();
+                    TailCallHost(hostFunc);
                     return;
             }
             throw new WasmRuntimeException($"Unexpected function {funcInst} at address {addr}");
+        }
+
+        /// <summary>
+        /// A tail call to a host function: a plain call followed by a return.
+        /// </summary>
+        public void TailCallHost(HostFunction hostFunc)
+        {
+            try
+            {
+                hostFunc.Invoke(this);
+            }
+            catch (WasmHostException)
+            {
+                // V8Sharp: the tail-calling frame is gone before the callee
+                // runs, so its handlers must not see the exception: abandon the
+                // frame, then let the dispatch loop throw at the caller's call
+                // site.
+                var abandoned = Frame.ReturnLabel;
+                OpStack.Count = abandoned.StackHeight + abandoned.Arity - Frame.Locals.Length;
+                FunctionReturn();
+                throw;
+            }
+            FunctionReturn();
         }
 
         public BlockTarget? FindLabel(int depth)

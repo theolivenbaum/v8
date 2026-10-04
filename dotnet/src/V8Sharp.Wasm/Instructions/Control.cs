@@ -417,6 +417,12 @@ namespace Wacs.Core.Instructions
         {
             Nop = true;
         }
+
+        // V8Sharp: for InstDelegate, which ends a legacy try block.
+        protected InstEnd(ByteCode op) : base(op)
+        {
+            Nop = true;
+        }
         
         public bool FunctionEnd;
 
@@ -432,6 +438,10 @@ namespace Wacs.Core.Instructions
             target.End = pointer;
             if (target.Suboridinate != null)
                 target.Suboridinate.End = pointer;
+            // V8Sharp: the end of a legacy try's last catch ends the try and
+            // every handler.
+            if (target is InstCatch legacyCatch)
+                legacyCatch.Try.SetEnd(pointer);
 
             if (target is IIfInstruction && target.Else < 0)
                 target.Else = pointer;

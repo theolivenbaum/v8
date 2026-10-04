@@ -114,11 +114,47 @@ namespace Wacs.Core.Instructions.Reference
             var func = context.Store[a];
             var val = new Value(ValType.FuncRef, a.Value);
             //Increase type specificity
-            if (func is FunctionInstance funcInst)
+            if (func is FunctionInstance funcInst && funcInst.Module == context.Frame.Module)
             {
                 val.Type = ValType.Ref | (ValType)funcInst.DefType.DefIndex;
             }
+            else
+            {
+                // V8Sharp: an imported function (a host function, or a wasm
+                // function of another module, whose DefIndex indexes that
+                // module's types) is typed by its import's declared type in
+                // this module, so ref.cast and ref.test see its signature.
+                int typeIndex = ImportTypeIndex(context.Frame.Module.Repr);
+                if (typeIndex >= 0)
+                    val.Type = ValType.Ref | (ValType)typeIndex;
+            }
             context.OpStack.PushRef(val);
+        }
+
+        private Module? _importTypeModule;
+        private int _importTypeIndex = -1;
+
+        private int ImportTypeIndex(Module module)
+        {
+            if (!ReferenceEquals(_importTypeModule, module))
+            {
+                _importTypeIndex = -1;
+                long funcIndex = 0;
+                foreach (var import in module.Imports)
+                {
+                    if (import.Desc is Module.ImportDesc.FuncDesc funcDesc)
+                    {
+                        if (funcIndex == FunctionIndex.Value)
+                        {
+                            _importTypeIndex = (int)funcDesc.TypeIndex.Value;
+                            break;
+                        }
+                        funcIndex++;
+                    }
+                }
+                _importTypeModule = module;
+            }
+            return _importTypeIndex;
         }
 
         public override InstructionBase Parse(BinaryReader reader)

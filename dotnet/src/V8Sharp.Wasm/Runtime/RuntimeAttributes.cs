@@ -20,6 +20,13 @@ namespace Wacs.Core.Runtime
     public class RuntimeAttributes
     {
         /// <summary>
+        /// V8Sharp: accept modules that mix legacy exception handling
+        /// (try/catch) with try_table and throw_ref
+        /// (--wasm-allow-mixed-eh-for-testing).
+        /// </summary>
+        public bool AllowMixedExceptionHandling { get; set; }
+
+        /// <summary>
         /// Backend for <c>memory.atomic.wait*</c> / <c>memory.atomic.notify</c>
         /// from the WebAssembly threads proposal. Defaults to
         /// <see cref="NotSupportedPolicy"/> when the runtime detects a

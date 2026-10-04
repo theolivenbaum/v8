@@ -55,6 +55,15 @@ namespace Wacs.Core.OpCodes
         [OpCode("try_table")]     TryTable     = 0x1F,
         [OpCode("throw")]         Throw        = 0x08,
         [OpCode("throw_ref")]     ThrowRef     = 0x0A,
+
+        // V8Sharp: the legacy exception handling instructions (the
+        // exception-handling proposal before try_table), which V8 still
+        // accepts and the mjsunit tests use.
+        [OpCode("try")]           Try          = 0x06,
+        [OpCode("catch")]         Catch        = 0x07,
+        [OpCode("rethrow")]       Rethrow      = 0x09,
+        [OpCode("delegate")]      Delegate     = 0x18,
+        [OpCode("catch_all")]     CatchAll     = 0x19,
         
         // =========================
         // Reference Types

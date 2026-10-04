@@ -31,11 +31,16 @@ namespace Wacs.Core.Runtime
         public Memory<Value> Locals;
         public Label ReturnLabel = new();
         public int Head;
+
+        // V8Sharp: the exception each legacy try's handler caught in this
+        // frame, for rethrow.
+        public Dictionary<InstTry, Value>? CaughtExceptions;
         
         public void Clear()
         {
             Module = default!;
             Locals = default;
+            CaughtExceptions = null;
         }
     }
 }

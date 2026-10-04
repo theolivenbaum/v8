@@ -101,8 +101,7 @@ namespace Wacs.Core.Instructions
                     wasmFunc.TailInvoke(context);
                     break;
                 case HostFunction hostFunc:
-                    hostFunc.Invoke(context);
-                    context.FunctionReturn();
+                    context.TailCallHost(hostFunc);
                     break;
             }
         }

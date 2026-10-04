@@ -65,6 +65,19 @@ namespace Wacs.Core.Validation
         private ModuleInstance ValidationModule { get; }
         public RuntimeAttributes Attributes { get; set; } = new();
 
+        // V8Sharp: V8 rejects a module that mixes the legacy exception
+        // handling instructions with try_table/throw_ref
+        // (WasmDetectedFeatures legacy_eh and exnref).
+        private bool _hasLegacyEH, _hasExnRef;
+
+        public static void DetectExceptionHandling(IWasmValidationContext context, bool legacy)
+        {
+            if (context is not WasmValidationContext ctx) return;
+            if (legacy) ctx._hasLegacyEH = true; else ctx._hasExnRef = true;
+            if (ctx._hasLegacyEH && ctx._hasExnRef && !ctx.Attributes.AllowMixedExceptionHandling)
+                throw new ValidationException("module uses a mix of legacy and new exception handling instructions");
+        }
+
         public FuncIdx FunctionIndex { get; set; } = FuncIdx.Default;
         public IValidationOpStack OpStack => Stack;
 

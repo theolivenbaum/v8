@@ -122,7 +122,11 @@ public static class WasmErrorMessages
         {
             return MessageTemplate.WasmTrapRethrowNull;
         }
-        if (m.Contains("cast failure", StringComparison.Ordinal)) return MessageTemplate.WasmTrapIllegalCast;
+        if (m.Contains("cast failure", StringComparison.Ordinal) || op.StartsWith("ref.cast", StringComparison.Ordinal) ||
+            m.StartsWith("Instruction ref.cast", StringComparison.Ordinal))
+        {
+            return MessageTemplate.WasmTrapIllegalCast;
+        }
         if (op.StartsWith("call_indirect", StringComparison.Ordinal) || op.StartsWith("return_call_indirect", StringComparison.Ordinal) ||
             m.StartsWith("call_indirect", StringComparison.Ordinal) || m.StartsWith("return_call_indirect", StringComparison.Ordinal) ||
             m.Contains("Instruction call_indirect", StringComparison.Ordinal))

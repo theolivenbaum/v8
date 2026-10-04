@@ -47,6 +47,11 @@ namespace Wacs.Core.Instructions
             OpCode.TryTable          => new InstTryTable(),
             OpCode.Throw             => new InstThrow(),
             OpCode.ThrowRef          => new InstThrowRef(),
+            OpCode.Try               => new InstTry(),
+            OpCode.Catch             => new InstCatch(),
+            OpCode.CatchAll          => new InstCatchAll(),
+            OpCode.Delegate          => new InstDelegate(),
+            OpCode.Rethrow           => new InstRethrow(),
                  
             OpCode.Br                => new InstBranch(),
             OpCode.BrIf              => new InstBranchIf(),
