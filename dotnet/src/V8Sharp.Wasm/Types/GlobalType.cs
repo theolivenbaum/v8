@@ -14,9 +14,8 @@
 
 using System;
 using System.IO;
-using FluentValidation;
-using Wacs.Core.Types.Defs;
 using Wacs.Core.Validation;
+using Wacs.Core.Types.Defs;
 
 namespace Wacs.Core.Types
 {
@@ -121,14 +120,16 @@ namespace Wacs.Core.Types
         /// <summary>
         /// @Spec 3.2.6. Global Types
         /// </summary>
-        public class Validator : AbstractValidator<GlobalType>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public static class Validator
         {
-            public Validator() {
+            public static void Validate(GlobalType gt, WasmValidationContext ctx)
+            {
                 // @Spec 3.2.6.1. mut valtype
-                RuleFor(gt => gt.Mutability).IsInEnum();
-                RuleFor(gt => gt.ContentType)
-                    .Must((gtype, vtype, ctx) => vtype.Validate(ctx.GetValidationContext().Types))
-                    .WithMessage(gt => $"GlobalType had invalid ContentType {gt.ContentType}");
+                if (gt.Mutability != Mutability.Immutable && gt.Mutability != Mutability.Mutable)
+                    throw new ValidationException($"GlobalType had invalid Mutability {gt.Mutability}");
+                if (!gt.ContentType.Validate(ctx.Types))
+                    throw new ValidationException($"GlobalType had invalid ContentType {gt.ContentType}");
             }
         }
     }

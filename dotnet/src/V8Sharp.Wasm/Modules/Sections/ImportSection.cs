@@ -16,12 +16,11 @@ using System;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Attributes;
 using Wacs.Core.Types;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core
 {
@@ -105,17 +104,31 @@ namespace Wacs.Core
                 writer.WriteLine($"{indent}(import \"{ModuleName}\" \"{Name}\"{import})"); 
             }
 
-            public class Validator : AbstractValidator<Import>
+            // V8Sharp: plain code instead of FluentValidation validators.
+            public static class Validator
             {
-                public Validator()
+                public static void Validate(Import import, WasmValidationContext ctx)
                 {
-                    RuleFor(i => i.Desc).SetInheritanceValidator(v => {
-                        v.Add(new ImportDesc.FuncDesc.Validator());
-                        v.Add(new ImportDesc.TableDesc.Validator());
-                        v.Add(new ImportDesc.MemDesc.Validator());
-                        v.Add(new ImportDesc.GlobalDesc.Validator());
-                        v.Add(new ImportDesc.TagDesc.Validator());
-                    });
+                    switch (import.Desc)
+                    {
+                        case ImportDesc.FuncDesc fd:
+                            // Only checks that the FunctionType exists, validation happens on the section
+                            if (!ctx.Types.Contains(fd.TypeIndex))
+                                throw new ValidationException($"Import {import.ModuleName}.{import.Name}: type index {fd.TypeIndex.Value} out of range");
+                            break;
+                        case ImportDesc.TableDesc td:
+                            TableType.Validator.Validate(td.TableDef, ctx);
+                            break;
+                        case ImportDesc.MemDesc md:
+                            MemoryType.Validator.Validate(md.MemDef, ctx);
+                            break;
+                        case ImportDesc.GlobalDesc gd:
+                            GlobalType.Validator.Validate(gd.GlobalDef, ctx);
+                            break;
+                        case ImportDesc.TagDesc tgd:
+                            TagType.Validator.Validate(tgd.TagDef, ctx);
+                            break;
+                    }
                 }
             }
         }
@@ -128,75 +141,30 @@ namespace Wacs.Core
             {
                 public TypeIdx TypeIndex { get; internal set; }
 
-                /// <summary>
-                /// @Spec 3.2.7.1. func functype
-                /// </summary>
-                public class Validator : AbstractValidator<FuncDesc> {
-                    public Validator() {
-                        // Only checks that the FunctionType exists, validation happens on the section
-                        RuleFor(desc => desc.TypeIndex)
-                            .Must((_, index, ctx) => ctx.GetValidationContext().Types.Contains(index));
-                    }
-                }
             }
 
             public class TableDesc : ImportDesc
             {
                 public TableType TableDef { get; internal set; } = null!;
 
-                /// <summary>
-                /// @Spec 3.2.7.2. table tabletype
-                /// </summary>
-                public class Validator : AbstractValidator<TableDesc> {
-                    public Validator() {
-                        RuleFor(desc => desc.TableDef)
-                            .SetValidator(new TableType.Validator());
-                    }
-                }
             }
 
             public class MemDesc : ImportDesc
             {
                 public MemoryType MemDef { get; internal set; } = null!;
 
-                /// <summary>
-                /// @Spec 3.2.7.3. mem memtype
-                /// </summary>
-                public class Validator : AbstractValidator<MemDesc> {
-                    public Validator() {
-                        RuleFor(desc => desc.MemDef)
-                            .SetValidator(new MemoryType.Validator());
-                    }
-                }
             }
 
             public class GlobalDesc : ImportDesc
             {
                 public GlobalType GlobalDef { get; internal set; } = null!;
 
-                /// <summary>
-                /// @Spec 3.2.7.4. global globaltype
-                /// </summary>
-                public class Validator : AbstractValidator<GlobalDesc> {
-                    public Validator() {
-                        RuleFor(desc => desc.GlobalDef)
-                            .SetValidator(new GlobalType.Validator());
-                    }
-                }
             }
 
             public class TagDesc : ImportDesc
             {
                 public TagType TagDef { get; internal set; } = null!;
 
-                public class Validator : AbstractValidator<TagDesc>
-                {
-                    public Validator()
-                    {
-                        RuleFor(desc => desc.TagDef)
-                            .SetValidator(new TagType.Validator());
-                    }
-                }
             }
         }
     }

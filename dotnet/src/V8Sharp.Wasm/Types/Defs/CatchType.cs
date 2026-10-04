@@ -13,9 +13,8 @@
 // limitations under the License.
 
 using System.IO;
-using FluentValidation;
-using Wacs.Core.Utilities;
 using Wacs.Core.Validation;
+using Wacs.Core.Utilities;
 
 namespace Wacs.Core.Types.Defs
 {
@@ -51,150 +50,60 @@ namespace Wacs.Core.Types.Defs
         }
 
 
-        public class Validator : AbstractValidator<CatchType>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public static class Validator
         {
-            public Validator()
+            public static void Validate(CatchType ct, WasmValidationContext vContext)
             {
-                RuleFor(ct => ct.X)
-                    .Must((_, index, ctx) => ctx.GetValidationContext().Tags.Contains(index))
-                    .When(ct => ct.Mode is CatchFlags.None or CatchFlags.CatchRef)
-                    .WithMessage(ct => $"Validation context did not contain Catch Tag Index {ct.X.Value}");
-                RuleFor(ct => ct.L)
-                    .Must((_, index, ctx) => ctx.GetValidationContext().ContainsLabel(index.Value))
-                    .WithMessage(ct => $"Validation context did not contain Catch Label Index {ct.L.Value}");
-                
-                RuleFor(ct => ct)
-                    .Custom((ct, ctx) =>
+                if (ct.Mode is CatchFlags.None or CatchFlags.CatchRef && !vContext.Tags.Contains(ct.X))
+                    throw new ValidationException($"Validation context did not contain Catch Tag Index {ct.X.Value}");
+                if (!vContext.ContainsLabel(ct.L.Value))
+                    throw new ValidationException($"Validation context did not contain Catch Label Index {ct.L.Value}");
+
+                var labelIdx = ct.L;
+                switch (ct.Mode)
+                {
+                    case CatchFlags.None:
+                    case CatchFlags.CatchRef:
                     {
-                        var tagIdx = ct.X;
-                        var labelIdx = ct.L;
-                        var vContext = ctx.GetValidationContext();
-                        var tag = vContext.Tags[tagIdx];
+                        var tag = vContext.Tags[ct.X];
                         var typeIdx = tag.TypeIndex;
                         if (!vContext.Types.Contains(typeIdx))
-                        {
-                            ctx.AddFailure($"Validation context did not contain Catch Tag Type Index {typeIdx.Value}");
-                            return;
-                        }
-
-                        var tagType = vContext.Types[typeIdx];
-                        var compType = tagType.Expansion;
+                            throw new ValidationException($"Validation context did not contain Catch Tag Type Index {typeIdx.Value}");
+                        var compType = vContext.Types[typeIdx].Expansion;
                         if (compType is not FunctionType functionType)
-                        {
-                            ctx.AddFailure($"Catch Tag Type Index {typeIdx.Value} was not a FunctionType");
-                            return;
-                        }
-
+                            throw new ValidationException($"Catch Tag Type Index {typeIdx.Value} was not a FunctionType");
                         if (functionType.ResultType.Arity != 0)
-                        {
-                            ctx.AddFailure($"Catch Tag Type Index {typeIdx.Value} had non-empty result type");
-                            return;
-                        }
-
-                        if (!vContext.ContainsLabel(labelIdx.Value))
-                        {
-                            ctx.AddFailure($"Validation context did not contain Catch Label Index {ct.L.Value}");
-                            return;
-                        }
-
-                        var controlFrame = vContext.ControlStack.PeekAt((int)labelIdx.Value);
-                        var pType = functionType.ParameterTypes;
-                        if (!pType.Matches(controlFrame.EndTypes, vContext.Types))
-                        {
-                            ctx.AddFailure($"Catch Label {controlFrame.EndTypes.ToNotation()} did not match Catch Tag {functionType.ParameterTypes.ToNotation()}");
-                            return;
-                        }
-                    })
-                    .When(ct => ct.Mode is CatchFlags.None);
-
-                RuleFor(ct => ct)
-                    .Custom((ct, ctx) =>
-                    {
-                        var tagIdx = ct.X;
-                        var labelIdx = ct.L;
-                        var vContext = ctx.GetValidationContext();
-                        var tag = vContext.Tags[tagIdx];
-                        var typeIdx = tag.TypeIndex;
-                        if (!vContext.Types.Contains(typeIdx))
-                        {
-                            ctx.AddFailure($"Validation context did not contain Catch Tag Type Index {typeIdx.Value}");
-                            return;
-                        }
-
-                        var tagType = vContext.Types[typeIdx];
-                        var compType = tagType.Expansion;
-                        if (compType is not FunctionType functionType)
-                        {
-                            ctx.AddFailure($"Catch Tag Type Index {typeIdx.Value} was not a FunctionType");
-                            return;
-                        }
-
-                        if (functionType.ResultType.Arity != 0)
-                        {
-                            ctx.AddFailure($"Catch Tag Type Index {typeIdx.Value} had non-empty result type");
-                            return;
-                        }
-
-                        if (!vContext.ContainsLabel(labelIdx.Value))
-                        {
-                            ctx.AddFailure($"Validation context did not contain Catch Label Index {ct.L.Value}");
-                            return;
-                        }
-
+                            throw new ValidationException($"Catch Tag Type Index {typeIdx.Value} had non-empty result type");
                         var controlFrame = vContext.ControlStack.PeekAt((int)labelIdx.Value);
                         // Spec: catch_ref appends a NON-NULLABLE (ref exn) to
                         // the tag's params; the captured exn is always present.
-                        var pType = functionType.ParameterTypes.Append(ValType.ExnNN);
+                        var pType = ct.Mode == CatchFlags.CatchRef
+                            ? functionType.ParameterTypes.Append(ValType.ExnNN)
+                            : functionType.ParameterTypes;
                         if (!pType.Matches(controlFrame.EndTypes, vContext.Types))
-                        {
-                            ctx.AddFailure($"Catch Label {controlFrame.EndTypes.ToNotation()} did not match Catch Tag {functionType.ParameterTypes.ToNotation()}");
-                            return;
-                        }
-                    })
-                    .When(ct => ct.Mode is CatchFlags.CatchRef);
-
-                RuleFor(ct => ct)
-                    .Custom((ct, ctx) =>
+                            throw new ValidationException($"Catch Label {controlFrame.EndTypes.ToNotation()} did not match Catch Tag {functionType.ParameterTypes.ToNotation()}");
+                        break;
+                    }
+                    case CatchFlags.CatchAll:
                     {
-                        var labelIdx = ct.L;
-                        var vContext = ctx.GetValidationContext();
-                        if (!vContext.ContainsLabel(labelIdx.Value))
-                        {
-                            ctx.AddFailure($"Validation context did not contain Catch Label Index {ct.L.Value}");
-                            return;
-                        }
                         var controlFrame = vContext.ControlStack.PeekAt((int)labelIdx.Value);
                         if (controlFrame.StartTypes.Arity != 0)
-                        {
-                            ctx.AddFailure($"Catch Label {labelIdx.Value} had non-empty start type");
-                            return;
-                        }
-                    })
-                    .When(ct => ct.Mode is CatchFlags.CatchAll);
-
-                RuleFor(ct => ct)
-                    .Custom((ct, ctx) =>
+                            throw new ValidationException($"Catch Label {labelIdx.Value} had non-empty start type");
+                        break;
+                    }
+                    case CatchFlags.CatchAllRef:
                     {
-                        var labelIdx = ct.L;
-                        var vContext = ctx.GetValidationContext();
-                        if (!vContext.ContainsLabel(labelIdx.Value))
-                        {
-                            ctx.AddFailure($"Validation context did not contain Catch Label Index {ct.L.Value}");
-                            return;
-                        }
                         var controlFrame = vContext.ControlStack.PeekAt((int)labelIdx.Value);
                         // Spec: catch_all_ref puts a NON-NULLABLE (ref exn) on
                         // the label's stack — the captured exn ref is always
                         // present in the catch handler.
                         var resultType = new ResultType(ValType.ExnNN);
                         if (controlFrame.StartTypes.Matches(resultType, vContext.Types))
-                        {
-                            ctx.AddFailure($"Catch Label {labelIdx.Value} had non-exnref start type");
-                            return;
-                        }
-                    })
-                    .When(ct => ct.Mode is CatchFlags.CatchAllRef);
-
+                            throw new ValidationException($"Catch Label {labelIdx.Value} had non-exnref start type");
+                        break;
+                    }
+                }
             }
         }
     }

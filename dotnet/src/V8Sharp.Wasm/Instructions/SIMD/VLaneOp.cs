@@ -14,10 +14,9 @@
 
 using System;
 using System.IO;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.OpCodes;
 using Wacs.Core.Runtime;
-using Wacs.Core.Validation;
 using LaneIdx = System.Byte;
 
 // ReSharper disable InconsistentNaming

@@ -14,11 +14,10 @@
 
 using System;
 using System.IO;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Types;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core
 {
@@ -58,18 +57,34 @@ namespace Wacs.Core
             /// <summary>
             /// @Spec 3.4.8.1.
             /// </summary>
-            public class Validator : AbstractValidator<Export>
+            // V8Sharp: plain code instead of FluentValidation validators.
+            public static class Validator
             {
-                public Validator()
+                public static void Validate(Export export, WasmValidationContext ctx)
                 {
-                    RuleFor(e => e.Desc).SetInheritanceValidator(v =>
+                    switch (export.Desc)
                     {
-                        v.Add(new ExportDesc.FuncDesc.Validator());
-                        v.Add(new ExportDesc.TableDesc.Validator());
-                        v.Add(new ExportDesc.MemDesc.Validator());
-                        v.Add(new ExportDesc.GlobalDesc.Validator());
-                        v.Add(new ExportDesc.TagDesc.Validator());
-                    });
+                        case ExportDesc.FuncDesc fd:
+                            if (!ctx.Funcs.Contains(fd.FunctionIndex))
+                                throw new ValidationException($"Validation context did not contain FuncDesc Index {fd.FunctionIndex.Value}");
+                            break;
+                        case ExportDesc.TableDesc td:
+                            if (!ctx.Tables.Contains(td.TableIndex))
+                                throw new ValidationException($"Validation context did not contain TableDesc Index {td.TableIndex.Value}");
+                            break;
+                        case ExportDesc.MemDesc md:
+                            if (!ctx.Mems.Contains(md.MemoryIndex))
+                                throw new ValidationException($"Validation context did not contain MemDesc Index {md.MemoryIndex.Value}");
+                            break;
+                        case ExportDesc.GlobalDesc gd:
+                            if (!ctx.Globals.Contains(gd.GlobalIndex))
+                                throw new ValidationException($"Validation context did not contain GlobalDesc Index {gd.GlobalIndex.Value}");
+                            break;
+                        case ExportDesc.TagDesc tgd:
+                            if (!ctx.Tags.Contains(tgd.TagIndex))
+                                throw new ValidationException($"Validation context did not contain TagDesc Index {tgd.TagIndex.Value}");
+                            break;
+                    }
                 }
             }
         }
@@ -81,84 +96,30 @@ namespace Wacs.Core
             {
                 public FuncIdx FunctionIndex { get; internal set; }
 
-                /// <summary>
-                /// @Spec 3.4.8.2. func
-                /// </summary>
-                public class Validator : AbstractValidator<FuncDesc>
-                {
-                    public Validator()
-                    {
-                        RuleFor(fd => fd.FunctionIndex)
-                            .Must((_, index, ctx) => ctx.GetValidationContext().Funcs.Contains(index));
-                    }
-                }
             }
 
             public class TableDesc : ExportDesc
             {
                 public TableIdx TableIndex { get; internal set; }
 
-                /// <summary>
-                /// @Spec 3.4.8.3. table
-                /// </summary>
-                public class Validator : AbstractValidator<TableDesc>
-                {
-                    public Validator()
-                    {
-                        RuleFor(td => td.TableIndex)
-                            .Must((_, index, ctx) => ctx.GetValidationContext().Tables.Contains(index));
-                    }
-                }
             }
 
             public class MemDesc : ExportDesc
             {
                 public MemIdx MemoryIndex { get; internal set; }
 
-                /// <summary>
-                /// @Spec 3.4.8.4. mem
-                /// </summary>
-                public class Validator : AbstractValidator<MemDesc>
-                {
-                    public Validator()
-                    {
-                        RuleFor(md => md.MemoryIndex)
-                            .Must((_, index, ctx) => ctx.GetValidationContext().Mems.Contains(index));
-                    }
-                }
             }
 
             public class GlobalDesc : ExportDesc
             {
                 public GlobalIdx GlobalIndex { get; internal set; }
 
-                /// <summary>
-                /// @Spec 3.4.8.5. global
-                /// </summary>
-                public class Validator : AbstractValidator<GlobalDesc>
-                {
-                    public Validator()
-                    {
-                        RuleFor(gd => gd.GlobalIndex)
-                            .Must((_, index, ctx) => ctx.GetValidationContext().Globals.Contains(index))
-                            .WithMessage(gd => $"Validation context did not contain GlobalDesc Index {gd.GlobalIndex.Value}");
-                    }
-                }
             }
 
             public class TagDesc : ExportDesc
             {
                 public TagIdx TagIndex { get; internal set; }
 
-                public class Validator : AbstractValidator<TagDesc>
-                {
-                    public Validator()
-                    {
-                        RuleFor(td => td.TagIndex)
-                            .Must((_, index, ctx) => ctx.GetValidationContext().Tags.Contains(index))
-                            .WithMessage(td => $"Validation context did not contain TagDesc Index {td.TagIndex.Value}");
-                    }
-                }
             }
         }
     }

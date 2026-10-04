@@ -15,7 +15,7 @@
 using System;
 using System.IO;
 using System.Linq;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Attributes;
 using Wacs.Core.Instructions;
 using Wacs.Core.Instructions.Reference;
@@ -23,7 +23,6 @@ using Wacs.Core.OpCodes;
 using Wacs.Core.Types;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core
 {
@@ -217,38 +216,51 @@ namespace Wacs.Core
             /// <summary>
             /// 3.4.5. Element Segments
             /// </summary>
-            public class Validator : AbstractValidator<ElementSegment>
+            // V8Sharp: plain code instead of FluentValidation validators.
+            public static class Validator
             {
-                public Validator()
+                public static void Validate(ElementSegment es, WasmValidationContext validationContext)
                 {
-                    RuleForEach(es => es.Initializers)
-                        .Custom((expr, ctx) =>
-                        {
-                            var es = ctx.InstanceToValidate;
-
-                            if (!es.Type.IsRefType())
-                                throw new InvalidDataException($"Element Segment has invalid reference type:{es.Type}");
-
-                            var resultType = new ResultType(es.Type);
-                            
-                            // @Spec 3.4.5.1. base
-                            var validationContext = ctx.GetValidationContext();
-                            validationContext.FunctionIndex = FuncIdx.Default;
-                            var exprValidator = new Expression.Validator(resultType, isConstant: true);
-                            var subContext = validationContext.PushSubContext(expr);
-                            var result = exprValidator.Validate(subContext);
-                            foreach (var error in result.Errors)
-                            {
-                                ctx.AddFailure($"Expression.{error.PropertyName}", error.ErrorMessage);
-                            }
-                            validationContext.PopValidationContext();
-                        });
-                    RuleFor(es => es.Mode).SetInheritanceValidator(v =>
+                    foreach (var expr in es.Initializers)
                     {
-                        v.Add(new ElementMode.PassiveMode.Validator());
-                        v.Add(new ElementMode.ActiveMode.Validator());
-                        v.Add(new ElementMode.DeclarativeMode.Validator());
-                    });
+                        if (!es.Type.IsRefType())
+                            throw new InvalidDataException($"Element Segment has invalid reference type:{es.Type}");
+
+                        var resultType = new ResultType(es.Type);
+
+                        // @Spec 3.4.5.1. base
+                        validationContext.FunctionIndex = FuncIdx.Default;
+                        Expression.Validator.Validate(expr, resultType, validationContext, isConstant: true);
+                    }
+
+                    switch (es.Mode)
+                    {
+                        case ElementMode.PassiveMode passive:
+                            // @Spec 3.4.5.2. passive: valid for all reference types
+                            if (!passive.SegmentType.Validate(validationContext.Types))
+                                throw new ValidationException($"Passive Element Type was invalid {passive.SegmentType}");
+                            break;
+                        case ElementMode.ActiveMode mode:
+                        {
+                            // @Spec 3.4.5.3 active
+                            if (!validationContext.Tables.Contains(mode.TableIndex))
+                                throw new ValidationException(
+                                    $"Table index {mode.TableIndex.Value} exceeds table size {validationContext.Tables.Count}");
+
+                            var tableType = validationContext.Tables[mode.TableIndex];
+                            var at = tableType.Limits.AddressType.ToValType();
+                            Expression.Validator.Validate(mode.Offset, new ResultType(at), validationContext, isConstant: true);
+
+                            if (!mode.SegmentType.Matches(tableType.ElementType, validationContext.Types))
+                                throw new ValidationException($"Active ElementMode {(Wat)mode.SegmentType} is not valid for table type {(Wat)tableType.ElementType}");
+                            break;
+                        }
+                        case ElementMode.DeclarativeMode declarative:
+                            // @Spec 3.4.5.4. declarative: valid for all reference types
+                            if (!declarative.SegmentType.Validate(validationContext.Types))
+                                throw new ValidationException($"Declarative Element Type was invalid {declarative.SegmentType}");
+                            break;
+                    }
                 }
             }
         }
@@ -259,17 +271,6 @@ namespace Wacs.Core
 
             public class PassiveMode : ElementMode
             {
-                // @Spec 3.4.5.2. passive
-                public class Validator : AbstractValidator<PassiveMode>
-                {
-                    public Validator()
-                    {
-                        //Valid for all reference types
-                        RuleFor(mode => mode.SegmentType)
-                            .Must((mode, type, ctx) => type.Validate(ctx.GetValidationContext().Types))
-                            .WithMessage(mode => $"Passive Element Type was invalid {mode.SegmentType}");
-                    }
-                }
             }
 
             public class ActiveMode : ElementMode
@@ -278,55 +279,10 @@ namespace Wacs.Core
                 public TableIdx TableIndex { get; }
                 public Expression Offset { get; }
 
-                // @Spec 3.4.5.3 active
-                public class Validator : AbstractValidator<ActiveMode>
-                {
-                    public Validator()
-                    {
-                        RuleFor(mode => mode.TableIndex)
-                            .Must((_, idx, ctx) =>
-                                ctx.GetValidationContext().Tables.Contains(idx));
-                        RuleFor(mode => mode)
-                            .Custom((mode, ctx) =>
-                            {
-                                var validationContext = ctx.GetValidationContext();
-                                if (!validationContext.Tables.Contains(mode.TableIndex))
-                                    throw new ValidationException(
-                                        $"Table index {mode.TableIndex.Value} exceeds table size {validationContext.Tables.Count}");
-                                
-                                var tableType = validationContext.Tables[mode.TableIndex];
-                                var at = tableType.Limits.AddressType.ToValType();
-                                var exprValidator = new Expression.Validator(new ResultType(at), isConstant: true);
-                                var subContext = validationContext.PushSubContext(mode.Offset);
-                                var result = exprValidator.Validate(subContext);
-                                foreach (var error in result.Errors)
-                                {
-                                    ctx.AddFailure($"Expression.{error.PropertyName}", error.ErrorMessage);
-                                }
-                                validationContext.PopValidationContext();
-                                
-                                if (!mode.SegmentType.Matches(tableType.ElementType, ctx.GetValidationContext().Types))
-                                {
-                                    ctx.AddFailure($"Active ElementMode {(Wat)mode.SegmentType} is not valid for table type {(Wat)tableType.ElementType}");                                    
-                                }
-                            });
-                    }
-                }
             }
 
             public class DeclarativeMode : ElementMode
             {
-                // @Spec 3.4.5.4. declarative
-                public class Validator : AbstractValidator<DeclarativeMode>
-                {
-                    public Validator()
-                    {
-                        //Valid for all reference types
-                        RuleFor(mode => mode.SegmentType)
-                            .Must((mode, type, ctx) => type.Validate(ctx.GetValidationContext().Types))
-                            .WithMessage(mode => $"Declarative Element Type was invalid {mode.SegmentType}");
-                    }
-                }
             }
         }
     }

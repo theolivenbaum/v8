@@ -16,10 +16,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core.Types
 {
@@ -117,30 +116,14 @@ namespace Wacs.Core.Types
                     $"Invalid type format {form} at offset {reader.BaseStream.Position-1}.")
             };
 
-        public class Validator : AbstractValidator<RecursiveType>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public static class Validator
         {
             /// https://webassembly.github.io/gc/core/bikeshed/index.html#-hrefsyntax-rectypemathsfrechrefsyntax-subtypemathitsubtypeast
-            public Validator()
+            public static void Validate(RecursiveType rt, WasmValidationContext vContext)
             {
-                RuleFor(rt => rt)
-                    .Custom((rt, ctx) =>
-                    {
-                        var vContext = ctx.GetValidationContext();
-                        var subTypeValidator = new SubType.Validator(rt);
-                        foreach (var (subtype, index) in rt.SubTypes.Select((s,i)=>(s,i)))
-                        {
-                            var subcontext = vContext.PushSubContext(subtype, index);
-                            var validationResult = subTypeValidator.Validate(subcontext);
-                            if (!validationResult.IsValid)
-                            {
-                                foreach (var failure in validationResult.Errors)
-                                {
-                                    var propertyName = $"{failure.PropertyName}";
-                                    ctx.AddFailure(propertyName, failure.ErrorMessage);
-                                }
-                            }
-                        }
-                    });
+                for (int index = 0; index < rt.SubTypes.Length; index++)
+                    SubType.Validator.Validate(rt.SubTypes[index], rt, index, vContext);
             }
         }
     }

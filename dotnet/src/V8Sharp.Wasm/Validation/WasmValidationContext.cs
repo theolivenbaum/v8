@@ -17,7 +17,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Instructions;
 using Wacs.Core.OpCodes;
 using Wacs.Core.Runtime;
@@ -33,13 +33,12 @@ namespace Wacs.Core.Validation
     public class WasmValidationContext : IWasmValidationContext
     {
         private static Stack<Value> _aside = new();
-        private readonly Stack<IValidationContext> _contextStack = new();
 
         /// <summary>
         /// @Spec 3.1.1. Contexts
         /// @Spec 3.4.10. Modules
         /// </summary>
-        public WasmValidationContext(Module module, ValidationContext<Module> rootContext)
+        public WasmValidationContext(Module module)
         {
             ValidationModule = new ModuleInstance(module);
 
@@ -55,16 +54,12 @@ namespace Wacs.Core.Validation
             Globals = new GlobalValidationSpace(module);
 
             Tags = new TagsSpace(module);
-
-            RootContext = rootContext;
-            _contextStack.Push(rootContext);
         }
 
         private Frame ExecFrame { get; set; } = null!;
         public ResultType ReturnType { get; set; } = null!;
         private ValidationOpStack Stack { get; }
 
-        public ValidationContext<Module> RootContext { get; }
 
         public ResultType Return => ControlFrame.EndTypes;
         private ModuleInstance ValidationModule { get; }
@@ -116,45 +111,40 @@ namespace Wacs.Core.Validation
             throw new ValidationException(string.Format(formatString, args));
         }
 
+        // V8Sharp: plain code; WACS validated each instruction through a
+        // FluentValidation sub-context.
         public void ValidateBlock(Block instructionBlock, int index = 0)
         {
-            var blockContext = PushSubContext(instructionBlock, index);
-            
-            var blockValidator = new Block.Validator();
-            var blockResult = blockValidator.Validate(blockContext);
-            foreach (var error in blockResult.Errors)
-            {
-                RootContext.AddFailure($"Block.{error.PropertyName}", error.ErrorMessage);
-            }
-
-            var instructionValidator = new InstructionValidator();
-            foreach (var (inst, instIdx) in instructionBlock.Instructions.Select((ib, i)=>(inst: ib, i)))
-            {
-                var subContext = PushSubContext(inst, instIdx);
-                var result = instructionValidator.Validate(subContext);
-                foreach (var error in result.Errors)
-                {
-                    RootContext.AddFailure($"Block Instruction.{error.PropertyName}", error.ErrorMessage);
-                }
-                
-                PopValidationContext();
-            }
-            
-            PopValidationContext();
+            Block.Validator.Validate(instructionBlock, this);
+            foreach (var inst in instructionBlock.Instructions)
+                ValidateInstruction(inst, this);
         }
 
         public void ValidateCatches(CatchType[] catches)
         {
-            var catchValidator = new CatchType.Validator();
-            foreach (var (catchType, index) in catches.Select((ct, i)=>(ct, i)))
+            foreach (var catchType in catches)
+                CatchType.Validator.Validate(catchType, this);
+        }
+
+        /// <summary>
+        /// Validates one instruction; a failure carries the instruction's
+        /// mnemonic (V8Sharp: WACS appended it to the message).
+        /// </summary>
+        public static void ValidateInstruction(InstructionBase inst, WasmValidationContext ctx)
+        {
+            try
             {
-                var subContext = PushSubContext(catchType, index);
-                var result = catchValidator.Validate(subContext);
-                foreach (var error in result.Errors)
-                {
-                    RootContext.AddFailure($"Catch.{error.PropertyName}", error.ErrorMessage);
-                }
-                PopValidationContext();
+                inst.Validate(ctx);
+            }
+            catch (ValidationException exc) when (exc.Instruction == null)
+            {
+                exc.Instruction = inst.Op.GetMnemonic();
+                throw;
+            }
+            catch (NotImplementedException)
+            {
+                throw new ValidationException($"WASM Instruction `{inst.Op.GetMnemonic()}` is not implemented.")
+                    { Instruction = inst.Op.GetMnemonic() };
             }
         }
 
@@ -208,16 +198,6 @@ namespace Wacs.Core.Validation
             }
         }
 
-        public ValidationContext<T> PushSubContext<T>(T child, int index = -1)
-            where T : class
-        {
-            var subctx = _contextStack.Peek().GetSubContext(child, index);
-            _contextStack.Push(subctx);
-            return subctx;
-        }
-
-        public void PopValidationContext() => _contextStack.Pop();
-
         public void SetExecFrame(FunctionType funcType, ValType[] localTypes)
         {
             ControlStack.Clear();
@@ -248,36 +228,5 @@ namespace Wacs.Core.Validation
             return new Memory<Value>(data);
         }
 
-        public class InstructionValidator : AbstractValidator<InstructionBase>
-        {
-            public InstructionValidator()
-            {
-                RuleFor(inst => inst)
-                    .Custom((inst, ctx) =>
-                    {
-                        try
-                        {
-                            inst.Validate(ctx.GetValidationContext());
-                        }
-                        catch (ValidationException exc)
-                        {
-                            string message = $"{exc.Message}";
-                            if (!exc.Message.StartsWith("Function["))
-                            {
-                                string path = ctx.PropertyPath;
-                                var (line, _) = ctx.GetValidationContext().ValidationModule.Repr.CalculateLine(path);
-                                message = $"line {line}: {message} in Instruction {inst.Op.GetMnemonic()}";
-                            }
-                            ctx.AddFailure(message);
-                            // throw new ValidationException(message);
-                        }
-                        catch (NotImplementedException exc)
-                        {
-                            _ = exc;
-                            ctx.AddFailure($"WASM Instruction `{inst.Op.GetMnemonic()}` is not implemented.");
-                        }
-                    });
-            }
-        }
     }
 }

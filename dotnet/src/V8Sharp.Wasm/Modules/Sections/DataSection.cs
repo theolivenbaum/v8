@@ -14,11 +14,10 @@
 
 using System;
 using System.IO;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Types;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core
 {
@@ -103,15 +102,22 @@ namespace Wacs.Core
             /// <summary>
             /// @Spec 3.4.6. Data Segments
             /// </summary>
-            public class Validator : AbstractValidator<Data>
+            // V8Sharp: plain code instead of FluentValidation validators.
+            public static class Validator
             {
-                public Validator()
+                public static void Validate(Data d, WasmValidationContext vContext)
                 {
-                    RuleFor(d => d.Mode).SetInheritanceValidator(v =>
-                    {
-                        v.Add(new DataMode.PassiveMode.Validator());
-                        v.Add(new DataMode.ActiveMode.Validator());
-                    });
+                    // @Spec 3.4.6.2. passive: always valid
+                    if (d.Mode is not DataMode.ActiveMode mode)
+                        return;
+                    // @Spec 3.4.6.3. active
+                    if (!vContext.Mems.Contains(mode.MemoryIndex))
+                        throw new ValidationException($"Memory index {mode.MemoryIndex} not found in module");
+                    var mem = vContext.Mems[mode.MemoryIndex];
+                    var resultType = new ResultType(mem.Limits.AddressType.ToValType());
+                    var execType = new FunctionType(ResultType.Empty, resultType);
+                    vContext.SetExecFrame(execType, Array.Empty<ValType>());
+                    Expression.Validator.Validate(mode.Offset, resultType, vContext, isConstant: true);
                 }
             }
         }
@@ -125,7 +131,6 @@ namespace Wacs.Core
                 /// <summary>
                 /// @Spec 3.4.6.2. passive
                 /// </summary>
-                public class Validator : AbstractValidator<PassiveMode> {}
             }
 
             public class ActiveMode : DataMode
@@ -134,39 +139,6 @@ namespace Wacs.Core
                 public MemIdx MemoryIndex { get; }
                 public Expression Offset { get; }
 
-                /// <summary>
-                /// @Spec 3.4.6.3. active
-                /// </summary>
-                public class Validator : AbstractValidator<ActiveMode>
-                {
-                    public Validator()
-                    {
-                        RuleFor(mode => mode)
-                            .Custom((mode, ctx) =>
-                            {
-                                var vContext = ctx.GetValidationContext();
-                                if (!vContext.Mems.Contains(mode.MemoryIndex))
-                                {
-                                    ctx.AddFailure("MemoryIndex",
-                                        $"Memory index {mode.MemoryIndex} not found in module");
-                                    return;
-                                }
-                                var mem = vContext.Mems[mode.MemoryIndex];
-                                var expr = mode.Offset;
-                                var resultType = new ResultType(mem.Limits.AddressType.ToValType());
-                                var execType = new FunctionType(ResultType.Empty, resultType);
-                                vContext.SetExecFrame(execType, Array.Empty<ValType>());
-                                var exprValidator = new Expression.Validator(resultType, isConstant: true);
-                                var subContext = vContext.PushSubContext(expr);
-                                var result = exprValidator.Validate(subContext);
-                                foreach (var error in result.Errors)
-                                {
-                                    ctx.AddFailure($"Expression.{error.PropertyName}", error.ErrorMessage);
-                                }
-                                vContext.PopValidationContext();
-                            });
-                    }
-                }
             }
         }
     }

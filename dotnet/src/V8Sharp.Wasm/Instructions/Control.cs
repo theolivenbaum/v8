@@ -18,7 +18,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Instructions.SuperInstruction;
 using Wacs.Core.OpCodes;
 using Wacs.Core.Runtime;
@@ -27,7 +27,6 @@ using Wacs.Core.Runtime.Types;
 using Wacs.Core.Types;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 using InstructionPointer = System.Int32;
 
 // @Spec 2.4.8. Control Instructions

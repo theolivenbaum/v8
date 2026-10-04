@@ -13,10 +13,9 @@
 // limitations under the License.
 
 using System.IO;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core.Types
 {
@@ -39,31 +38,22 @@ namespace Wacs.Core.Types
             );
         }
 
-        public class Validator : AbstractValidator<TagType>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public static class Validator
         {
-            public Validator()
+            public static void Validate(TagType tt, WasmValidationContext vContext)
             {
-                RuleFor(tt => tt.Attribute)
-                    .IsInEnum();
-                RuleFor(tt => tt.TypeIndex)
-                    .Must((_, index, ctx) => ctx.GetValidationContext().Types.Contains(index));
-                RuleFor(tt => tt)
-                    .Custom((tt, ctx) =>
-                    {
-                        var vContext = ctx.GetValidationContext();
-                        if (!vContext.Types.Contains(tt.TypeIndex))
-                            ctx.AddFailure($"Type index {tt.TypeIndex} not found in types");
-                        
-                        var tagType = vContext.Types[tt.TypeIndex];
-                        var compType = tagType.Expansion;
-                        if (compType is not FunctionType functionType)
-                        {
-                            ctx.AddFailure($"Tag type must be a function type, found {compType}");
-                            return;
-                        }
-                        if (functionType.ResultType.Arity != 0)
-                            ctx.AddFailure($"Tag type result must be empty. Type Result was {functionType.ResultType}");
-                    });
+                if (!System.Enum.IsDefined(typeof(TagTypeAttribute), tt.Attribute))
+                    throw new ValidationException($"Tag had invalid attribute {tt.Attribute}");
+                if (!vContext.Types.Contains(tt.TypeIndex))
+                    throw new ValidationException($"Type index {tt.TypeIndex} not found in types");
+
+                var tagType = vContext.Types[tt.TypeIndex];
+                var compType = tagType.Expansion;
+                if (compType is not FunctionType functionType)
+                    throw new ValidationException($"Tag type must be a function type, found {compType}");
+                if (functionType.ResultType.Arity != 0)
+                    throw new ValidationException($"Tag type result must be empty. Type Result was {functionType.ResultType}");
             }
         }
     }

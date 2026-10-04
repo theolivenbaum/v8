@@ -15,7 +15,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Attributes;
 using Wacs.Core.Instructions;
 using Wacs.Core.OpCodes;
@@ -23,7 +23,6 @@ using Wacs.Core.Text;
 using Wacs.Core.Types;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core
 {
@@ -70,7 +69,7 @@ namespace Wacs.Core
                 var head = $"{indent}(func{id}{type}{param}{result}";
                 
                 writer.Write(head);
-                indent += TextModuleWriter.Indent2Space;
+                indent += "  ";
                 if (Locals.Length > 0)
                 {
                     var localtypes = string.Join(" ", Locals.Select(v => v.ToWat()));
@@ -117,7 +116,7 @@ namespace Wacs.Core
                             writer.WriteLine();
                             writer.Write(instText);
 
-                            var blockIndent = indent + TextModuleWriter.Indent2Space;
+                            var blockIndent = indent + "  ";
                         
                             for (int b = 0; b < blockInst.Count; ++b)
                             {
@@ -175,82 +174,63 @@ namespace Wacs.Core
             /// <summary>
             /// @Spec 3.4.1. Functions
             /// </summary>
-            public class Validator : AbstractValidator<Function>
+            // V8Sharp: plain code instead of a FluentValidation validator.
+            public static class Validator
             {
-                public Validator()
+                public static void Validate(Function func, WasmValidationContext vContext)
                 {
+                    var types = vContext.Types;
                     // @Spec 3.4.1.1
-                    RuleFor(func => func.TypeIndex)
-                        .Must((_, index, ctx) =>
-                            ctx.GetValidationContext().Types.Contains(index));
-                    RuleFor(func => func)
-                        .Custom((func, ctx) =>
-                        {
-                            var vContext = ctx.GetValidationContext();
-                            
-                            var types = vContext.Types;
-                            if (!types.Contains(func.TypeIndex))
-                            {
-                                throw new ValidationException($"Function.TypeIndex not within Module.Types");
-                            }
-                            
-                            if (func.IsImport)
-                                return;
-                            
-                            if (func.Locals.Length > vContext.Attributes.MaxFunctionLocals)
-                                throw new ValidationException(
-                                    $"Function[{func.Index}] locals count {func.Locals.Length} exceeds maximum allowed {vContext.Attributes.MaxFunctionLocals}");
+                    if (!types.Contains(func.TypeIndex))
+                    {
+                        throw new ValidationException($"Function.TypeIndex not within Module.Types");
+                    }
 
-                            foreach (var (localType,index) in func.Locals.Select((l,i)=>(l,i)))
-                            {
-                                if (!localType.Validate(vContext.Types))
-                                    throw new ValidationException($"Function[{func.Index}] Local[{index}] had invalid type:{localType}");
-                            }
-                            
-                            var type = types[func.TypeIndex];
-                            var funcType = type.Expansion as FunctionType;
-                            if (funcType is null)
-                                throw new ValidationException($"Function[{func.Index}] type {type} is not a FuncType.");
+                    if (func.IsImport)
+                        return;
 
-                            foreach (var (paramType, index) in funcType.ParameterTypes.Types.Select((t, i) => (t, i)))
-                            {
-                                if (!paramType.Validate(vContext.Types))
-                                    throw new ValidationException($"Function[{func.Index}] Parameter[{index}] had invalid type:{paramType}");
-                            }
-                            foreach (var (resType, index) in funcType.ResultType.Types.Select((t, i) => (t, i)))
-                            {
-                                if (!resType.Validate(vContext.Types))
-                                    throw new ValidationException($"Function[{func.Index}] Result[{index}] had invalid type:{resType}");
-                            }                            
-                            
-                            vContext.FunctionIndex = func.Index;
-                            vContext.SetExecFrame(funcType, func.Locals);
-                            
-                            //*Expression Validator also validates result types
-                            var exprValidator = new Expression.Validator(funcType.ResultType);
-                            var subcontext = vContext.PushSubContext(func.Body);
-                            try
-                            {
-                                var validationResult = exprValidator.Validate(subcontext);
-                                if (!validationResult.IsValid)
-                                {
-                                    foreach (var failure in validationResult.Errors)
-                                    {
-                                        // Map the child validation failures to the parent context
-                                        // Adjust the property name to reflect the path to the child property
-                                        var propertyName = $"{failure.PropertyName}";
-                                        ctx.AddFailure(propertyName, failure.ErrorMessage);
-                                    }
-                                }
-                            }
-                            catch (ValidationException exc)
-                            {
-                                var message = $"{exc.Message}";
-                                ctx.AddFailure(message);
-                                throw new ValidationException(message);
-                            }
-                            vContext.PopValidationContext();
-                        });
+                    if (func.Locals.Length > vContext.Attributes.MaxFunctionLocals)
+                        throw new ValidationException(
+                            $"Function[{func.Index}] locals count {func.Locals.Length} exceeds maximum allowed {vContext.Attributes.MaxFunctionLocals}");
+
+                    for (int index = 0; index < func.Locals.Length; index++)
+                    {
+                        var localType = func.Locals[index];
+                        if (!localType.Validate(vContext.Types))
+                            throw new ValidationException($"Function[{func.Index}] Local[{index}] had invalid type:{localType}");
+                    }
+
+                    var type = types[func.TypeIndex];
+                    var funcType = type.Expansion as FunctionType;
+                    if (funcType is null)
+                        throw new ValidationException($"Function[{func.Index}] type {type} is not a FuncType.");
+
+                    for (int index = 0; index < funcType.ParameterTypes.Types.Length; index++)
+                    {
+                        var paramType = funcType.ParameterTypes.Types[index];
+                        if (!paramType.Validate(vContext.Types))
+                            throw new ValidationException($"Function[{func.Index}] Parameter[{index}] had invalid type:{paramType}");
+                    }
+                    for (int index = 0; index < funcType.ResultType.Types.Length; index++)
+                    {
+                        var resType = funcType.ResultType.Types[index];
+                        if (!resType.Validate(vContext.Types))
+                            throw new ValidationException($"Function[{func.Index}] Result[{index}] had invalid type:{resType}");
+                    }
+
+                    vContext.FunctionIndex = func.Index;
+                    vContext.SetExecFrame(funcType, func.Locals);
+
+                    //*Expression Validator also validates result types
+                    try
+                    {
+                        Expression.Validator.Validate(func.Body, funcType.ResultType, vContext);
+                    }
+                    catch (ValidationException exc) when (exc.FunctionIndex < 0)
+                    {
+                        exc.FunctionIndex = (int)func.Index.Value;
+                        throw;
+                    }
                 }
             }
         }

@@ -15,12 +15,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Attributes;
 using Wacs.Core.Types;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core
 {
@@ -77,35 +76,19 @@ namespace Wacs.Core
             /// <summary>
             /// @Spec 3.4.4.1 Globals
             /// </summary>
-            public class Validator : AbstractValidator<Global>
+            // V8Sharp: plain code instead of a FluentValidation validator.
+            public static class Validator
             {
-                public Validator()
+                public static void Validate(Global g, WasmValidationContext validationContext)
                 {
-                    RuleFor(g => g.Type).SetValidator(new GlobalType.Validator());
-                    RuleFor(g => g.Initializer)
-                        .Custom((expr, ctx) =>
-                        {
-                            var validationContext = ctx.GetValidationContext();
-                            var subContext = validationContext.PushSubContext(expr);
+                    GlobalType.Validator.Validate(g.Type, validationContext);
 
-                            var funcType = FunctionType.Empty;
-                            validationContext.FunctionIndex = FuncIdx.Default;
-                            validationContext.SetExecFrame(funcType, Array.Empty<ValType>());
-                            
-                            var g = ctx.InstanceToValidate;
-                            var exprValidator = new Expression.Validator(g.Type.ResultType, isConstant: true);
-                            
-                            var result = exprValidator.Validate(subContext);
-                            foreach (var error in result.Errors)
-                            {
-                                ctx.AddFailure($"Global.Initializer.{error.PropertyName}", error.ErrorMessage);
-                            }
-                            
-                            validationContext.PopValidationContext();
-                        });
-                    RuleFor(g => g)
-                        .Custom((glob, ctx) => 
-                            ctx.GetValidationContext().Globals.SetHighWatermark(glob));
+                    var funcType = FunctionType.Empty;
+                    validationContext.FunctionIndex = FuncIdx.Default;
+                    validationContext.SetExecFrame(funcType, Array.Empty<ValType>());
+                    Expression.Validator.Validate(g.Initializer, g.Type.ResultType, validationContext, isConstant: true);
+
+                    validationContext.Globals.SetHighWatermark(g);
                 }
             }
         }

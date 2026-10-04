@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.OpCodes;
 using Wacs.Core.Runtime;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core.Instructions
 {

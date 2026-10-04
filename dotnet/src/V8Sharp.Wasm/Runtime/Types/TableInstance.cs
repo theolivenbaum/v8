@@ -15,7 +15,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Types;
 using Wacs.Core.Utilities;
 
@@ -121,9 +121,8 @@ namespace Wacs.Core.Runtime.Types
                 {
                     validator.ValidateAndThrow(newLimits);
                 }
-                catch (ValidationException exc)
+                catch (ValidationException)
                 {
-                    _ = exc;
                     return false;
                 }
 

@@ -37,11 +37,6 @@ namespace Wacs.Core.Runtime
         /// Hard-capped at ~2 GiB (Array.MaxLength).</summary>
         ManagedArray = 0,
 
-        /// <summary>Native pointer + <c>nuint</c> length. No 2 GiB
-        /// cap; required for memory64. Owning
-        /// <see cref="Wacs.Core.Runtime.Types.MemoryInstance"/>
-        /// must be disposed to free the native buffer.</summary>
-        NativePointer = 1,
     }
 
     public class RuntimeOptions
@@ -54,9 +49,8 @@ namespace Wacs.Core.Runtime
         /// Backing storage for new <c>MemoryInstance</c> allocations.
         /// Default <see cref="MemoryStorageMode.ManagedArray"/> keeps
         /// the existing byte[] path byte-stable for callers that
-        /// haven't opted in. Set to
-        /// <see cref="MemoryStorageMode.NativePointer"/> to allocate
-        /// native memory and lift the 2 GiB cap.
+        /// haven't opted in. (V8Sharp: the NativePointer mode is not
+        /// vendored; memories are managed arrays.)
         /// </summary>
         public MemoryStorageMode MemoryStorage = MemoryStorageMode.ManagedArray;
     }

@@ -13,12 +13,11 @@
 // limitations under the License.
 
 using System;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.OpCodes;
 using Wacs.Core.Runtime;
 using Wacs.Core.Types;
 using Wacs.Core.Types.Defs;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core.Instructions.SuperInstruction
 {

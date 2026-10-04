@@ -16,15 +16,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using FluentValidation;
-using FluentValidation.Results;
+using Wacs.Core.Validation;
 using Wacs.Core.Instructions;
 using Wacs.Core.Instructions.Reference;
 using Wacs.Core.OpCodes;
 using Wacs.Core.Types;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core
 {
@@ -39,9 +37,6 @@ namespace Wacs.Core
         {
         }
 
-        public ValidationResult Validate() => new ModuleValidator().Validate(this);
-        public ValidationResult Validate(Runtime.RuntimeAttributes attributes) =>
-            new ModuleValidator(attributes).Validate(this);
         public void ValidateAndThrow() => new ModuleValidator().ValidateAndThrow(this);
         public void ValidateAndThrow(Runtime.RuntimeAttributes attributes) =>
             new ModuleValidator(attributes).ValidateAndThrow(this);

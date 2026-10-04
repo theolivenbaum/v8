@@ -15,10 +15,9 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core.Types
 {
@@ -118,16 +117,17 @@ namespace Wacs.Core.Types
         /// 3.2.3. Function Types
         /// Always valid
         /// </summary>
-        public new class Validator : AbstractValidator<FunctionType>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public new static class Validator
         {
-            public Validator()
+            public static void Validate(FunctionType f, WasmValidationContext ctx)
             {
-                RuleForEach(f => f.ParameterTypes.Types)
-                    .Must((_, pt, ctx) => pt.Validate(ctx.GetValidationContext().Types))
-                    .WithMessage(f => $"FunctionType had invalid parameter types:{f}");
-                RuleForEach(f => f.ResultType.Types)
-                    .Must((_, pt, ctx) => pt.Validate(ctx.GetValidationContext().Types))
-                    .WithMessage(f => $"FunctionType had invalid result types:{f}");
+                foreach (var pt in f.ParameterTypes.Types)
+                    if (!pt.Validate(ctx.Types))
+                        throw new ValidationException($"FunctionType had invalid parameter types:{f}");
+                foreach (var rt in f.ResultType.Types)
+                    if (!rt.Validate(ctx.Types))
+                        throw new ValidationException($"FunctionType had invalid result types:{f}");
             }
         }
     }

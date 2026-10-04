@@ -31,7 +31,9 @@ no generator project.
 ## What was not vendored
 
 - `WASIp1` (WASI preview 1: not part of a JavaScript engine).
-- `Text` (the WAT/WAST parser and writer: V8 has no text format either).
+- `Text` (the WAT/WAST parser and writer: V8 has no text format either),
+  except `Text/LineMap.cs` and `Text/TriviaToken.cs`, two small types the
+  stack-trace formatter and the custom-section codecs refer to.
 - `Wacs.Compilation` (the source generators; see above), the
   `OpSourceGenerator` output (C# source strings of instructions, used only by
   WACS's tooling), and the `ThreadedExperiment` dispatcher (InlineIL.Fody).

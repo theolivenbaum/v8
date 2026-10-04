@@ -16,9 +16,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using FluentValidation;
-using Wacs.Core.Types.Defs;
 using Wacs.Core.Validation;
+using Wacs.Core.Types.Defs;
 
 namespace Wacs.Core.Types
 {
@@ -63,57 +62,24 @@ namespace Wacs.Core.Types
 
         public abstract int ComputeHash(int defIndexValue, List<DefType> defs);
 
-        public class Validator : AbstractValidator<CompositeType>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public static class Validator
         {
-            public Validator()
+            public static void Validate(CompositeType ct, WasmValidationContext vContext)
             {
-                RuleFor(ct => ct)
-                    .Custom((ct, ctx) =>
-                    {
-                        var vContext = ctx.GetValidationContext();
-                        var fieldValidator = new FieldType.Validator();
-                        switch (ct)
-                        {
-                            case FunctionType ft:
-                                var funcValidator = new FunctionType.Validator();
-                                var funcContext = vContext.PushSubContext(ft);
-                                var funcResult = funcValidator.Validate(funcContext);
-                                if (funcResult.IsValid)
-                                    break;
-                                foreach (var failure in funcResult.Errors)
-                                {
-                                    var propertyName = $"{failure.PropertyName}";
-                                    ctx.AddFailure(propertyName, failure.ErrorMessage);
-                                }
-                                break;
-                            case StructType st:
-                                foreach (var (field,index) in st.FieldTypes.Select((f,i)=>(f,i)))
-                                {
-                                    var structContext = vContext.PushSubContext(field, index);
-                                    var structResult = fieldValidator.Validate(structContext);
-                                    if (structResult.IsValid) 
-                                        continue;
-                                    foreach (var failure in structResult.Errors)
-                                    {
-                                        var propertyName = $"{failure.PropertyName}";
-                                        ctx.AddFailure(propertyName, failure.ErrorMessage);
-                                    }
-                                    break;
-                                }
-                                break;
-                            case ArrayType at:
-                                var arrayContext = vContext.PushSubContext(at.ElementType);
-                                var arrayResult = fieldValidator.Validate(arrayContext);
-                                if (arrayResult.IsValid)
-                                    break;
-                                foreach (var failure in arrayResult.Errors)
-                                {
-                                    var propertyName = $"{failure.PropertyName}";
-                                    ctx.AddFailure(propertyName, failure.ErrorMessage);
-                                }
-                                break;
-                        }
-                    });
+                switch (ct)
+                {
+                    case FunctionType ft:
+                        FunctionType.Validator.Validate(ft, vContext);
+                        break;
+                    case StructType st:
+                        foreach (var field in st.FieldTypes)
+                            FieldType.Validator.Validate(field, vContext);
+                        break;
+                    case ArrayType at:
+                        FieldType.Validator.Validate(at.ElementType, vContext);
+                        break;
+                }
             }
         }
     }

@@ -14,13 +14,12 @@
 
 using System;
 using System.IO;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Attributes;
 using Wacs.Core.Instructions.Reference;
 using Wacs.Core.OpCodes;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core.Types
 {
@@ -137,7 +136,8 @@ namespace Wacs.Core.Types
         /// <summary>
         /// @Spec 3.2.4. Table Types
         /// </summary>
-        public class Validator : AbstractValidator<TableType>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public static class Validator
         {
             // table32 K = 2^32, table64 K = 2^64 per spec § 3.2.4.
             // The K parameter is interpreted unsigned by Limits.Validator,
@@ -148,40 +148,18 @@ namespace Wacs.Core.Types
             public static readonly Limits.Validator Limits = new(0x1_0000_0000L);
             private static readonly Limits.Validator Limits64 = new(unchecked((long)ulong.MaxValue));
 
-            public Validator()
+            public static void Validate(TableType tt, WasmValidationContext validationContext)
             {
                 // @Spec 3.2.4.1. limits reftype
-                RuleFor(tt => tt.Limits)
-                    .Custom((limits, ctx) =>
-                    {
-                        var v = limits.AddressType == AddrType.I64 ? Limits64 : Limits;
-                        var result = v.Validate(limits);
-                        foreach (var failure in result.Errors)
-                            ctx.AddFailure(failure);
-                    });
-                RuleFor(tt => tt.ElementType)
-                    .Must((_, type, ctx) => type.Validate(ctx.GetValidationContext().Types))
-                    .WithMessage(tt => $"TableType had invalid ElementType {tt.ElementType}");
-                RuleFor(tt => tt.Init)
-                    .Custom((expr, ctx) =>
-                    {
-                        var validationContext = ctx.GetValidationContext();
-                        var subContext = validationContext.PushSubContext(expr);
+                var v = tt.Limits.AddressType == AddrType.I64 ? Limits64 : Limits;
+                v.ValidateAndThrow(tt.Limits);
+                if (!tt.ElementType.Validate(validationContext.Types))
+                    throw new ValidationException($"TableType had invalid ElementType {tt.ElementType}");
 
-                        var tt = ctx.InstanceToValidate;
-                            
-                        var funcType = FunctionType.Empty;
-                        validationContext.FunctionIndex = FuncIdx.Default;
-                        validationContext.SetExecFrame(funcType, Array.Empty<ValType>());
-                        var exprValidator = new Expression.Validator(new ResultType(tt.ElementType), isConstant: true);
-                            
-                        var result = exprValidator.Validate(subContext);
-                        foreach (var error in result.Errors)
-                        {
-                            ctx.AddFailure($"TableType.Init.{error.PropertyName}", error.ErrorMessage);
-                        }
-                        validationContext.PopValidationContext();
-                    });
+                var funcType = FunctionType.Empty;
+                validationContext.FunctionIndex = FuncIdx.Default;
+                validationContext.SetExecFrame(funcType, Array.Empty<ValType>());
+                Expression.Validator.Validate(tt.Init, new ResultType(tt.ElementType), validationContext, isConstant: true);
             }
         }
     }

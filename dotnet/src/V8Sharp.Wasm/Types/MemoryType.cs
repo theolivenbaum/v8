@@ -13,7 +13,7 @@
 // limitations under the License.
 
 using System.IO;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
 
@@ -84,25 +84,20 @@ namespace Wacs.Core.Types
         /// <summary>
         /// @Spec 3.2.5. Memory Types
         /// </summary>
-        public class Validator : AbstractValidator<MemoryType>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public static class Validator
         {
             private static readonly Limits.Validator Mem32Limits =
                 new Limits.Validator(Constants.WasmMaxPages);
             private static readonly Limits.Validator Mem64Limits =
                 new Limits.Validator(Constants.WasmMaxPages64);
 
-            public Validator()
+            public static void Validate(MemoryType mt, WasmValidationContext ctx)
             {
                 // @Spec 3.2.5.1. limits
                 // memory32: K = 2^16 pages (4 GiB); memory64: K = 2^48 pages
-                RuleFor(mt => mt.Limits)
-                    .Custom((limits, ctx) =>
-                    {
-                        var v = limits.AddressType == AddrType.I64 ? Mem64Limits : Mem32Limits;
-                        var result = v.Validate(limits);
-                        foreach (var failure in result.Errors)
-                            ctx.AddFailure(failure);
-                    });
+                var v = mt.Limits.AddressType == AddrType.I64 ? Mem64Limits : Mem32Limits;
+                v.ValidateAndThrow(mt.Limits);
             }
         }
     }

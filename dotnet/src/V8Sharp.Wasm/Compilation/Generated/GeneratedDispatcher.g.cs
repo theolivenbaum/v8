@@ -47,7 +47,7 @@ namespace Wacs.Core.Compilation
         /// body of each opcode to completion before looping. Prefix opcodes (0xFB-0xFF)
         /// delegate to per-prefix sub-methods that handle their secondary byte(s).
         /// </summary>
-        [System.Runtime.CompilerServices.SkipLocalsInit]
+        // V8Sharp: [SkipLocalsInit] removed (it needs AllowUnsafeBlocks).
         public static void Run(ExecContext ctx, Wacs.Core.Compilation.CompiledFunction entryFunc)
         {
             var _opStack = ctx.OpStack;

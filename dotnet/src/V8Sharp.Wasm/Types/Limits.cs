@@ -14,7 +14,7 @@
 
 using System;
 using System.IO;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
 
@@ -89,26 +89,29 @@ namespace Wacs.Core.Types
         /// <summary>
         /// @Spec 3.2.1. Limits
         /// </summary>
-        public class Validator : AbstractValidator<Limits>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public class Validator
         {
             // Limits semantics are unsigned per spec § 3.2.1 — both
             // bounds are u32/u64. The text parser may yield a negative
             // long (unchecked cast of a u64 with bit 63 set, e.g.
             // 0xffff_ffff_ffff_ffff in table64 limits), so all bound
             // checks compare as ulong rather than long.
-            public Validator(long rangeK) {
-                ulong rangeKU = unchecked((ulong)rangeK);
-                RuleFor(limits => limits.Minimum)
-                    .Must(min => unchecked((ulong)min) <= rangeKU)
-                    .WithMessage(l => $"Minimum {(ulong)l.Minimum} exceeds bound {rangeKU}");
-                When(l => l.Maximum.HasValue, () => {
-                    RuleFor(l => l.Maximum)
-                        .Must(max => unchecked((ulong)max!.Value) <= rangeKU)
-                        .WithMessage(l => $"Maximum {(ulong)l.Maximum!.Value} exceeds bound {rangeKU}");
-                    RuleFor(l => l.Maximum)
-                        .Must((l, max) => unchecked((ulong)max!.Value) >= unchecked((ulong)l.Minimum))
-                        .WithMessage(l => $"Maximum {(ulong)l.Maximum!.Value} less than minimum {(ulong)l.Minimum}");
-                });
+            private readonly ulong _rangeKU;
+
+            public Validator(long rangeK) => _rangeKU = unchecked((ulong)rangeK);
+
+            public void ValidateAndThrow(Limits l)
+            {
+                if (unchecked((ulong)l.Minimum) > _rangeKU)
+                    throw new ValidationException($"Minimum {(ulong)l.Minimum} exceeds bound {_rangeKU}");
+                if (l.Maximum.HasValue)
+                {
+                    if (unchecked((ulong)l.Maximum.Value) > _rangeKU)
+                        throw new ValidationException($"Maximum {(ulong)l.Maximum.Value} exceeds bound {_rangeKU}");
+                    if (unchecked((ulong)l.Maximum.Value) < unchecked((ulong)l.Minimum))
+                        throw new ValidationException($"Maximum {(ulong)l.Maximum.Value} less than minimum {(ulong)l.Minimum}");
+                }
             }
         }
     }

@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using FluentValidation;
-using Wacs.Core.Types.Defs;
 using Wacs.Core.Validation;
+using Wacs.Core.Types.Defs;
 
 namespace Wacs.Core.Types
 {
@@ -47,16 +46,15 @@ namespace Wacs.Core.Types
         /// <summary>
         /// @Spec 3.2.2. Block Types
         /// </summary>
-        public class Validator : AbstractValidator<Block>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public static class Validator
         {
-            public Validator()
+            public static void Validate(Block b, WasmValidationContext ctx)
             {
                 // @Spec 3.2.2.1. typeidx
                 // @Spec 3.2.2.2. [valtype?]
-                RuleFor(b => b.BlockType)
-                    .Must((_, type, ctx) => ctx.GetValidationContext().ValidateBlockType(type))
-                    .WithMessage("Blocks must have a defined BlockType if not a ValType index");
-
+                if (!ctx.ValidateBlockType(b.BlockType))
+                    throw new ValidationException("Blocks must have a defined BlockType if not a ValType index");
             }
         }
     }

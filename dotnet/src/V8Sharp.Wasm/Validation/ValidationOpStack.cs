@@ -14,7 +14,7 @@
 
 using System.Collections.Generic;
 using System.Linq;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Runtime;
 using Wacs.Core.Types;
 using Wacs.Core.Types.Defs;

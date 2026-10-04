@@ -18,7 +18,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
-using FluentValidation;
 using Wacs.Core.Runtime.Exceptions;
 using Wacs.Core.Types;
 using Wacs.Core.Types.Defs;
@@ -26,165 +25,120 @@ using Wacs.Core.Utilities;
 
 namespace Wacs.Core.Runtime.Types
 {
-    public unsafe class MemoryInstance : IDisposable
+    // V8Sharp: linear memory is always a managed byte[]. WACS also had a
+    // NativePointer mode (NativeMemory.AllocZeroed, unsafe pointers) for
+    // memories above 2 GiB; V8Sharp keeps the engine free of unsafe code
+    // (dotnet/CLAUDE.md rule 5), so memories are bounded by Array.MaxLength,
+    // as V8Sharp's ArrayBuffers are (deviations.md, "WebAssembly").
+    // Shared memories reserve their maximum size up front (when it is small
+    // enough) so that the byte[] never moves: SharedArrayBuffers handed to
+    // JavaScript alias it across growth, as V8's do.
+    public class MemoryInstance : IDisposable
     {
-        // ManagedArray-mode backing. In NativePointer mode this
-        // stays as Array.Empty<byte>() so accidental Data[i] access
-        // surfaces an AOOR rather than silently zero-reading.
+        /// <summary>The largest maximum a shared memory reserves up front.</summary>
+        public const long SharedReservationLimit = 64L * 1024 * 1024;
+
+        // The storage. For a shared memory with a reservation, longer than
+        // the memory; _byteLength is the memory's size.
         public byte[] Data;
 
-        // NativePointer-mode storage; zero/null in ManagedArray
-        // mode. NativeSize is authoritative — Data.Length is
-        // meaningless when StorageMode == NativePointer.
-        public byte* NativeBase;
-        public nuint NativeSize;
+        private long _byteLength;
 
         /// <summary>
-        /// Backing storage selector. <see cref="MemoryStorageMode.ManagedArray"/>
-        /// reads/writes <see cref="Data"/>; <see cref="MemoryStorageMode.NativePointer"/>
-        /// reads/writes <see cref="NativeBase"/> + <see cref="NativeSize"/>.
-        /// Set at construction; immutable for the lifetime of this
-        /// instance (Grow preserves the chosen mode).
+        /// V8Sharp: called after the memory grew (memory.grow or the JS API's
+        /// Memory.prototype.grow), so that the JS API can refresh the
+        /// ArrayBuffer that aliases the memory (WasmMemoryObject::Grow).
         /// </summary>
-        public MemoryStorageMode StorageMode { get; }
+        public Action<MemoryInstance, long>? OnGrow;
+
+        /// <summary>
+        /// Backing storage selector; always <see cref="MemoryStorageMode.ManagedArray"/>.
+        /// </summary>
+        public MemoryStorageMode StorageMode => MemoryStorageMode.ManagedArray;
 
         // Lazy-allocated only when the host has opted into concurrent wasm
         // execution (see ConcurrencyPolicyMode.HostDefined) AND the memory
         // type is shared. Without both, atomic ops operate on an
         // uncontended Data array and Grow is only called from the one
-        // executing thread — no lock needed. Allocating this eagerly on
-        // every MemoryInstance would penalize the single-threaded common
-        // case, and ReaderWriterLockSlim has historical IL2CPP fragility
-        // pre-Unity-2022, so gating on HostDefined keeps Unity consumers
-        // off the lock entirely.
+        // executing thread — no lock needed.
         internal ReaderWriterLockSlim? _growLock;
 
-        // Idempotency flag: explicit Dispose and the finalizer both
-        // hit DisposeCore; the native-buffer free runs once.
-        private bool _disposed;
-
-        [SuppressMessage("ReSharper.DPA", "DPA0003: Excessive memory allocations in LOH", MessageId = "type: System.Byte[]; size: 134MB")]
         public MemoryInstance(MemoryType type)
             : this(type, MemoryStorageMode.ManagedArray) { }
 
         public MemoryInstance(MemoryType type, MemoryStorageMode storage)
         {
             Type = type;
-            StorageMode = storage;
 
-            if (type.Limits.Minimum > MaxPagesForMode(storage))
+            if (type.Limits.Minimum > MaxPages)
                 throw new InstantiationException($"Cannot allocate memory of size {type.Limits.Minimum}");
 
             long initialSize = type.Limits.Minimum * Constants.PageSize;
-            switch (storage)
+            long reserved = initialSize;
+            if (type.Limits.Shared && type.Limits.Maximum is long max)
             {
-                case MemoryStorageMode.NativePointer:
-                    NativeBase = AllocateZeroed((nuint)initialSize);
-                    NativeSize = (nuint)initialSize;
-                    // Sentinel empty array so accidental Data[i]
-                    // reads fail loudly instead of zero-reading.
-                    Data = Array.Empty<byte>();
-                    break;
-                case MemoryStorageMode.ManagedArray:
-                default:
-                    Data = new byte[initialSize];
-                    break;
+                long maxBytes = Math.Min(max, MaxPages) * Constants.PageSize;
+                if (maxBytes <= SharedReservationLimit) reserved = maxBytes;
             }
+            Data = new byte[reserved];
+            _byteLength = initialSize;
         }
 
         public MemoryType Type { get; private set; }
 
-        public long Size => StorageMode == MemoryStorageMode.NativePointer
-            ? (long)(NativeSize / Constants.PageSize)
-            : Data.Length / Constants.PageSize;
+        public long Size => Volatile.Read(ref _byteLength) / Constants.PageSize;
 
         /// <summary>
-        /// Authoritative byte length in either mode. <c>nuint</c>
-        /// (host-pointer-sized) so memory64 callers don't truncate.
+        /// Authoritative byte length. <c>nuint</c> (host-pointer-sized) so
+        /// memory64 callers don't truncate.
         /// </summary>
-        public nuint ByteLength => StorageMode == MemoryStorageMode.NativePointer
-            ? NativeSize
-            : (nuint)Data.Length;
+        public nuint ByteLength
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => (nuint)Volatile.Read(ref _byteLength);
+        }
 
-        //TODO bounds checking?
         public Span<byte> this[Range range]
         {
             get
             {
-                if (StorageMode == MemoryStorageMode.NativePointer)
-                {
-                    var (offset, length) = range.GetOffsetAndLength((int)NativeSize);
-                    return new Span<byte>(NativeBase + offset, length);
-                }
-                return Data.AsSpan(range);
+                var (offset, length) = range.GetOffsetAndLength((int)_byteLength);
+                return Data.AsSpan(offset, length);
             }
         }
 
         /// <summary>
-        /// Returns a <see cref="Span{T}"/> over the storage,
-        /// regardless of mode. Callers must not retain the span past
-        /// the next <see cref="Grow"/> on this instance — grow
-        /// reallocates the backing storage and the span becomes
-        /// stale (matches the contract <c>byte[].AsSpan</c> already
-        /// imposed via Array.Resize).
+        /// Returns a <see cref="Span{T}"/> over the storage. Callers must not
+        /// retain the span past the next <see cref="Grow"/> on this instance —
+        /// grow reallocates the backing storage and the span becomes stale.
         /// </summary>
-        public Span<byte> AsSpan(int offset, int length)
-        {
-            if (StorageMode == MemoryStorageMode.NativePointer)
-                return new Span<byte>(NativeBase + offset, length);
-            return Data.AsSpan(offset, length);
-        }
+        public Span<byte> AsSpan(int offset, int length) => Data.AsSpan(offset, length);
 
         /// <summary>
-        /// High-address sibling of <see cref="AsSpan(int, int)"/>.
-        /// The transpiler's narrow-load/store helpers
-        /// (<c>StoreI32_8</c>, etc.) compute byte offsets up to
-        /// <c>nuint</c> range under
-        /// <see cref="MemoryStorageMode.NativePointer"/>; the int
-        /// overload would truncate offsets past <c>int.MaxValue</c>
-        /// and produce a span pointing far below
-        /// <see cref="NativeBase"/>. ManagedArray mode falls back to
-        /// the byte[] AsSpan after a safe-by-construction
-        /// <c>(int)offset</c> cast (the byte[] is bounded ≤ 2 GiB by
-        /// Array.MaxLength).
+        /// High-address sibling of <see cref="AsSpan(int, int)"/>. The byte[]
+        /// is bounded by Array.MaxLength, so the <c>(int)offset</c> cast is
+        /// safe for in-bounds offsets.
         /// </summary>
-        public Span<byte> AsSpan(nuint offset, int length)
-        {
-            if (StorageMode == MemoryStorageMode.NativePointer)
-                return new Span<byte>(NativeBase + offset, length);
-            return Data.AsSpan((int)offset, length);
-        }
+        public Span<byte> AsSpan(nuint offset, int length) => Data.AsSpan((int)offset, length);
 
         /// <summary>
         /// @Spec 4.5.3.9. Growing memories
         /// </summary>
         public bool Grow(long numPages)
         {
-            long oldNumPages = StorageMode == MemoryStorageMode.NativePointer
-                ? (long)(NativeSize / Constants.PageSize)
-                : Data.Length / Constants.PageSize;
+            long oldNumPages = Size;
             long newNumPages = oldNumPages + numPages;
 
-            if (newNumPages > MaxPagesForMode(StorageMode))
+            if (numPages < 0 || newNumPages > MaxPages)
                 return false;
 
-            if (newNumPages > Type.Limits.Maximum)
+            if (Type.Limits.Maximum is long maximum && newNumPages > maximum)
                 return false;
 
             var newLimits = new Limits(Type.Limits)
             {
                 Minimum = newNumPages
             };
-            var validator = TableType.Validator.Limits;
-            try
-            {
-                validator.ValidateAndThrow(newLimits);
-            }
-            catch (ValidationException exc)
-            {
-                _ = exc;
-                return false;
-            }
 
             long len = newNumPages * Constants.PageSize;
 
@@ -200,109 +154,30 @@ namespace Wacs.Core.Runtime.Types
                 GrowStorage(len, newLimits);
             }
 
+            OnGrow?.Invoke(this, oldNumPages);
             return true;
         }
 
-        // Mode-specific grow body. ManagedArray uses Array.Resize
-        // (capped at ~2 GiB). NativePointer allocates a new
-        // zero-initialized native buffer, copies the live bytes,
-        // and frees the old buffer — no 2 GiB cap.
+        // A memory whose reservation holds the new size grows in place;
+        // otherwise Array.Resize moves it (capped at ~2 GiB).
         private void GrowStorage(long newLenBytes, Limits newLimits)
         {
-            if (StorageMode == MemoryStorageMode.NativePointer)
+            if (newLenBytes > Data.Length)
             {
-                nuint newSize = (nuint)newLenBytes;
-                byte* newBase = AllocateZeroed(newSize);
-                if (NativeSize > 0)
-                    Buffer.MemoryCopy(NativeBase, newBase,
-                        (long)newSize, (long)NativeSize);
-                FreeNative(NativeBase);
-                NativeBase = newBase;
-                NativeSize = newSize;
+                var data = Data;
+                Array.Resize(ref data, (int)newLenBytes);
+                Data = data;
             }
-            else
-            {
-                Array.Resize(ref Data, (int)newLenBytes);
-            }
+            Volatile.Write(ref _byteLength, newLenBytes);
             Type = new MemoryType(newLimits);
         }
 
-        // Page-count cap, by storage mode + address type.
-        // ManagedArray: hard-capped at HostMaxPages (~2 GiB, the
-        // byte[] limit even with gcAllowVeryLargeObjects).
-        // NativePointer + i32 memory: WasmMaxPages (4 GiB, wasm32
-        // spec max).
-        // NativePointer + i64 memory: WasmMaxPages64 (2^48).
-        private long MaxPagesForMode(MemoryStorageMode mode)
-        {
-            if (mode != MemoryStorageMode.NativePointer)
-                return Constants.HostMaxPages;
-            return Type.Limits.AddressType == AddrType.I64
-                ? Constants.WasmMaxPages64
-                : Constants.WasmMaxPages;
-        }
+        // Page-count cap: what a byte[] can hold (Constants.HostMaxPages,
+        // ~2 GiB), for 32-bit and 64-bit memories alike.
+        private long MaxPages => Constants.HostMaxPages;
 
-        // Native buffer allocator. Prefers NativeMemory.AllocZeroed
-        // on .NET 6+ (single syscall, page-zeroed by the OS); falls
-        // back to AllocHGlobal + InitBlock on legacy targets.
-        private static byte* AllocateZeroed(nuint size)
-        {
-#if NET6_0_OR_GREATER
-            return (byte*)NativeMemory.AllocZeroed(size);
-#else
-            // AllocHGlobal returns uninitialized memory; zero it
-            // explicitly so the byte[] default-zero spec holds.
-            // size cap: AllocHGlobal takes IntPtr (signed) — for
-            // sizes near nuint.MaxValue on 64-bit hosts this would
-            // truncate; netstandard2.1 callers don't need >2 GiB
-            // memories, so the cast is safe in practice.
-            byte* ptr = (byte*)Marshal.AllocHGlobal((IntPtr)(long)size);
-            if (size > 0)
-                Unsafe.InitBlockUnaligned(ptr, 0, (uint)size);
-            return ptr;
-#endif
-        }
-
-        private static void FreeNative(byte* ptr)
-        {
-            if (ptr == null) return;
-#if NET6_0_OR_GREATER
-            NativeMemory.Free(ptr);
-#else
-            Marshal.FreeHGlobal((IntPtr)ptr);
-#endif
-        }
-
-        // Explicit dispose — caller owns the lifetime and is
-        // responsible for releasing native memory when the runtime
-        // is torn down. Finalizer is a backstop for native-mode
-        // leaks; ManagedArray mode skips the finalizer registration.
         public void Dispose()
         {
-            DisposeCore();
-            // Fully-qualified — Wacs.Core.Runtime has a sibling
-            // GC sub-namespace that the resolver picks first.
-            System.GC.SuppressFinalize(this);
-        }
-
-        ~MemoryInstance()
-        {
-            DisposeCore();
-        }
-
-        private void DisposeCore()
-        {
-            if (_disposed) return;
-            _disposed = true;
-            if (StorageMode == MemoryStorageMode.NativePointer
-                && NativeBase != null)
-            {
-                FreeNative(NativeBase);
-                NativeBase = null;
-                NativeSize = 0;
-            }
-            // ManagedArray: nothing to free — the GC reclaims Data
-            // when the MemoryInstance becomes unreachable.
             _growLock?.Dispose();
             _growLock = null;
         }
@@ -340,44 +215,19 @@ namespace Wacs.Core.Runtime.Types
         }
 
         /// <summary>
-        /// Mode-dispatched <c>ref T</c> over the byte at offset
-        /// <paramref name="ea"/>. ManagedArray returns
-        /// <c>ref Unsafe.As&lt;byte, T&gt;(ref Data[ea])</c>;
-        /// NativePointer returns <c>ref Unsafe.AsRef&lt;T&gt;(NativeBase + ea)</c>.
-        /// Used by atomic load/store/RMW so the same Interlocked /
-        /// Volatile call sites work on both backings.
-        /// Caller guarantees <paramref name="ea"/> is in-bounds and
-        /// aligned for <typeparamref name="T"/>.
+        /// <c>ref T</c> over the byte at offset <paramref name="ea"/>
+        /// (<c>Unsafe.As</c> over the array element, no unsafe code). Used by
+        /// atomic load/store/RMW. Caller guarantees <paramref name="ea"/> is
+        /// in-bounds and aligned for <typeparamref name="T"/>.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ref T RefAs<T>(int ea) where T : unmanaged
-        {
-            if (StorageMode == MemoryStorageMode.NativePointer)
-                return ref Unsafe.AsRef<T>(NativeBase + ea);
-            return ref Unsafe.As<byte, T>(ref Data[ea]);
-        }
+            => ref Unsafe.As<byte, T>(ref Data[ea]);
 
-        /// <summary>
-        /// High-address sibling of <see cref="RefAs{T}(int)"/>. The
-        /// transpiler's load/store helpers compute <c>ea</c> as a
-        /// 64-bit value (<c>(uint)addr + offset</c>) so guests with
-        /// > 2 GiB linear memory under <see cref="MemoryStorageMode.NativePointer"/>
-        /// can address into the high half. The <c>int</c> overload
-        /// truncates such <c>ea</c> values to a negative pointer
-        /// arithmetic offset and trips an AccessViolationException.
-        /// This overload accepts the full <see cref="nuint"/> range.
-        /// <para>ManagedArray-mode memories are bounded by
-        /// <c>Array.MaxLength</c> (~2 GiB) so the <c>(int)ea</c> cast
-        /// in that branch is safe by construction; the bug is purely
-        /// the NativePointer pointer arithmetic.</para>
-        /// </summary>
+        /// <summary>High-address sibling of <see cref="RefAs{T}(int)"/>.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe ref T RefAs<T>(nuint ea) where T : unmanaged
-        {
-            if (StorageMode == MemoryStorageMode.NativePointer)
-                return ref Unsafe.AsRef<T>(NativeBase + ea);
-            return ref Unsafe.As<byte, T>(ref Data[(int)ea]);
-        }
+        public ref T RefAs<T>(nuint ea) where T : unmanaged
+            => ref Unsafe.As<byte, T>(ref Data[(int)ea]);
 
         /// <summary>Atomic 32-bit load at byte offset <paramref name="ea"/>.
         /// Caller guarantees <paramref name="ea"/> is in-bounds and 4-byte
@@ -635,7 +485,7 @@ namespace Wacs.Core.Runtime.Types
         }
 
         public bool Contains(int offset, int width) =>
-            offset >= 0 && (offset + width) <= Data.Length;
+            offset >= 0 && (offset + width) <= (long)ByteLength;
 
         public string ReadString(uint ptr, uint len)
         {

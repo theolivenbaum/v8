@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using Microsoft.Extensions.ObjectPool;
+
 
 namespace Wacs.Core.Utilities
 {
@@ -21,7 +21,7 @@ namespace Wacs.Core.Utilities
     {
         public override T Create() => new T();
 
-        public override bool Return(T? obj)
+        public override bool Return(T obj)
         {
             if (obj == null)
                 return false;

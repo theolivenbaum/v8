@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using FluentValidation;
 using Wacs.Core.Runtime;
 using Wacs.Core.Types;
 
@@ -21,54 +20,61 @@ namespace Wacs.Core.Validation
     /// <summary>
     /// @Spec 3.4. Modules
     /// </summary>
-    public class ModuleValidator : AbstractValidator<Module>
+    // V8Sharp: plain code instead of a FluentValidation AbstractValidator<Module>;
+    // the rules run in WACS's order and the first failure throws.
+    public class ModuleValidator
     {
+        private readonly RuntimeAttributes? _attributes;
+
         public ModuleValidator() : this(null) { }
 
-        public ModuleValidator(RuntimeAttributes? attributes)
+        public ModuleValidator(RuntimeAttributes? attributes) => _attributes = attributes;
+
+        public void ValidateAndThrow(Module module)
         {
             //Set the validation context
-            RuleFor(module => module)
-                .Custom((module, ctx) =>
+            var vctx = new WasmValidationContext(module);
+            if (_attributes != null) vctx.Attributes = _attributes;
+
+            foreach (var type in module.Types)
+                RecursiveType.Validator.Validate(type, vctx);
+            foreach (var import in module.Imports)
+                Module.Import.Validator.Validate(import, vctx);
+            vctx.Globals.SetHighImportWatermark();
+            foreach (var table in module.Tables)
+                TableType.Validator.Validate(table, vctx);
+            foreach (var mem in module.Memories)
+                MemoryType.Validator.Validate(mem, vctx);
+            foreach (var global in module.Globals)
+                Module.Global.Validator.Validate(global, vctx);
+            foreach (var tag in module.Tags)
+                TagType.Validator.Validate(tag, vctx);
+            foreach (var func in module.ValidationFuncs)
+                Module.Function.Validator.Validate(func, vctx);
+            foreach (var export in module.Exports)
+                Module.Export.Validator.Validate(export, vctx);
+            foreach (var elem in module.Elements)
+                Module.ElementSegment.Validator.Validate(elem, vctx);
+            foreach (var data in module.Datas)
+                Module.Data.Validator.Validate(data, vctx);
+
+            if (module.StartIndex.Value < module.Funcs.Count)
+            {
+                var idx = module.StartIndex;
+                if (!vctx.Funcs.Contains(idx))
+                    throw new ValidationException($"Invalid Start function index {idx.Value}");
+                var typeIndex = vctx.Funcs[idx].TypeIndex;
+                var type = vctx.Types[typeIndex].Expansion;
+                //TODO: handle any type
+
+                if (type is FunctionType funcType)
                 {
-                    var vctx = new WasmValidationContext(module, ctx);
-                    if (attributes != null) vctx.Attributes = attributes;
-                    ctx.RootContextData[nameof(WasmValidationContext)] = vctx;
-                });
-
-            RuleForEach(module => module.Types).SetValidator(new RecursiveType.Validator());
-            RuleForEach(module => module.Imports).SetValidator(new Module.Import.Validator());
-            RuleFor(module => module.Imports)
-                .Custom((_, ctx) => 
-                    ctx.GetValidationContext().Globals.SetHighImportWatermark());
-            RuleForEach(module => module.Tables).SetValidator(new TableType.Validator());
-            RuleForEach(module => module.Memories).SetValidator(new MemoryType.Validator());
-            RuleForEach(module => module.Globals).SetValidator(new Module.Global.Validator());
-            RuleForEach(module => module.Tags).SetValidator(new TagType.Validator());
-            RuleForEach(module => module.ValidationFuncs)
-                .SetValidator(new Module.Function.Validator()).OverridePropertyName("Function");
-            RuleForEach(module => module.Exports).SetValidator(new Module.Export.Validator());
-            RuleForEach(module => module.Elements).SetValidator(new Module.ElementSegment.Validator());
-            RuleForEach(module => module.Datas).SetValidator(new Module.Data.Validator());
-
-            RuleFor(module => module.StartIndex)
-                .Must((_, idx, ctx) => ctx.GetValidationContext().Funcs.Contains(idx))
-                .Custom((idx, ctx) =>
-                {
-                    var execContext = ctx.GetValidationContext();
-                    var typeIndex = execContext.Funcs[idx].TypeIndex;
-                    var type = execContext.Types[typeIndex].Expansion;
-                    //TODO: handle any type
-
-                    if (type is FunctionType funcType)
+                    if (funcType.ParameterTypes.Arity != 0 || funcType.ResultType.Arity != 0)
                     {
-                        if (funcType.ParameterTypes.Arity != 0 || funcType.ResultType.Arity != 0)
-                        {
-                            ctx.AddFailure($"Invalid Start function with type: {type}");
-                        }
+                        throw new ValidationException($"Invalid Start function with type: {type}");
                     }
-                })
-                .When(module => module.StartIndex.Value < module.Funcs.Count);
+                }
+            }
         }
     }
 }

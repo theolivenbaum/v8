@@ -16,12 +16,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Runtime;
 using Wacs.Core.Runtime.Exceptions;
 using Wacs.Core.Types.Defs;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core.Types
 {
@@ -115,21 +114,17 @@ namespace Wacs.Core.Types
             return hash.ToHashCode();
         }
 
-        public class Validator : AbstractValidator<FieldType>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public static class Validator
         {
-            public Validator()
+            public static void Validate(FieldType ft, WasmValidationContext ctx)
             {
                 //PackedTypes are always valid
-                RuleFor(ft => ft.StorageType)
-                    .IsInEnum()
-                    .When(ft => ft.StorageType.IsPacked());
-                
+                if (ft.StorageType.IsPacked())
+                    return;
                 //StorageType
-                RuleFor(ft => ft.StorageType)
-                    .Must((_, vt, ctx) => vt.Validate(ctx.GetValidationContext().Types))
-                    .When(ft => !ft.StorageType.IsPacked())
-                    .WithMessage(ft => $"FieldType had invalid StorageType:{ft.StorageType}");
-                
+                if (!ft.StorageType.Validate(ctx.Types))
+                    throw new ValidationException($"FieldType had invalid StorageType:{ft.StorageType}");
                 //Spec ignores Mutability for validation
             }
         }

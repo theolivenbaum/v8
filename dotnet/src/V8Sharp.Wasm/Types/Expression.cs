@@ -16,12 +16,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using FluentValidation;
+using Wacs.Core.Validation;
 using Wacs.Core.Instructions;
 using Wacs.Core.OpCodes;
 using Wacs.Core.Runtime;
 using Wacs.Core.Utilities;
-using Wacs.Core.Validation;
 
 namespace Wacs.Core.Types
 {
@@ -141,63 +140,35 @@ namespace Wacs.Core.Types
         /// <summary>
         /// @Spec 3.3.10. Expressions
         /// </summary>
-        public class Validator : AbstractValidator<Expression>
+        // V8Sharp: plain code instead of a FluentValidation validator.
+        public static class Validator
         {
-            public Validator(ResultType resultType, bool isConstant = false)
+            public static void Validate(Expression e, ResultType resultType, WasmValidationContext validationContext,
+                bool isConstant = false)
             {
-                RuleFor(e => e).Custom((e, ctx) =>
+                if (isConstant)
+                    if (!e.Instructions.IsConstant(validationContext))
+                        throw new ValidationException($"Expression must be constant");
+
+                var funcType = new FunctionType(ResultType.Empty, resultType);
+                validationContext.PushControlFrame(OpCode.Expr, funcType); //The root frame
+                validationContext.PushControlFrame(OpCode.Block, funcType); //For the end instruction
+
+                int lastIndex = e.Instructions.Count - 1;
+                // @Spec 3.3.9. Instruction Sequences
+                int index = 0;
+                foreach (var inst in e.Instructions)
                 {
-                    var validationContext = ctx.GetValidationContext();
-                    
-                    if (isConstant)
-                        if (!e.Instructions.IsConstant(validationContext))
-                            ctx.AddFailure($"Expression must be constant");
+                    //Skip End for constant expressions
+                    if (isConstant && index == lastIndex && inst.Op == OpCode.End)
+                        break;
+                    WasmValidationContext.ValidateInstruction(inst, validationContext);
+                    index++;
+                }
 
-
-                    var funcType = new FunctionType(ResultType.Empty, resultType);
-                    validationContext.PushControlFrame(OpCode.Expr, funcType); //The root frame
-                    validationContext.PushControlFrame(OpCode.Block, funcType); //For the end instruction
-                    
-                    var instructionValidator = new WasmValidationContext.InstructionValidator();
-
-                    int lastIndex = e.Instructions.Count - 1;
-                    // @Spec 3.3.9. Instruction Sequences
-                    foreach (var (inst, index) in e.Instructions.Select((inst, index)=>(inst, index)))
-                    {
-                        //Skip End for constant expressions
-                        if (isConstant && index == lastIndex && inst.Op == OpCode.End)
-                            break;
-                        
-                        var subContext = validationContext.PushSubContext(inst, index);
-
-                        try
-                        {
-                            var result = instructionValidator.Validate(subContext);
-                            foreach (var error in result.Errors)
-                            {
-                                ctx.AddFailure($"Instruction.{error.PropertyName}", error.ErrorMessage);
-                            }
-                        }
-                        catch (ValidationException exc)
-                        {
-                            ctx.AddFailure(exc.Message);
-                        }
-                        
-                        validationContext.PopValidationContext();
-                    }
-
-                    try
-                    {
-                        validationContext.PopControlFrame();
-                        if (validationContext.OpStack.Height != 0)
-                            throw new ValidationException($"Expression had leftover operands on the stack");
-                        
-                    }
-                    catch (ValidationException exc)
-                    {
-                        ctx.AddFailure($"{exc.Message}");
-                    }
-                });
+                validationContext.PopControlFrame();
+                if (validationContext.OpStack.Height != 0)
+                    throw new ValidationException($"Expression had leftover operands on the stack");
             }
         }
     }

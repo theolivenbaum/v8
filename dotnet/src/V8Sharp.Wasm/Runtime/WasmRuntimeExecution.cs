@@ -24,7 +24,6 @@ using Wacs.Core.Runtime.Concurrency;
 using Wacs.Core.Runtime.Exceptions;
 using Wacs.Core.Runtime.Types;
 using Wacs.Core.Utilities;
-using Wacs.Core.WASIp1;
 
 namespace Wacs.Core.Runtime
 {
@@ -265,31 +264,6 @@ namespace Wacs.Core.Runtime
                     ctx.FlushCallStack();
                     ExceptionDispatchInfo.Throw(exc);
                 }
-                catch (SignalException exc)
-                {
-                    ctx.ProcessTimer.Stop();
-                    ctx.InstructionTimer.Stop();
-                    if (options.LogProgressEvery > 0)
-                        Console.Error.WriteLine();
-                    if (options.CollectStats != StatsDetail.None)
-                        PrintStats(options);
-                    if (options.LogGas)
-                        Console.Error.WriteLine($"Process used {ctx.steps} gas. {ctx.ProcessTimer.Elapsed}");
-
-                    // Source-line enrichment is now WasmStackTrace's
-                    // job. The legacy CalculateLineNumbers branch
-                    // wrapped messages using a stubbed
-                    // ComputePointerPath that always returned an
-                    // empty list — removed.
-                    string message = exc.Message;
-
-                    //Flush the stack before throwing...
-                    ctx.FlushCallStack();
-
-                    var exType = exc.GetType();
-                    var ctr = exType.GetConstructor(new Type[] { typeof(int), typeof(string) });
-                    ExceptionDispatchInfo.Throw(ctr?.Invoke(new object[] { exc.Signal, message }) as Exception ?? exc);
-                }
                 catch (WasmRuntimeException)
                 {
                     //Maybe Log?
@@ -441,37 +415,6 @@ namespace Wacs.Core.Runtime
                         ctx.FlushCallStack();
                     }
                     ExceptionDispatchInfo.Throw(exc);
-                }
-                catch (SignalException exc)
-                {
-                    ctx.ProcessTimer.Stop();
-                    ctx.InstructionTimer.Stop();
-                    if (options.LogProgressEvery > 0)
-                        Console.Error.WriteLine();
-                    if (options.CollectStats != StatsDetail.None)
-                        PrintStats(options);
-                    if (options.LogGas)
-                        Console.Error.WriteLine($"Process used {ctx.steps} gas. {ctx.ProcessTimer.Elapsed}");
-
-                    // Source-line enrichment is now WasmStackTrace's
-                    // job. The legacy CalculateLineNumbers branch
-                    // wrapped messages using a stubbed
-                    // ComputePointerPath that always returned an
-                    // empty list — removed.
-                    string message = exc.Message;
-
-                    if (isNestedCall)
-                    {
-                        ctx.InstructionPointer = savedInstructionPointer;
-                    }
-                    else
-                    {
-                        ctx.FlushCallStack();
-                    }
-
-                    var exType = exc.GetType();
-                    var ctr = exType.GetConstructor(new Type[] { typeof(int), typeof(string) });
-                    ExceptionDispatchInfo.Throw(ctr?.Invoke(new object[] { exc.Signal, message }) as Exception ?? exc);
                 }
                 catch (WasmRuntimeException)
                 {
