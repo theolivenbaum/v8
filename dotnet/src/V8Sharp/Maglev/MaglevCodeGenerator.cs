@@ -55,13 +55,15 @@ internal sealed class MaglevCodeGenerator
     readonly LocalBuilder _fp;
     readonly LocalBuilder _frame;
     readonly LocalBuilder _baseFrameIndex;
-    // Scratch locals.
-    readonly LocalBuilder _tmpLong;
-    readonly LocalBuilder _tmpDouble;
-    readonly LocalBuilder _tmpInt;
-    readonly LocalBuilder _tmpMap;
-    readonly LocalBuilder _tmpValue;
-    readonly LocalBuilder _tmpObject;
+    // Scratch locals, declared on first use (a small method's local count
+    // decides whether RyuJIT can inline it into its direct entry).
+    LocalBuilder? _tmpLongLocal, _tmpDoubleLocal, _tmpIntLocal, _tmpMapLocal, _tmpValueLocal, _tmpObjectLocal;
+    LocalBuilder _tmpLong => _tmpLongLocal ??= _il.DeclareLocal(typeof(long));
+    LocalBuilder _tmpDouble => _tmpDoubleLocal ??= _il.DeclareLocal(typeof(double));
+    LocalBuilder _tmpInt => _tmpIntLocal ??= _il.DeclareLocal(typeof(int));
+    LocalBuilder _tmpMap => _tmpMapLocal ??= _il.DeclareLocal(typeof(Map));
+    LocalBuilder _tmpValue => _tmpValueLocal ??= _il.DeclareLocal(typeof(JSValue));
+    LocalBuilder _tmpObject => _tmpObjectLocal ??= _il.DeclareLocal(typeof(HeapObject));
 
     readonly List<(FieldBuilder Field, object? Value)> _staticConstants = [];
     readonly Dictionary<(object, Type), FieldBuilder> _constantFields = new();
@@ -113,12 +115,6 @@ internal sealed class MaglevCodeGenerator
         _fp = _il.DeclareLocal(typeof(int));
         _frame = _il.DeclareLocal(typeof(InterpreterFrameRecord).MakeByRefType());
         _baseFrameIndex = _il.DeclareLocal(typeof(int));
-        _tmpLong = _il.DeclareLocal(typeof(long));
-        _tmpDouble = _il.DeclareLocal(typeof(double));
-        _tmpInt = _il.DeclareLocal(typeof(int));
-        _tmpMap = _il.DeclareLocal(typeof(Map));
-        _tmpValue = _il.DeclareLocal(typeof(JSValue));
-        _tmpObject = _il.DeclareLocal(typeof(HeapObject));
     }
 
     /// <summary>
@@ -217,11 +213,17 @@ internal sealed class MaglevCodeGenerator
         }
 
         MethodBuilder? fastCall = DefineFastCallEntry();
+        MethodImplAttributes bodyFlags = MethodImplAttributes.IL;
         if (_optimizeFully || _il.ILOffset <= s_aggressiveMaxIL || _il.ILOffset > kAggressiveILBytes)
         {
-            _method.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
+            bodyFlags |= MethodImplAttributes.AggressiveOptimization;
             fastCall?.SetImplementationFlags(MethodImplAttributes.AggressiveOptimization);
         }
+        // A small body without exception handlers is inlined into its direct
+        // entry: a direct call is then one .NET call, as V8's call is one jump
+        // to the callee's code.
+        if (fastCall is not null && !_hasCatchBlocks && _il.ILOffset <= kInlineIntoFastCallILBytes) bodyFlags |= MethodImplAttributes.AggressiveInlining;
+        if (bodyFlags != MethodImplAttributes.IL) _method.SetImplementationFlags(bodyFlags);
         _code.DeoptPoints = _deoptPoints.ToArray();
         _code.SpeculationFeedback = _speculationFeedback.ToArray();
         _code.MaxScratchSize = _maxScratch;
@@ -292,6 +294,10 @@ internal sealed class MaglevCodeGenerator
     /// FullOpts up to 47000 bytes of Maglev IL). The limit bounds RyuJIT's
     /// compile time.
     /// </summary>
+    /// <summary>The largest body inlined into its direct entry (RyuJIT's inlinee limits: no EH, few locals).</summary>
+    static readonly int kInlineIntoFastCallILBytes =
+        int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_INLINE_BODY_IL"), out int inlineBody) ? inlineBody : 1200;
+
     static readonly int kMaxOptimizedILBytes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_IL"), out int maxIL) ? maxIL : 60000;
 
     /// <summary>Methods with more IL are compiled with AggressiveOptimization (see kMaxOptimizedILBytes).</summary>
