@@ -299,6 +299,60 @@ public sealed partial class MaglevGraphBuilder
         BuildBody(0, osrHeader: header);
     }
 
+    /// <summary>
+    /// The effects a loop's body is first assumed to have: everything when it
+    /// calls (its header then forgets what a call can change), nothing
+    /// otherwise (checked at the back edge, see VisitJumpLoop).
+    /// </summary>
+    LoopEffects PrescanLoopEffects(LoopInfo loop)
+    {
+        var effects = new LoopEffects();
+        var it = new BytecodeArrayIterator(_unit.Bytecode);
+        it.SetOffset(loop.LoopStart);
+        for (; !it.Done() && it.CurrentOffset() < loop.JumpLoopOffset; it.Advance())
+        {
+            Bytecode bc = it.CurrentBytecode();
+            if (Bytecodes.IsCallOrConstruct(bc) || Bytecodes.IsCallRuntime(bc))
+            {
+                effects.Cleared = true;
+                break;
+            }
+        }
+        return effects;
+    }
+
+    /// <summary>
+    /// At a loop's back edge: the effects its body had must be ones its header
+    /// assumed; otherwise the graph is built again with them
+    /// (MaglevRestartException).
+    /// </summary>
+    void CheckLoopEffects(int header)
+    {
+        List<MaglevCompilationInfo.ActiveLoop> loops = _info.ActiveLoops;
+        for (int i = loops.Count - 1; i >= 0; i--)
+        {
+            MaglevCompilationInfo.ActiveLoop loop = loops[i];
+            if (!ReferenceEquals(loop.Unit, _unit) || loop.Header != header) continue;
+            loops.RemoveAt(i);
+            if (!loop.Observed.IsSubsetOf(loop.Assumed))
+            {
+                _info.LoopHints[(_unit.SharedFunctionInfo, header)] = loop.Assumed.Union(loop.Observed);
+                throw new MaglevRestartException();
+            }
+            return;
+        }
+    }
+
+    /// <summary>Drops the active loops of this unit that end before <paramref name="offset"/> (back edges never reached).</summary>
+    void PopFinishedLoops(int offset)
+    {
+        List<MaglevCompilationInfo.ActiveLoop> loops = _info.ActiveLoops;
+        for (int i = loops.Count - 1; i >= 0; i--)
+        {
+            if (ReferenceEquals(loops[i].Unit, _unit) && loops[i].End < offset) loops.RemoveAt(i);
+        }
+    }
+
     /// <summary>Whether the bytecode at <paramref name="offset"/> starts a block through a merge state.</summary>
     bool NeedsMergeState(int offset) => _isJumpTarget[offset] || _predecessorCount[offset] > 1 || _analysis.IsLoopHeader(offset);
 
@@ -316,6 +370,7 @@ public sealed partial class MaglevGraphBuilder
         for (; !_it.Done(); _it.Advance())
         {
             int offset = _it.CurrentOffset();
+            if (_info.ActiveLoops.Count > 0) PopFinishedLoops(offset);
             HandleTryBlock(offset);
             if (_catchStates[offset] is { } catchState)
             {
@@ -337,6 +392,7 @@ public sealed partial class MaglevGraphBuilder
             if (_info.IsTracing) Console.WriteLine($"[maglev] {_unit} @{offset} {_it.CurrentBytecode()}");
             VisitSingleBytecode();
         }
+        if (_info.ActiveLoops.Count > 0) PopFinishedLoops(int.MaxValue);
     }
 
     /// <summary>
@@ -432,6 +488,8 @@ public sealed partial class MaglevGraphBuilder
         block.IsExceptionHandler = true;
         // The throwing nodes ran (and may have had side effects) after their frames merged.
         _frame.Known.ClearUnstableMaps();
+        _frame.Known.ClearLoaded();
+        _info.RecordLoopEffect(clearsAll: true);
         // Isolate::UnwindAndFindHandler sets the context from the context register.
         SetCurrentContext(_frame.Context);
     }
@@ -527,7 +585,24 @@ public sealed partial class MaglevGraphBuilder
         var state = new MergePointInterpreterFrameState(_unit, offset, _predecessorCount[offset],
             _analysis.GetInLivenessFor(offset), loop);
         _mergeStates[offset] = state;
-        state.InitializeLoop(this, _frame, entryPredecessor, _loopChangesContext[offset], IsResumableLoop(loop));
+        bool resumable = IsResumableLoop(loop);
+        LoopEffects? assumed = null;
+        if (_info.OptimisticLoops && !resumable)
+        {
+            assumed = _info.LoopHints.TryGetValue((_unit.SharedFunctionInfo, offset), out LoopEffects? hint) ? hint : PrescanLoopEffects(loop);
+            if (assumed.Cleared) assumed = null;
+        }
+        state.InitializeLoop(this, _frame, entryPredecessor, _loopChangesContext[offset], resumable, assumed);
+        if (assumed is not null) _info.ActiveLoops.Add(new MaglevCompilationInfo.ActiveLoop(_unit, offset, loop.JumpLoopOffset, assumed));
+        // The frame at the loop entry (deopt frame of hoisted untagging checks).
+        var entryValues = new List<(Register, ValueNode)>();
+        for (int slot = 0; slot < _frame.Values.Length; slot++)
+        {
+            if (!InterpreterFrameState.IsLive(_unit, state.Liveness, slot)) continue;
+            if (_frame.Values[slot] is not { } v) continue;
+            entryValues.Add((InterpreterFrameState.RegisterOf(_unit, slot), v));
+        }
+        state.LoopEntryDeoptFrame = new InterpretedDeoptFrame(_unit, offset, offset, entryValues.ToArray(), ClosureNode, _callerDeoptFrame);
         BasicBlock header = _graph.NewBlock();
         header.IsLoopHeader = true;
         header.Offset = offset;
@@ -622,6 +697,7 @@ public sealed partial class MaglevGraphBuilder
             var copy = new InterpreterFrameState(_unit);
             Array.Copy(_frame.Values, copy.Values, copy.Values.Length);
             copy.Known = _frame.Known.Clone();
+            copy.DirtyParameters = _frame.DirtyParameters;
             _pendingFallthrough = copy;
             _pendingFallthroughPredecessor = block;
             _pendingFallthroughOffset = next;
@@ -708,6 +784,7 @@ public sealed partial class MaglevGraphBuilder
     /// </summary>
     T AddNewNode<T>(T node, DeoptimizeReason reason = DeoptimizeReason.kUnknown) where T : Node
     {
+        if (_frame.DirtyParameters != 0 && ObservesFrameParameters(node)) FlushDirtyParameters();
         node.Id = _graph.NewNodeId();
         node.Unit = _unit;
         if (!_it.Done()) node.BytecodeOffset = Cursor;
@@ -730,12 +807,69 @@ public sealed partial class MaglevGraphBuilder
         }
         if ((node.Properties & (OpProperties.kCanWrite | OpProperties.kCall)) != 0)
         {
-            _frame.Known.ClearUnstableMaps();
+            MarkPossibleSideEffect(node);
             // MarkPossibleSideEffect -> ResetBuilderCachedState: later checks
             // cannot resume before this node.
             _latestCheckpointedFrame = null;
         }
         return node;
+    }
+
+    /// <summary>
+    /// MarkPossibleSideEffect: what a node that writes or calls makes
+    /// unknown. A simple store (a field, an element, a context slot, the
+    /// frame) changes no map and only the loaded values of its own key, which
+    /// then holds the stored value; anything else (calls, map transitions)
+    /// clears the unstable maps and every loaded value.
+    /// </summary>
+    void MarkPossibleSideEffect(Node node)
+    {
+        KnownNodeAspects known = _frame.Known;
+        if ((node.Properties & OpProperties.kCall) == 0)
+        {
+            switch (node.Opcode)
+            {
+                case Opcode.StoreTaggedField:
+                    known.ForgetPropertyKey(node.Int0);
+                    _info.RecordLoopEffect(propertyKey: node.Int0);
+                    known.LoadedProperties[(node.Inputs[0], node.Int0)] = node.Inputs[1];
+                    return;
+                case Opcode.StoreContextSlot:
+                    known.ForgetContextSlot(node.Int0);
+                    _info.RecordLoopEffect(contextSlot: node.Int0);
+                    known.LoadedContextSlots[(node.Inputs[0], node.Int1, node.Int0)] = node.Inputs[1];
+                    return;
+                case Opcode.MaybeGrowFastElements:
+                case Opcode.UpdateJSArrayLength:
+                    foreach (int key in (ReadOnlySpan<int>)[PropertyKeys.kElements, PropertyKeys.kJSArrayLength, PropertyKeys.kFixedArrayLength])
+                    {
+                        known.ForgetPropertyKey(key);
+                        _info.RecordLoopEffect(propertyKey: key);
+                    }
+                    return;
+                case Opcode.StoreFixedArrayElement:
+                case Opcode.StoreFixedDoubleArrayElement:
+                case Opcode.StoreTypedArrayElement:
+                case Opcode.StorePropertyCellValue:
+                case Opcode.StoreRegister:
+                case Opcode.EnterInlinedFrame:
+                case Opcode.StoreGeneratorContinuation:
+                case Opcode.GeneratorStore:
+                    return;
+            }
+        }
+        known.ClearUnstableMaps();
+        known.ClearLoaded();
+        _info.RecordLoopEffect(clearsAll: true);
+    }
+
+    /// <summary>A load of <paramref name="key"/> of <paramref name="obj"/>: the known value, or the new load (recorded).</summary>
+    ValueNode BuildLoadProperty(ValueNode obj, int key, Func<ValueNode> build)
+    {
+        if (_frame.Known.LoadedProperties.TryGetValue((obj, key), out ValueNode? known)) return known;
+        ValueNode value = build();
+        _frame.Known.LoadedProperties[(obj, key)] = value;
+        return value;
     }
 
     ValueNode GetRootConstant(RootIndex index) => _graph.GetRootConstant(index);
@@ -869,13 +1003,84 @@ public sealed partial class MaglevGraphBuilder
     void StoreRegister(Register r, ValueNode value)
     {
         _frame.Set(r, value);
-        if (r.IsParameter && !r.IsFunctionClosure && !r.IsCurrentContext && !_unit.IsInline)
+        if (r.IsParameter && !r.IsFunctionClosure && !r.IsCurrentContext)
         {
-            // A parameter assignment also goes to the frame: function.arguments
-            // reads the frame's parameters (V8 reads them from the optimized
-            // frame through the deopt translation).
+            // A parameter assignment also goes to the frame (an inlined
+            // function's too): function.arguments reads the frame's parameters
+            // (V8 reads them from the optimized frame through the deopt
+            // translation). The store is sunk to the next node that can
+            // observe the frame (FlushDirtyParameters).
+            int index = r.ToParameterIndex();
+            if (index < 64)
+            {
+                _frame.DirtyParameters |= 1UL << index;
+                return;
+            }
             AddNewNode(new Node(Opcode.StoreRegister) { Inputs = [GetTaggedValue(value)], Int0 = r.Index });
         }
+    }
+
+    /// <summary>
+    /// Whether a node can observe the frame's parameter slots: it calls out
+    /// (function.arguments of this frame, a stack walk), throws, or reads the
+    /// frame (arguments objects, builtins that take registers).
+    /// </summary>
+    /// <remarks>
+    /// The loop interrupt check (HandleNoHeapWritesInterrupt) does not count:
+    /// the interrupts it serves (termination, code installation) run no
+    /// JavaScript.
+    /// </remarks>
+    static bool ObservesFrameParameters(Node node) =>
+        node.Opcode is Opcode.CallBuiltin or Opcode.LoadRegister or Opcode.EnterInlinedFrame or Opcode.GeneratorStore ||
+        node.Opcode is not (Opcode.StoreRegister or Opcode.HandleNoHeapWritesInterrupt) &&
+        (node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0;
+
+    /// <summary>
+    /// V8Sharp: writes the parameters assigned since the last write into the
+    /// frame's parameter slots (StoreRegister). Deviation: V8 keeps assigned
+    /// parameters only in the optimized frame and reads them for
+    /// function.arguments through the deopt translation; V8Sharp's stack
+    /// walker reads the interpreter frame, so an assignment is written there
+    /// before the next node that can observe it, rather than at every
+    /// assignment (a loop that assigns a parameter and calls nothing keeps it
+    /// in an IL local).
+    /// </summary>
+    void FlushDirtyParameters()
+    {
+        ulong dirty = _frame.DirtyParameters;
+        _frame.DirtyParameters = 0;
+        for (int i = 0; dirty != 0; i++, dirty >>= 1)
+        {
+            if ((dirty & 1) == 0) continue;
+            Register r = Register.FromParameterIndex(i);
+            ValueNode? value = _frame.TryGet(r);
+            if (value is null) continue;
+            AddNewNode(new Node(Opcode.StoreRegister) { Inputs = [GetTaggedValue(value)], Int0 = r.Index });
+        }
+    }
+
+    /// <summary>
+    /// BuildTestUndetectable with MaglevReducer::TryFoldTestUndetectable: an
+    /// untagged number or a receiver (under the NoUndetectableObjects
+    /// protector) is not undetectable; with the protector, only null and
+    /// undefined are.
+    /// </summary>
+    ValueNode BuildTestUndetectable(ValueNode value)
+    {
+        if (value.Representation != ValueRepresentation.kTagged) return GetBooleanConstant(false);
+        if (value.IsConstant)
+        {
+            JSValue c = value.ConstantValue();
+            return GetBooleanConstant(c.IsNullOrUndefined || c.HeapObjectOrNull is JSReceiver r && r.Map.IsUndetectable);
+        }
+        bool noUndetectable = _info.DependOnProtector(Protectors.IsNoUndetectableObjectsIntact(Isolate), "NoUndetectableObjects");
+        if (noUndetectable && !NodeTypes.CanBe(GetType(value), NodeType.kNullOrUndefined)) return GetBooleanConstant(false);
+        return AddNewNode(new ValueNode(Opcode.TestUndetectable, ValueRepresentation.kTagged)
+        {
+            Inputs = [value],
+            Type = NodeType.kBoolean,
+            Int0 = noUndetectable ? 1 : 0,
+        });
     }
 
     NodeType GetType(ValueNode node) => _frame.Known.GetType(node);
@@ -1001,6 +1206,8 @@ public sealed partial class MaglevGraphBuilder
     /// </summary>
     ValueNode Select(ControlNode branch, Func<ValueNode> ifTrue, Func<ValueNode> ifFalse)
     {
+        // (The branches share the frame: no parameter stays dirty in one of them only.)
+        FlushDirtyParameters();
         BasicBlock predecessor = _currentBlock!;
         KnownNodeAspects known = _frame.Known.Clone();
         FinishBlock(branch);

@@ -31,13 +31,7 @@ public static class MaglevBuiltins
 
     /// <summary>A Smi (31-bit, integral, not -0), as JSValue.IsSmi.</summary>
     [MethodImpl(Inline)]
-    public static bool IsSmi(JSValue v)
-    {
-        if (!ReferenceEquals(v._obj, NumberTag.Instance)) return false;
-        double d = v._num;
-        int i = (int)d;
-        return i == d && i >= JSValue.SmiMinValue && i <= JSValue.SmiMaxValue && (i != 0 || BitConverter.DoubleToInt64Bits(d) == 0);
-    }
+    public static bool IsSmi(JSValue v) => ReferenceEquals(v._obj, NumberTag.Instance) && JSValue.IsSmiDouble(v._num);
 
     [MethodImpl(Inline)]
     public static bool IsHeapObject(JSValue v) => v._obj is not null && !ReferenceEquals(v._obj, NumberTag.Instance);
@@ -236,7 +230,15 @@ public static class MaglevBuiltins
     public static JSValue TaggedEqual(JSValue a, JSValue b) => a.IsIdenticalTo(b) ? JSValue.True : JSValue.False;
 
     [MethodImpl(Inline)]
-    public static bool ToBoolean(JSValue v) => InterpreterOps.ToBoolean(v);
+    public static bool ToBoolean(JSValue v)
+    {
+        // Receivers first (`if (node)`), by instance type: ObjectOps.BooleanValue
+        // is not inlined.
+        HeapObject? o = v._obj;
+        if (o is null) return false;
+        if (o.InstanceType >= InstanceTypeChecks.FirstJSReceiver) return !Unsafe.As<JSReceiver>(o).Map.IsUndetectable;
+        return InterpreterOps.ToBoolean(v);
+    }
 
     [MethodImpl(Inline)]
     public static bool Float64ToBoolean(double d) => d != 0 && !double.IsNaN(d);
@@ -250,7 +252,73 @@ public static class MaglevBuiltins
     [MethodImpl(Inline)]
     public static bool IsIdentical(JSValue a, JSValue b) => a.IsIdenticalTo(b);
 
-    public static JSValue TestUndetectable(JSValue v) => JSValue.FromBoolean(InterpreterOps.IsUndetectable(v));
+    /// <summary>
+    /// TestUndetectable: null, undefined and receivers with undetectable maps
+    /// (the instance type range test instead of a class type test).
+    /// </summary>
+    [MethodImpl(Inline)]
+    public static JSValue TestUndetectable(JSValue v)
+    {
+        HeapObject? o = v._obj;
+        bool undetectable = o is null || ReferenceEquals(o, Oddball.Null) ||
+                            o.InstanceType >= InstanceTypeChecks.FirstJSReceiver && Unsafe.As<JSReceiver>(o).Map.IsUndetectable;
+        return undetectable ? JSValue.True : JSValue.False;
+    }
+
+    /// <summary>
+    /// OrdinaryHasInstance for the checked constructor of an instanceof
+    /// (TryBuildFastInstanceOf): the prototype chain walk of
+    /// ObjectOps.FastInstanceOf, or the generic InstanceOf when it does not apply.
+    /// </summary>
+    /// <summary>
+    /// BuildOrdinaryHasInstance with the constructor's prototype known at
+    /// compile time (HasInPrototypeChain): valid while the constructor keeps
+    /// its map and its prototype (V8 depends on both); otherwise, and for
+    /// proxies and access-checked objects on the chain, InstanceOfFunction.
+    /// </summary>
+    [MethodImpl(Inline)]
+    public static JSValue OrdinaryHasInstance(Isolate isolate, JSValue obj, JSFunction function, Map functionMap, HeapObject protoOrMap,
+        JSReceiver prototype)
+    {
+        if (ReferenceEquals(function.Map, functionMap) && ReferenceEquals(function.PrototypeOrInitialMap, protoOrMap))
+        {
+            HeapObject? o = obj._obj;
+            if (o is null || o.InstanceType < InstanceTypeChecks.FirstJSReceiver) return JSValue.False;
+            Map map = Unsafe.As<JSReceiver>(o).Map;
+            while (!Map.IsSpecialReceiverMap(map))
+            {
+                JSReceiver? next = map.Prototype;
+                if (next is null) return JSValue.False;
+                if (ReferenceEquals(next, prototype)) return JSValue.True;
+                map = next.Map;
+            }
+        }
+        return InstanceOfFunction(isolate, obj, function);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue InstanceOfFunction(Isolate isolate, JSValue obj, JSValue constructor)
+    {
+        int fast = ObjectOps.FastInstanceOf(obj, constructor);
+        if (fast >= 0) return fast != 0 ? JSValue.True : JSValue.False;
+        return ObjectOps.InstanceOf(isolate, obj, constructor) ? JSValue.True : JSValue.False;
+    }
+
+    /// <summary>
+    /// CreateObjectLiteral for a shallow boilerplate (no nested objects, which
+    /// boilerplates never get): a copy of it; the runtime's path once its map
+    /// is deprecated (the deep copy migrates it).
+    /// </summary>
+    public static JSValue CloneObjectLiteral(Isolate isolate, FeedbackVector fv, int slot, JSValue description, int flags, LiteralShape shape)
+    {
+        if (shape.IsValid()) return shape.Clone(isolate);
+        return Baseline.BaselineBuiltins.CreateObjectLiteral(isolate, fv, slot, description, flags);
+    }
+
+    /// <summary>TestUndetectable under the NoUndetectableObjects protector: null or undefined.</summary>
+    [MethodImpl(Inline)]
+    public static JSValue TestUndefinedOrNull(JSValue v) =>
+        v._obj is null || ReferenceEquals(v._obj, Oddball.Null) ? JSValue.True : JSValue.False;
 
     public static JSValue TestTypeOf(JSValue v, int literal) => BaselineBuiltinsBridge.TestTypeOf(v, literal);
 
@@ -911,4 +979,66 @@ public static class MaglevBuiltins
 internal static class BaselineBuiltinsBridge
 {
     public static JSValue TestTypeOf(JSValue v, int literal) => Baseline.BaselineBuiltins.TestTypeOf(v, literal);
+}
+
+/// <summary>
+/// The shape of a literal boilerplate Maglev code copies (CloneObjectLiteral):
+/// a fast-mode object without elements whose object-valued fields are such
+/// boilerplates or arrays of primitives (their copy-on-write elements shared).
+/// </summary>
+/// <remarks>
+/// Deviation: the runtime's copy (StructureWalk) gives the nested arrays
+/// allocation mementos of their sites; these copies do not, so elements kind
+/// changes of arrays Maglev code created do not reach the site.
+/// </remarks>
+public sealed class LiteralShape
+{
+    public JSObject Boilerplate = null!;
+    public (FieldIndex Index, LiteralShape Shape)[] Nested = [];
+
+    public static LiteralShape? TryCreate(JSObject boilerplate, int depth)
+    {
+        if (depth > 3 || boilerplate.Map.IsDeprecated || !boilerplate.HasFastProperties) return null;
+        if (boilerplate is JSArray array)
+        {
+            if (!ElementsKinds.IsFastElementsKind(array.Map.ElementsKind)) return null;
+            if (array.Elements is FixedArray elements)
+            {
+                for (int i = 0; i < elements.Length; i++) if (elements._data[i].HeapObjectOrNull is JSObject) return null;
+            }
+            return new LiteralShape { Boilerplate = boilerplate };
+        }
+        if (boilerplate.Map.InstanceType != InstanceType.JSObjectType || boilerplate.Elements.Length != 0) return null;
+        Map map = boilerplate.Map;
+        DescriptorArray descriptors = map.InstanceDescriptors;
+        int count = map.NumberOfOwnDescriptors;
+        List<(FieldIndex, LiteralShape)>? nested = null;
+        for (int i = 0; i < count; i++)
+        {
+            PropertyDetails details = descriptors.GetDetails(new InternalIndex(i));
+            if (details.Location != PropertyLocation.Field) continue;
+            FieldIndex index = FieldIndex.ForDetails(map, details);
+            if (boilerplate.RawFastPropertyAt(index).HeapObjectOrNull is JSObject value)
+            {
+                if (TryCreate(value, depth + 1) is not { } child) return null;
+                (nested ??= []).Add((index, child));
+            }
+        }
+        return new LiteralShape { Boilerplate = boilerplate, Nested = nested?.ToArray() ?? [] };
+    }
+
+    /// <summary>The boilerplates are as when the shape was made (none migrated since).</summary>
+    public bool IsValid()
+    {
+        if (Boilerplate.Map.IsDeprecated) return false;
+        foreach ((FieldIndex _, LiteralShape child) in Nested) if (!child.IsValid()) return false;
+        return true;
+    }
+
+    public JSObject Clone(Isolate isolate)
+    {
+        JSObject copy = isolate.Factory.CopyJSObject(Boilerplate);
+        foreach ((FieldIndex index, LiteralShape child) in Nested) copy.FastPropertyAtPut(index, child.Clone(isolate));
+        return copy;
+    }
 }

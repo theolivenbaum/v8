@@ -26,6 +26,9 @@ namespace V8Sharp.Deoptimizer;
 
 public static class Deoptimizer
 {
+    /// <summary>The feedback index of a deopt exit's reason that marks a hoisted untagging check.</summary>
+    internal const int kHoistedUntaggingFeedback = 0x7FFF;
+
     /// <summary>
     /// Deoptimizer::New + DoComputeOutputFrames for deopt exit
     /// <paramref name="index"/> of <paramref name="code"/>, whose frame
@@ -40,7 +43,13 @@ public static class Deoptimizer
         // speculated on (Deoptimizer: feedback_to_update), which now
         // disallows speculation.
         point.Reason = (DeoptimizeReason)(reason & 0xFFFF);
-        if (reason >> 16 is > 0 and int feedback)
+        if (reason >> 16 == kHoistedUntaggingFeedback)
+        {
+            // V8Sharp: a speculatively hoisted untagging failed; the next
+            // compilation keeps the loop phi tagged.
+            MaglevCompiler.DisableSpeculativeUntagging(code.SharedFunctionInfo);
+        }
+        else if (reason >> 16 is > 0 and int feedback)
         {
             (FeedbackVector vector, int slot) = code.SpeculationFeedback[feedback - 1];
             // TranslatedState::DoUpdateFeedback.

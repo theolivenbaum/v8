@@ -275,25 +275,25 @@ public sealed partial class MaglevGraphBuilder
         {
             case PropertyAccessInfo.Kind.DataField:
             {
-                ValueNode holder = info.Holder is null ? receiver : GetConstant(info.Holder);
-                return AddNewNode(new ValueNode(Opcode.LoadTaggedField, ValueRepresentation.kTagged)
+                ValueNode holder = GetTaggedValue(info.Holder is null ? receiver : GetConstant(info.Holder));
+                return BuildLoadProperty(holder, info.StorageIndex, () => AddNewNode(new ValueNode(Opcode.LoadTaggedField, ValueRepresentation.kTagged)
                 {
-                    Inputs = [GetTaggedValue(holder)],
+                    Inputs = [holder],
                     Int0 = info.StorageIndex,
                     Properties = OpProperties.kCanRead,
-                });
+                }));
             }
             case PropertyAccessInfo.Kind.DataConstant:
                 return GetConstant(info.Constant);
             case PropertyAccessInfo.Kind.NotFound:
                 return GetRootConstant(RootIndex.kUndefinedValue);
             case PropertyAccessInfo.Kind.ArrayLength:
-                return AddNewNode(new ValueNode(Opcode.LoadJSArrayLength, ValueRepresentation.kTagged)
+                return BuildLoadProperty(receiver, PropertyKeys.kJSArrayLength, () => AddNewNode(new ValueNode(Opcode.LoadJSArrayLength, ValueRepresentation.kTagged)
                 {
                     Inputs = [receiver],
                     Type = NodeType.kNumber,
                     Properties = OpProperties.kCanRead,
-                });
+                }));
             case PropertyAccessInfo.Kind.StringLength:
                 return AddNewNode(new ValueNode(Opcode.StringLength, ValueRepresentation.kInt32)
                 {
@@ -333,6 +333,8 @@ public sealed partial class MaglevGraphBuilder
     /// </summary>
     ValueNode? BuildPolymorphicAccess(ValueNode receiver, List<(Map[] Maps, Func<ValueNode?> Build)> cases, bool hasResult)
     {
+        // (The cases share the frame: no parameter stays dirty in one of them only.)
+        FlushDirtyParameters();
         ValueNode map = AddNewNode(new ValueNode(Opcode.LoadMap, ValueRepresentation.kTagged)
         {
             Inputs = [receiver],
@@ -635,8 +637,32 @@ public sealed partial class MaglevGraphBuilder
             SetAccumulator(element);
             return;
         }
+        if (_info.IsTracing) TraceGenericAccess("keyed load", nexus, slot);
         SetAccumulator(CallBaseline("GetKeyedProperty", [obj, key],
             [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1)])!);
+    }
+
+    /// <summary>--trace-maglev-graph-building: why a property access is generic (its feedback).</summary>
+    void TraceGenericAccess(string what, FeedbackNexus nexus, int slot)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"[maglev] generic {what} in {_unit} @{_it.CurrentOffset()}: {nexus.IcState()}");
+        var all = new List<(Map Map, JSValue Handler)>();
+        if (nexus.IcState() is InlineCacheState.MONOMORPHIC or InlineCacheState.POLYMORPHIC) nexus.ExtractMapsAndHandlers(all);
+        foreach ((Map map, JSValue handler) in all)
+        {
+            sb.Append($" [{map.InstanceType} {map.ElementsKind}{(map.IsDeprecated ? " deprecated" : "")} -> ");
+            sb.Append(handler.HeapObjectOrNull switch
+            {
+                LoadHandler lh => $"load {lh.HandlerKind} {lh.ElementsKind} oob={lh.AllowOutOfBounds} holes={lh.AllowHandlingHole} fast={lh.FastElementsMode}",
+                StoreHandler sh => $"store {sh.HandlerKind} {sh.ElementsKind} {sh.StoreMode}",
+                { } o => o.GetType().Name,
+                null => "none",
+            });
+            sb.Append(']');
+        }
+        _ = slot;
+        Console.WriteLine(sb.ToString());
     }
 
     /// <summary>The elements kinds of element handlers for these maps, if all are fast kinds of one family.</summary>
@@ -691,6 +717,8 @@ public sealed partial class MaglevGraphBuilder
     ValueNode? TryBuildElementLoad(ValueNode obj, ValueNode key, List<(Map Map, JSValue Handler)> feedback)
     {
         if (obj.Representation != ValueRepresentation.kTagged) return null;
+        if (TryApplyElementLoadTransitions(obj, feedback) is not { } refined) return null;
+        feedback = refined;
         if (CollectTypedArrayAccess(feedback, load: true, out ElementsKind typedKind, out bool typedHandlesOOB))
         {
             return BuildTypedArrayElementLoad(obj, key, feedback, typedKind, typedHandlesOOB);
@@ -728,6 +756,72 @@ public sealed partial class MaglevGraphBuilder
         }
         BuildBoundsCheck(obj, elements, index, isJSArray);
         return BuildElementLoad(elements, index, kind, anyHoley, maps, feedback);
+    }
+
+    /// <summary>
+    /// ElementAccessFeedback::Refine's transition groups for a keyed load: a
+    /// map whose handler transitions the elements kind
+    /// (LoadHandler::TransitionAndLoadElement) is a transition source; the
+    /// access transitions such an object to the target map
+    /// (TransitionElementsKind with transition_sources) and then loads as for
+    /// the target. Returns the feedback with each source replaced by its
+    /// target (the feedback as it is when there is no transition), or null
+    /// when a transition cannot be built.
+    /// </summary>
+    List<(Map Map, JSValue Handler)>? TryApplyElementLoadTransitions(ValueNode obj, List<(Map Map, JSValue Handler)> feedback)
+    {
+        bool any = false;
+        foreach ((Map _, JSValue handler) in feedback)
+        {
+            if (handler.HeapObjectOrNull is LoadHandler { HandlerKind: LoadHandler.Kind.kElementWithTransition }) any = true;
+        }
+        if (!any) return feedback;
+        var refined = new List<(Map Map, JSValue Handler)>(feedback.Count);
+        var sources = new List<Map>();
+        Map? target = null;
+        foreach ((Map map, JSValue handler) in feedback)
+        {
+            if (handler.HeapObjectOrNull is not LoadHandler { HandlerKind: LoadHandler.Kind.kElementWithTransition } lh)
+            {
+                refined.Add((map, handler));
+                continue;
+            }
+            if (map.InstanceType != InstanceType.JSArrayType || !ElementsKinds.IsFastElementsKind(map.ElementsKind) ||
+                !ElementsKinds.IsFastElementsKind(lh.ElementsKind))
+            {
+                return null;
+            }
+            ElementsKind toKind = ElementsKinds.IsHoleyElementsKind(map.ElementsKind)
+                ? ElementsKinds.GetHoleyElementsKind(lh.ElementsKind)
+                : lh.ElementsKind;
+            Map? to = Map.TryAsElementsKind(Isolate, map, toKind);
+            // One target per access (V8: one per transition group).
+            if (to is null || to.IsDeprecated || target is not null && !ReferenceEquals(to, target)) return null;
+            target = to;
+            sources.Add(map);
+        }
+        // The target loads with an element handler of its kind (the
+        // transitioning handler's, without the transition).
+        LoadHandler? targetHandler = null;
+        foreach ((Map map, JSValue handler) in refined)
+        {
+            if (ReferenceEquals(map, target)) targetHandler = handler.HeapObjectOrNull as LoadHandler;
+        }
+        if (targetHandler is null)
+        {
+            var lh = (LoadHandler)feedback.Find(e => ReferenceEquals(e.Map, sources[0])).Handler.Object;
+            targetHandler = LoadHandler.LoadElement(Isolate, target!.ElementsKind, isJSArray: true, lh.AllowOutOfBounds, lh.AllowHandlingHole);
+            refined.Add((target, JSValue.FromObject(targetHandler)));
+        }
+        if (targetHandler.HandlerKind != LoadHandler.Kind.kElement) return null;
+        AddNewNode(new Node(Opcode.TransitionElementsKind)
+        {
+            Inputs = [obj],
+            Obj0 = target,
+            Obj1 = sources.ToArray(),
+            Properties = OpProperties.kCanAllocate | OpProperties.kCanWrite | OpProperties.kNotIdempotent,
+        });
+        return refined;
     }
 
     /// <summary>
@@ -1020,12 +1114,12 @@ public sealed partial class MaglevGraphBuilder
     }
 
     ValueNode BuildLoadElements(ValueNode obj) =>
-        AddNewNode(new ValueNode(Opcode.LoadElements, ValueRepresentation.kTagged)
+        BuildLoadProperty(obj, PropertyKeys.kElements, () => AddNewNode(new ValueNode(Opcode.LoadElements, ValueRepresentation.kTagged)
         {
             Inputs = [obj],
             Type = NodeType.kOtherHeapObject,
             Properties = OpProperties.kCanRead,
-        });
+        }));
 
     /// <summary>index &lt; length (unsigned), deoptimizing out of bounds.</summary>
     void BuildBoundsCheck(ValueNode obj, ValueNode elements, ValueNode index, bool isJSArray)
@@ -1043,18 +1137,18 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>The length elements accesses check: a JSArray's length, else the backing store's.</summary>
     ValueNode BuildLoadLength(ValueNode obj, ValueNode elements, bool isJSArray) =>
         isJSArray
-            ? GetInt32(AddNewNode(new ValueNode(Opcode.LoadJSArrayLength, ValueRepresentation.kTagged)
+            ? GetInt32(BuildLoadProperty(obj, PropertyKeys.kJSArrayLength, () => AddNewNode(new ValueNode(Opcode.LoadJSArrayLength, ValueRepresentation.kTagged)
             {
                 Inputs = [obj],
                 Type = NodeType.kSmi,
                 Properties = OpProperties.kCanRead,
-            }))
-            : AddNewNode(new ValueNode(Opcode.LoadFixedArrayLength, ValueRepresentation.kInt32)
+            })))
+            : BuildLoadProperty(elements, PropertyKeys.kFixedArrayLength, () => AddNewNode(new ValueNode(Opcode.LoadFixedArrayLength, ValueRepresentation.kInt32)
             {
                 Inputs = [elements],
                 Type = NodeType.kSmi,
                 Properties = OpProperties.kCanRead,
-            });
+            }));
 
     // ---- Keyed stores -------------------------------------------------------------------------------------
 

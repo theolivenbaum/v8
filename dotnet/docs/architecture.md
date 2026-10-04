@@ -674,8 +674,34 @@ feedback vector) and the frame record, so stack traces, `arguments` and
 the frame walker work unchanged. Inlined functions get real frames too
 (`EnterInlinedFrame` pushes an interpreter frame record and its register
 area; `LeaveInlinedFrame` pops it), which keeps stack traces exact and
-makes deopts of inlined code cheap. The current bytecode offset of every
+makes deopts of inlined code cheap; the push is lazy, before the first node
+of the inlined body that can observe frames (calls, nodes that can throw or
+deoptimize lazily); an eager deopt pushes the frames it needs. The current bytecode offset of every
 frame is stored in its record before anything that can throw or call.
+
+**Direct calls.** Each code has a second IL method, its direct entry
+(`MaglevCode.FastCall`: `JSValue FastCall(MaglevCode, Isolate, JSFunction,
+int argc, JSValue receiver, JSValue a0, ...)`, up to six arguments; a
+function that reads its actual arguments takes six and keeps argc of them
+in the frame). It builds the frame with the function's constants (bytecode,
+feedback vector, register count) without clearing the register file, runs
+the code, and pops the frame (inline after the call, in a fault block for
+exceptions). `CallKnownJSFunction` (a call of a constant JSFunction that is
+not inlined) loads the callee's code from its feedback vector at run time
+and invokes the entry with the receiver and arguments as values; generic
+calls (`MaglevCalls.Call`) and constructs (`ConstructWithReceiver`, argc's
+sign bit set, new.target in `Isolate.MaglevNewTarget`) use it too.
+Parameters assigned by the code stay in IL locals and reach the frame only
+before nodes that can observe it (`InterpreterFrameState.DirtyParameters`).
+
+**Load elimination.** KnownNodeAspects keeps loaded fields (by object and
+storage index), elements, array and FixedArray lengths, and context slots;
+stores update their own key and forget aliases of it, and nodes that can
+run arbitrary code clear everything (MarkPossibleSideEffect). For loops,
+V8 peels the first iteration to learn what the body changes; V8Sharp
+assumes a loop without calls changes nothing, checks that at the back edge
+(`LoopEffects`) and, when it did change something known at the header,
+builds the graph again with those effects (`MaglevRestartException`).
 
 **Deoptimization.** A deopt exit stores the values of the frame state of
 its checkpoint (V8's translation: every live register, the context and the
@@ -709,12 +735,14 @@ ranges run from a value's definition to its last use, counting deopt frame
 values, phi inputs at the predecessor's end and lazily pushed inlined
 frames, and a value live into a loop is live through it. This keeps a
 method's locals below RyuJIT's inlining (512) and MinOpts (2000) limits.
-A compile whose IL exceeds 36000 bytes bails out (MinOpts territory).
+A tiering compile whose IL exceeds 60000 bytes bails out; methods over 20000
+bytes are `AggressiveOptimization` (RyuJIT's tier 0 of big methods is
+MinOpts, slower than the baseline code).
 Deopt exits spill only non-constant values (constants are literals of the
 deopt point), share spill code between exits with the same values, and end
 in one call that takes the last values (`MaglevBuiltins.Deopt0-4`).
 
-**Tiering.** `--maglev` (off by default in V8Sharp) makes
+**Tiering.** `--maglev` (on by default, as in V8) makes
 `Isolate.UseOptimizer` true; `TieringManager.OnInterruptTick` requests a
 compile once a function's invocation count reaches
 `--invocation-count-for-maglev` (400, V8's). With `--concurrent-recompilation` (the

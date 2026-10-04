@@ -274,6 +274,8 @@ public static partial class RuntimeTest
         NativeContext nc = isolate.NativeContext;
         JSFunction constructor = isolate.Factory.NewFunction(info, nc, nc.StrictFunctionWithoutPrototypeMap);
         Map map = Map.Copy(isolate, nc.ObjectFunction.InitialMap, "Undetectable");
+        // ApiNatives::CreateApiFunction's MarkAsUndetectable.
+        if (Protectors.IsNoUndetectableObjectsIntact(isolate)) Protectors.InvalidateNoUndetectableObjects(isolate);
         map.IsUndetectable = true;
         map.IsCallable = true;
         map.SetConstructor(constructor);

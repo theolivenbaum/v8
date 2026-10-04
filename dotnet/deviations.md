@@ -381,7 +381,7 @@ for now, to be revisited when the reason goes away.
 - Tier-up size limit: functions over 100000 bytes of bytecode do not tier up
   by themselves (V8 has no such limit for Sparkplug); `%CompileBaseline`
   still compiles them, in chunks.
-- Without `--maglev` (V8Sharp's default) `Isolate.UseOptimizer` is false, so
+- With `--no-maglev` (or `--jitless`) `Isolate.UseOptimizer` is false, so
   `TieringManager` behaves as in a V8 built without Turbofan and Maglev
   (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the
   baseline bits). The interrupt budget after tier-up is
@@ -402,9 +402,9 @@ for now, to be revisited when the reason goes away.
 
 ## Optimizing compiler (Maglev) and deoptimizer
 
-- Temporary: `--maglev` is off by default (V8's x64 default is on) until the
-  tier is conformance-clean under forced optimization and a net win
-  (`todo.md`). `Isolate.UseOptimizer` is `--maglev && !--jitless`.
+- `--maglev` is on by default, as V8's x64 default (since 2026-10-04);
+  `Isolate.UseOptimizer` is `--maglev && !--jitless`. There is no
+  Turbofan: Maglev is the top tier.
 - Code generation: IL in the baseline code space instead of machine code
   (architecture.md section 9.2); values live in IL locals rather than
   registers and stack slots, and no safepoint table. In place of the register
@@ -431,13 +431,15 @@ for now, to be revisited when the reason goes away.
   install drops it (V8 validates them at commit). OSR requests are concurrent too
   (`--concurrent-osr`): the frame keeps running and a later back edge enters
   the code installed in the OSR cache. `%OptimizeFunctionOnNextCall`,
-  `%OptimizeMaglevOnNextCall`, `%OptimizeOsr` and every compile in natives
-  tests (`--allow-natives-syntax`) are synchronous (RyuJIT tier 0 first).
+  `%OptimizeMaglevOnNextCall`, `%OptimizeOsr` and the compiles of functions
+  a natives test optimizes by hand (`--allow-natives-syntax`) are
+  synchronous (RyuJIT tier 0 first); a loop's tiering OSR stays concurrent.
 - OSR: the check for OSR code runs at the JumpLoop budget interrupt (V8
   checks the OSR urgency on every back edge), in interpreted and baseline
   frames (`BaselineExecution.BudgetInterruptOnJumpLoopOsr`); OSR code takes
   the frame's registers as its initial values at the loop header, and runs
-  in the same frame. No OSR from a Wide/ExtraWide JumpLoop.
+  in the same frame. OSR offsets of prefixed JumpLoops are the offset after
+  the prefix (BytecodeAnalysis's osr_entry_point).
 - Bytecode liveness is computed by an iterative fixed point over all
   bytecodes (V8 does one backward pass plus a loop fix-up pass); the result
   is the same.
@@ -457,9 +459,11 @@ for now, to be revisited when the reason goes away.
   requests (`%OptimizeFunctionOnNextCall`) still compile, as in V8.
 - The tiering manager does not optimize functions whose graph exceeds
   `MaglevCompiler.kMaxTieringGraphNodes` (2000 nodes, `V8SHARP_MAGLEV_MAX_NODES`
-  overrides it) or whose IL exceeds 36000 bytes
-  (`MaglevCodeGenerator.kMaxOptimizedILBytes`): RyuJIT compiles bigger methods
-  with MinOpts, slower than the baseline code. V8 optimizes them.
+  overrides it) or whose IL exceeds 60000 bytes
+  (`MaglevCodeGenerator.kMaxOptimizedILBytes`, `V8SHARP_MAGLEV_MAX_IL`): the
+  compile time of bigger methods outweighs their gain. V8 optimizes them.
+  Methods over 20000 IL bytes are `AggressiveOptimization` (RyuJIT's tier 0
+  of big methods is MinOpts, slower than the baseline code).
   `%OptimizeFunctionOnNextCall` still compiles such functions.
 - Deopt exits: constant values of a frame state are literals of the deopt
   point's translation (V8's StoreLiteral), written by the Deoptimizer; exits
@@ -491,6 +495,44 @@ for now, to be revisited when the reason goes away.
   (`BuiltinStringPrototypeCharCodeAtOrNaN`) and the keyed name check against
   the name's primitive (`CheckValueEqualsString` with the primitive) are one
   node each where V8 builds a branch and a phi.
+- Inlining limits: Maglev is V8Sharp's top tier (no Turbofan), so the
+  inlining heuristics use the values V8's `--maglev-as-top-tier` implies
+  (max_maglev_inlined_bytecode_size 460, min_maglev_inlining_frequency
+  0.10) unless those flags are set explicitly; V8's x64 default
+  configuration uses 100 and 0.95 and leaves the rest to Turbofan.
+  Measured (octane-steady, 2026-10-03): +3% geomean on Richards, DeltaBlue,
+  RayTrace, EarleyBoyer, Crypto.
+- Parameter assignments (of the function and of inlined functions) stay in
+  IL locals and are written to the frame only before nodes that can observe
+  the frame's parameters (calls, allocation of arguments objects):
+  V8's optimized frame has no interpreter parameter slots to keep current,
+  and materializes them at deopt.
+- Hoisted untagging of loop entry values (the phi representation
+  selector's speculative untagging): an untagging check before the loop of
+  a parameter or OSR value whose feedback was a number. A failed check
+  deoptimizes with `Deoptimizer.kHoistedUntaggingFeedback`, after which the
+  function's compiles keep such phis tagged (V8 uses the deopt's feedback
+  the same way through the loop entry's frame state).
+- Direct calls: a call of a known JSFunction with Maglev code enters its
+  direct entry (`MaglevCode.FastCall`, a second IL method taking the
+  receiver and up to six arguments as values) instead of V8's
+  CallKnownJSFunction into the code entry with arguments on the stack. The
+  callee's frame builder skips clearing the register file (the optimized
+  code writes every register before reading it, and the frame state names
+  only live ones). A construct's new.target is passed in
+  `Isolate.MaglevNewTarget` and argc's sign bit marks the construct.
+- Loop effects: V8 learns what a loop body changes by peeling the first
+  iteration; V8Sharp assumes a loop without calls changes nothing it loaded
+  before, checks that at the back edge, and builds the graph again with the
+  effects seen (`MaglevRestartException`, at most four attempts).
+- Object literals: copies of boilerplates whose fields hold primitives,
+  nested such boilerplates or arrays of primitives (`LiteralShape`); the
+  copies of nested arrays carry no allocation mementos (the runtime's
+  StructureWalk gives them their sites'), so elements kind changes of
+  arrays made by optimized code do not reach the site.
+- instanceof of the TestInstanceOf feedback's constructor: CheckValue and
+  `ObjectOps.FastInstanceOf` (the prototype chain walk) as one call, where
+  V8 builds the walk as nodes.
 - No escape analysis (except the arguments object forwarded to
   Function.prototype.apply), loop peeling, LICM, CSE, range analysis, or
   DataView/string builder reductions yet.

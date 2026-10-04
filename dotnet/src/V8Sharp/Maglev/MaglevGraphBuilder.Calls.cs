@@ -122,6 +122,14 @@ public sealed partial class MaglevGraphBuilder
         else if (feedback.HeapObjectOrNull is JSFunction target && !FeedbackVector.IsCleared(feedback))
         {
             BuildCheckValue(callee, target, DeoptimizeReason.kWrongCallTarget);
+            // TryReduceBuiltin's Function.prototype.apply (feedback naming
+            // apply itself once the applied functions differ).
+            if (ReferenceEquals(target, Isolate.NativeContext.FunctionPrototypeApply) &&
+                TryReduceFunctionPrototypeApply(receiver, args) is { } applied2)
+            {
+                SetAccumulator(applied2);
+                return;
+            }
             // SaveCallSpeculationScope: the reduction's checks disallow speculation here when they fail.
             ValueNode? reduced = null;
             if (speculate)
@@ -148,6 +156,11 @@ public sealed partial class MaglevGraphBuilder
             if (TryBuildInlinedCall(target, callee, receiver, args, mode, nexus, isConstruct: false, null) is { } inlined)
             {
                 SetAccumulator(inlined);
+                return;
+            }
+            if (TryBuildDirectCall(target, receiver, args, argsFirst, mode) is { } direct)
+            {
+                SetAccumulator(direct);
                 return;
             }
             if (argsFirst.IsValid || args.Length == 0)
@@ -325,6 +338,57 @@ public sealed partial class MaglevGraphBuilder
         ConvertReceiverMode mode) =>
         BuildCall(GetConstant(target), receiver, args, argsFirst, mode);
 
+    /// <summary>
+    /// CallKnownJSFunction (V8's node of that name): a call of the constant
+    /// <paramref name="target"/> that enters its Maglev code directly
+    /// (MaglevCalls, "Direct calls"), or null when the target cannot be
+    /// called that way.
+    /// </summary>
+    ValueNode? TryBuildDirectCall(JSFunction target, ValueNode receiver, ValueNode[] args, Register argsFirst, ConvertReceiverMode mode)
+    {
+        SharedFunctionInfo shared = target.Shared;
+        if (shared.FunctionData is not BytecodeArray bytecode || shared.HasBuiltinId || shared.IsClassConstructor) return null;
+        if (target.RawFeedbackCell.Value is not FeedbackVector vector) return null;
+        int formal = bytecode.ParameterCount - 1;
+        if (formal > MaglevFastCalls.kMaxArity) return null;
+        // The direct entry's arity (MaglevCodeGenerator.DefineFastCallEntry).
+        if (MaglevCodeGenerator.ReadsActualArguments(bytecode)) formal = MaglevFastCalls.kMaxArity;
+        if (args.Length > formal) return null;
+        // The slow path takes the arguments from consecutive registers or as values.
+        if (!argsFirst.IsValid && args.Length > 3) return null;
+        var info = new KnownCallInfo
+        {
+            Target = target,
+            Vector = vector,
+            FormalCount = formal,
+            Argc = args.Length,
+            Mode = mode,
+            ArgsFirst = args.Length == 0 ? Register.InvalidValue() : argsFirst,
+        };
+        var inputs = new List<ValueNode>(args.Length + 2) { GetTaggedValue(receiver) };
+        foreach (ValueNode arg in args) inputs.Add(GetTaggedValue(arg));
+        if (!shared.Native && shared.LanguageMode == Common.LanguageMode.Sloppy)
+        {
+            // CallFunction's receiver conversion, statically where it can be.
+            if (mode == ConvertReceiverMode.NullOrUndefined ||
+                receiver.Opcode == Opcode.RootConstant && receiver.ConstantValue().IsNullOrUndefined)
+            {
+                inputs.Add(GetConstant(target.Context.NativeContext.GlobalProxyObject));
+                info.HasConvertedReceiver = true;
+            }
+            else if (!CheckType(receiver, NodeType.kJSReceiver))
+            {
+                info.CheckReceiver = true;
+            }
+        }
+        return AddNewNode(new ValueNode(Opcode.CallKnownJSFunction, ValueRepresentation.kTagged)
+        {
+            Inputs = inputs.ToArray(),
+            Obj0 = info,
+            Properties = OpProperties.kGenericCall,
+        });
+    }
+
     /// <summary>A call of <paramref name="callee"/> with the arguments in consecutive registers (MaglevCalls.Call).</summary>
     ValueNode BuildCall(ValueNode callee, ValueNode receiver, ValueNode[] args, Register argsFirst, ConvertReceiverMode mode)
     {
@@ -500,13 +564,13 @@ public sealed partial class MaglevGraphBuilder
         bool small = length <= Flags.max_maglev_inlined_bytecode_size_small;
         int depth = _unit.InliningDepth + 1;
         if (depth > Flags.max_maglev_hard_inline_depth) return "too deep";
-        if (!small && depth > Flags.max_maglev_inline_depth) return "inline depth";
-        if (length > Flags.max_maglev_inlined_bytecode_size) return "too big";
-        if (!small && _info.InlinedBytecodeSize + length > Flags.max_maglev_inlined_bytecode_size_cumulative) return "budget";
+        if (!small && depth > MaxInlineDepth) return "inline depth";
+        if (length > MaxInlinedBytecodeSize) return "too big";
+        if (!small && _info.InlinedBytecodeSize + length > MaxInlinedBytecodeSizeCumulative) return "budget";
         if (!small)
         {
             float frequency = nexus.IsNull ? 1f : nexus.ComputeCallFrequency();
-            if (frequency < Flags.min_maglev_inlining_frequency) return "infrequent";
+            if (frequency < MinInliningFrequency) return "infrequent";
         }
         // Direct recursion is not inlined.
         for (MaglevCompilationUnit? u = _unit; u is not null; u = u.Caller)
@@ -515,6 +579,40 @@ public sealed partial class MaglevGraphBuilder
         }
         return null;
     }
+
+    // V8Sharp has no Turbofan: Maglev is the top tier, so it inlines as V8
+    // with --maglev-as-top-tier, whose weak implications raise
+    // max_maglev_inlined_bytecode_size to 460 and lower
+    // min_maglev_inlining_frequency to 0.10 (flag-definitions.h). Flags set
+    // explicitly keep their values. The variables V8SHARP_MAGLEV_INLINE_DEPTH,
+    // _FREQUENCY, _SIZE and _BUDGET (or the runtimeconfig properties
+    // V8Sharp.MaglevInline{Depth,Frequency,Size,Budget}) override the
+    // defaults for experiments.
+    const int kTopTierInlinedBytecodeSize = 460;
+    const double kTopTierInliningFrequency = 0.10;
+
+    static readonly int s_inlineDepth = int.TryParse(Setting("V8SHARP_MAGLEV_INLINE_DEPTH", "V8Sharp.MaglevInlineDepth"), out int d) ? d : -1;
+    static readonly double s_inlineFrequency = double.TryParse(Setting("V8SHARP_MAGLEV_INLINE_FREQUENCY", "V8Sharp.MaglevInlineFrequency"),
+        System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double f) ? f : -1;
+    static readonly int s_inlineSize = int.TryParse(Setting("V8SHARP_MAGLEV_INLINE_SIZE", "V8Sharp.MaglevInlineSize"), out int z) ? z : -1;
+    static readonly int s_inlineBudget = int.TryParse(Setting("V8SHARP_MAGLEV_INLINE_BUDGET", "V8Sharp.MaglevInlineBudget"), out int c) ? c : -1;
+
+    static string? Setting(string variable, string property) =>
+        Environment.GetEnvironmentVariable(variable) ?? AppContext.GetData(property)?.ToString();
+
+    int MaxInlinedBytecodeSize => Flags.IsExplicitlySet("max_maglev_inlined_bytecode_size")
+        ? Flags.max_maglev_inlined_bytecode_size
+        : s_inlineSize >= 0 ? s_inlineSize : kTopTierInlinedBytecodeSize;
+
+    int MaxInlinedBytecodeSizeCumulative => s_inlineBudget >= 0 && !Flags.IsExplicitlySet("max_maglev_inlined_bytecode_size_cumulative")
+        ? s_inlineBudget
+        : Flags.max_maglev_inlined_bytecode_size_cumulative;
+
+    int MaxInlineDepth => s_inlineDepth >= 0 && !Flags.IsExplicitlySet("max_maglev_inline_depth") ? s_inlineDepth : Flags.max_maglev_inline_depth;
+
+    double MinInliningFrequency => Flags.IsExplicitlySet("min_maglev_inlining_frequency")
+        ? Flags.min_maglev_inlining_frequency
+        : s_inlineFrequency >= 0 ? s_inlineFrequency : kTopTierInliningFrequency;
 
     /// <summary>Bytecodes that read the frame through the interpreter state cannot run in an inlined frame.</summary>
     static bool InlineableBytecodes(BytecodeArray bytecode)
@@ -562,6 +660,8 @@ public sealed partial class MaglevGraphBuilder
             }
         }
         var vector = (FeedbackVector)target.RawFeedbackCell.Value!;
+        // The inlined code's calls can observe this frame's parameters.
+        FlushDirtyParameters();
         var unit = new MaglevCompilationUnit(_info, target, shared, vector, _unit, _unit.InliningDepth + 1);
         try
         {
@@ -634,9 +734,9 @@ public sealed partial class MaglevGraphBuilder
             result = phi;
         }
         _currentBlock = continuation;
+        // (What the callee's nodes changed, its returns' known node aspects
+        // already forget: MarkPossibleSideEffect.)
         _frame.Known = known;
-        // The callee may have changed anything (its stores, its calls).
-        _frame.Known.ClearUnstableMaps();
         AddNewNode(new Node(Opcode.LeaveInlinedFrame)
         {
             Inputs = [_frame.Context],

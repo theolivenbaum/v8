@@ -18,6 +18,9 @@ namespace V8Sharp
         /// <summary>The values a deopt exit hands the Deoptimizer (the optimized frame's translation values).</summary>
         public JSValue[] MaglevDeoptScratch = new JSValue[64];
 
+        /// <summary>The new.target of a construct entering Maglev code's direct entry (MaglevCalls.ConstructWithReceiver).</summary>
+        public JSValue MaglevNewTarget;
+
         /// <summary>Set by the Deoptimizer: the Maglev code returned to continue in the interpreter.</summary>
         public bool MaglevDeoptPending;
 
@@ -139,9 +142,13 @@ namespace V8Sharp.Maglev
             if (isolate.Flags.trace_osr) Console.WriteLine($"[OSR - compiling {MaglevCompiler.DebugName(function.Shared)} at JumpLoop {jumpLoopOffset}]");
             // --concurrent-osr (V8's default): the job is queued, the frame
             // keeps running in its tier, and a later back edge enters the code
-            // INSTALL_MAGLEV_CODE put in the OSR cache. Natives tests
-            // (%OptimizeOsr) compile synchronously, so the next back edge OSRs.
-            if (isolate.Flags.concurrent_osr && isolate.Flags.concurrent_recompilation && !isolate.Flags.allow_natives_syntax)
+            // INSTALL_MAGLEV_CODE put in the OSR cache. An OSR %OptimizeOsr
+            // asked for (or of a function the test optimizes by hand) compiles
+            // synchronously, so the next back edge OSRs; heuristic OSR stays
+            // concurrent in natives tests too, as in V8.
+            bool requested = vector.OsrRequestedByNatives ||
+                             isolate.Flags.allow_natives_syntax && MaglevCompiler.IsMarkedForManualOptimization(function);
+            if (isolate.Flags.concurrent_osr && isolate.Flags.concurrent_recompilation && !requested)
             {
                 MaglevCompiler.CompileConcurrently(isolate, function, jumpLoopOffset);
                 return null;

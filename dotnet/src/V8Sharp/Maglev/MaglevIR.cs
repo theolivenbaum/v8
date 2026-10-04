@@ -595,6 +595,12 @@ public sealed class EagerDeoptInfo(DeoptFrame topFrame, DeoptimizeReason reason)
     /// </summary>
     public FeedbackVector? FeedbackToUpdate;
     public int FeedbackSlotToUpdate = -1;
+    /// <summary>
+    /// V8Sharp: the check untags a loop entry value speculatively
+    /// (MaglevPhiRepresentationSelector); its deopt disables that speculation
+    /// for the function.
+    /// </summary>
+    public bool HoistedUntagging;
 }
 
 /// <summary>LazyDeoptInfo: the result of the call goes to ResultLocation (the accumulator or a register).</summary>
@@ -665,6 +671,29 @@ public sealed class CallBuiltinInfo(MethodInfo method, BuiltinArg[] args, string
     public bool Elided;
     /// <summary>CallForwardArguments: the arguments object input.</summary>
     public bool ForwardsArguments;
+}
+
+/// <summary>
+/// The parameters of a CallKnownJSFunction node (Obj0): a call of a constant
+/// JSFunction that enters the callee's Maglev code directly when it has
+/// some (MaglevCalls, "Direct calls"). Inputs: the receiver, the arguments,
+/// and the receiver the callee sees when the call converts it statically
+/// (the global proxy for a sloppy callee).
+/// </summary>
+public sealed class KnownCallInfo
+{
+    public JSFunction Target = null!;
+    public FeedbackVector Vector = null!;
+    /// <summary>The arity of the callee's direct entry (MaglevCode.FastCallArity).</summary>
+    public int FormalCount;
+    public int Argc;
+    public ConvertReceiverMode Mode;
+    /// <summary>The receiver is checked to be a JSReceiver at run time (a sloppy callee converts others).</summary>
+    public bool CheckReceiver;
+    /// <summary>The last input is the receiver the callee sees (statically converted).</summary>
+    public bool HasConvertedReceiver;
+    /// <summary>The arguments' consecutive registers (the slow path's register list), or invalid.</summary>
+    public Interpreter.Register ArgsFirst = Interpreter.Register.InvalidValue();
 }
 
 /// <summary>The kind of an elidable arguments object.</summary>

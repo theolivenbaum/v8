@@ -20,6 +20,33 @@ namespace V8Sharp.Maglev;
 /// </summary>
 public delegate JSValue MaglevCodeEntry(Isolate isolate, ref InterpreterState state);
 
+// The direct call entries of Maglev code (MaglevCalls, "Direct calls"): the
+// callee closure, the call's argument count, the receiver and one value per
+// formal parameter (undefined for the missing ones). Bound to their code.
+public delegate JSValue MaglevFastCall0(Isolate isolate, JSFunction function, int argc, JSValue receiver);
+public delegate JSValue MaglevFastCall1(Isolate isolate, JSFunction function, int argc, JSValue receiver, JSValue a0);
+public delegate JSValue MaglevFastCall2(Isolate isolate, JSFunction function, int argc, JSValue receiver, JSValue a0, JSValue a1);
+public delegate JSValue MaglevFastCall3(Isolate isolate, JSFunction function, int argc, JSValue receiver, JSValue a0, JSValue a1,
+    JSValue a2);
+public delegate JSValue MaglevFastCall4(Isolate isolate, JSFunction function, int argc, JSValue receiver, JSValue a0, JSValue a1,
+    JSValue a2, JSValue a3);
+public delegate JSValue MaglevFastCall5(Isolate isolate, JSFunction function, int argc, JSValue receiver, JSValue a0, JSValue a1,
+    JSValue a2, JSValue a3, JSValue a4);
+public delegate JSValue MaglevFastCall6(Isolate isolate, JSFunction function, int argc, JSValue receiver, JSValue a0, JSValue a1,
+    JSValue a2, JSValue a3, JSValue a4, JSValue a5);
+
+public static class MaglevFastCalls
+{
+    /// <summary>The most formal parameters a direct call entry takes.</summary>
+    public const int kMaxArity = 6;
+
+    public static readonly Type[] DelegateTypes =
+    [
+        typeof(MaglevFastCall0), typeof(MaglevFastCall1), typeof(MaglevFastCall2), typeof(MaglevFastCall3),
+        typeof(MaglevFastCall4), typeof(MaglevFastCall5), typeof(MaglevFastCall6),
+    ];
+}
+
 /// <summary>A frame of a deopt translation.</summary>
 public sealed class DeoptFrameData
 {
@@ -84,6 +111,14 @@ public sealed class MaglevCode
     public static CodeKind Kind => CodeKind.MAGLEV;
 
     public MaglevCodeEntry Entry { get; internal set; } = null!;
+
+    /// <summary>
+    /// The direct call entry (a MaglevFastCall delegate of the function's
+    /// formal parameter count), or null (OSR code, too many parameters).
+    /// </summary>
+    public Delegate? FastCall;
+    /// <summary>The formal parameter count of <see cref="FastCall"/> (-1 without one).</summary>
+    public int FastCallArity = -1;
 
     /// <summary>Code::marked_for_deoptimization: activations deoptimize lazily when control returns to them.</summary>
     public bool MarkedForDeoptimization;

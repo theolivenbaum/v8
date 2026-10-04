@@ -314,6 +314,9 @@ public sealed class FeedbackVector : HeapObject
     public void ResetOsrUrgency() => OsrUrgency = 0;
     public void RequestOsrAtNextOpportunity() => OsrUrgency = kMaxOsrUrgency;
 
+    /// <summary>V8Sharp: %OptimizeOsr asked for OSR (the OSR compile is synchronous then).</summary>
+    public bool OsrRequestedByNatives;
+
     /// <summary>FeedbackVector::New: allocates and initializes the vector, and installs it in the parent cell.</summary>
     public static FeedbackVector New(Isolate isolate, SharedFunctionInfo shared,
         ClosureFeedbackCellArray closureFeedbackCellArray, FeedbackCell parentFeedbackCell)

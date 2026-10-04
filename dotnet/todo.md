@@ -1515,8 +1515,8 @@ default barrier). See "Ninth interpreter performance pass" above.
 Order (decided 2026-09-28): the interpreter is finished first — correctness
 (test262/mjsunit) and interpreter performance (target: within 2x of V8
 --jitless) — before any further work on the IL tiers. The baseline tier is
-on by default since 2026-10-03; the optimizing tier (Maglev) is in
-progress, off by default.
+on by default since 2026-10-03; the optimizing tier (Maglev) since
+2026-10-04.
 
 - [x] TieringManager: interrupt budget, OnInterruptTick, feedback allocation
       and the Sparkplug tier-up, InterruptBudgetFor with V8's flag defaults,
@@ -1586,7 +1586,7 @@ progress, off by default.
   - zlib: V8 runs it as asm.js through wasm (about 70x the baseline score);
     out of scope for the baseline tier.
 - [~] Optimizing compiler (Maglev analogue), src/V8Sharp/Maglev/ and
-      Deoptimizer/ (architecture.md 9.2). OFF by default (`--maglev`):
+      Deoptimizer/ (architecture.md 9.2). On by default since 2026-10-04 (`--no-maglev` turns it off):
       - Graph builder from bytecode + feedback: abstract frame, merge
         points and loop phis, liveness (BytecodeAnalysis), Int32/Float64
         speculation with overflow/-0 checks and kSignedSmall Smi
@@ -1650,12 +1650,95 @@ progress, off by default.
     regress-2618's Turbofan OSR); block coverage (%DebugToggleBlockCoverage,
     code-coverage-block-opt); super property ICs (super-ic-opt's
     const-field dependency: GetNamedPropertyFromSuper records no feedback).
-  - Performance: calls not inlined cost ~60 ns (frame record, register
-    window, write barriers). Deopt exits are a third of the IL (0.55 of the
-    body's in PdfJS after literals, shared spill code and DeoptN). Values
-    share IL locals by live range, so RyuJIT optimizes and inlines big
-    graphs; the tiering limits are 2000 nodes and 36000 bytes of IL. No
-    escape analysis, LICM, loop peeling or CSE of loads.
+  - Performance (2026-10-04): calls between optimized functions enter the
+    callee's direct entry (MaglevCode.FastCall, ~25 ns for a method call
+    from ~45 ns); what is left per call is the interpreter frame the entry
+    builds (fixed slots, frame record, InterpreterState) and the GC write
+    barrier of the receiver slot. Load elimination of fields, elements,
+    lengths and context slots, loop effects by graph restart (no loop
+    peeling), parameter stores sunk to observing nodes, hoisted loop entry
+    untagging, keyed load elements kind transitions, nested literal copies,
+    instanceof without the IC, apply(arguments) forwarding for megamorphic
+    targets, inlining with the --maglev-as-top-tier limits. Open: the
+    graph is built on the main thread (2.8 ms per compile in a cold Box2D
+    run from bin/, mostly tier-0 code of the compiler itself; V8 builds it
+    on a worker); checks of loop-invariant values stay in loop bodies (V8
+    peels only loops whose body invalidates what the header knows, so this
+    is mostly register pressure: Crypto's am3 loop keeps its values in
+    stack slots); polymorphic calls (DeltaBlue) go through MaglevCalls.Call;
+    no escape analysis, CSE or range analysis; zlib's biggest function
+    (6343 nodes, 518 KB of IL) is over the tiering limits (2000 nodes,
+    60000 bytes of IL) and would need function splitting. Deopt exits are
+    a third of the IL.
+  - Maglev on by default (2026-10-04, cea743c4; V8Sharp.Bench `compare`,
+    2 interleaved runs, parity publish (R2R composite, self-contained),
+    bench-session.sh under the lock; V8 is the 14.7 oracle; "default" is
+    V8Sharp's default configuration, now Ignition + baseline IL + Maglev).
+    Cold Octane (wall): host load 2.3/1.4, steal 0%, cpu-cal 1726/1783 ms,
+    mem-bw 32.2/33.9 GB/s; v8:maglev crashed (exit 139) once each on
+    RegExp, Splay, NavierStokes, PdfJS and zlib (means over one run):
+
+    | benchmark | v8sharp:jitless | v8sharp:sparkplug | v8sharp (default) | v8:maglev | v8:jit |
+    |---|---|---|---|---|---|
+    | Richards | 805 | 897 | 2385 | 24462 | 35486 |
+    | DeltaBlue | 740 | 801 | 3050 | 36041 | 69526 |
+    | Crypto | 702 | 690 | 5051 | 24680 | 36070 |
+    | RayTrace | 1629 | 1822 | 2874 | 41698 | 73074 |
+    | EarleyBoyer | 2646 | 2780 | 4827 | 32028 | 42710 |
+    | RegExp | 1039 | 1254 | 1284 | 6568 | 7084 |
+    | Splay | 2315 | 2403 | 4320 | 7782 | 7385 |
+    | SplayLatency | 2687 | 2715 | 2655 | 5629 | 5528 |
+    | NavierStokes | 1707 | 2530 | 15098 | 20640 | 30583 |
+    | PdfJS | 2834 | 3077 | 3434 | 32782 | 37118 |
+    | Mandreel | 558 | 497 | 2881 | 27476 | 37867 |
+    | MandreelLatency | 3076 | 3360 | 6738 | 38824 | 45124 |
+    | Gameboy | 3487 | 3734 | 6338 | 77165 | 79214 |
+    | CodeLoad | 10094 | 9583 | 9456 | 18312 | 18076 |
+    | Box2D | 2719 | 2298 | 2365 | 77301 | 83622 |
+    | zlib | 881 | 902 | 3837 | 76720 | 76657 |
+    | Typescript | 7615 | 6746 | 7221 | 59820 | 61098 |
+    | geomean | 1914 | 2002 | 4130 | 27545 | 33571 |
+
+    octane-steady (thread CPU after a warm pass of 1/50 of Octane's
+    iterations; two sessions, load 7.4/1.7 and 1.6/5.4, steal 0-1%, cpu-cal
+    1789/1738 and 1699/1776 ms, mem-bw 33.5/33.6 and 27.5/32.4 GB/s; V8
+    crashed once on Richards (maglev), Crypto (both), RegExp (both) and
+    CodeLoad (jit); latency rows omitted):
+
+    | benchmark | v8sharp:jitless | v8sharp (default) | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 476 | 1603 | 11435 | 14899 |
+    | DeltaBlue | 425 | 1490 | 15142 | 20695 |
+    | Crypto | 55 | 426 | 1816 | 2658 |
+    | RayTrace | 227 | 420 | 5137 | 7490 |
+    | EarleyBoyer | 94 | 206 | 1245 | 1577 |
+    | RegExp | 233 | 301 | 1527 | 1577 |
+    | Splay | 3588 | 2845 | 16667 | 15746 |
+    | NavierStokes | 239 | 2053 | 2955 | 4155 |
+    | PdfJS | 811 | 1093 | 8393 | 8074 |
+    | Mandreel | 84 | 504 | 4341 | 5832 |
+    | Gameboy | 358 | 1280 | 8781 | 7746 |
+    | CodeLoad | 3156 | 2896 | 4035 | 4066 |
+    | Box2D | 706 | 704 | 15923 | 17381 |
+    | zlib | 19 | 89 | 1838 | 1855 |
+    | Typescript | 311 | 257 | 2416 | 2260 |
+
+    The default configuration is 2.06x the baseline-only configuration on
+    cold Octane (ahead on every benchmark but CodeLoad, -1%, and
+    SplayLatency, -2%) and 15% of V8 --no-turbofan. The steady scores of
+    the big benchmarks (Box2D, Typescript, CodeLoad, PdfJS) measure tier-up
+    more than optimized code: the warm pass is 1/50 of Octane's work, and
+    Box2D's score moves 806-1420 between single runs.
+  - Conformance with Maglev on by default (2026-10-04, cea743c4): test262
+    0 newly failing (95123 run, also with --maglev before the switch);
+    mjsunit 0 newly failing after the expectations took the six tests that
+    fail with the optimizing tier (code-coverage-block-opt,
+    elide-double-hole-check-12, es6/super-ic-opt, regress/regress-2618,
+    turbolev/holey-double-load-arith, turboshaft/regress-380487911, with
+    reasons) and dropped two maglev/ tests that now pass. Under forced
+    optimization at cea743c4: mjsunit 0 newly failing, 0 newly passing
+    (7565 run; two large-allocation regress tests crashed once and passed
+    on rerun).
   - Conformance under forced optimization (`--maglev
     --invocation-count-for-maglev=4 --optimize-on-next-call-optimizes-to-maglev`,
     2026-10-02, after concurrent compilation): test262 0 newly failing
@@ -1702,8 +1785,9 @@ progress, off by default.
     thread), Splay and Gameboy (allocation- and call-heavy code that is
     still generic). The rest of the gap to V8 --jitless is the interpreter
     (V8Sharp's interpreter is 42% of V8's on this run).
-  - The tier stays off by default until it is conformance-clean under
-    forced optimization and a net win on Octane.
+  - On by default since 2026-10-04 (conformance-clean under forced
+    optimization but for the six listed below, and a net win on
+    octane-steady and cold Octane; see "Maglev on by default").
 - Phase 2 measurements (2026-10-03; V8Sharp.Bench `compare`, octane-steady
   (thread CPU after a warm pass), 3 interleaved runs, parity publishes,
   bench-session.sh under the lock; host load 1.1-1.8, steal 0%, cpu-cal

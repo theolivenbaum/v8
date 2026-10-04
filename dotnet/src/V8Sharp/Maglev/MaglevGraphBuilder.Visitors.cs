@@ -86,6 +86,10 @@ public sealed partial class MaglevGraphBuilder
                 break;
 
             // ---- Context slots ---------------------------------------------------------------------
+            // LoadAndCacheContextSlot caches a slot as a constant by its scope
+            // info's MaybeAssigned flag (never for var, which a generator's
+            // resumption can assign after an "immutable" load); without the
+            // context's scope info here every slot is cached as mutable.
             case Bytecode.LdaContextSlotNoCell:
             case Bytecode.LdaContextSlot:
             case Bytecode.LdaImmutableContextSlot:
@@ -146,11 +150,7 @@ public sealed partial class MaglevGraphBuilder
                 SetAccumulator(BuildTaggedEqual(LoadRegister(0), GetAccumulator()));
                 break;
             case Bytecode.TestUndetectable:
-                SetAccumulator(AddNewNode(new ValueNode(Opcode.TestUndetectable, ValueRepresentation.kTagged)
-                {
-                    Inputs = [GetTaggedValue(GetAccumulator())],
-                    Type = NodeType.kBoolean,
-                }));
+                SetAccumulator(BuildTestUndetectable(GetAccumulator()));
                 break;
             case Bytecode.TestNull:
                 SetAccumulator(BuildTaggedEqual(GetAccumulator(), GetRootConstant(RootIndex.kNullValue)));
@@ -428,10 +428,38 @@ public sealed partial class MaglevGraphBuilder
                 VisitCompareOperation(CompareOperation.kGreaterThanOrEqual, "TestGreaterThanOrEqual");
                 break;
             case Bytecode.TestInstanceOf:
+            {
+                // TryBuildFastInstanceOf: the feedback's constructor (checked), then
+                // OrdinaryHasInstance without the IC (MaglevBuiltins.InstanceOfFunction).
+                JSValue feedback = _unit.Feedback.Slots[FeedbackSlot(1)];
+                if (feedback.HeapObjectOrNull is JSFunction constructor && GetSpeculationModeAllowsInstanceOf())
+                {
+                    ValueNode obj = LoadRegister(0);
+                    BuildCheckValue(GetAccumulator(), constructor, DeoptimizeReason.kWrongValue);
+                    if (obj.Representation != ValueRepresentation.kTagged || !NodeTypes.CanBe(GetType(obj), NodeType.kJSReceiver))
+                    {
+                        SetAccumulator(GetBooleanConstant(false));
+                        break;
+                    }
+                    if (ObjectOps.OrdinaryHasInstancePrototype(constructor) is { } prototype)
+                    {
+                        // The prototype as a constant, checked against the
+                        // constructor's map and prototype slot at run time.
+                        SetAccumulator(CallMaglev("OrdinaryHasInstance", [obj],
+                            [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.C(constructor), BuiltinArg.C(constructor.Map),
+                             BuiltinArg.C(constructor.PrototypeOrInitialMap), BuiltinArg.C(prototype)],
+                            OpProperties.kGenericCall, type: NodeType.kBoolean)!);
+                        break;
+                    }
+                    SetAccumulator(CallMaglev("InstanceOfFunction", [obj, GetConstant(constructor)],
+                        [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1)], OpProperties.kGenericCall, type: NodeType.kBoolean)!);
+                    break;
+                }
                 SetAccumulator(CallBaseline("TestInstanceOf", [LoadRegister(0), GetAccumulator()],
                     [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(1)), BuiltinArg.In(0), BuiltinArg.In(1)])!);
                 GetAccumulator().Type = NodeType.kBoolean;
                 break;
+            }
             case Bytecode.TestIn:
                 SetAccumulator(CallBaseline("TestIn", [LoadRegister(0), GetAccumulator()],
                     [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(1)), BuiltinArg.In(0), BuiltinArg.In(1)])!);
@@ -493,6 +521,20 @@ public sealed partial class MaglevGraphBuilder
                     EmitUnconditionalDeopt(bytecode == Bytecode.CreateArrayLiteral
                         ? DeoptimizeReason.kInsufficientTypeFeedbackForArrayLiteral
                         : DeoptimizeReason.kInsufficientTypeFeedbackForObjectLiteral);
+                    break;
+                }
+                if (bytecode == Bytecode.CreateObjectLiteral &&
+                    _unit.Feedback.Slots[FeedbackSlot(1)].HeapObjectOrNull is AllocationSite { Boilerplate: { } boilerplate } &&
+                    LiteralShape.TryCreate(boilerplate, 0) is { } shape)
+                {
+                    // TryBuildFastCreateObjectOrArrayLiteral for a boilerplate whose nested
+                    // values are such boilerplates or arrays of primitives: copies of them
+                    // (MaglevBuiltins.CloneObjectLiteral).
+                    ValueNode clone = CallMaglev("CloneObjectLiteral", [],
+                        [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(1)), BuiltinArg.C(Constant(ConstantPoolIndex(0))),
+                         BuiltinArg.I(Flag8(2)), BuiltinArg.C(shape)], OpProperties.kCanAllocate | OpProperties.kNotIdempotent,
+                        type: NodeType.kOtherJSReceiver)!;
+                    SetAccumulator(clone);
                     break;
                 }
                 ValueNode result = CallBaseline(bytecode == Bytecode.CreateArrayLiteral ? "CreateArrayLiteral" : "CreateObjectLiteral", [],
@@ -859,14 +901,28 @@ public sealed partial class MaglevGraphBuilder
     // ---- Contexts --------------------------------------------------------------------------------
 
     /// <summary>The context <paramref name="depth"/> levels up from <paramref name="context"/>, then slot <paramref name="index"/>.</summary>
-    ValueNode BuildLoadContextSlot(ValueNode context, int depth, int index) =>
-        AddNewNode(new ValueNode(Opcode.LoadContextSlot, ValueRepresentation.kTagged)
+    /// <remarks>
+    /// Load elimination (KnownNodeAspects::loaded_context_slots and, for
+    /// immutable slots, loaded_context_constants): a slot loaded or stored
+    /// since the last write that can reach it is not loaded again.
+    /// </remarks>
+    ValueNode BuildLoadContextSlot(ValueNode context, int depth, int index, bool immutable = false)
+    {
+        context = GetTaggedValue(context);
+        KnownNodeAspects known = _frame.Known;
+        if (known.LoadedContextConstants.TryGetValue((context, depth, index), out ValueNode? constant)) return constant;
+        if (known.LoadedContextSlots.TryGetValue((context, depth, index), out ValueNode? loaded)) return loaded;
+        ValueNode value = AddNewNode(new ValueNode(Opcode.LoadContextSlot, ValueRepresentation.kTagged)
         {
-            Inputs = [GetTaggedValue(context)],
+            Inputs = [context],
             Int0 = index,
             Int1 = depth,
             Properties = OpProperties.kCanRead,
         });
+        if (immutable) known.LoadedContextConstants[(context, depth, index)] = value;
+        else known.LoadedContextSlots[(context, depth, index)] = value;
+        return value;
+    }
 
     void BuildStoreContextSlot(ValueNode context, int depth, int index, ValueNode value) =>
         AddNewNode(new Node(Opcode.StoreContextSlot)
@@ -1602,6 +1658,9 @@ public sealed partial class MaglevGraphBuilder
         FinishBlock(new ControlNode(Opcode.Jump) { Int0 = target });
     }
 
+    /// <summary>(TestInstanceOf's feedback is the constructor or megamorphic; there is no speculation mode.)</summary>
+    static bool GetSpeculationModeAllowsInstanceOf() => true;
+
     void BuildBranchIfToBooleanTrue(ValueNode value, int jumpOffset, bool jumpOnTrue)
     {
         if (value.IsConstant)
@@ -1613,6 +1672,19 @@ public sealed partial class MaglevGraphBuilder
         if (CheckType(value, NodeType.kBoolean) && value.Representation == ValueRepresentation.kTagged)
         {
             BuildBranchIfTrue(value, jumpOffset, jumpOnTrue);
+            return;
+        }
+        // A receiver is true unless undetectable; with null and undefined the
+        // only other values, it is a null test (NoUndetectableObjects protector).
+        if (value.Representation == ValueRepresentation.kTagged && CheckType(value, NodeType.kJSReceiverOrNullOrUndefined) &&
+            _info.DependOnProtector(Protectors.IsNoUndetectableObjectsIntact(Isolate), "NoUndetectableObjects"))
+        {
+            if (CheckType(value, NodeType.kJSReceiver))
+            {
+                BuildUnconditionalBranch(jumpOnTrue ? jumpOffset : _it.NextOffset());
+                return;
+            }
+            BuildBranch(new ControlNode(Opcode.BranchIfUndefinedOrNull) { Inputs = [value] }, jumpOffset, !jumpOnTrue);
             return;
         }
         switch (value.Representation)
@@ -1705,6 +1777,7 @@ public sealed partial class MaglevGraphBuilder
         if (state is null || !state.IsLoop) throw new MaglevBailoutException($"loop without header (JumpLoop at {_it.CurrentOffset()} to {header}, state {(state is null ? "none" : "not a loop")})");
         // HandleNoHeapWritesInterrupt (V8's loop interrupt check; there is no Turbofan to count budget for).
         AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kCanThrow | OpProperties.kNotIdempotent });
+        CheckLoopEffects(header);
         // JumpLoop clobbers the accumulator.
         SetAccumulator(GetRootConstant(RootIndex.kUndefinedValue));
         BasicBlock block = _currentBlock!;
