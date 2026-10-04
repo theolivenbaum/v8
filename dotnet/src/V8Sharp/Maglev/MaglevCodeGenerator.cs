@@ -358,7 +358,12 @@ internal sealed class MaglevCodeGenerator
             foreach (Node node in block.Nodes)
             {
                 int at = pos++;
-                foreach (ValueNode input in node.Inputs) Use(input, at);
+                foreach (ValueNode input in node.Inputs)
+                {
+                    Use(input, at);
+                    // Stores read the untagged value under a tagging (UntaggedNumberSource).
+                    if (node.Opcode is Opcode.StoreFixedArrayElement or Opcode.StoreContextSlot) Use(UntaggedNumberSource(input), at);
+                }
                 UseFrame(node.EagerDeoptInfo?.TopFrame, at);
                 UseFrame(node.LazyDeoptInfo?.TopFrame, at);
                 if (node is ValueNode v) def[v] = at;
