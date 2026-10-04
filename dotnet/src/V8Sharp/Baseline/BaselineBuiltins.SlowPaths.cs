@@ -120,7 +120,10 @@ public static partial class BaselineBuiltins
         if (handler is not LoadHandler { HandlerKind: LoadHandler.Kind.kElement }) return kTypedMissBits;
         var array = Unsafe.As<JSTypedArray>(receiver);
         byte[]? data = array.FastData;
-        if (data is null || (uint)index >= (uint)array.FastLength ||
+        // The kind is a compile-time constant of the calling code, which other
+        // functions with the same bytecode share (BaselineCodeCache): the map
+        // check before the call is against their feedback, so the kind is checked here.
+        if (data is null || (uint)index >= (uint)array.FastLength || (int)array.Map.ElementsKind != kind ||
             !Protectors.IsArrayBufferDetachingIntact(isolate) && array.Buffer.WasDetached)
         {
             return kTypedMissBits;
@@ -197,7 +200,7 @@ public static partial class BaselineBuiltins
         }
         var array = Unsafe.As<JSTypedArray>(receiver);
         byte[]? data = array.FastData;
-        if (data is null || (uint)index >= (uint)array.FastLength || !storeHandler.IsValid ||
+        if (data is null || (uint)index >= (uint)array.FastLength || (int)array.Map.ElementsKind != kind || !storeHandler.IsValid ||
             !Protectors.IsArrayBufferDetachingIntact(isolate) && array.Buffer.WasDetached ||
             !Protectors.IsArrayBufferMutableIntact(isolate) && array.Buffer.IsImmutable)
         {

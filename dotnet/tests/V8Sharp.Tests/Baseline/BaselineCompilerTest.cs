@@ -4,6 +4,7 @@
 // (--no-sparkplug) and through baseline code (--always-sparkplug) and compare
 // the results, and check the tiering entry points (%CompileBaseline, the
 // interrupt budget, OSR from Ignition, exception handlers, generators).
+using V8Sharp.Baseline;
 using V8Sharp.Codegen;
 
 namespace V8Sharp.Tests.Baseline;
@@ -314,6 +315,41 @@ public class BaselineCompilerTest
             var r = [...g()].join();
             r + '|' + %ActiveTierIsSparkplug(g);
             """));
+    }
+
+    [Fact]
+    public void TypedElementHelpersCheckTheKind()
+    {
+        // Baseline code is shared by every closure of a SharedFunctionInfo (and,
+        // through BaselineCodeCache, by functions with the same bytecode), each
+        // with its own feedback vector: the map check of a typed array site is
+        // against the running closure's feedback, so the element kind compiled
+        // in as a constant is checked again by the helpers
+        // (test262 staging/sm/TypedArray/element-setting-converts-using-ToNumber).
+        var flagList = new FlagList();
+        flagList.SetFlagsFromString("--allow-natives-syntax --no-lazy-feedback-allocation --no-sparkplug");
+        Isolate isolate = Isolate.New(flagList);
+        using (isolate.Enter())
+        {
+            JSValue value = Compiler.CompileAndRun(isolate, """
+                function get(a, i) { return a[i]; }
+                function set(a, i, v) { a[i] = v; }
+                var a = new Uint16Array([1000, 1001]);
+                get(a, 0); get(a, 1); set(a, 0, 1000); set(a, 1, 1001);
+                [get, set, a];
+                """);
+            var items = (FixedArray)value.As<JSArray>().Elements;
+            HeapObject? load = ((FeedbackVector)((JSFunction)items[0].HeapObjectOrNull!).RawFeedbackCell.Value!).Slots[1].HeapObjectOrNull;
+            HeapObject? store = ((FeedbackVector)((JSFunction)items[1].HeapObjectOrNull!).RawFeedbackCell.Value!).Slots[1].HeapObjectOrNull;
+            HeapObject array = items[2].HeapObjectOrNull!;
+            const int uint16 = (int)ElementsKind.UINT16_ELEMENTS, int8 = (int)ElementsKind.INT8_ELEMENTS;
+            Assert.Equal(BitConverter.DoubleToInt64Bits(1001), BaselineBuiltins.LoadTypedElementBits(isolate, load, array, 1, uint16));
+            Assert.Equal(BaselineBuiltins.kTypedMissBits, BaselineBuiltins.LoadTypedElementBits(isolate, load, array, 1, int8));
+            Assert.False(BaselineBuiltins.TryStoreTypedElement(isolate, store, array, 1, JSValue.FromNumber(7), int8));
+            Assert.Equal(BitConverter.DoubleToInt64Bits(1001), BaselineBuiltins.LoadTypedElementBits(isolate, load, array, 1, uint16));
+            Assert.True(BaselineBuiltins.TryStoreTypedElement(isolate, store, array, 1, JSValue.FromNumber(7), uint16));
+            Assert.Equal(BitConverter.DoubleToInt64Bits(7), BaselineBuiltins.LoadTypedElementBits(isolate, load, array, 1, uint16));
+        }
     }
 
     [Fact]
