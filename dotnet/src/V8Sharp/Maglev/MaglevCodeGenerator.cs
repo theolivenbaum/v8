@@ -214,9 +214,8 @@ internal sealed class MaglevCodeGenerator
         if (_hasCatchBlocks) EmitTryRegionEnd();
         if (_il.ILOffset > kMaxOptimizedILBytes && !_info.Isolate.Flags.allow_natives_syntax)
         {
-            // RyuJIT would compile the method with MinOpts (compSetOptimizationLevel),
-            // slower than the baseline code it replaces (V8Sharp's limit on top
-            // of V8's max_maglev_optimized_bytecode_size; deviations.md).
+            // V8SHARP_MAGLEV_MAX_IL: a limit for experiments (none by default;
+            // RyuJIT compiles a method over its limits with MinOpts).
             throw new MaglevBailoutException($"IL beyond RyuJIT's optimization limits ({_il.ILOffset} bytes)");
         }
         if (_info.Isolate.Flags.trace_opt_verbose)
@@ -294,16 +293,14 @@ internal sealed class MaglevCodeGenerator
     }
 
     /// <summary>
-    /// The most IL a tiering compile may produce. RyuJIT switches a tier-0
-    /// compile of a method over 60000 IL bytes, 20000 IL instructions or 8000
-    /// local references to MinOpts (it never tiers up when the code is an OSR
-    /// loop); methods over <see cref="kAggressiveILBytes"/> are therefore
-    /// compiled fully optimized at once (AggressiveOptimization, as the
-    /// concurrent compiles are), which these limits do not apply to (measured:
-    /// FullOpts up to 47000 bytes of Maglev IL). The limit bounds RyuJIT's
-    /// compile time.
+    /// The most IL a tiering compile may produce (V8SHARP_MAGLEV_MAX_IL; no
+    /// limit by default). RyuJIT compiles a method over 60000 IL bytes, 20000
+    /// IL instructions, 2000 basic blocks or 8000 local references with
+    /// MinOpts, AggressiveOptimization or not ("Tier-0 switched MinOpts" in
+    /// DOTNET_JitDisasmSummary); methods over <see cref="kAggressiveILBytes"/>
+    /// are compiled fully optimized at once, as the concurrent compiles are.
     /// </summary>
-    static readonly int kMaxOptimizedILBytes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_IL"), out int maxIL) ? maxIL : 60000;
+    static readonly int kMaxOptimizedILBytes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_IL"), out int maxIL) ? maxIL : int.MaxValue;
 
     /// <summary>Methods with more IL are compiled with AggressiveOptimization (see kMaxOptimizedILBytes).</summary>
     const int kAggressiveILBytes = 20000;

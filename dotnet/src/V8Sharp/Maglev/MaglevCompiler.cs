@@ -85,13 +85,14 @@ public static class MaglevCompiler
     }
 
     /// <summary>
-    /// The largest graph the tiering manager optimizes (V8Sharp deviation): the
-    /// IL of bigger graphs exceeds RyuJIT's MinOpts limits (60 KB of IL, 8000
-    /// local references), so their code is compiled without optimization at a
-    /// high JIT cost and runs slower than the interpreter. Explicit requests
-    /// (%OptimizeFunctionOnNextCall) compile them anyway.
+    /// The largest graph the tiering manager optimizes: none by default, as in
+    /// V8 (whose limits are max_maglev_optimized_bytecode_size in PrepareJob
+    /// and max_optimized_bytecode_size in the interrupt budget). A method over
+    /// RyuJIT's optimization limits is compiled with MinOpts, which is still
+    /// well ahead of the lower tiers (zlib's biggest function: cold zlib +76%).
+    /// V8SHARP_MAGLEV_MAX_NODES sets a limit, for experiments.
     /// </summary>
-    internal static readonly int kMaxTieringGraphNodes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_NODES"), out int n) ? n : 2000;
+    internal static readonly int kMaxTieringGraphNodes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_MAX_NODES"), out int n) ? n : int.MaxValue;
 
     /// <summary>
     /// Compiler::CompileOptimized(function, kSynchronous, MAGLEV) up to the

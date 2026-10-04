@@ -479,14 +479,14 @@ for now, to be revisited when the reason goes away.
   from optimizing a function (V8 counts deopts with `--max-deopt-count` per
   feedback vector only for Turbofan and lets Maglev re-optimize). Explicit
   requests (`%OptimizeFunctionOnNextCall`) still compile, as in V8.
-- The tiering manager does not optimize functions whose graph exceeds
-  `MaglevCompiler.kMaxTieringGraphNodes` (2000 nodes, `V8SHARP_MAGLEV_MAX_NODES`
-  overrides it) or whose IL exceeds 60000 bytes
-  (`MaglevCodeGenerator.kMaxOptimizedILBytes`, `V8SHARP_MAGLEV_MAX_IL`): the
-  compile time of bigger methods outweighs their gain. V8 optimizes them.
-  Methods over 20000 IL bytes are `AggressiveOptimization` (RyuJIT's tier 0
-  of big methods is MinOpts, slower than the baseline code).
-  `%OptimizeFunctionOnNextCall` still compiles such functions.
+- Size limits are V8's (max_maglev_optimized_bytecode_size, 512 KB, in
+  PrepareJob; max_optimized_bytecode_size, 60 KB, stops the ticks). A
+  method beyond RyuJIT's optimization limits (60000 IL bytes, 20000
+  instructions, 2000 blocks, 8000 local references) is compiled by RyuJIT
+  with MinOpts; such code is still well ahead of the baseline tier and the
+  interpreter (zlib). `V8SHARP_MAGLEV_MAX_NODES` and `V8SHARP_MAGLEV_MAX_IL`
+  set limits for experiments. Methods over 20000 IL bytes are
+  `AggressiveOptimization` (RyuJIT's tier 0 of big methods is MinOpts).
 - Deopt exits: constant values of a frame state are literals of the deopt
   point's translation (V8's StoreLiteral), written by the Deoptimizer. V8's
   exits are a call each and the deoptimizer reads the values from the

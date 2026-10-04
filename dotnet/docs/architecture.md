@@ -736,9 +736,10 @@ ranges run from a value's definition to its last use, counting deopt frame
 values, phi inputs at the predecessor's end and lazily pushed inlined
 frames, and a value live into a loop is live through it. This keeps a
 method's locals below RyuJIT's inlining (512) and MinOpts (2000) limits.
-A tiering compile whose IL exceeds 60000 bytes bails out; methods over 20000
-bytes are `AggressiveOptimization` (RyuJIT's tier 0 of big methods is
-MinOpts, slower than the baseline code).
+There is no IL size limit beyond V8's bytecode size limits: RyuJIT compiles
+a method over its optimization limits with MinOpts, which still beats the
+lower tiers; methods over 20000 bytes are `AggressiveOptimization` (RyuJIT's
+tier 0 of big methods is MinOpts).
 Deopt exits spill only non-constant values (constants are literals of the
 deopt point). Every spilled value has its own slot of the scratch buffer
 (`DeoptFrameData.ScratchSlots`), so the code that stores a value is the same
