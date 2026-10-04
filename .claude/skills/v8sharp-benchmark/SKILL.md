@@ -52,6 +52,19 @@ hour and every other agent waits. Work in two loops:
 - Never queue more than one session at a time per agent, and cancel queued
   sessions you no longer need: a waiting session still takes its turn.
 
+## Compile time is not scored (warm suites)
+
+V8 ships its builtins precompiled and compiles JavaScript on background
+threads; V8Sharp's tiers emit IL that RyuJIT compiles. The warm suites
+(`octane-steady`, `octane-quick`) measure the generated code, not compilers:
+each benchmark warms up for 2x its measured iterations
+(`V8SHARP_BENCH_WARMUP`), then both engines wait for their background
+compiles to finish and install (`waitForCompilations()`: V8Sharp's
+`Isolate.WaitForBackgroundCompilation`, V8's `%WaitForBackgroundOptimization`)
+before the measured runs start, and scores use main-thread CPU time only.
+Cold `octane` still includes compilation: report it separately, as start-up.
+Warm numbers taken before this rule (2026-10-04) are not comparable.
+
 ## Rules
 
 1. **Warm up before measuring.** A cold run measures .NET's JIT compiling
