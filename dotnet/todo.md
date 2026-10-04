@@ -1706,6 +1706,108 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     is mostly register pressure: Crypto's am3 loop keeps its values in
     stack slots); polymorphic calls (DeltaBlue) go through MaglevCalls.Call;
     no escape analysis, CSE or range analysis.
+  - Compile pipeline and tier-up (2026-10-04, f93817c5..dbf2af5b):
+    concurrent jobs (MaglevConcurrentDispatcher.cs, maglev-concurrent-
+    dispatcher.cc) build the graph on two worker threads (the main thread
+    keeps PrepareJob and FinalizeJob: Box2D from bin, 2067 ms of main-thread
+    compile time to 68 ms); feedback pairs under a seqlock, commit against
+    a dependency invalidation log, no heap writes from the worker; deopt
+    exits share spill chains with one scratch slot per value (exit IL of
+    zlib's biggest function 434 KB -> 33 KB); fallthrough to the next block
+    and fused compare branches (Box2D: 11% less IL, 15% fewer blocks); the
+    direct call entry compiled on the worker too; no graph or IL limits
+    beyond V8's bytecode limits (MinOpts for methods over RyuJIT's limits);
+    queued jobs of ticking functions move to the front
+    (concurrent_recompilation_front_running); TieringManager with V8's
+    tiering_in_progress / osr_tiering_in_progress states, Maglev OSR budget
+    and urgency, cached tiering decisions (kEarlyMaglev, kDelayMaglev) and
+    NotifyICChanged's profile-guided part; no deopt count limit (V8's;
+    Gameboy's executeIteration hit the old limit of 8 in every run). Per-change cold Octane (parity
+    publishes, 3 interleaved runs, bench-session.sh):
+    - worker graph building + 2 workers (f93817c5 vs 57d945ce; load 6.1 ->
+      5.3, my own test run overlapped): Box2D 1159 -> 2030, Gameboy 2543 ->
+      4286, PdfJS +2%, Typescript +1%, Richards equal; with the graph built on
+      the main thread (same build, V8SHARP_MAGLEV_GRAPH_ON_MAIN_THREAD=1)
+      Box2D 1398, Gameboy 2975.
+    - spill chains (a74d8ed2 vs f93817c5; started at load 18, ended at 1):
+      Richards +20%, PdfJS +13%, zlib +8%, Box2D/Gameboy within noise.
+    - no size limits (same build, V8SHARP_MAGLEV_MAX_NODES/MAX_IL lifted):
+      zlib 4145 -> 7314 (+76%), Typescript +11%, RegExp -4% (noise).
+    - front running (bdfa42d7's parent vs the same build with
+      --no-concurrent-recompilation-front-running; idle host): Box2D +20%,
+      Gameboy +38%, Typescript +5%, PdfJS -4%, Richards -6%.
+    The ReadyToRun composite publish precompiles the compiler: a cold Box2D
+    run JITs one V8Sharp.Maglev method at tier 0 (36 are rejitted at tier 1
+    in the background, 6 AggressiveOptimization helpers are FullOpts).
+    Conformance (dbf2af5b, flock -s, --jobs 2; the same at bdfa42d7): mjsunit default 0 newly
+    failing (7602 run); mjsunit forced optimization 1 newly failing,
+    regress/regress-1236560 (TIMEOUT in the runner's worker, 0.3 s in the
+    shell; also times out with 57d945ce on this host, so not from this
+    work); test262 default and forced 0 newly failing (95123 run); no
+    worker exceptions (V8SHARP_MAGLEV_REPORT_BACKGROUND_EXCEPTIONS to a
+    file).
+    Open: RyuJIT is the bottleneck (about 70% of a job; time grows with
+    basic blocks, about a quarter of them CheckMaps on values not known to
+    be receivers: null, instance type and map compares); jobs still wait
+    hundreds of ms for a worker at start-up; methods over RyuJIT's limits
+    (Typescript's Scanner.innerScan, 3800 blocks) get MinOpts, where a
+    compact form (out-of-line checks, as the baseline tier's chunks and
+    out-of-line paths) could keep them FullOpts; the OSR check runs at
+    budget interrupts, not every JumpLoop; JumpLoop OSR into code installed
+    meanwhile relies on the install zeroing the budget.
+    Cold Octane at f0b0a4cf (octane, wall-clock scores, 3 interleaved runs,
+    parity publishes, bench-session.sh; load 5.9/4.1, steal 0%, cpu-cal
+    1749/1792 ms, mem-bw 29.1/33.7 GB/s; V8 crashed (exit 139) once on a few
+    rows, means over the remaining runs); "before" is 57d945ce:
+
+    | benchmark | v8sharp before | v8sharp (default) | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 2377 | 2644 | 24415 | 35455 |
+    | DeltaBlue | 3206 | 3350 | 35170 | 70813 |
+    | Crypto | 5556 | 5189 | 23623 | 35560 |
+    | RayTrace | 2732 | 3001 | 39650 | 67586 |
+    | EarleyBoyer | 4716 | 4846 | 32745 | 44673 |
+    | RegExp | 1313 | 1294 | 6786 | 7082 |
+    | Splay | 4163 | 4345 | 7221 | 7635 |
+    | SplayLatency | 2652 | 2631 | 5180 | 5410 |
+    | NavierStokes | 13619 | 13304 | 20249 | 29414 |
+    | PdfJS | 2898 | 3128 | 31103 | 33282 |
+    | Mandreel | 2655 | 3490 | 26176 | 37100 |
+    | MandreelLatency | 6628 | 6354 | 36773 | 45323 |
+    | Gameboy | 5803 | 7519 | 72898 | 77245 |
+    | CodeLoad | 8996 | 8765 | 17482 | 17665 |
+    | Box2D | 2294 | 5746 | 70748 | 84257 |
+    | zlib | 3820 | 7250 | 73707 | 75072 |
+    | Typescript | 6551 | 7781 | 53583 | 56183 |
+    | geomean | 3990 | 4614 | 26372 | 32930 |
+
+    Cold geomean +16% (17.5% of V8 --no-turbofan, 14.0% of V8).
+    octane-steady at f0b0a4cf (the warm protocol of e9b062be: 2x warm-up,
+    background compiles waited for and installed; thread CPU, 2 interleaved
+    runs; load 2.5/3.3, steal 0%, cpu-cal 1767/1690 ms, mem-bw 34.2/33.2
+    GB/s; V8 crashed (exit 139) on a few rows, means over the remaining
+    runs; latency rows omitted):
+
+    | benchmark | v8sharp (default) | v8:maglev | v8:jit |
+    |---|---|---|---|
+    | Richards | 1129 | 8945 | 10506 |
+    | DeltaBlue | 1311 | 12040 | 20317 |
+    | Crypto | 306 | 1394 | 2123 |
+    | RayTrace | 334 | 3871 | 6487 |
+    | EarleyBoyer | 160 | 919 | 1169 |
+    | RegExp | 238 | 1126 | 1158 |
+    | Splay | 2861 | 12212 | 12320 |
+    | NavierStokes | 1535 | 2149 | 3063 |
+    | PdfJS | 1456 | 9302 | 9537 |
+    | Mandreel | 623 | 4311 | 5933 |
+    | Gameboy | 1431 | 7809 | 8312 |
+    | CodeLoad | 3627 | 4318 | 4376 |
+    | Box2D | 2932 | 19333 | 21362 |
+    | zlib | 178 | 1823 | 1852 |
+    | Typescript | 485 | 2767 | 2845 |
+    | geomean | 792 | 4180 | 5044 |
+
+    Warm geomean: 18.9% of V8 --no-turbofan.
   - Maglev on by default (2026-10-04, cea743c4; V8Sharp.Bench `compare`,
     2 interleaved runs, parity publish (R2R composite, self-contained),
     bench-session.sh under the lock; V8 is the 14.7 oracle; "default" is
