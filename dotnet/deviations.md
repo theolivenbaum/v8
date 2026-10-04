@@ -452,8 +452,12 @@ for now, to be revisited when the reason goes away.
   of big methods is MinOpts, slower than the baseline code).
   `%OptimizeFunctionOnNextCall` still compiles such functions.
 - Deopt exits: constant values of a frame state are literals of the deopt
-  point's translation (V8's StoreLiteral), written by the Deoptimizer; exits
-  whose remaining values are the same share their spill code.
+  point's translation (V8's StoreLiteral), written by the Deoptimizer. V8's
+  exits are a call each and the deoptimizer reads the values from the
+  optimized frame; V8Sharp's values are in IL locals, so an exit spills them
+  to the isolate's scratch buffer, one slot per value, through chains of
+  spill blocks that exits share (an exit stores what a recent exit's block
+  does not and continues there).
 - Typed array stores: V8Sharp's keyed store IC gives typed arrays a slow
   handler (and goes megamorphic), so the element store is built from the
   feedback maps alone, and megamorphic keyed stores call

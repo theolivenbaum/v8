@@ -84,7 +84,7 @@ public sealed class MaglevCompilationJob
     {
         if (!_logOpen) return;
         _logOpen = false;
-        Isolate.MaglevConcurrentDispatcher.EndDependencyLog();
+        Isolate.MaglevConcurrentDispatcher.EndDependencyLog(_dependencyLogStart);
     }
 
     public double PrepareMs { get; private set; }
@@ -402,29 +402,36 @@ public sealed class MaglevConcurrentDispatcher
     readonly List<(HeapObject Object, Objects.DependentCode.DependencyGroups Groups)> _log = [];
     /// <summary>The log position of _log[0].</summary>
     long _logBase;
-    /// <summary>Jobs between PrepareJob and FinalizeJob.</summary>
-    int _openJobs;
+    /// <summary>The log positions of the jobs between PrepareJob and FinalizeJob, in the order they were prepared.</summary>
+    readonly List<long> _openJobs = [];
 
     /// <summary>Whether invalidations are being logged (a job is open).</summary>
-    public bool IsLogging => _openJobs > 0;
+    public bool IsLogging => _openJobs.Count > 0;
 
     internal long BeginDependencyLog()
     {
-        _openJobs++;
-        return _logBase + _log.Count;
+        long start = _logBase + _log.Count;
+        _openJobs.Add(start);
+        return start;
     }
 
-    internal void EndDependencyLog()
+    /// <summary>A job is finalized: the entries no open job needs any more are dropped.</summary>
+    internal void EndDependencyLog(long start)
     {
-        if (--_openJobs > 0) return;
-        _logBase += _log.Count;
-        _log.Clear();
+        _openJobs.Remove(start);
+        long keepFrom = _openJobs.Count == 0 ? _logBase + _log.Count : _openJobs[0];
+        int drop = (int)(keepFrom - _logBase);
+        if (drop <= 0) return;
+        if (drop == _log.Count) _log.Clear();
+        else if (drop >= 1024 || drop * 2 >= _log.Count) _log.RemoveRange(0, drop);
+        else return;
+        _logBase = keepFrom;
     }
 
     /// <summary>DependentCode.DeoptimizeDependencyGroups: records an invalidation while jobs are open.</summary>
     internal void RecordInvalidation(HeapObject obj, Objects.DependentCode.DependencyGroups groups)
     {
-        if (_openJobs > 0) _log.Add((obj, groups));
+        if (_openJobs.Count > 0) _log.Add((obj, groups));
     }
 
     /// <summary>The first dependency invalidated since <paramref name="start"/>, or null.</summary>

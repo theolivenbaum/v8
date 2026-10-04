@@ -48,7 +48,7 @@ internal sealed class MaglevCodeGenerator
     readonly MaglevCode _code;
     readonly TypeBuilder _type;
     readonly MethodBuilder _method;
-    readonly ILGenerator _il;
+    readonly MaglevILEmitter _il;
 
     // Frame locals of the outermost frame.
     readonly LocalBuilder _fpRef;
@@ -108,7 +108,7 @@ internal sealed class MaglevCodeGenerator
         string name = "maglev:" + MaglevCompiler.DebugName(info.Function.Shared) + (info.IsOsr ? "@osr" + info.OsrOffset : "");
         (_type, _method) = BaselineCodeSpace.For(info.Isolate).DefineMethod(name, typeof(JSValue),
             [typeof(MaglevCode), typeof(Isolate), typeof(InterpreterState).MakeByRefType()]);
-        _il = _method.GetILGenerator(4096);
+        _il = new MaglevILEmitter(_method.GetILGenerator(4096));
         _fpRef = _il.DeclareLocal(typeof(JSValue).MakeByRefType());
         _fp = _il.DeclareLocal(typeof(int));
         _frame = _il.DeclareLocal(typeof(InterpreterFrameRecord).MakeByRefType());
@@ -213,7 +213,8 @@ internal sealed class MaglevCodeGenerator
         if (_info.Isolate.Flags.trace_opt_verbose)
         {
             Console.WriteLine($"[maglev code: {bodySize} bytes IL body, {_il.ILOffset - bodySize} bytes in {_pendingExits.Count} deopt exits " +
-                              $"({_frameExits.Count} eager, {_pendingExits.Count - _frameExits.Count} lazy; {_eagerStubs.Count} eager checks, {_spilledValues} values)]");
+                              $"({_frameExits.Count} eager, {_pendingExits.Count - _frameExits.Count} lazy; {_eagerStubs.Count} eager checks, {_spilledValues} values); " +
+                              $"{_il.Instructions} instructions, {_il.BlockBoundaries} block boundaries, {_il.LocalReferences} local references, {_il.Locals} locals]");
         }
 
         MethodBuilder? fastCall = DefineFastCallEntry();
@@ -1110,25 +1111,26 @@ internal sealed class MaglevCodeGenerator
         foreach ((Label label, DeoptInfo info, DeoptimizeKind kind, DeoptimizeReason reason, ValueNode? result) in _pendingExits)
         {
             _il.MarkLabel(label);
-            var spill = new List<ValueNode?>();
+            var spill = new List<ValueNode>();
             var point = new DeoptPoint { Kind = kind, Reason = reason };
             // Frames outermost first.
             var frames = new List<InterpretedDeoptFrame>();
             for (DeoptFrame? f = info.TopFrame; f is not null; f = f.Parent) frames.Add((InterpretedDeoptFrame)f);
             frames.Reverse();
             var data = new DeoptFrameData[frames.Count];
-            int scratch = 0;
             for (int i = 0; i < frames.Count; i++)
             {
                 InterpretedDeoptFrame f = frames[i];
                 MaglevCompilationUnit unit = f.Unit;
                 var registers = new Register[f.Values.Length];
+                var slots = new int[f.Values.Length];
                 ArgumentsObjectKind[]? materialize = null;
                 JSValue[]? constants = null;
                 bool[]? isConstant = null;
                 for (int k = 0; k < f.Values.Length; k++)
                 {
                     registers[k] = f.Values[k].Register;
+                    slots[k] = -1;
                     ValueNode value = f.Values[k].Value;
                     if (value.IsConstant)
                     {
@@ -1136,16 +1138,15 @@ internal sealed class MaglevCodeGenerator
                         // Deoptimizer writes it, the exit spills nothing.
                         (constants ??= new JSValue[f.Values.Length])[k] = value.ConstantValue();
                         (isConstant ??= new bool[f.Values.Length])[k] = true;
-                        spill.Add(null);
                         continue;
                     }
                     if (IsElidedArguments(value))
                     {
                         // The Deoptimizer creates the elided arguments object.
                         (materialize ??= new ArgumentsObjectKind[f.Values.Length])[k] = ((CallBuiltinInfo)value.Obj0!).ArgumentsKind;
-                        spill.Add(null);
                         continue;
                     }
+                    slots[k] = SpillSlot(value);
                     spill.Add(value);
                 }
                 data[i] = new DeoptFrameData
@@ -1162,31 +1163,24 @@ internal sealed class MaglevCodeGenerator
                     Materialize = materialize,
                     Constants = constants,
                     IsConstant = isConstant,
-                    ScratchStart = scratch,
+                    ScratchSlots = slots,
                 };
-                scratch += registers.Length;
             }
             if (kind == DeoptimizeKind.kLazy && info is LazyDeoptInfo lazy)
             {
                 point.ResultLocation = lazy.ResultLocation;
                 if (result is not null && lazy.ResultSize == 1)
                 {
-                    point.ResultScratchIndex = scratch;
+                    point.ResultScratchIndex = SpillSlot(result);
                     spill.Add(result);
-                    scratch++;
                 }
             }
             point.Frames = data;
-            point.ScratchSize = scratch;
-            _maxScratch = Math.Max(_maxScratch, scratch);
             int index = _deoptPoints.Count;
             _deoptPoints.Add(point);
             info.DeoptIndex = index;
-            // The deopt point and the reason go to locals, and the exit jumps to
-            // the spill code of its value sequence, which exits with the same
-            // values in the same scratch slots share (the translations differ
-            // in their frames' offsets and registers, which are data).
-            var key = new SpillKey(spill);
+            // The deopt point (and a lazy exit's reason) go to locals, and the
+            // exit spills its values and ends in the Deoptimize call.
             if (kind == DeoptimizeKind.kLazy)
             {
                 _il.Emit(OpCodes.Ldc_I4, (int)reason);
@@ -1194,101 +1188,128 @@ internal sealed class MaglevCodeGenerator
             }
             _il.Emit(OpCodes.Ldc_I4, index);
             _il.Emit(OpCodes.Stloc, _deoptIndex);
-            if (!_spillBlocks.TryGetValue(key, out Label block))
-            {
-                block = _il.DefineLabel();
-                _spillBlocks[key] = block;
-                _pendingSpills.Add((block, spill));
-            }
-            _il.Emit(OpCodes.Br, block);
+            EmitSpillChain(spill);
         }
-        foreach ((Label block, List<ValueNode?> spill) in _pendingSpills)
-        {
-            _il.MarkLabel(block);
-            _spilledValues += spill.Count;
-            // The last (up to four) values go with the Deoptimize call
-            // (MaglevBuiltins.DeoptN), the others through Spill*.
-            int tail = spill.Count;
-            int tailCount = 0;
-            while (tail > 0 && tailCount < 4 && spill[tail - 1] is not null)
-            {
-                tail--;
-                tailCount++;
-            }
-            EmitSpill(spill.GetRange(0, tail));
-            // Deoptimizer::Deoptimize(isolate, ref state, code, index, reason); return to MaglevExecution.Run.
-            _il.Emit(OpCodes.Ldarg_1);
-            _il.Emit(OpCodes.Ldarg_2);
-            _il.Emit(OpCodes.Ldarg_0);
-            _il.Emit(OpCodes.Ldloc, _deoptIndex);
-            _il.Emit(OpCodes.Ldloc, _deoptReason);
-            if (tailCount > 0)
-            {
-                _il.Emit(OpCodes.Ldc_I4, tail);
-                for (int k = 0; k < tailCount; k++) Load(spill[tail + k]!, ValueRepresentation.kTagged);
-            }
-            Call("Deopt" + tailCount);
-            EmitReturn();
-        }
+        _maxScratch = _spillSlots.Count;
     }
 
-    readonly Dictionary<SpillKey, Label> _spillBlocks = new();
-    readonly List<(Label Block, List<ValueNode?> Spill)> _pendingSpills = [];
+    // ---- Spill chains ------------------------------------------------------------------------------------------
 
-    /// <summary>A deopt exit's spill sequence, compared by the values' identities.</summary>
-    readonly struct SpillKey(List<ValueNode?> values) : IEquatable<SpillKey>
+    // Every value a deopt exit spills has its own slot of the scratch buffer
+    // (SpillSlot), so the code storing a value is the same for every exit.
+    // An exit stores what a recent exit's spill block does not and jumps to
+    // that block, which stores the rest and ends in the Deoptimize call (or
+    // jumps on to its own predecessor): consecutive exits share most of
+    // their live values, so the exits of a function with a big frame cost a
+    // few stores each instead of a copy of the frame (V8's deopt exits are a
+    // call each; the deoptimizer reads the values from the optimized frame).
+    // A block may also store values the jumping exit does not need, from
+    // locals that hold something else there by then: harmless, its
+    // translation does not read those slots.
+
+    readonly Dictionary<ValueNode, int> _spillSlots = new(ReferenceEqualityComparer.Instance);
+
+    sealed class SpillBlock(Label label, System.Collections.BitArray stored)
     {
-        readonly List<ValueNode?> _values = values;
+        public readonly Label Label = label;
+        /// <summary>The slots stored from this block to the Deoptimize call.</summary>
+        public readonly System.Collections.BitArray Stored = stored;
+    }
 
-        public bool Equals(SpillKey other)
+    readonly List<SpillBlock> _spillChains = [];
+
+    /// <summary>How many recent spill blocks an exit considers continuing in.</summary>
+    const int kSpillChainCandidates = 16;
+
+    int SpillSlot(ValueNode value)
+    {
+        if (!_spillSlots.TryGetValue(value, out int slot)) _spillSlots[value] = slot = _spillSlots.Count;
+        return slot;
+    }
+
+    void EmitSpillChain(List<ValueNode> spill)
+    {
+        // The recent block that already stores most of these values.
+        SpillBlock? parent = null;
+        int best = spill.Count;
+        for (int c = _spillChains.Count - 1, n = 0; c >= 0 && n < kSpillChainCandidates; c--, n++)
         {
-            if (_values.Count != other._values.Count) return false;
-            for (int i = 0; i < _values.Count; i++)
+            SpillBlock candidate = _spillChains[c];
+            int missing = 0;
+            foreach (ValueNode v in spill)
             {
-                if (!ReferenceEquals(_values[i], other._values[i])) return false;
+                int slot = _spillSlots[v];
+                if (slot >= candidate.Stored.Length || !candidate.Stored[slot]) missing++;
             }
-            return true;
+            if (missing < best || parent is null && missing <= best)
+            {
+                best = missing;
+                parent = candidate;
+                if (missing == 0) break;
+            }
         }
-
-        public override bool Equals(object? obj) => obj is SpillKey k && Equals(k);
-
-        public override int GetHashCode()
+        var own = new List<ValueNode>();
+        foreach (ValueNode v in spill)
         {
-            var h = new HashCode();
-            foreach (ValueNode? v in _values) h.Add(v is null ? 0 : RuntimeHelpers.GetHashCode(v));
-            return h.ToHashCode();
+            int slot = _spillSlots[v];
+            if (parent is null || slot >= parent.Stored.Length || !parent.Stored[slot]) own.Add(v);
         }
+        if (parent is not null && own.Count == 0)
+        {
+            _il.Emit(OpCodes.Br, parent.Label);
+            return;
+        }
+        if (parent is not null && own.Count == spill.Count) parent = null;
+        // Distinct values (a value can stand for several registers).
+        own.Sort((a, b) => _spillSlots[a].CompareTo(_spillSlots[b]));
+        for (int i = own.Count - 1; i > 0; i--)
+        {
+            if (ReferenceEquals(own[i], own[i - 1])) own.RemoveAt(i);
+        }
+        Label block = _il.DefineLabel();
+        _il.MarkLabel(block);
+        var stored = new System.Collections.BitArray(Math.Max(_spillSlots.Count, parent?.Stored.Length ?? 0));
+        if (parent is not null)
+        {
+            for (int i = 0; i < parent.Stored.Length; i++) stored[i] = parent.Stored[i];
+        }
+        foreach (ValueNode v in own) stored[_spillSlots[v]] = true;
+        _spillChains.Add(new SpillBlock(block, stored));
+        EmitSpill(own);
+        _spilledValues += own.Count;
+        if (parent is not null)
+        {
+            _il.Emit(OpCodes.Br, parent.Label);
+            return;
+        }
+        // Deoptimizer::Deoptimize(isolate, ref state, code, index, reason); return to MaglevExecution.Run.
+        _il.Emit(OpCodes.Ldarg_1);
+        _il.Emit(OpCodes.Ldarg_2);
+        _il.Emit(OpCodes.Ldarg_0);
+        _il.Emit(OpCodes.Ldloc, _deoptIndex!);
+        _il.Emit(OpCodes.Ldloc, _deoptReason!);
+        Call("Deopt0");
+        EmitReturn();
     }
 
     /// <summary>
-    /// Stores <paramref name="values"/> to the deopt scratch buffer from index
-    /// 0, in chunks through MaglevBuiltins.Spill* (an elided value, null, is
-    /// left for the Deoptimizer): a few bytes of IL per value, so the exits
-    /// do not dominate the method's IL size.
+    /// Stores <paramref name="values"/> (sorted by slot) to their scratch
+    /// slots, consecutive slots in chunks through MaglevBuiltins.Spill*: a few
+    /// bytes of IL per value.
     /// </summary>
-    void EmitSpill(List<ValueNode?> values)
+    void EmitSpill(List<ValueNode> values)
     {
         int i = 0;
         while (i < values.Count)
         {
-            // Slots the Deoptimizer fills (literals, elided objects) are skipped.
-            if (values[i] is null)
-            {
-                i++;
-                continue;
-            }
-            int run = 0;
-            while (i + run < values.Count && values[i + run] is not null) run++;
-            int remaining = run;
-            int chunk = remaining >= 8 ? 8 : remaining >= 4 ? 4 : remaining >= 2 ? 2 : 1;
+            int first = _spillSlots[values[i]];
+            int run = 1;
+            while (i + run < values.Count && _spillSlots[values[i + run]] == first + run) run++;
+            int chunk = run >= 8 ? 8 : run >= 4 ? 4 : run >= 2 ? 2 : 1;
             _il.Emit(OpCodes.Ldarg_1);
             _il.Emit(OpCodes.Ldfld, s_deoptScratch);
-            _il.Emit(OpCodes.Ldc_I4, i);
-            for (int k = 0; k < chunk; k++)
-            {
-                if (values[i + k] is { } value) Load(value, ValueRepresentation.kTagged);
-                else LoadUndefined();
-            }
+            _il.Emit(OpCodes.Ldc_I4, first);
+            for (int k = 0; k < chunk; k++) Load(values[i + k], ValueRepresentation.kTagged);
             Call("Spill" + chunk);
             i += chunk;
         }
@@ -1357,16 +1378,6 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldloc, _tmpValue);
         _il.Emit(OpCodes.Ldfld, s_bits);
         _il.Emit(OpCodes.Stfld, s_bits);
-    }
-
-    void EmitStoreScratch(int index, ValueNode value)
-    {
-        _il.Emit(OpCodes.Ldarg_1);
-        _il.Emit(OpCodes.Ldfld, s_deoptScratch);
-        _il.Emit(OpCodes.Ldc_I4, index);
-        _il.Emit(OpCodes.Ldelema, typeof(JSValue));
-        Load(value, ValueRepresentation.kTagged);
-        _il.Emit(OpCodes.Stobj, typeof(JSValue));
     }
 
     // ---- Nodes --------------------------------------------------------------------------------------------

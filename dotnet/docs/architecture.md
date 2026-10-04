@@ -699,8 +699,14 @@ A tiering compile whose IL exceeds 60000 bytes bails out; methods over 20000
 bytes are `AggressiveOptimization` (RyuJIT's tier 0 of big methods is
 MinOpts, slower than the baseline code).
 Deopt exits spill only non-constant values (constants are literals of the
-deopt point), share spill code between exits with the same values, and end
-in one call that takes the last values (`MaglevBuiltins.Deopt0-4`).
+deopt point). Every spilled value has its own slot of the scratch buffer
+(`DeoptFrameData.ScratchSlots`), so the code that stores a value is the same
+for every exit: an exit stores what one of the last 16 exits' spill blocks
+does not and jumps to it, and the chain ends in `MaglevBuiltins.Deopt0`.
+Consecutive exits share most of their live values, so an exit costs a few
+stores (zlib's biggest function: 434 KB of exit IL before, 33 KB after).
+The IL goes through `MaglevILEmitter`, which counts what RyuJIT's
+optimization limits count and uses the short constant encodings.
 
 **Tiering.** `--maglev` (on by default, as in V8) makes
 `Isolate.UseOptimizer` true; `TieringManager.OnInterruptTick` requests a
