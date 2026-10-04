@@ -458,6 +458,8 @@ public partial class JSObject
                 return new JSRawJson(map);
             case InstanceType.JSShadowRealmType:
                 return new JSShadowRealm(map);
+            case >= InstanceType.WasmModuleObjectType and <= InstanceType.WasmArrayType:
+                return V8Sharp.Wasm.WasmObjects.AllocateForMap(map);
             case >= InstanceType.JSTemporalDurationType and <= InstanceType.JSTemporalZonedDateTimeType:
                 return JSTemporalObject.AllocateTemporalForMap(map);
             case InstanceType.JSExternalObjectType:
@@ -602,6 +604,26 @@ public partial class JSObject
                 return kHeaderSize + 2 * kTagged;
             case InstanceType.JSShadowRealmType:
                 return kHeaderSize + kTagged;
+            // WasmModuleObject::kHeaderSize ... (wasm-objects.tq field counts).
+            case InstanceType.WasmModuleObjectType:
+                return kHeaderSize + 2 * kTagged;
+            case InstanceType.WasmInstanceObjectType:
+                return kHeaderSize + 3 * kTagged;
+            case InstanceType.WasmMemoryObjectType:
+                return kHeaderSize + 4 * kTagged;
+            case InstanceType.WasmTableObjectType:
+                return kHeaderSize + 6 * kTagged;
+            case InstanceType.WasmGlobalObjectType:
+                return kHeaderSize + 6 * kTagged;
+            case InstanceType.WasmTagObjectType:
+                return kHeaderSize + 3 * kTagged;
+            case InstanceType.WasmExceptionPackageType:
+                return kHeaderSize;
+            case InstanceType.WasmSuspendingObjectType:
+                return kHeaderSize + kTagged;
+            case InstanceType.WasmStructType:
+            case InstanceType.WasmArrayType:
+                return kHeaderSize;
             case >= InstanceType.JSTemporalDurationType and <= InstanceType.JSTemporalZonedDateTimeType:
                 return kHeaderSize + kTagged;
             case InstanceType.JSStringIteratorType:

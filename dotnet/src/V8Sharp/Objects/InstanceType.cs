@@ -162,6 +162,20 @@ public enum InstanceType : ushort
     JSContextExtensionObjectType,
     JSArgumentsExoticObjectType,
     JSRawJsonType,
+    // WebAssembly (V8_ENABLE_WEBASSEMBLY): the JS API objects of
+    // src/wasm/wasm-objects.h. V8's WasmStruct and WasmArray are receivers
+    // that are not JSObjects; V8Sharp wraps the GC objects in JSObjects
+    // (deviations.md, "WebAssembly").
+    WasmModuleObjectType,
+    WasmInstanceObjectType,
+    WasmMemoryObjectType,
+    WasmTableObjectType,
+    WasmGlobalObjectType,
+    WasmTagObjectType,
+    WasmExceptionPackageType,
+    WasmSuspendingObjectType,
+    WasmStructType,
+    WasmArrayType,
     JSShadowRealmType,
     JSWrappedFunctionType,
     JSBoundFunctionType,

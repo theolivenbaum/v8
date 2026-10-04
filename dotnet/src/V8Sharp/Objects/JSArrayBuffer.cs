@@ -106,6 +106,18 @@ public sealed class BackingStore
         }
     }
 
+    /// <summary>
+    /// The store of a WebAssembly memory's buffer (BackingStore::AllocateWasmMemory
+    /// in V8): the memory's array, of which the first <paramref name="byteLength"/>
+    /// bytes are the memory. A shared memory reserves its maximum, so the
+    /// array is longer than the memory and stays in place when it grows.
+    /// </summary>
+    public static BackingStore WrapWasmMemory(byte[] buffer, ulong byteLength, bool shared) =>
+        new(buffer, byteLength, byteLength, shared, resizable: false) { IsWasmMemory = true };
+
+    /// <summary>BackingStore::is_wasm_memory.</summary>
+    public bool IsWasmMemory { get; private init; }
+
     /// <summary>A store over existing memory (the empty store of a zero-length transfer, API wrapping).</summary>
     public static BackingStore WrapAllocation(byte[] buffer, bool shared) =>
         new(buffer, (ulong)buffer.Length, (ulong)buffer.Length, shared, resizable: false);
