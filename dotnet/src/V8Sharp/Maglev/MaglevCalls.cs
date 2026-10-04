@@ -50,6 +50,120 @@ public static class MaglevCalls
         return Baseline.BaselineCalls.CallFromOptimizedCode(isolate, callee, receiver, argsStart, argc, mode);
     }
 
+    // ---- Generic calls with the arguments as values ------------------------------------------------------
+    //
+    // The Call builtin's dispatch (Generate_CallFunction) for a call whose
+    // target is not known at compile time, taking the receiver and up to three
+    // arguments as values: a callee with Maglev code is entered through its
+    // direct entry (the arguments never go through the register stack),
+    // anything else through the register window CallValuesN builds.
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    public static JSValue CallWithValues0(Isolate isolate, JSValue callee, JSValue receiver, int mode)
+    {
+        if (TryGetFastCallee(isolate, callee, ref receiver, 0, out JSFunction function, out MaglevCode code))
+        {
+            Delegate fast = code.FastCall!;
+            return code.FastCallArity switch
+            {
+                0 => Unsafe.As<MaglevFastCall0>(fast)(isolate, function, 0, receiver),
+                1 => Unsafe.As<MaglevFastCall1>(fast)(isolate, function, 0, receiver, default),
+                2 => Unsafe.As<MaglevFastCall2>(fast)(isolate, function, 0, receiver, default, default),
+                3 => Unsafe.As<MaglevFastCall3>(fast)(isolate, function, 0, receiver, default, default, default),
+                _ => InvokeFastCallValues(isolate, code, function, receiver, 0, default, default, default),
+            };
+        }
+        return CallValues0(isolate, callee, receiver, mode);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    public static JSValue CallWithValues1(Isolate isolate, JSValue callee, JSValue receiver, JSValue a0, int mode)
+    {
+        if (TryGetFastCallee(isolate, callee, ref receiver, 1, out JSFunction function, out MaglevCode code))
+        {
+            Delegate fast = code.FastCall!;
+            return code.FastCallArity switch
+            {
+                1 => Unsafe.As<MaglevFastCall1>(fast)(isolate, function, 1, receiver, a0),
+                2 => Unsafe.As<MaglevFastCall2>(fast)(isolate, function, 1, receiver, a0, default),
+                3 => Unsafe.As<MaglevFastCall3>(fast)(isolate, function, 1, receiver, a0, default, default),
+                _ => InvokeFastCallValues(isolate, code, function, receiver, 1, a0, default, default),
+            };
+        }
+        return CallValues1(isolate, callee, receiver, a0, mode);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    public static JSValue CallWithValues2(Isolate isolate, JSValue callee, JSValue receiver, JSValue a0, JSValue a1, int mode)
+    {
+        if (TryGetFastCallee(isolate, callee, ref receiver, 2, out JSFunction function, out MaglevCode code))
+        {
+            Delegate fast = code.FastCall!;
+            return code.FastCallArity switch
+            {
+                2 => Unsafe.As<MaglevFastCall2>(fast)(isolate, function, 2, receiver, a0, a1),
+                3 => Unsafe.As<MaglevFastCall3>(fast)(isolate, function, 2, receiver, a0, a1, default),
+                _ => InvokeFastCallValues(isolate, code, function, receiver, 2, a0, a1, default),
+            };
+        }
+        return CallValues2(isolate, callee, receiver, a0, a1, mode);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    public static JSValue CallWithValues3(Isolate isolate, JSValue callee, JSValue receiver, JSValue a0, JSValue a1, JSValue a2, int mode)
+    {
+        if (TryGetFastCallee(isolate, callee, ref receiver, 3, out JSFunction function, out MaglevCode code))
+        {
+            return InvokeFastCallValues(isolate, code, function, receiver, 3, a0, a1, a2);
+        }
+        return CallValues3(isolate, callee, receiver, a0, a1, a2, mode);
+    }
+
+    /// <summary>
+    /// The callee of a generic call when it has Maglev code whose direct entry
+    /// takes <paramref name="argc"/> arguments (CallFunction's checks: not a
+    /// class constructor; a sloppy callee's receiver converted).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool TryGetFastCallee(Isolate isolate, JSValue callee, ref JSValue receiver, int argc, out JSFunction function,
+        out MaglevCode code)
+    {
+        if (callee._obj is JSFunction f && f.RawFeedbackCell.Value is FeedbackVector { MaglevCode: { } c } && argc <= c.FastCallArity)
+        {
+            SharedFunctionInfo shared = f.Shared;
+            if (!shared.IsClassConstructor)
+            {
+                if (!receiver.IsJSReceiver && !shared.Native && shared.LanguageMode == LanguageMode.Sloppy)
+                {
+                    receiver = InterpreterCalls.ConvertReceiver(isolate, f, receiver);
+                }
+                function = f;
+                code = c;
+                return true;
+            }
+        }
+        function = null!;
+        code = null!;
+        return false;
+    }
+
+    /// <summary>A direct entry of any arity called with at most three arguments.</summary>
+    static JSValue InvokeFastCallValues(Isolate isolate, MaglevCode code, JSFunction function, JSValue receiver, int argc, JSValue a0,
+        JSValue a1, JSValue a2)
+    {
+        Delegate fast = code.FastCall!;
+        return code.FastCallArity switch
+        {
+            0 => Unsafe.As<MaglevFastCall0>(fast)(isolate, function, argc, receiver),
+            1 => Unsafe.As<MaglevFastCall1>(fast)(isolate, function, argc, receiver, a0),
+            2 => Unsafe.As<MaglevFastCall2>(fast)(isolate, function, argc, receiver, a0, a1),
+            3 => Unsafe.As<MaglevFastCall3>(fast)(isolate, function, argc, receiver, a0, a1, a2),
+            4 => Unsafe.As<MaglevFastCall4>(fast)(isolate, function, argc, receiver, a0, a1, a2, default),
+            5 => Unsafe.As<MaglevFastCall5>(fast)(isolate, function, argc, receiver, a0, a1, a2, default, default),
+            _ => Unsafe.As<MaglevFastCall6>(fast)(isolate, function, argc, receiver, a0, a1, a2, default, default, default),
+        };
+    }
+
     /// <summary>A call from a register list through the callee's direct entry (MaglevCode.FastCall).</summary>
     static JSValue InvokeFastCall(Isolate isolate, MaglevCode code, JSFunction function, JSValue receiver, int argsStart, int argc,
         int passedArgc)

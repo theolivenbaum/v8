@@ -12,6 +12,7 @@
 // V8's inlined frames exist only in the deopt translation; V8Sharp's stack
 // walker (Error.stack, %GetOptimizationStatus, function.arguments) reads frame
 // records, so each inlined call keeps one (a few stores).
+using System.Reflection;
 using V8Sharp.Builtins;
 using V8Sharp.Deoptimizer;
 using V8Sharp.Interpreter;
@@ -163,7 +164,7 @@ public sealed partial class MaglevGraphBuilder
                 SetAccumulator(direct);
                 return;
             }
-            if (argsFirst.IsValid || args.Length == 0)
+            if (argsFirst.IsValid || args.Length < s_callWithValues.Length)
             {
                 SetAccumulator(BuildCallKnownJSFunction(target, receiver, args, argsFirst, mode));
                 return;
@@ -183,7 +184,7 @@ public sealed partial class MaglevGraphBuilder
             SetAccumulator(applyCall);
             return;
         }
-        if (argsFirst.IsValid || args.Length == 0)
+        if (argsFirst.IsValid || args.Length < s_callWithValues.Length)
         {
             // V8's generic Call node: the Call builtin, without feedback collection.
             SetAccumulator(BuildCall(callee, receiver, args, argsFirst, mode));
@@ -389,9 +390,40 @@ public sealed partial class MaglevGraphBuilder
         });
     }
 
-    /// <summary>A call of <paramref name="callee"/> with the arguments in consecutive registers (MaglevCalls.Call).</summary>
+    static readonly MethodInfo[] s_callWithValues =
+    [
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues0))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues1))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues2))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues3))!,
+    ];
+
+    /// <summary>
+    /// A call of <paramref name="callee"/> (V8's generic Call node): up to
+    /// three arguments as values (MaglevCalls.CallWithValuesN, which enters
+    /// Maglev code through its direct entry), more from consecutive registers
+    /// (MaglevCalls.Call).
+    /// </summary>
     ValueNode BuildCall(ValueNode callee, ValueNode receiver, ValueNode[] args, Register argsFirst, ConvertReceiverMode mode)
     {
+        if (args.Length < s_callWithValues.Length)
+        {
+            var inputs = new ValueNode[2 + args.Length];
+            var builtinArgs = new BuiltinArg[3 + args.Length + 1];
+            inputs[0] = callee;
+            inputs[1] = receiver;
+            builtinArgs[0] = BuiltinArg.Isolate;
+            builtinArgs[1] = BuiltinArg.In(0);
+            builtinArgs[2] = BuiltinArg.In(1);
+            for (int i = 0; i < args.Length; i++)
+            {
+                inputs[2 + i] = args[i];
+                builtinArgs[3 + i] = BuiltinArg.In(2 + i);
+            }
+            builtinArgs[^1] = BuiltinArg.I((int)mode);
+            MethodInfo method = s_callWithValues[args.Length];
+            return BuildCallBuiltin(method, method.Name, inputs, builtinArgs, [], OpProperties.kGenericCall)!;
+        }
         var stores = new (Register, ValueNode)[args.Length];
         for (int i = 0; i < args.Length; i++) stores[i] = (new Register(argsFirst.Index + i), args[i]);
         return CallMaglev2("CallKnownJSFunction", [callee, receiver],

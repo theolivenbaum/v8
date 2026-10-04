@@ -121,6 +121,41 @@ public class MaglevCallsTest
           return out.join();
         })()
         """,
+        // Generic calls (megamorphic targets) with the arguments as values
+        // (MaglevCalls.CallWithValuesN): fewer and more arguments than the
+        // callee's parameters, arguments objects, sloppy receivers, class
+        // constructors, builtins, deopts and throws in the callee.
+        """
+        (function() {
+          function f0() { return 'f0:' + arguments.length + (this === undefined ? 'u' : typeof this); }
+          function f1(a) { return 'f1:' + a + ':' + arguments.length; }
+          function f2(a, b) { 'use strict'; return 'f2:' + a + ':' + b + ':' + (this === undefined ? 'u' : typeof this); }
+          function f3(a, b, c) { return 'f3:' + a + b + c + (c === undefined); }
+          function f5(a, b, c, d, e) { return 'f5:' + a + b + c + d + e; }
+          function rest(...r) { return 'rest:' + r.length + r.join(''); }
+          function thrower(a) { if (a === 13) throw new Error('t' + a); return 'ok' + a; }
+          function deopter(a) { return a.x + 1; }
+          class K { constructor(a) { this.a = a; } }
+          var fs = [f0, f1, f2, f3, f5, rest, thrower, deopter, K, Math.max, String];
+          function call0(f) { return f(); }
+          function call1(f, a) { return f(a); }
+          function call2(f, a, b) { return f(a, b); }
+          function call3(f, a, b, c) { return f(a, b, c); }
+          function m1(o, f, a) { o.f = f; return o.f(a); }
+          var out = [];
+          for (var k = 0; k < 40; k++) {
+            for (var f of fs) {
+              var arg = f === deopter ? (k < 30 ? { x: k } : { y: 1, x: 0.5 }) : k;
+              try { out.push(call0(f)); } catch (e) { out.push(e.constructor.name); }
+              try { out.push(call1(f, arg)); } catch (e) { out.push(e.constructor.name + e.message); }
+              try { out.push(call2(f, arg, 'b')); } catch (e) { out.push(e.constructor.name); }
+              try { out.push(call3(f, arg, 'b', 'c')); } catch (e) { out.push(e.constructor.name); }
+              try { out.push(m1({ v: k }, f, arg)); } catch (e) { out.push(e.constructor.name); }
+            }
+          }
+          return out.join();
+        })()
+        """,
     };
 
     [Theory]

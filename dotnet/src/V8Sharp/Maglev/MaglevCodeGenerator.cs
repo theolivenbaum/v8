@@ -2549,6 +2549,9 @@ internal sealed class MaglevCodeGenerator
 
     static readonly FieldInfo s_vectorMaglevCode = typeof(FeedbackVector).GetField(nameof(FeedbackVector.MaglevCode))!;
     static readonly FieldInfo s_codeFastCall = typeof(MaglevCode).GetField(nameof(MaglevCode.FastCall))!;
+    static readonly FieldInfo s_codeFastCallArity = typeof(MaglevCode).GetField(nameof(MaglevCode.FastCallArity))!;
+    static readonly MethodInfo s_unsafeAs = typeof(Unsafe).GetMethods()
+        .First(m => m.Name == nameof(Unsafe.As) && m.GetGenericArguments().Length == 1 && m.GetParameters()[0].ParameterType == typeof(object));
     static readonly FieldInfo s_stIsolate = typeof(InterpreterState).GetField(nameof(InterpreterState.Isolate))!;
     static readonly FieldInfo s_stBaseFrameIndex = typeof(InterpreterState).GetField(nameof(InterpreterState.BaseFrameIndex))!;
     static readonly MethodInfo s_enterFastFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.EnterFastFrame))!;
@@ -2778,12 +2781,16 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Stloc, _calleeCode);
         _il.Emit(OpCodes.Ldloc, _calleeCode);
         _il.Emit(OpCodes.Brfalse, slow);
+        // The entry has the formal parameter count's delegate type when its
+        // arity is that count (an int compare instead of a type test).
+        _il.Emit(OpCodes.Ldloc, _calleeCode);
+        _il.Emit(OpCodes.Ldfld, s_codeFastCallArity);
+        _il.Emit(OpCodes.Ldc_I4, info.FormalCount);
+        _il.Emit(OpCodes.Bne_Un, slow);
         _il.Emit(OpCodes.Ldloc, _calleeCode);
         _il.Emit(OpCodes.Ldfld, s_codeFastCall);
-        _il.Emit(OpCodes.Isinst, delegateType);
+        _il.Emit(OpCodes.Call, s_unsafeAs.MakeGenericMethod(delegateType));
         _il.Emit(OpCodes.Stloc, entry);
-        _il.Emit(OpCodes.Ldloc, entry);
-        _il.Emit(OpCodes.Brfalse, slow);
         if (info.CheckReceiver)
         {
             Load(node.Inputs[0], ValueRepresentation.kTagged);
