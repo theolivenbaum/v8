@@ -16,7 +16,9 @@ public abstract partial class JSReceiver
     /// <summary>JSReceiver::SetIntegrityLevel.</summary>
     public static bool SetIntegrityLevel(Isolate isolate, JSReceiver receiver, IntegrityLevel level, ShouldThrow shouldThrow)
     {
-        if (receiver is JSObject obj)
+        // A wasm object is not a JSObject in V8: it takes the slow path,
+        // whose PreventExtensions throws.
+        if (receiver is JSObject obj && !Map.IsWasmObjectMap(obj.Map))
         {
             if (!obj.HasSloppyArgumentsElements && obj is not JSModuleNamespace)
             {
@@ -104,6 +106,10 @@ public abstract partial class JSReceiver
     public static bool PreventExtensions(Isolate isolate, JSReceiver obj, ShouldThrow shouldThrow)
     {
         if (obj is JSProxy proxy) return JSProxy.PreventExtensions(isolate, proxy, shouldThrow);
+        if (Map.IsWasmObjectMap(obj.Map))
+        {
+            return ObjectOps.ReturnFailure(isolate, ShouldThrow.ThrowOnError, MessageTemplate.WasmObjectsAreOpaque);
+        }
         return JSObject.PreventExtensions(isolate, (JSObject)obj, shouldThrow);
     }
 
@@ -319,6 +325,10 @@ public abstract partial class JSReceiver
     /// <summary>JSReceiver::SetPrototype ([[SetPrototypeOf]]).</summary>
     public static bool SetPrototype(Isolate isolate, JSReceiver obj, JSValue value, bool fromJavaScript, ShouldThrow shouldThrow)
     {
+        if (Map.IsWasmObjectMap(obj.Map))
+        {
+            return ObjectOps.ReturnFailure(isolate, shouldThrow, MessageTemplate.WasmObjectsAreOpaque);
+        }
         if (obj is JSProxy proxy)
         {
             if (!value.IsJSReceiver && !value.IsNull)
