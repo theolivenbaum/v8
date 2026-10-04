@@ -494,6 +494,11 @@ public static partial class WasmJs
     {
         var thrower = new ErrorThrower(isolate, "WebAssembly.compile()");
         JSPromise promise = PromiseBuiltins.NewJSPromise(isolate);
+        if (!IsWasmCodegenAllowed(isolate))
+        {
+            JSPromise.Reject(isolate, promise, thrower.Reify(ErrorThrower.ErrorType.CompileError, ErrorStringForCodegen(isolate)));
+            return promise;
+        }
         byte[] bytes;
         try
         {
@@ -537,6 +542,10 @@ public static partial class WasmJs
         if (!args.IsConstructCall)
         {
             thrower.TypeError("WebAssembly.Module must be invoked with 'new'");
+        }
+        if (!IsWasmCodegenAllowed(isolate))
+        {
+            thrower.CompileError(ErrorStringForCodegen(isolate));
         }
         byte[] bytes = GetAndCopyFirstArgumentAsBytes(isolate, args, thrower);
         WasmModuleObject moduleObj = SyncCompile(isolate, thrower, bytes);
@@ -593,6 +602,17 @@ public static partial class WasmJs
                 else onDone(null, thrower.Reify(ErrorThrower.ErrorType.CompileError, error!));
             }
         });
+    }
+
+    /// <summary>wasm::IsWasmCodegenAllowed: the embedder's callback (here %DisallowWasmCodegen).</summary>
+    static bool IsWasmCodegenAllowed(Isolate isolate) => !WasmEngine.Get(isolate).CodegenDisallowed;
+
+    /// <summary>wasm::ErrorStringForCodegen.</summary>
+    static string ErrorStringForCodegen(Isolate isolate)
+    {
+        JSValue message = isolate.NativeContext.ErrorMessageForWasmCodeGen;
+        return message.IsString ? ObjectOps.ToString(isolate, message).ToString()
+            : "Wasm code generation disallowed by embedder";
     }
 
     static void RejectLater(Isolate isolate, JSPromise promise, JSValue reason) =>
@@ -687,6 +707,11 @@ public static partial class WasmJs
         catch (JavaScriptException e)
         {
             JSPromise.Reject(isolate, promise, e.Value);
+            return promise;
+        }
+        if (!IsWasmCodegenAllowed(isolate))
+        {
+            JSPromise.Reject(isolate, promise, thrower.Reify(ErrorThrower.ErrorType.CompileError, ErrorStringForCodegen(isolate)));
             return promise;
         }
         AsyncCompile(isolate, thrower, bytes, (module, error) =>

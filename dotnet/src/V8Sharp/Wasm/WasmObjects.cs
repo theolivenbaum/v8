@@ -24,6 +24,9 @@ public sealed class WasmModuleObject(Map map) : JSObject(map)
 
     /// <summary>The module's wire bytes (V8's NativeModule::wire_bytes).</summary>
     public byte[] WireBytes = null!;
+
+    /// <summary>The number of instances created (%WasmGetNumberOfInstances).</summary>
+    public int InstanceCount;
 }
 
 /// <summary>V8's WasmInstanceObject.</summary>

@@ -25,7 +25,7 @@
   "sparkplug_plus": false,
   "has_maglev": true,
   "has_turbofan": true,
-  "has_webassembly": false,
+  "has_webassembly": true,
   "has_wasm_interpreter": false,
   "i18n": false,
   "temporal": true,

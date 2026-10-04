@@ -77,6 +77,12 @@ namespace V8Sharp.Wasm
 
         public Isolate Isolate { get; }
 
+        /// <summary>
+        /// The embedder disallows wasm code generation (%DisallowWasmCodegen,
+        /// v8::Isolate::SetAllowWasmCodeGenerationCallback).
+        /// </summary>
+        public bool CodegenDisallowed { get; set; }
+
         public WasmRuntime Runtime { get; }
 
         public Store Store => Runtime.RuntimeStore;

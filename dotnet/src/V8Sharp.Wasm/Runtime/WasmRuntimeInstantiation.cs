@@ -171,14 +171,17 @@ namespace Wacs.Core.Runtime
                             throw new NotSupportedException(
                                 $"The imported Function was not provided by the environment: {entityId.module}.{entityId.entity} {funcSig.ToNotation()}");
                         var functionInstance = Store[funcAddr];
-                        if (functionInstance is FunctionInstance wasmFunc)
+                        // V8Sharp: an embedder that resolves the imports itself has
+                        // checked their types (across modules, by canonical type);
+                        // the checks below compare types with this module's indices.
+                        if (_explicitImports == null && functionInstance is FunctionInstance wasmFunc)
                         {
                             wasmFunc.SetName(entityId.entity);
                             if (!wasmFunc.DefType.Matches(type, moduleInstance.Types))
                                 throw new NotSupportedException(
                                     $"Recursive Type mismatch while importing Function {entityId.module}.{entityId.entity}: expected {funcSig.ToNotation()}, env provided Function {functionInstance.Type.ToNotation()}");    
                         }
-                        if (!functionInstance.Type.Matches(funcSig, moduleInstance.Types))
+                        if (_explicitImports == null && !functionInstance.Type.Matches(funcSig, moduleInstance.Types))
                             throw new NotSupportedException(
                                 $"Type mismatch while importing Function {entityId.module}.{entityId.entity}: expected {funcSig.ToNotation()}, env provided Function {functionInstance.Type.ToNotation()}");
                         //14. external imported addresses first
@@ -190,7 +193,7 @@ namespace Wacs.Core.Runtime
                             throw new NotSupportedException(
                                 $"The imported Table was not provided by the environment: {entityId.module}.{entityId.entity}");
                         var tableInstance = Store[tableAddr];
-                        if (!tableType.IsCompatibleWith(tableInstance.Type))
+                        if (_explicitImports == null && !tableType.IsCompatibleWith(tableInstance.Type))
                             throw new NotSupportedException(
                                 $"Type mismatch while importing Table {entityId.module}.{entityId.entity}: expected {tableType}, env provided Table {tableInstance.Type}");
                         //15. external imported addresses first
@@ -202,7 +205,7 @@ namespace Wacs.Core.Runtime
                             throw new NotSupportedException(
                                 $"The imported Memory was not provided by the environment: {entityId.module}.{entityId.entity}");
                         var memInstance = Store[memAddr];
-                        if (!memType.IsCompatibleWith(memInstance.Type))
+                        if (_explicitImports == null && !memType.IsCompatibleWith(memInstance.Type))
                             throw new NotSupportedException(
                                 $"Type mismatch while importing Memory {entityId.module}.{entityId.entity}: expected {memType}, env provided Memory {memInstance.Type}");
                         //16. external imported addresses first
@@ -214,14 +217,14 @@ namespace Wacs.Core.Runtime
                             throw new NotSupportedException(
                                 $"The imported Global was not provided by the environment: {entityId.module}.{entityId.entity}");
                         var globalInstance = Store[globalAddr];
-                        if (globalType.Mutability != globalInstance.Type.Mutability)
+                        if (_explicitImports == null && globalType.Mutability != globalInstance.Type.Mutability)
                             throw new NotSupportedException(
                                 $"Mutability mismatch while importing Global {entityId.module}.{entityId.entity} {globalType}, env provided Global {globalInstance.Type}");
-                        if (globalInstance.Type.ContentType.IsDefType() &&
+                        if (_explicitImports == null && globalInstance.Type.ContentType.IsDefType() &&
                             !moduleInstance.Types.Contains(globalInstance.Type.ContentType.Index()))
                             throw new NotSupportedException(
                                 $"Incompatible import type for Global {entityId.module}.{entityId.entity}: {globalInstance.Type}");
-                        if (!globalInstance.Type.Matches(globalType, moduleInstance.Types))
+                        if (_explicitImports == null && !globalInstance.Type.Matches(globalType, moduleInstance.Types))
                             throw new NotSupportedException(
                                 $"Type mismatch while importing Global {entityId.module}.{entityId.entity}: expected {globalType}, env provided Global {globalInstance.Type}");
                         
@@ -235,7 +238,7 @@ namespace Wacs.Core.Runtime
                         var tagInstance = Store[tagAddr];
                         var importedType = tagInstance.Type;
                         var tagType = moduleInstance.Types[tagDesc.TagDef.TypeIndex];
-                        if (!importedType.Matches(tagType, moduleInstance.Types))
+                        if (_explicitImports == null && !importedType.Matches(tagType, moduleInstance.Types))
                             throw new NotSupportedException(
                                 $"Type mismatch while importing Tag {entityId.module}.{entityId.entity}: expected {tagType.Expansion}, env provided Tag {tagInstance.Type}");
                         

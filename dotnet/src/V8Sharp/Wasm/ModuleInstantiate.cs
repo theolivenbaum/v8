@@ -94,6 +94,7 @@ public sealed class InstanceBuilder
             _isolate.NativeContext.WasmInstanceConstructor.InitialMap);
         instanceObject.ModuleObject = _moduleObject;
         instanceObject.Instance = instance;
+        _moduleObject.InstanceCount++;
         ProcessExports(instanceObject, imports);
 
         // Run the start function if one was specified.
