@@ -365,9 +365,22 @@ for now, to be revisited when the reason goes away.
   handler was an own field when the function was compiled compares the
   handler slot's payload (the encoded field index) and accesses the field
   at its known offset; a keyed access whose feedback map was a typed array
-  calls the element load or store of that kind. Any other feedback at run
+  calls the element load or store of that kind; a named access whose
+  feedback was polymorphic calls a helper that does the own-field hit of
+  any of its maps. Any other feedback at run
   time takes the general path (the IC), so the behaviour and the feedback
   are the same; only the speed of a site whose feedback changes differs.
+- Code cache (`BaselineCodeCache`): V8 compiles each SharedFunctionInfo's
+  baseline code itself; V8Sharp shares the compiled methods between
+  functions with the same bytecode (embedded feedback masked), handler
+  table, register file shape, resumable kind and number constants, because
+  RyuJIT costs milliseconds per function and programs that evaluate the same
+  source again would compile the same IL again. The code reads everything
+  else at run time and checks every compile-time assumption, so only speed
+  differs. `V8SHARP_BASELINE_NO_CODE_CACHE=1` turns it off.
+- Tier-up size limit: functions over 100000 bytes of bytecode do not tier up
+  by themselves (V8 has no such limit for Sparkplug); `%CompileBaseline`
+  still compiles them, in chunks.
 - Without `--maglev` (V8Sharp's default) `Isolate.UseOptimizer` is false, so
   `TieringManager` behaves as in a V8 built without Turbofan and Maglev
   (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the

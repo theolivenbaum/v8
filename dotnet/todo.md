@@ -1530,8 +1530,10 @@ progress, off by default.
       the conditional jumps, monomorphic named/keyed loads and stores, global
       loads, context slots), chosen per bytecode from the feedback at compile
       time; registers in IL locals; lean baseline-to-baseline calls
-      (BaselineCalls, also through Function.prototype.call/apply); compact
-      code for functions beyond RyuJIT's optimization limits; concurrent
+      (BaselineCalls, also through Function.prototype.call/apply);
+      feedback-specialized own-field and typed array accesses; out-of-line
+      checks, chunks and compact code for functions beyond RyuJIT's
+      optimization limits; a code cache by bytecode; concurrent
       compilation on a background thread (--concurrent-sparkplug, on as in
       V8). Tests: tests/V8Sharp.Tests/Baseline (interpreter vs
       --always-sparkplug, and the same feedback in both tiers).
@@ -1557,17 +1559,29 @@ progress, off by default.
     short run. On an idle 4-core host cold Octane runs are now within noise of
     the interpreter (the compile threads use idle cores); on a loaded host
     they are still slower.
-  - Functions with more than 5000 bytes of bytecode stay in the interpreter
-    (one IL method beyond RyuJIT's limits even in compact form): TypeScript's
-    and zlib's biggest functions. Splitting a function into several IL
-    methods would let them tier up.
+  - Functions over RyuJIT's limits are emitted in the out-of-line form, then
+    in chunks (one IL method per bytecode range, 2026-10-04); functions over
+    100000 bytes of bytecode still stay in the interpreter unless
+    %CompileBaseline asks (mjsunit regress-crbug-808192 builds one of 4 MB).
+    A chunk exit spills the cached registers and re-enters through the
+    dispatch: a hot loop that crosses a chunk boundary would pay it per
+    iteration (cuts are placed at the least loop depth to avoid that).
+  - Compile cost: functions with the same bytecode share their methods
+    (BaselineCodeCache; CodeLoad: 62 of 71 compiles are hits). Typescript and
+    PdfJS still pay RyuJIT for each distinct function.
   - In big methods RyuJIT stops inlining (inline budget, 512 locals): what
     the code relies on being inlined must be IL (the bytecode offset store,
     Smi constants are; FieldAt, Map.IsUndetectable, FromNumber are calls).
   - Performance: calls still pay the interpreter frame's setup (register
-    file clear, frame record, write barriers: about 20% of DeltaBlue in
-    BaselineCalls.Enter and the write barrier); a leaner frame protocol
-    shared with the interpreter would help both tiers.
+    file clear, frame record, write barriers: about 20% of DeltaBlue and
+    Richards in BaselineCalls.EnterInline, PushFrame and the write barrier,
+    after the 2026-10-04 pass); a leaner frame protocol shared with the
+    interpreter would help both tiers. Skipping the register clear for
+    register-cached callees was measured and gave nothing.
+  - SignedSmall feedback needs an explicit Smi check per operand (JSValue has
+    no tagged Smis): integral, 31-bit, not -0.
+  - zlib: V8 runs it as asm.js through wasm (about 70x the baseline score);
+    out of scope for the baseline tier.
 - [~] Optimizing compiler (Maglev analogue), src/V8Sharp/Maglev/ and
       Deoptimizer/ (architecture.md 9.2). OFF by default (`--maglev`):
       - Graph builder from bytecode + feedback: abstract frame, merge
