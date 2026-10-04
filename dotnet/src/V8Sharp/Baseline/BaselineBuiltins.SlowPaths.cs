@@ -51,6 +51,54 @@ public static partial class BaselineBuiltins
     [MethodImpl(Helper)]
     public static void StoreSlot(ref JSValue slot, JSValue value) => JSValue.StoreSlot(ref slot, value);
 
+    // ---- Polymorphic own fields -----------------------------------------------------------------------
+
+    /// <summary>A marker no JavaScript value can be: the result of a helper that did not do the operation.</summary>
+    public static readonly HeapObject MissMarker = new FixedArray(0);
+
+    /// <summary>
+    /// GetNamedProperty's polymorphic own-field hit (HandlePolymorphicCase, then
+    /// the Smi handler's field load): the field, or <see cref="MissMarker"/>.
+    /// </summary>
+    [MethodImpl(Helper)]
+    public static JSValue LoadPolymorphicOwnField(HeapObject? feedback, HeapObject? receiver)
+    {
+        if (feedback is FixedArray polymorphic && ICMaps.AsJSObject(receiver) is { } obj)
+        {
+            Map map = obj.Map;
+            JSValue[] data = polymorphic.Data;
+            for (int i = 0; i + 1 < data.Length; i += 2)
+            {
+                if (!ReferenceEquals(data[i]._obj, map)) continue;
+                int field = FeedbackNexus.DecodeOwnField(in data[i + 1]);
+                if (field >= 0) return obj.FieldAt(field);
+                break;
+            }
+        }
+        return JSValue.FromObject(MissMarker);
+    }
+
+    /// <summary>
+    /// SetNamedProperty's polymorphic field store (HandlePolymorphicCase, then
+    /// StoreIC.TryStoreEncodedField): false when the IC has to do it.
+    /// </summary>
+    [MethodImpl(Helper)]
+    public static bool TryStorePolymorphicOwnField(HeapObject? feedback, HeapObject? receiver, JSValue value)
+    {
+        if (feedback is FixedArray polymorphic && ICMaps.AsJSObject(receiver) is { } obj)
+        {
+            Map map = obj.Map;
+            JSValue[] data = polymorphic.Data;
+            for (int i = 0; i + 1 < data.Length; i += 2)
+            {
+                if (!ReferenceEquals(data[i]._obj, map)) continue;
+                long encoded = data[i + 1]._bits;
+                return encoded != 0 && data[i + 1]._obj is StoreHandler && StoreIC.TryStoreEncodedField(obj, encoded, value);
+            }
+        }
+        return false;
+    }
+
     // ---- Typed array elements -----------------------------------------------------------------------
 
     /// <summary>

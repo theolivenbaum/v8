@@ -1145,6 +1145,54 @@ public sealed partial class BaselineCompiler
         EmitGetNamedPropertySlow(slow, done, receiver, slot);
     }
 
+    /// <summary>Whether the IC slot's feedback was polymorphic when the function was compiled.</summary>
+    bool CompileTimePolymorphic(int slot) => !_compact && !FeedbackUnknown && CompileTimeFeedback(slot) is FixedArray;
+
+    static readonly MethodInfo s_loadPolymorphicOwnField = typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.LoadPolymorphicOwnField))!;
+    static readonly MethodInfo s_tryStorePolymorphicOwnField =
+        typeof(BaselineBuiltins).GetMethod(nameof(BaselineBuiltins.TryStorePolymorphicOwnField))!;
+    static readonly FieldInfo s_missMarker = typeof(BaselineBuiltins).GetField(nameof(BaselineBuiltins.MissMarker))!;
+
+    /// <summary>GetNamedProperty with polymorphic feedback at compile time: the own-field hit of any of its maps.</summary>
+    void VisitGetNamedPropertyPolymorphic()
+    {
+        Label slow = _il.DefineLabel(), done = _il.DefineLabel();
+        Register receiver = RegisterOperand(0);
+        int slot = FeedbackSlot(2);
+        FeedbackSlotObj(slot);
+        RegObj(receiver);
+        Emit(OpCodes.Call, s_loadPolymorphicOwnField);
+        Emit(OpCodes.Stloc, TVal);
+        LocalObj(TVal);
+        Emit(OpCodes.Ldsfld, s_missMarker);
+        Emit(OpCodes.Beq, slow);
+        Emit(OpCodes.Ldloc, TVal);
+        SetAcc();
+        Emit(OpCodes.Br, done);
+        EmitGetNamedPropertySlow(slow, done, receiver, slot);
+    }
+
+    /// <summary>SetNamedProperty with polymorphic feedback at compile time: the field store of any of its maps.</summary>
+    void VisitSetNamedPropertyPolymorphic()
+    {
+        Label done = _il.DefineLabel();
+        Register receiver = RegisterOperand(0);
+        int slot = FeedbackSlot(2);
+        FeedbackSlotObj(slot);
+        RegObj(receiver);
+        Acc();
+        Emit(OpCodes.Call, s_tryStorePolymorphicOwnField);
+        Emit(OpCodes.Brtrue, done);
+        Isolate();
+        Fv();
+        I(slot);
+        Reg(receiver);
+        Const(ConstantPoolIndex(1));
+        Acc();
+        CallBuiltin("SetNamedPropertySlow");
+        _il.MarkLabel(done);
+    }
+
     void EmitGetNamedPropertySlow(Label slow, Label done, Register receiver, int slot)
     {
         _il.MarkLabel(slow);

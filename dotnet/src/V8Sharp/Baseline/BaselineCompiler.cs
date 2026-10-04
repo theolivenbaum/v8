@@ -943,7 +943,11 @@ public sealed partial class BaselineCompiler
 
             // ---- Property loads ----------------------------------------------------------------------------------------------
             case Bytecode.GetNamedProperty:
-                if (GetNamedPropertySite(FeedbackSlot(2)) == NamedLoadPaths.None)
+                if (CompileTimePolymorphic(FeedbackSlot(2)))
+                {
+                    VisitGetNamedPropertyPolymorphic();
+                }
+                else if (GetNamedPropertySite(FeedbackSlot(2)) == NamedLoadPaths.None)
                 {
                     Isolate();
                     Fv();
@@ -1027,7 +1031,11 @@ public sealed partial class BaselineCompiler
 
             // ---- Property stores ----------------------------------------------------------------------------------------------------
             case Bytecode.SetNamedProperty:
-                if (!SetNamedPropertyInline(FeedbackSlot(2)))
+                if (CompileTimePolymorphic(FeedbackSlot(2)))
+                {
+                    VisitSetNamedPropertyPolymorphic();
+                }
+                else if (!SetNamedPropertyInline(FeedbackSlot(2)))
                 {
                     Isolate();
                     Fv();
