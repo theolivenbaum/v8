@@ -157,4 +157,28 @@ public class MaglevTypesTest
     [Theory]
     [MemberData(nameof(PhiTypeSnippets))]
     public void PhiTypesGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
+    [Fact]
+    public void PrototypeChangeDeoptimizesDependentCode()
+    {
+        // The code depends on the validity cell of the load's handler: a
+        // change of the prototype chain invalidates it (no check runs in the
+        // optimized code).
+        string result = MaglevCompilerTest.Run("--maglev --no-concurrent-recompilation", """
+            (function() {
+              function P() { this.x = 1; }
+              P.prototype.m = function() { return 1; };
+              function call(o) { return o.m(); }
+              %PrepareFunctionForOptimization(call);
+              call(new P()); call(new P());
+              %OptimizeFunctionOnNextCall(call);
+              var before = call(new P());
+              var optimized = %ActiveTierIsMaglev(call) || (%GetOptimizationStatus(call) & 32) !== 0;
+              P.prototype.n = 2;
+              var deoptimized = (%GetOptimizationStatus(call) & 32) === 0;
+              return [before, optimized, deoptimized, call(new P())].join();
+            })()
+            """);
+        Assert.Equal("1,true,true,1", result);
+    }
 }

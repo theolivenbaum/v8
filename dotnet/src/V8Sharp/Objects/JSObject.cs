@@ -2168,7 +2168,17 @@ public partial class JSObject
         if (cell is not null)
         {
             // Just set the value; the cell will be replaced lazily.
-            if (!cell.Value.IsIdenticalTo(Cell.kPrototypeChainInvalid)) cell.Value = Cell.kPrototypeChainInvalid;
+            if (!cell.Value.IsIdenticalTo(Cell.kPrototypeChainInvalid))
+            {
+                cell.Value = Cell.kPrototypeChainInvalid;
+                // V8Sharp: optimized code depends on the validity cells of the
+                // handlers it was built from (V8's code depends on the stable
+                // maps of the prototype chain, which change in the same places).
+                if (Isolate.Current is { } isolate)
+                {
+                    DependentCode.DeoptimizeDependencyGroups(isolate, cell, DependentCode.DependencyGroups.PrototypeCheck);
+                }
+            }
         }
         if (map.TryGetPrototypeInfo(out PrototypeInfo prototypeInfo))
         {

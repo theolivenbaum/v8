@@ -672,7 +672,9 @@ public sealed partial class MaglevGraphBuilder
 
     /// <summary>
     /// The prototype chain a handler relies on is unchanged (V8: a dependency
-    /// on stable prototype maps; V8Sharp: the handler's validity cell).
+    /// on stable prototype maps, DependOnStablePrototypeChains; V8Sharp: a
+    /// dependency on the handler's validity cell, which the object model
+    /// invalidates whenever a map on the chain changes).
     /// </summary>
     void BuildCheckValidityCell(Cell cell)
     {
@@ -680,8 +682,19 @@ public sealed partial class MaglevGraphBuilder
         {
             EmitUnconditionalDeoptAndAbort(DeoptimizeReason.kWrongMap);
         }
+        if (!s_validityCellChecks)
+        {
+            _info.AddDependency(cell, Objects.DependentCode.DependencyGroups.PrototypeCheck);
+            return;
+        }
         AddNewNode(new Node(Opcode.CheckValidityCell) { Obj0 = cell, Properties = OpProperties.kEagerDeopt }, DeoptimizeReason.kWrongMap);
     }
+
+    /// <summary>
+    /// V8SHARP_MAGLEV_VALIDITY_CELL_CHECKS=1: check the validity cells at run
+    /// time instead of depending on them (for A/B measurements).
+    /// </summary>
+    static readonly bool s_validityCellChecks = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_VALIDITY_CELL_CHECKS") == "1";
 
     /// <summary>
     /// BuildPolymorphicAccess: a map dispatch over <paramref name="cases"/>
