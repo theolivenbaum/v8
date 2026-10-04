@@ -32,11 +32,24 @@ public static class BaselineSupport
 
     /// <summary>
     /// Whether the tiering paths (batch compilation, --always-sparkplug)
-    /// compile the function: CanCompileWithBaseline. (A function beyond
-    /// RyuJIT's optimization limits is compiled in chunks, BaselineCode.GenerateChunks;
-    /// it used to stay in the interpreter above 5000 bytes of bytecode.)
+    /// compile the function: CanCompileWithBaseline, and not beyond the size
+    /// limit.
     /// </summary>
-    public static bool TiersUpToBaseline(Isolate isolate, SharedFunctionInfo shared) => CanCompileWithBaseline(isolate, shared);
+    /// <remarks>
+    /// Deviation: V8 tiers up functions of any size to Sparkplug. A function
+    /// beyond RyuJIT's optimization limits is compiled in chunks
+    /// (BaselineCode.GenerateChunks), at about 30 IL bytes and a few
+    /// microseconds of RyuJIT per bytecode byte: one with more than
+    /// <see cref="kMaxBytecodeLength"/> bytes of bytecode (generated code, such
+    /// as mjsunit's regress-crbug-808192 constructors of a million bytes) would
+    /// take seconds to minutes and stays in the interpreter unless compiled
+    /// explicitly (%CompileBaseline). (The limit was 5000 bytes before chunks.)
+    /// </remarks>
+    public static bool TiersUpToBaseline(Isolate isolate, SharedFunctionInfo shared) =>
+        CanCompileWithBaseline(isolate, shared) && ((BytecodeArray)shared.FunctionData!).Length <= kMaxBytecodeLength;
+
+    /// <summary>The largest bytecode array that tiers up to baseline code by itself (a V8Sharp limit; see TiersUpToBaseline).</summary>
+    public const int kMaxBytecodeLength = 100_000;
 
     /// <summary>GenerateBaselineCode.</summary>
     public static BaselineCode GenerateBaselineCode(Isolate isolate, SharedFunctionInfo shared)
