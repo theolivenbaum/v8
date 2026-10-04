@@ -122,6 +122,13 @@ public sealed class BaselineBatchCompiler(Isolate isolate)
     public void InstallBatch() => _concurrentCompiler?.InstallBatch();
 
     /// <summary>
+    /// Waits for the batches on the background thread and installs their code
+    /// (the baseline counterpart of %WaitForBackgroundOptimization; used by
+    /// embedders that measure steady-state code, such as V8Sharp.Bench).
+    /// </summary>
+    public void WaitForBackgroundCompiles() => _concurrentCompiler?.WaitForJobs();
+
+    /// <summary>
     /// Tries to compile an enqueued function. Returns false if compilation was
     /// not possible (the weak reference is no longer valid, ...).
     /// </summary>
@@ -149,6 +156,7 @@ public sealed class BaselineBatchCompiler(Isolate isolate)
 internal sealed class ConcurrentBaselineCompiler(Isolate isolate)
 {
     readonly ConcurrentQueue<BaselineBatchCompilerJob> _outgoingQueue = new();
+    int _jobsInFlight;
 
     // The functions of jobs not installed yet (SharedFunctionInfo::is_sparkplug_compiling;
     // main thread only).
@@ -162,12 +170,21 @@ internal sealed class ConcurrentBaselineCompiler(Isolate isolate)
     {
         var job = new BaselineBatchCompilerJob(isolate, taskQueue, _compiling);
         if (job.IsEmpty) return;
+        Interlocked.Increment(ref _jobsInFlight);
         BaselineCompileThread.Post(() =>
         {
             job.Compile();
             _outgoingQueue.Enqueue(job);
+            Interlocked.Decrement(ref _jobsInFlight);
             isolate.StackGuard.RequestInterrupt(StackGuard.InterruptFlag.INSTALL_BASELINE_CODE);
         });
+    }
+
+    /// <summary>Waits until no batch is on the background thread, then installs them all.</summary>
+    public void WaitForJobs()
+    {
+        while (Volatile.Read(ref _jobsInFlight) > 0) Thread.Sleep(1);
+        InstallBatch();
     }
 
     /// <summary>ConcurrentBaselineCompiler::InstallBatch.</summary>

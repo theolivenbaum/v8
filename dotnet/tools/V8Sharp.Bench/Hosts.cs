@@ -25,7 +25,9 @@ sealed class OracleHost : IBenchHost
     {
         _workDir = workDir;
         Directory.SetCurrentDirectory(workDir);
-        if (flags.Length > 0) ReferenceV8.EnsureFlags(flags);
+        // --allow-natives-syntax for waitForCompilations (%WaitForBackgroundOptimization);
+        // it only lets the parser accept %-calls.
+        ReferenceV8.EnsureFlags((flags + " --allow-natives-syntax").Trim());
         _engine = new V8ScriptEngine(V8ScriptEngineFlags.DisableGlobalMembers);
         // ClearScript only binds public types; delegates avoid exposing one.
         _engine.AddHostObject("__print", new Action<string>(Console.WriteLine));
@@ -42,6 +44,7 @@ sealed class OracleHost : IBenchHost
               globalThis.read = function read(f) { return r(String(f)); };
               globalThis.quit = function quit() { };
               globalThis.d8 = { file: { execute: globalThis.load, read: globalThis.read } };
+              globalThis.waitForCompilations = function waitForCompilations() { %WaitForBackgroundOptimization(); };
             })();
             """);
     }
@@ -79,6 +82,10 @@ sealed class V8SharpHost : IBenchHost
             Install(context, global, "quit", static (Isolate i, in BuiltinArguments a) => JSValue.Undefined);
             Install(context, global, "cpuTimeMs",
                 static (Isolate i, in BuiltinArguments a) => JSValue.FromNumber(Program.ThreadCpuTimeMs()));
+            // octane-steady: compiles queued during the warm-up finish before the
+            // measured runs, so the score is the generated code, not RyuJIT.
+            Install(context, global, "waitForCompilations",
+                static (Isolate i, in BuiltinArguments a) => { i.WaitForBackgroundCompilation(); return JSValue.Undefined; });
             // Bytes the CLR allocated on this thread (micro/cpu.js prints bytes per iteration).
             Install(context, global, "allocatedBytes",
                 static (Isolate i, in BuiltinArguments a) => JSValue.FromNumber(GC.GetAllocatedBytesForCurrentThread()));
