@@ -765,6 +765,10 @@ public sealed partial class MaglevGraphBuilder
         BasicBlock continuation = _graph.NewBlock();
         _graph.Blocks.Add(continuation);
         KnownNodeAspects known = returns[0].Known;
+        // The result phi's type: the union of the returned values' types on
+        // their paths (before the merges below change returns[0]'s aspects).
+        NodeType resultType = NodeType.kNone;
+        foreach ((BasicBlock _, ValueNode value, KnownNodeAspects k) in returns) resultType |= k.GetType(value);
         foreach ((BasicBlock block, ValueNode _, KnownNodeAspects k) in returns)
         {
             block.Control!.Target = continuation;
@@ -774,7 +778,7 @@ public sealed partial class MaglevGraphBuilder
         ValueNode result = returns[0].Value;
         if (!returns.TrueForAll(r => ReferenceEquals(r.Value, result)))
         {
-            var phi = new Phi(Register.VirtualAccumulator(), -1) { Id = _graph.NewNodeId(), Block = continuation, Unit = _unit };
+            var phi = new Phi(Register.VirtualAccumulator(), -1) { Id = _graph.NewNodeId(), Block = continuation, Unit = _unit, Type = resultType };
             foreach ((BasicBlock _, ValueNode value, KnownNodeAspects _) in returns) phi.InputList.Add(value);
             continuation.Phis.Add(phi);
             result = phi;

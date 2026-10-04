@@ -787,6 +787,10 @@ public sealed partial class MaglevGraphBuilder
         }
         _graph.Blocks.Add(join);
         KnownNodeAspects known = results[0].Known;
+        // The result phi's type (the union of the arms' result types, before
+        // the merges below change results[0]'s aspects).
+        NodeType resultType = NodeType.kNone;
+        if (hasResult) foreach ((BasicBlock _, ValueNode? value, KnownNodeAspects k) in results) resultType |= k.GetType(value!);
         foreach ((BasicBlock block, ValueNode? _, KnownNodeAspects k) in results)
         {
             join.Predecessors.Add(block);
@@ -797,7 +801,7 @@ public sealed partial class MaglevGraphBuilder
         if (!hasResult) return null;
         ValueNode first = results[0].Value!;
         if (results.TrueForAll(r => ReferenceEquals(r.Value, first))) return first;
-        var phi = new Phi(Register.VirtualAccumulator(), -1) { Id = _graph.NewNodeId(), Block = join, Unit = _unit };
+        var phi = new Phi(Register.VirtualAccumulator(), -1) { Id = _graph.NewNodeId(), Block = join, Unit = _unit, Type = resultType };
         foreach ((BasicBlock _, ValueNode? value, KnownNodeAspects _) in results) phi.InputList.Add(value!);
         join.Phis.Add(phi);
         return phi;

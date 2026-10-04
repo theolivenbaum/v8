@@ -431,6 +431,9 @@ public sealed class MergePointInterpreterFrameState
                 }
                 if (existing is Phi phi && ReferenceEquals(phi.Block, null) && phi.MergeOffset == MergeOffset && Phis.Contains(phi))
                 {
+                    // MergeValue: the phi's type is the union of its inputs' types
+                    // (taken before tagging: untagged nodes know more).
+                    phi.Type |= unmerged.Known.GetType(incoming);
                     phi.InputList.Add(builder.GetTaggedValueForPhi(incoming, predecessor));
                     continue;
                 }
@@ -438,7 +441,9 @@ public sealed class MergePointInterpreterFrameState
                 var newPhi = new Phi(InterpreterFrameState.RegisterOf(Unit, slot), MergeOffset)
                 {
                     Id = builder.Graph.NewNodeId(),
-                    Type = NodeType.kUnknown,
+                    // The previous predecessors' type of the value (what they
+                    // all know: the merged aspects so far) and this one's.
+                    Type = Known!.GetType(existing) | unmerged.Known.GetType(incoming),
                 };
                 // The existing value came from all previous predecessors.
                 for (int i = 0; i < index; i++)
@@ -582,6 +587,9 @@ public sealed class MergePointInterpreterFrameState
             {
                 Id = builder.Graph.NewNodeId(),
                 IsLoopPhi = true,
+                // UpdateLoopPhiType: the type stays unknown inside the loop;
+                // the entry's type starts the type after the loop.
+                PostLoopType = predecessor is null || resumable ? NodeType.kUnknown : unmerged.Known.GetType(entry),
             };
             if (predecessor is not null) phi.InputList.Add(builder.GetTaggedValueForPhi(entry, predecessor));
             Phis.Add(phi);
@@ -625,6 +633,10 @@ public sealed class MergePointInterpreterFrameState
             int slot = InterpreterFrameState.SlotOf(Unit, phi.Owner);
             ValueNode? incoming = loopEndState.Values[slot];
             if (incoming is null) throw new MaglevBailoutException("loop phi without back-edge value");
+            // merge_post_loop_type, then promote_post_loop_type: uses after
+            // the loop see the union of the entry's and the back edge's types.
+            phi.PostLoopType |= loopEndState.Known.GetType(incoming);
+            phi.Type = phi.PostLoopType;
             phi.InputList.Add(builder.GetTaggedValueForPhi(incoming, predecessor));
         }
         Predecessors.Add(predecessor);

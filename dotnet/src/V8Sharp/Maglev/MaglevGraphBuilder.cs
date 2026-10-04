@@ -999,6 +999,12 @@ public sealed partial class MaglevGraphBuilder
         node.Id = _graph.NewNodeId();
         node.Unit = _unit;
         if (!_it.Done()) node.BytecodeOffset = Cursor;
+        if (node.Opcode is Opcode.CheckMaps or Opcode.LoadMap or Opcode.TransitionElementsKind &&
+            NodeTypes.Is(_frame.Known.GetType(node.Inputs[0]), NodeType.kJSReceiver))
+        {
+            // GetCheckType: the known type of the input makes the receiver check unnecessary.
+            node.CheckType = Maglev.CheckType.kOmitHeapObjectCheck;
+        }
         if ((node.Properties & OpProperties.kEagerDeopt) != 0)
         {
             node.EagerDeoptInfo = NewEagerDeoptInfo(reason);

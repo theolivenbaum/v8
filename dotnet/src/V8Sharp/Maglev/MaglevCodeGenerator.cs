@@ -190,6 +190,9 @@ internal sealed class MaglevCodeGenerator
             var list = new List<(string, int, int, int)>();
             foreach (var e in h) list.Add((e.Key, e.Value.Item1, e.Value.Item2, e.Value.Item3));
             list.Sort(static (a, b) => b.Item3.CompareTo(a.Item3));
+            long count = 0, bytes = 0, blocks = 0;
+            foreach ((string _, int c, int by, int bl) in list) { count += c; bytes += by; blocks += bl; }
+            Console.Error.WriteLine($"IL {bytes,8} {count,7} {blocks,7} (total: bytes, nodes, blocks)");
             for (int i = 0; i < list.Count && i < 30; i++)
             {
                 Console.Error.WriteLine($"IL {list[i].Item3,8} {list[i].Item2,7} {list[i].Item4,7} {list[i].Item1}");
@@ -889,7 +892,7 @@ internal sealed class MaglevCodeGenerator
             EmitNode(node);
             if (s_ilHistogram is not null)
             {
-                string key = node.Opcode == Opcode.CallBuiltin ? "CallBuiltin:" + ((CallBuiltinInfo)node.Obj0!).Method.Name : node.Opcode == Opcode.CheckMaps ? "CheckMaps:" + ((Map[])node.Obj0!).Length + (Array.TrueForAll((Map[])node.Obj0!, static m => m.IsStable) ? ":stable" : ":unstable") + (NodeTypes.Is(node.Inputs[0].Type, NodeType.kJSReceiver) ? ":recv" : "") : node.Opcode.ToString();
+                string key = node.Opcode == Opcode.CallBuiltin ? "CallBuiltin:" + ((CallBuiltinInfo)node.Obj0!).Method.Name : node.Opcode == Opcode.CheckMaps ? "CheckMaps:" + ((Map[])node.Obj0!).Length + (Array.TrueForAll((Map[])node.Obj0!, static m => m.IsStable) ? ":stable" : ":unstable") + (node.CheckType == CheckType.kOmitHeapObjectCheck || NodeTypes.Is(node.Inputs[0].Type, NodeType.kJSReceiver) ? ":recv" : ":in=" + node.Inputs[0].Opcode + (node.Inputs[0] is Phi ph ? (ph.IsLoopPhi ? "L" : "M") : "")) : node.Opcode == Opcode.LoadMap ? "LoadMap:in=" + node.Inputs[0].Opcode : node.Opcode.ToString();
                 lock (s_ilHistogram)
                 {
                     s_ilHistogram.TryGetValue(key, out (int, int, int) e);
@@ -1960,7 +1963,7 @@ internal sealed class MaglevCodeGenerator
                 // V8's TransitionElementsKind node: an object with one of the
                 // source maps transitions to the target; others are unchanged.
                 Label done = _il.DefineLabel(), transition = _il.DefineLabel();
-                EmitLoadMapOrBranch(node.Inputs[0], done);
+                EmitLoadMapOrBranch(node, done);
                 _il.Emit(OpCodes.Stloc, _tmpMap);
                 foreach (Map source in sources)
                 {
@@ -2031,7 +2034,7 @@ internal sealed class MaglevCodeGenerator
             case Opcode.LoadMap:
             {
                 Label notReceiver = _il.DefineLabel(), done = _il.DefineLabel();
-                EmitLoadMapOrBranch(node.Inputs[0], notReceiver);
+                EmitLoadMapOrBranch(node, notReceiver);
                 _il.Emit(OpCodes.Br, done);
                 _il.MarkLabel(notReceiver);
                 _il.Emit(OpCodes.Ldnull);
@@ -2631,11 +2634,12 @@ internal sealed class MaglevCodeGenerator
     /// <paramref name="notReceiver"/> when it is not a JSReceiver
     /// (MaglevBuiltins.MapOf inlined).
     /// </summary>
-    void EmitLoadMapOrBranch(ValueNode value, Label notReceiver)
+    void EmitLoadMapOrBranch(Node node, Label notReceiver)
     {
+        ValueNode value = node.Inputs[0];
         Load(value, ValueRepresentation.kTagged);
         _il.Emit(OpCodes.Ldfld, s_obj);
-        if (NodeTypes.Is(value.Type, NodeType.kJSReceiver))
+        if (node.CheckType == CheckType.kOmitHeapObjectCheck || NodeTypes.Is(value.Type, NodeType.kJSReceiver))
         {
             _il.Emit(OpCodes.Ldfld, s_receiverMap);
             return;
@@ -2664,7 +2668,7 @@ internal sealed class MaglevCodeGenerator
         bool migrateAndDeopt = !migrate && node.Int1 == 1;
         Label fail = migrate || migrateAndDeopt ? _il.DefineLabel() : exit;
         Label ok = _il.DefineLabel();
-        EmitLoadMapOrBranch(node.Inputs[0], exit);
+        EmitLoadMapOrBranch(node, exit);
         // The last map's compare branches to the failure, the others to ok.
         if (maps.Length > 1) _il.Emit(OpCodes.Stloc, _tmpMap);
         for (int i = 0; i < maps.Length; i++)

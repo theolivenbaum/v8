@@ -79,6 +79,24 @@ public enum NodeType : uint
     kAnyHeapObject = kUnknown & ~kSmi,
 }
 
+/// <summary>
+/// CheckType (maglev-ir.h): whether a node that reads the map of its input
+/// checks that the input has one.
+/// </summary>
+/// <remarks>
+/// V8's kCheckHeapObject is a Smi check before the map load. In V8Sharp only
+/// JSReceivers have a map field (JSValue's object half is null for undefined
+/// and the number tag for numbers), so the check it stands for is the
+/// receiver check (object half non-null, instance type at least
+/// FIRST_JS_RECEIVER_TYPE); kOmitHeapObjectCheck is used when the input is
+/// known to be a JSReceiver.
+/// </remarks>
+public enum CheckType : byte
+{
+    kCheckHeapObject,
+    kOmitHeapObjectCheck,
+}
+
 public static class NodeTypes
 {
     /// <summary>NodeTypeIs: every leaf of <paramref name="type"/> is in <paramref name="toCheck"/>.</summary>
@@ -385,6 +403,13 @@ public abstract class NodeBase(Opcode opcode)
     /// <summary>The bytecode offset (after any prefix) the frame record holds while the node runs; -1 if none.</summary>
     public int BytecodeOffset = -1;
 
+    /// <summary>
+    /// CheckMaps, LoadMap, TransitionElementsKind: whether the map load needs
+    /// the input's receiver check (V8's CheckType, from the known type of the
+    /// input where the node is built).
+    /// </summary>
+    public CheckType CheckType;
+
     // Node parameters (what V8 keeps in the node's own fields).
     public int Int0;
     public int Int1;
@@ -502,6 +527,11 @@ public class ValueNode(Opcode opcode, ValueRepresentation representation) : Node
 /// <summary>Phi.</summary>
 public sealed class Phi(Interpreter.Register owner, int mergeOffset) : ValueNode(Opcode.Phi, ValueRepresentation.kTagged)
 {
+    /// <summary>
+    /// A loop phi's type once the back edge is merged (Phi::post_loop_type):
+    /// the union of its inputs' types; until then the phi's type is unknown.
+    /// </summary>
+    public NodeType PostLoopType = NodeType.kNone;
     /// <summary>The interpreter register the phi merges (V8: Phi::owner).</summary>
     public Interpreter.Register Owner = owner;
     public int MergeOffset = mergeOffset;
