@@ -1986,10 +1986,16 @@ internal sealed class MaglevCodeGenerator
                 Store(v!);
                 return;
             case Opcode.StoreFixedArrayElement:
+                // The element's address, then the store: a number (an untagged
+                // value tagged for the store) writes its payload, and a
+                // reference equal to the slot's leaves it (no write barrier),
+                // as V8's StoreFixedArrayElementNoWriteBarrier for Smis.
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
+                _il.Emit(OpCodes.Ldfld, s_obj);
+                _il.Emit(OpCodes.Ldfld, s_fixedArrayData);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
-                Load(node.Inputs[2], ValueRepresentation.kTagged);
-                Call(nameof(MaglevBuiltins.StoreFixedArrayElement));
+                _il.Emit(OpCodes.Ldelema, typeof(JSValue));
+                EmitStoreTagged(UntaggedNumberSource(node.Inputs[2]));
                 return;
             case Opcode.StoreFixedDoubleArrayElement:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
@@ -2008,18 +2014,13 @@ internal sealed class MaglevCodeGenerator
                 Store(v!);
                 return;
             case Opcode.LoadContextSlot:
-                Load(node.Inputs[0], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Ldc_I4, node.Int1);
-                _il.Emit(OpCodes.Ldc_I4, node.Int0);
-                Call(nameof(MaglevBuiltins.LoadContextSlot));
+                EmitContextSlotAddress(node.Inputs[0], node.Int1, node.Int0);
+                _il.Emit(OpCodes.Ldobj, typeof(JSValue));
                 Store(v!);
                 return;
             case Opcode.StoreContextSlot:
-                Load(node.Inputs[0], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Ldc_I4, node.Int1);
-                _il.Emit(OpCodes.Ldc_I4, node.Int0);
-                Load(node.Inputs[1], ValueRepresentation.kTagged);
-                Call(nameof(MaglevBuiltins.StoreContextSlot));
+                EmitContextSlotAddress(node.Inputs[0], node.Int1, node.Int0);
+                EmitStoreTagged(UntaggedNumberSource(node.Inputs[1]));
                 return;
             case Opcode.StringLength:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
@@ -2332,6 +2333,39 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Call, s_createScalarUnsafe!);
         _il.Emit(OpCodes.Call, s_cvttsd2si);
     }
+
+    static readonly FieldInfo s_fixedArrayData = typeof(FixedArray).GetField("_data", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    static readonly FieldInfo s_contextSlots = typeof(Context).GetField(nameof(Context.Slots))!;
+
+    /// <summary>
+    /// The address of slot <paramref name="index"/> of the context
+    /// <paramref name="depth"/> levels up from <paramref name="context"/>
+    /// (the previous-context walk unrolled).
+    /// </summary>
+    void EmitContextSlotAddress(ValueNode context, int depth, int index)
+    {
+        Load(context, ValueRepresentation.kTagged);
+        _il.Emit(OpCodes.Ldfld, s_obj);
+        for (int d = 0; d < depth; d++)
+        {
+            _il.Emit(OpCodes.Ldfld, s_contextSlots);
+            _il.Emit(OpCodes.Ldc_I4, (int)Context.Field.PREVIOUS_INDEX);
+            _il.Emit(OpCodes.Ldelema, typeof(JSValue));
+            _il.Emit(OpCodes.Ldfld, s_obj);
+        }
+        _il.Emit(OpCodes.Ldfld, s_contextSlots);
+        _il.Emit(OpCodes.Ldc_I4, index);
+        _il.Emit(OpCodes.Ldelema, typeof(JSValue));
+    }
+
+    /// <summary>
+    /// The value a store writes: the untagged number a tagging conversion
+    /// converts (EmitStoreTagged then writes the payload), or the value.
+    /// </summary>
+    static ValueNode UntaggedNumberSource(ValueNode value) =>
+        value.Opcode is Opcode.Int32ToNumber or Opcode.Uint32ToNumber or Opcode.Float64ToTagged && !value.IsConstant
+            ? value.Inputs[0]
+            : value;
 
     /// <summary>
     /// Pushes the address of the field at <paramref name="storageIndex"/> of the

@@ -257,6 +257,46 @@ public class MaglevCodeQualityTest
         """,
     };
 
+    public static TheoryData<string> StoreSnippets => new()
+    {
+        // Element and context slot stores written inline: numbers (their
+        // payload only), objects into slots that held numbers and back, fresh
+        // objects into old arrays and contexts kept across garbage
+        // collections (the write barrier of a changed reference).
+        """
+        (function() {
+          var counter = 0, last = null;
+          function bump(a, k) {
+            counter = counter + k;
+            for (var i = 0; i < a.length; i++) a[i] = (a[i] * 3 + k) & 0xffff;
+            return counter;
+          }
+          function fill(a, k) {
+            for (var i = 0; i < a.length; i++) a[i] = (i & 1) ? { v: k + i, s: 'x' + i } : k * 0.5 + i;
+            last = a[k % a.length];
+            return a.length;
+          }
+          function nested() {
+            var depth1 = 0;
+            return function (k) { return (function () { depth1 = depth1 + k; return depth1; })(); };
+          }
+          var smis = [1, 2, 3, 4, 5, 6, 7, 8], objs = new Array(16).fill(0), out = [], n = nested();
+          for (var k = 0; k < 60; k++) {
+            out.push(bump(smis, k), fill(objs, k), n(k));
+            var junk = [];
+            for (var j = 0; j < 200; j++) junk.push({ j: j, s: 'junk' + j });
+          }
+          for (var i = 0; i < objs.length; i++) out.push(typeof objs[i] === 'object' ? objs[i].v + objs[i].s : objs[i]);
+          out.push(smis.join(), typeof last === 'object' ? last.v : last);
+          return out.join();
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(StoreSnippets))]
+    public void InlineStoresGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
     [Theory]
     [MemberData(nameof(FieldRepresentationSnippets))]
     public void FieldRepresentationsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
