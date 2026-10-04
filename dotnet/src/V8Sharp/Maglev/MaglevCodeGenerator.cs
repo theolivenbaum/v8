@@ -160,19 +160,22 @@ internal sealed class MaglevCodeGenerator
 
     /// <summary>Time spent creating the code's type and delegate (V8SHARP_JIT_STATS).</summary>
     internal static double CreateTypeMs;
-    // Diagnostics: V8SHARP_IL_HISTOGRAM=1 prints the IL bytes per node kind at exit.
-    static readonly Dictionary<string, (int Count, int Bytes)>? s_ilHistogram = InitHistogram();
+    // Diagnostics: V8SHARP_IL_HISTOGRAM=1 prints the IL bytes and block boundaries per node kind at exit.
+    static readonly Dictionary<string, (int Count, int Bytes, int Blocks)>? s_ilHistogram = InitHistogram();
 
-    static Dictionary<string, (int, int)>? InitHistogram()
+    static Dictionary<string, (int, int, int)>? InitHistogram()
     {
         if (Environment.GetEnvironmentVariable("V8SHARP_IL_HISTOGRAM") != "1") return null;
-        var h = new Dictionary<string, (int, int)>();
+        var h = new Dictionary<string, (int, int, int)>();
         AppDomain.CurrentDomain.ProcessExit += (_, _) =>
         {
-            var list = new List<(string, int, int)>();
-            foreach (var e in h) list.Add((e.Key, e.Value.Item1, e.Value.Item2));
+            var list = new List<(string, int, int, int)>();
+            foreach (var e in h) list.Add((e.Key, e.Value.Item1, e.Value.Item2, e.Value.Item3));
             list.Sort(static (a, b) => b.Item3.CompareTo(a.Item3));
-            for (int i = 0; i < list.Count && i < 30; i++) Console.Error.WriteLine($"IL {list[i].Item3,8} {list[i].Item2,7} {list[i].Item1}");
+            for (int i = 0; i < list.Count && i < 30; i++)
+            {
+                Console.Error.WriteLine($"IL {list[i].Item3,8} {list[i].Item2,7} {list[i].Item4,7} {list[i].Item1}");
+            }
         };
         return h;
     }
@@ -232,6 +235,7 @@ internal sealed class MaglevCodeGenerator
         _code.DeoptPoints = _deoptPoints.ToArray();
         _code.SpeculationFeedback = _speculationFeedback.ToArray();
         _code.MaxScratchSize = _maxScratch;
+        _code.ILCounts = (_il.Instructions, _il.BlockBoundaries, _il.LocalReferences, _il.Locals);
         long createStart = System.Diagnostics.Stopwatch.GetTimestamp();
         Type type = BaselineCodeSpace.CreateType(_type);
         foreach ((FieldBuilder field, object? value) in _staticConstants)
@@ -825,12 +829,16 @@ internal sealed class MaglevCodeGenerator
                 _il.Emit(OpCodes.Stloc, _throwSite!);
                 continue;
             }
-            int ilBefore = _il.ILOffset;
+            int ilBefore = _il.ILOffset, blocksBefore = _il.BlockBoundaries;
             EmitNode(node);
             if (s_ilHistogram is not null)
             {
                 string key = node.Opcode == Opcode.CallBuiltin ? "CallBuiltin:" + ((CallBuiltinInfo)node.Obj0!).Method.Name : node.Opcode == Opcode.CheckMaps ? "CheckMaps:" + ((Map[])node.Obj0!).Length + (Array.TrueForAll((Map[])node.Obj0!, static m => m.IsStable) ? ":stable" : ":unstable") + (NodeTypes.Is(node.Inputs[0].Type, NodeType.kJSReceiver) ? ":recv" : "") : node.Opcode.ToString();
-                lock (s_ilHistogram) { s_ilHistogram.TryGetValue(key, out (int, int) e); s_ilHistogram[key] = (e.Item1 + 1, e.Item2 + _il.ILOffset - ilBefore); }
+                lock (s_ilHistogram)
+                {
+                    s_ilHistogram.TryGetValue(key, out (int, int, int) e);
+                    s_ilHistogram[key] = (e.Item1 + 1, e.Item2 + _il.ILOffset - ilBefore, e.Item3 + _il.BlockBoundaries - blocksBefore);
+                }
             }
         }
         EmitControl(block, block.Control!);

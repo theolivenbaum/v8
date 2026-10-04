@@ -88,9 +88,14 @@ public sealed class MaglevCompilationJob
     }
 
     public double PrepareMs { get; private set; }
+    /// <summary>The time from EnqueueJob to the start of ExecuteJob (waiting for a worker).</summary>
+    public double QueuedMs { get; private set; }
+    internal long EnqueuedAt;
     public double ExecuteMs { get; private set; }
     public double FinalizeMs { get; private set; }
     public double GraphMs { get; private set; }
+    /// <summary>RyuJIT's time compiling the code on the worker.</summary>
+    public double JitMs { get; private set; }
     public int NodeCount => _info?.Graph.NodeCount ?? 0;
 
     void Fail(string reason, bool disable)
@@ -145,6 +150,7 @@ public sealed class MaglevCompilationJob
     {
         if (CurrentState != State.kReadyToExecute) return CurrentState;
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (EnqueuedAt != 0) QueuedMs = System.Diagnostics.Stopwatch.GetElapsedTime(EnqueuedAt, start).TotalMilliseconds;
         try
         {
             if (IsConcurrent && Isolate.Flags.concurrent_recompilation_delay > 0) Thread.Sleep(Isolate.Flags.concurrent_recompilation_delay);
@@ -157,8 +163,15 @@ public sealed class MaglevCompilationJob
             };
             var generator = new MaglevCodeGenerator(info, code, optimizeFully: IsConcurrent);
             (MaglevCodeEntry entry, int ilSize) = generator.Generate();
-            // RyuJIT compiles the method now, on this thread.
-            if (IsConcurrent) RuntimeHelpers.PrepareMethod(entry.Method.MethodHandle);
+            // RyuJIT compiles the methods now, on this thread (the direct call
+            // entry too: otherwise its first call compiles it on the main thread).
+            if (IsConcurrent)
+            {
+                TimeSpan jitBefore = System.Runtime.JitInfo.GetCompilationTime(currentThread: true);
+                RuntimeHelpers.PrepareMethod(entry.Method.MethodHandle);
+                if (code.FastCall is { } fastCall) RuntimeHelpers.PrepareMethod(fastCall.Method.MethodHandle);
+                JitMs = (System.Runtime.JitInfo.GetCompilationTime(currentThread: true) - jitBefore).TotalMilliseconds;
+            }
             code.Entry = entry;
             code.ILSize = ilSize;
             code.CompiledConcurrently = IsConcurrent;
@@ -368,6 +381,7 @@ public sealed class MaglevConcurrentDispatcher
     /// <summary>MaglevConcurrentDispatcher::EnqueueJob (main thread).</summary>
     public void EnqueueJob(MaglevCompilationJob job)
     {
+        job.EnqueuedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         EnsureWorkers(_isolate);
         lock (_inFlightLock) _inFlight++;
         s_incoming.Add(job);

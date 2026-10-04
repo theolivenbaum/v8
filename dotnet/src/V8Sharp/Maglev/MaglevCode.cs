@@ -142,6 +142,8 @@ public sealed class MaglevCode
     public CompilationDependency[] Dependencies { get; internal set; } = [];
 
     public int ILSize { get; internal set; }
+    /// <summary>What RyuJIT's optimization limits count (MaglevILEmitter), for --trace-opt-verbose.</summary>
+    public (int Instructions, int BlockBoundaries, int LocalReferences, int Locals) ILCounts { get; internal set; }
     public int NodeCount { get; internal set; }
     public int InlinedFunctionCount { get; internal set; }
 

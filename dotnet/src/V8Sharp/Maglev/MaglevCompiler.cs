@@ -309,9 +309,13 @@ public static class MaglevCompiler
         {
             Console.WriteLine($"[{(install ? "completed" : job.CurrentState == MaglevCompilationJob.State.kFailed ? "aborted" : "discarded")} " +
                               $"concurrent maglev compile of {DebugName(shared)}{(job.IsOsr ? " OSR" : "")}, " +
-                              $"{job.NodeCount} nodes, {code?.ILSize ?? 0} bytes IL, background {job.ExecuteMs:F3} ms " +
-                              $"(graph {job.GraphMs:F3} ms), finalize {job.FinalizeMs:F3} ms" +
-                              (job.CurrentState == MaglevCompilationJob.State.kFailed ? ", reason: " + job.BailoutReason : "") + "]");
+                              $"{job.NodeCount} nodes, {code?.ILSize ?? 0} bytes IL, queued {job.QueuedMs:F3} ms, background {job.ExecuteMs:F3} ms " +
+                              $"(graph {job.GraphMs:F3} ms, RyuJIT {job.JitMs:F3} ms), finalize {job.FinalizeMs:F3} ms" +
+                              (job.CurrentState == MaglevCompilationJob.State.kFailed ? ", reason: " + job.BailoutReason : "") +
+                              (isolate.Flags.trace_opt_verbose && code is not null
+                                  ? $"; {code.ILCounts.Instructions} instructions, {code.ILCounts.BlockBoundaries} block boundaries, " +
+                                    $"{code.ILCounts.LocalReferences} local references, {code.ILCounts.Locals} locals"
+                                  : "") + "]");
         }
     }
 
