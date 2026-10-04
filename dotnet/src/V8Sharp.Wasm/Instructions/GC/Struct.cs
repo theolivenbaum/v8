@@ -92,6 +92,7 @@ namespace Wacs.Core.Instructions.GC
             //9,10,11,12,13
             var a = context.Store.AddStruct();
             var si = new StoreStruct(a, structFt, vals);
+            si.DefType = context.Frame.Module.Types[X];
 
             //14
             //*We're relying on the C# Runtime's heap to manage this ref.
@@ -158,6 +159,7 @@ namespace Wacs.Core.Instructions.GC
             //9,10,11,12,13
             var a = context.Store.AddStruct();
             var si = new StoreStruct(a, structFt);
+            si.DefType = context.Frame.Module.Types[X];
 
             //14
             //*We're relying on the C# Runtime's heap to manage this ref.

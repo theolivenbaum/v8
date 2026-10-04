@@ -1170,10 +1170,22 @@ namespace Wacs.Core.Instructions
             
             //18.
             //Check wasmfuncs, not hostfuncs
-            if (funcInst is FunctionInstance ftAct)
-                if (!ftAct.DefType.Matches(ftExpect, context.Frame.Module.Types))
+            // V8Sharp: a function with a defined type is checked by canonical
+            // type only. The structural check compares type indices against
+            // this module's types, which is wrong for a function of another
+            // module whose signature refers to its own types.
+            var actualDefType = funcInst switch
+            {
+                FunctionInstance ftAct => ftAct.DefType,
+                HostFunction { DefType: { } hostDefType } => hostDefType,
+                _ => null,
+            };
+            if (actualDefType != null)
+            {
+                if (!actualDefType.Matches(ftExpect, context.Frame.Module.Types))
                     throw new TrapException($"Instruction {Op.GetMnemonic()} failed. RecursiveType differed.");
-            if (!funcInst.Type.Matches(ftExpect.Unroll.Body, context.Frame.Module.Types))
+            }
+            else if (!funcInst.Type.Matches(ftExpect.Unroll.Body, context.Frame.Module.Types))
                 throw new TrapException($"Instruction {Op.GetMnemonic()} failed. Expected FunctionType differed.");
             //19.
             context.InvokeResolved(funcInst);
@@ -1226,10 +1238,22 @@ namespace Wacs.Core.Instructions
 
             //18.
             //Check wasmfuncs, not hostfuncs
-            if (funcInst is FunctionInstance ftAct)
-                if (!ftAct.DefType.Matches(ftExpect, context.Frame.Module.Types))
+            // V8Sharp: a function with a defined type is checked by canonical
+            // type only. The structural check compares type indices against
+            // this module's types, which is wrong for a function of another
+            // module whose signature refers to its own types.
+            var actualDefType = funcInst switch
+            {
+                FunctionInstance ftAct => ftAct.DefType,
+                HostFunction { DefType: { } hostDefType } => hostDefType,
+                _ => null,
+            };
+            if (actualDefType != null)
+            {
+                if (!actualDefType.Matches(ftExpect, context.Frame.Module.Types))
                     throw new TrapException($"Instruction {Op.GetMnemonic()} failed. RecursiveType differed.");
-            if (!funcInst.Type.Matches(ftExpect.Unroll.Body, context.Frame.Module.Types))
+            }
+            else if (!funcInst.Type.Matches(ftExpect.Unroll.Body, context.Frame.Module.Types))
                 throw new TrapException($"Instruction {Op.GetMnemonic()} failed. Expected FunctionType differed.");
             //19.
             await context.InvokeAsync(a);

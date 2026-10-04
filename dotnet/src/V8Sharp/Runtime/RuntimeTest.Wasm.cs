@@ -28,6 +28,15 @@ public static partial class RuntimeTable
             return JSValue.Undefined;
         });
 
+        // Runtime_ScheduleGCInStackCheck: the wasm tests use it to collect
+        // garbage while references are live on the stack; the .NET collector
+        // runs on its own schedule and is precise, so there is nothing to
+        // provoke.
+        Register(FunctionId.ScheduleGCInStackCheck, Undefined);
+        // Runtime_IsAtomicsWaitAllowed: d8 allows Atomics.wait on the main
+        // thread, and so does the V8Sharp shell.
+        Register(FunctionId.IsAtomicsWaitAllowed, static (i, a) => JSValue.True);
+
         // runtime-test-wasm.cc: tiers and code.
         Register(FunctionId.IsWasmCode, static (i, a) =>
             JSValue.FromBoolean(WasmObjects.IsWasmExportedFunction(a.Length > 0 ? a[0] : JSValue.Undefined)));

@@ -84,8 +84,10 @@ namespace Wacs.Core.Instructions.GC
             //11,12
             var a = context.Store.AddArray();
             
+            ArrayLimits.CheckLength(arrayType, n);
             //10
             var ai = new StoreArray(a, arrayType, val, n);
+            ai.DefType = context.Frame.Module.Types[X];
             
             //13
             var refArray = new Value(ValType.Ref | (ValType)X, ai);
@@ -150,8 +152,10 @@ namespace Wacs.Core.Instructions.GC
             int n = context.OpStack.PopI32();
             //8,9
             //10,11 skip the stack since we're inline
+            ArrayLimits.CheckLength(arrayType, n);
             var a = context.Store.AddArray();
             var ai = new StoreArray(a, arrayType, n);
+            ai.DefType = context.Frame.Module.Types[X];
             var refArray = new Value(ValType.Ref | (ValType)X, ai);
             context.OpStack.PushValue(refArray);
         }
@@ -228,6 +232,7 @@ namespace Wacs.Core.Instructions.GC
             var a = context.Store.AddArray();
             //10
             var ai = new StoreArray(a, arrayType, ref values);
+            ai.DefType = context.Frame.Module.Types[X];
             //13
             var refArray = new Value(ValType.Ref | (ValType)X, ai);
             context.OpStack.PushValue(refArray);
@@ -319,6 +324,7 @@ namespace Wacs.Core.Instructions.GC
             var ft = arrayType.ElementType;
             context.Assert(ft.BitWidth() != BitWidth.None,
                 $"Instruction {Op.GetMnemonic()} failed. FieldType does not have a valid bitwidth {ft}.");
+            ArrayLimits.CheckLength(arrayType, n);
             //14
             var z = ft.BitWidth().ByteSize();
             //15 — @Spec 4.5.3.5: trap if s + n*|t| > |data.Data|.
@@ -337,6 +343,7 @@ namespace Wacs.Core.Instructions.GC
             var a = context.Store.AddArray();
             //17,18
             var ai = new StoreArray(a, arrayType, b, n, z);
+            ai.DefType = context.Frame.Module.Types[X];
             var refArray = new Value(ValType.Ref | (ValType)X, ai);
             context.OpStack.PushValue(refArray);
         }
@@ -414,6 +421,10 @@ namespace Wacs.Core.Instructions.GC
             context.Assert(context.OpStack.Peek().IsI32,
                 $"Instruction {Op.GetMnemonic()} failed. Wrong type at top of stack {context.OpStack.Peek().Type}.");
             var s = context.OpStack.PopI32();
+            {
+                var newElemType = context.Frame.Module.Types[X].Expansion as ArrayType;
+                if (newElemType != null) ArrayLimits.CheckLength(newElemType, n);
+            }
             //9
             if (s < 0)
                 throw new TrapException($"Instruction {Op.GetMnemonic()} failed. Out of bounds Array elem source index");
@@ -432,6 +443,7 @@ namespace Wacs.Core.Instructions.GC
             var a = context.Store.AddArray();
             //17,18
             var ai = new StoreArray(a, arrayType, refs);
+            ai.DefType = context.Frame.Module.Types[X];
             var refArray = new Value(ValType.Ref | (ValType)X, ai);
             context.OpStack.PushValue(refArray);
         }
@@ -870,6 +882,10 @@ namespace Wacs.Core.Instructions.GC
             var a1 = ref1.GcRef as StoreArray;
             context.Assert(a1,
                 $"Instruction {Op.GetMnemonic()} failed. Reference was not an array.");
+            // V8Sharp: V8 checks the destination's bounds before the source
+            // reference (TurboFan and Liftoff agree on the trap reason).
+            if (d+n > a1.Length)
+                throw new TrapException($"Instruction {Op.GetMnemonic()} failed. Destination array overflow.");
             //19
             if (ref2.IsNullRef)
                 throw new TrapException($"Instruction {Op.GetMnemonic()} failed. Array reference was null.");
@@ -1177,6 +1193,28 @@ namespace Wacs.Core.Instructions.GC
         {
             writer.WriteLeb128_u32((uint)X.Value);
             writer.WriteLeb128_u32(Y.Value);
+        }
+    }
+}
+namespace Wacs.Core.Instructions.GC
+{
+    /// <summary>
+    /// V8Sharp: V8's limit on a new array's length (WasmArray::MaxLength),
+    /// checked before the segment bounds as V8 does.
+    /// </summary>
+    internal static class ArrayLimits
+    {
+        public const string TooLarge = "requested new array is too large";
+
+        public static void CheckLength(ArrayType arrayType, int length)
+        {
+            var width = arrayType.ElementType.BitWidth();
+            // References are tagged values: 4 bytes with pointer compression.
+            long elementSize = width == BitWidth.None ? 4 : width.ByteSize();
+            // RoundDown((kSmiMaxValue(31-bit) - kHeaderSize) / size, kTaggedSize)
+            long max = (0x3FFFFFFFL - 16) / elementSize & ~3L;
+            if ((uint)length > max)
+                throw new TrapException(TooLarge);
         }
     }
 }

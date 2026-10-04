@@ -275,6 +275,20 @@ namespace V8Sharp.Wasm
         public Value ExternRefFor(JSValue value, ValType type)
         {
             if (value.IsNull) return Value.Null(ValType.ExternRef);
+            // V8 keeps the JS value itself: a wasm GC object stays that object
+            // and a Smi-range number becomes an i31ref under any.convert_extern
+            // (CanonicalizeSmi), so both keep their identity as anyref.
+            if (value.HeapObjectOrNull is WasmGCObjectWrapper gcObject)
+            {
+                Value gcRef = gcObject.Ref;
+                gcRef.Type = type;
+                return gcRef;
+            }
+            if (TryI31(value, out Value i31))
+            {
+                i31.Type = type;
+                return i31;
+            }
             JSExternRef reference;
             if (value.HeapObjectOrNull is { } heapObject && !value.IsNumber)
             {
@@ -328,7 +342,7 @@ namespace V8Sharp.Wasm
                 }
                 if (value.HeapObjectOrNull is WasmGCObjectWrapper gc)
                 {
-                    if (!gc.Ref.Type.Matches(expected, module.Types))
+                    if (!expected.Matches(gc.Ref, module.Types))
                     {
                         errorMessage = "object is not a subtype of expected type";
                         return false;
@@ -467,6 +481,7 @@ namespace V8Sharp.Wasm
         {
             IFunctionInstance f = Store[address];
             if (f is FunctionInstance wasm) return wasm.DefType.Matches(expected, module.Types);
+            if (f is HostFunction { DefType: { } hostType }) return hostType.Matches(expected, module.Types);
             return expected.Expansion is FunctionType sig && f.Type.Matches(sig, module.Types);
         }
 
@@ -539,8 +554,9 @@ namespace V8Sharp.Wasm
                 case ExnInstance exn:
                     return ExceptionPackageFor(value, exn);
             }
-            if (value.Type.Matches(ValType.FuncRef, null) || value.Type == ValType.FuncRef || value.Type == ValType.Func ||
-                (value.Type.IsDefType() && value.GcRef is null))
+            // A function reference is the only non-null reference without a
+            // heap object (its value is the function's address).
+            if (value.GcRef is null)
             {
                 return FuncRefToJS(value);
             }

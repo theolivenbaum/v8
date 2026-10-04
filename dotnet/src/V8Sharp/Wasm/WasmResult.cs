@@ -98,13 +98,20 @@ public static class WasmErrorMessages
     /// The MessageTemplate of a trap. WACS raises traps with its own texts;
     /// V8 has one message per trap reason (wasm::TrapReason).
     /// </summary>
+    // V8SHARP_TRACE_WASM_TRAPS=1 prints the interpreter's own trap message.
+    static readonly bool s_traceTraps = Environment.GetEnvironmentVariable("V8SHARP_TRACE_WASM_TRAPS") is not null;
+
     public static MessageTemplate TrapTemplate(TrapException e)
     {
         string m = e.Message;
+        if (s_traceTraps) Console.Error.WriteLine("[wasm trap] " + m);
         string op = e.WasmFrames is { Length: > 0 } frames && frames[0].Instruction is { } inst
             ? inst.Op.GetMnemonic()
             : "";
         if (e is OutOfBoundsTableAccessException) return MessageTemplate.WasmTrapTableOutOfBounds;
+        if (m.Contains("too large", StringComparison.Ordinal)) return MessageTemplate.WasmTrapArrayTooLarge;
+        if (m.Contains("element segment out of bounds", StringComparison.Ordinal))
+            return MessageTemplate.WasmTrapElementSegmentOutOfBounds;
         if (m.StartsWith("unreachable", StringComparison.Ordinal)) return MessageTemplate.WasmTrapUnreachable;
         if (m.Contains("divide by zero", StringComparison.OrdinalIgnoreCase))
         {
@@ -133,8 +140,8 @@ public static class WasmErrorMessages
         {
             if (m.Contains("could not find element", StringComparison.Ordinal) || m.Contains("undefined element", StringComparison.Ordinal))
                 return MessageTemplate.WasmTrapTableOutOfBounds;
-            if (m.Contains("ull", StringComparison.Ordinal))
-                return MessageTemplate.WasmTrapFuncSigMismatch;
+            if (m.Contains("NullReference", StringComparison.Ordinal))
+                return MessageTemplate.WasmTrapNullFunc;
             return MessageTemplate.WasmTrapFuncSigMismatch;
         }
         if (m.Contains("type mismatch", StringComparison.Ordinal) || m.Contains("FunctionType differed", StringComparison.Ordinal) ||

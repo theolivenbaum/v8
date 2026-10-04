@@ -20,6 +20,13 @@ namespace Wacs.Core.Runtime
 {
     public class StoreArray : IGcRef
     {
+        /// <summary>
+        /// V8Sharp: the array's defined type (its RTT), so casts see the
+        /// precise type after the reference passed through externref or
+        /// another module.
+        /// </summary>
+        public Wacs.Core.Types.DefType? DefType { get; set; }
+
         private readonly Value[] _data;
 
         private readonly ArrayType _definition;

@@ -225,10 +225,12 @@ namespace Wacs.Core.Instructions
             //15.
             long d = context.OpStack.PopAddr();
             
-            if (s + n > elem.Elements.Count || d + n > tab.Elements.Count)
-            {
+            // V8Sharp: the table range is checked first, and a segment
+            // overrun is its own trap reason (V8's InitTableEntries).
+            if (d + n > tab.Elements.Count)
                 throw new OutOfBoundsTableAccessException("Trap in table.init");
-            }
+            if (s + n > elem.Elements.Count)
+                throw new TrapException("table.init: element segment out of bounds");
             
             //Tail recursive call alternative loop, inline tableset
             while (true)

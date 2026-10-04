@@ -353,14 +353,10 @@ namespace Wacs.Core.Types.Defs
                 return true;
             if (refVal.IsNullRef)
             {
-                if (rt1.IsNullable() || rt1 is ValType.None or ValType.NoneNN)
-                    return true;
-                if (refVal.Type is ValType.FuncRef or ValType.NoFunc && rt1 is ValType.NoFunc or ValType.NoFuncNN)
-                    return true;
-                if (refVal.Type is ValType.ExternRef or ValType.NoExtern && rt1 is ValType.NoExtern or ValType.NoExternNN)
-                    return true;
-
-                return refVal.Type.Matches(rt1, types);
+                // V8Sharp: null is in a reference type exactly when the type is
+                // nullable (validation puts both in one hierarchy). WACS also
+                // accepted null for (ref none), (ref nofunc) and (ref noextern).
+                return rt1.IsNullable();
             }
             else
             {
@@ -368,6 +364,39 @@ namespace Wacs.Core.Types.Defs
                     return false;
                 if (rt1 is ValType.AnyNN)
                     return true;
+                // Every non-null external reference is an extern, whatever it
+                // holds (a JS value, an i31 or a GC object passed through).
+                if (rt1 is ValType.Extern or ValType.ExternRef)
+                    return true;
+
+                // V8Sharp: match the object's own type (V8 casts compare the
+                // object's RTT), not the static type the value carries, which
+                // any.convert_extern and cross-module calls make imprecise.
+                Wacs.Core.Types.DefType? rtt = refVal.GcRef switch
+                {
+                    Wacs.Core.Runtime.GC.StoreStruct s => s.DefType,
+                    Wacs.Core.Runtime.StoreArray a => a.DefType,
+                    _ => null,
+                };
+                if (refVal.GcRef is Wacs.Core.Runtime.GC.I31Ref)
+                    return ValType.I31NN.Matches(rt1, types);
+                // A function reference has no heap object; its type is the
+                // function's, which the value's static type may not show (a
+                // function from JS or another module).
+                if (refVal.GcRef is null && Wacs.Core.Runtime.Store.Current is { } store &&
+                    store.FunctionDefType(new Wacs.Core.Runtime.FuncAddr((int)refVal.Data.Ptr)) is { } funcType)
+                {
+                    if (rt1.IsDefType())
+                        return types != null && types.Contains(rt1.Index()) && funcType.Matches(types[rt1.Index()], types);
+                    return ValType.Func.Matches(rt1, types);
+                }
+                if (rtt != null)
+                {
+                    if (rt1.IsDefType())
+                        return types != null && types.Contains(rt1.Index()) && rtt.Matches(types[rt1.Index()], types);
+                    var kind = rtt.Expansion is Wacs.Core.Types.StructType ? ValType.StructNN : ValType.ArrayNN;
+                    return kind.Matches(rt1, types);
+                }
 
                 var concreteType = refVal.Type.AsNonNullable();
                 return concreteType.Matches(rt1, types);

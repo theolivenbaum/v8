@@ -247,9 +247,12 @@ public sealed class InstanceBuilder
             // kWasmToWasm: the import is a wasm function (of another instance);
             // its type must match.
             IFunctionInstance func = _engine.Store[data.Address];
-            bool matches = func is FunctionInstance wasmFunc
-                ? wasmFunc.DefType.Matches(expectedType, _types)
-                : func.Type.Matches(expectedSig, _types);
+            bool matches = func switch
+            {
+                FunctionInstance wasmFunc => wasmFunc.DefType.Matches(expectedType, _types),
+                HostFunction { DefType: { } hostType } => hostType.Matches(expectedType, _types),
+                _ => func.Type.Matches(expectedSig, _types),
+            };
             if (!matches)
             {
                 _thrower.LinkError(ImportName(index) + ": imported function does not match the expected type");
@@ -259,7 +262,9 @@ public sealed class InstanceBuilder
 
         // A JS function: the WasmToJS wrapper.
         WasmModule.Import import = _module.Imports[index];
-        return WasmJs.NewImportWrapper(_engine, callable, expectedSig, import.ModuleName, import.Name, suspending, _typesModule);
+        FuncAddr wrapper = WasmJs.NewImportWrapper(_engine, callable, expectedSig, import.ModuleName, import.Name, suspending, _typesModule);
+        if (_engine.Store[wrapper] is HostFunction host) host.DefType = expectedType;
+        return wrapper;
     }
 
     /// <summary>InstanceBuilder::ProcessImportedTable.</summary>

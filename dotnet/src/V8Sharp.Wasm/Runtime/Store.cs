@@ -25,6 +25,24 @@ namespace Wacs.Core.Runtime
     /// </summary>
     public class Store
     {
+        /// <summary>
+        /// V8Sharp: the store whose code runs on this thread, so that a cast
+        /// of a function reference can look up the function's type.
+        /// </summary>
+        [ThreadStatic] public static Store? Current;
+
+        /// <summary>V8Sharp: the defined type of the function at <paramref name="addr"/>, if known.</summary>
+        public Wacs.Core.Types.DefType? FunctionDefType(FuncAddr addr)
+        {
+            if (addr.Value < 0 || !Contains(addr)) return null;
+            return this[addr] switch
+            {
+                FunctionInstance f => f.DefType,
+                HostFunction h => h.DefType,
+                _ => null,
+            };
+        }
+
         private readonly List<DataInstance> Datas = new();
         private readonly List<ElementInstance> Elems = new();
         private readonly List<ExnInstance> Exns = new();

@@ -57,7 +57,9 @@ namespace Wacs.Core.Runtime
         public ModuleInstance InstantiateModule(Module module, IAddress?[] imports, RuntimeOptions? options = default)
         {
             var saved = _explicitImports;
+            var savedStore = Wacs.Core.Runtime.Store.Current;
             _explicitImports = imports;
+            Wacs.Core.Runtime.Store.Current = RuntimeStore;
             try
             {
                 return InstantiateModule(module, options);
@@ -65,6 +67,7 @@ namespace Wacs.Core.Runtime
             finally
             {
                 _explicitImports = saved;
+                Wacs.Core.Runtime.Store.Current = savedStore;
             }
         }
 
@@ -123,6 +126,8 @@ namespace Wacs.Core.Runtime
             int savedHeight = ctx.StackHeight;
             int savedFloor = ctx.UnwindFloor;
             int savedCount = ctx.OpStack.Count;
+            var savedStore = Wacs.Core.Runtime.Store.Current;
+            Wacs.Core.Runtime.Store.Current = RuntimeStore;
 
             ctx.OpStack.GuardExhaust(args.Length);
             for (int i = 0; i < args.Length; ++i)
@@ -153,6 +158,7 @@ namespace Wacs.Core.Runtime
             {
                 ctx.InstructionPointer = savedPointer;
                 ctx.UnwindFloor = savedFloor;
+                Wacs.Core.Runtime.Store.Current = savedStore;
             }
         }
 

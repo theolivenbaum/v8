@@ -134,6 +134,12 @@ namespace Wacs.Core.Runtime.Types
 
         public FunctionType Type { get; }
 
+        /// <summary>
+        /// V8Sharp: the function's defined type (its canonical signature), for
+        /// casts and import checks. Null when only the structural type is known.
+        /// </summary>
+        public Wacs.Core.Types.DefType? DefType { get; set; }
+
         public Span<object> GetParameterBuf(ExecContext ctx)
         {
             var span = ParameterBuffer.AsSpan();
