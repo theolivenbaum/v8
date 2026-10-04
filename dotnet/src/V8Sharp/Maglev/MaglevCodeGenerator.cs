@@ -194,11 +194,17 @@ internal sealed class MaglevCodeGenerator
         }
         _hasCatchBlocks = _catchBlocks.Count > 0;
         if (_hasCatchBlocks) EmitTryRegionStart();
+        var blocks = new List<BasicBlock>(_graph.Blocks.Count);
         foreach (BasicBlock block in _graph.Blocks)
         {
-            if (block.IsDead) continue;
-            EmitBlock(block);
+            if (!block.IsDead) blocks.Add(block);
         }
+        for (int i = 0; i < blocks.Count; i++)
+        {
+            _nextBlock = i + 1 < blocks.Count ? blocks[i + 1] : null;
+            EmitBlock(blocks[i]);
+        }
+        _nextBlock = null;
         EmitEdgeStubs();
         int bodySize = _il.ILOffset;
         EmitDeoptExits();
@@ -886,6 +892,11 @@ internal sealed class MaglevCodeGenerator
         }
     }
 
+    /// <summary>The block emitted after the current one (a jump to it falls through), or null.</summary>
+    BasicBlock? _nextBlock;
+
+    static bool HasPhiMoves(BasicBlock to) => to.Phis.Exists(static p => p.Local is not null);
+
     void EmitControl(BasicBlock block, ControlNode c)
     {
         switch (c.Opcode)
@@ -893,7 +904,7 @@ internal sealed class MaglevCodeGenerator
             case Opcode.Jump:
             case Opcode.JumpLoop:
                 EmitPhiMoves(block, c.Target!);
-                _il.Emit(OpCodes.Br, BlockLabel(c.Target!));
+                if (!ReferenceEquals(c.Target, _nextBlock)) _il.Emit(OpCodes.Br, BlockLabel(c.Target!));
                 return;
             case Opcode.Return:
                 Load(c.Inputs[0], ValueRepresentation.kTagged);
@@ -934,12 +945,73 @@ internal sealed class MaglevCodeGenerator
                 return;
             }
         }
-        // Conditional branches: push the condition (true -> Target).
+        // Conditional branches (true -> Target). The target emitted next is
+        // the fallthrough (when its edge has no phi moves).
+        BasicBlock t = c.Target!, f = c.FalseTarget!;
+        bool falseFallsThrough = ReferenceEquals(f, _nextBlock) && !HasPhiMoves(f);
+        bool trueFallsThrough = !falseFallsThrough && ReferenceEquals(t, _nextBlock) && !HasPhiMoves(t);
+        if (TryEmitCompareAndBranch(c, out OpCode branchIfTrue, out OpCode branchIfFalse))
+        {
+            // The compare and the branch in one instruction (blt, bge.un, ...).
+            if (trueFallsThrough)
+            {
+                _il.Emit(branchIfFalse, EdgeLabel(block, f));
+                return;
+            }
+            _il.Emit(branchIfTrue, EdgeLabel(block, t));
+            if (!falseFallsThrough) _il.Emit(OpCodes.Br, EdgeLabel(block, f));
+            return;
+        }
         EmitBranchCondition(c);
-        Label trueLabel = EdgeLabel(block, c.Target!);
-        Label falseLabel = EdgeLabel(block, c.FalseTarget!);
-        _il.Emit(OpCodes.Brtrue, trueLabel);
-        _il.Emit(OpCodes.Br, falseLabel);
+        if (trueFallsThrough)
+        {
+            _il.Emit(OpCodes.Brfalse, EdgeLabel(block, f));
+            return;
+        }
+        _il.Emit(OpCodes.Brtrue, EdgeLabel(block, t));
+        if (!falseFallsThrough) _il.Emit(OpCodes.Br, EdgeLabel(block, f));
+    }
+
+    /// <summary>
+    /// For an int32 or float64 compare branch: pushes the operands and
+    /// returns the branch instructions taken when the comparison holds and
+    /// when it does not (IEEE semantics: a comparison with NaN is false, so
+    /// the negated float branches are the unordered forms).
+    /// </summary>
+    bool TryEmitCompareAndBranch(ControlNode c, out OpCode branchIfTrue, out OpCode branchIfFalse)
+    {
+        branchIfTrue = branchIfFalse = OpCodes.Nop;
+        bool isFloat;
+        if (c.Opcode == Opcode.BranchIfInt32Compare)
+        {
+            if (c.Unsigned && c.Operation != CompareOperation.kLessThan) return false;
+            isFloat = false;
+        }
+        else if (c.Opcode == Opcode.BranchIfFloat64Compare)
+        {
+            isFloat = true;
+        }
+        else
+        {
+            return false;
+        }
+        ValueRepresentation repr = isFloat ? ValueRepresentation.kFloat64 : ValueRepresentation.kInt32;
+        Load(c.Inputs[0], repr);
+        Load(c.Inputs[1], repr);
+        if (c.Unsigned)
+        {
+            (branchIfTrue, branchIfFalse) = (OpCodes.Blt_Un, OpCodes.Bge_Un);
+            return true;
+        }
+        (branchIfTrue, branchIfFalse) = c.Operation switch
+        {
+            CompareOperation.kEqual or CompareOperation.kStrictEqual => (OpCodes.Beq, OpCodes.Bne_Un),
+            CompareOperation.kLessThan => (OpCodes.Blt, isFloat ? OpCodes.Bge_Un : OpCodes.Bge),
+            CompareOperation.kGreaterThan => (OpCodes.Bgt, isFloat ? OpCodes.Ble_Un : OpCodes.Ble),
+            CompareOperation.kLessThanOrEqual => (OpCodes.Ble, isFloat ? OpCodes.Bgt_Un : OpCodes.Bgt),
+            _ => (OpCodes.Bge, isFloat ? OpCodes.Blt_Un : OpCodes.Blt),
+        };
+        return true;
     }
 
     /// <summary>Pushes the bool condition of a branch control node.</summary>
@@ -2363,22 +2435,20 @@ internal sealed class MaglevCodeGenerator
         Label fail = migrate || migrateAndDeopt ? _il.DefineLabel() : exit;
         Label ok = _il.DefineLabel();
         EmitLoadMapOrBranch(node.Inputs[0], exit);
-        if (maps.Length == 1)
+        // The last map's compare branches to the failure, the others to ok.
+        if (maps.Length > 1) _il.Emit(OpCodes.Stloc, _tmpMap);
+        for (int i = 0; i < maps.Length; i++)
         {
-            LoadConstantObject(maps[0], typeof(Map));
-            _il.Emit(OpCodes.Beq, ok);
+            if (maps.Length > 1) _il.Emit(OpCodes.Ldloc, _tmpMap);
+            LoadConstantObject(maps[i], typeof(Map));
+            _il.Emit(i == maps.Length - 1 ? OpCodes.Bne_Un : OpCodes.Beq, i == maps.Length - 1 ? fail : ok);
         }
-        else
+        if (!migrate && !migrateAndDeopt)
         {
-            _il.Emit(OpCodes.Stloc, _tmpMap);
-            foreach (Map map in maps)
-            {
-                _il.Emit(OpCodes.Ldloc, _tmpMap);
-                LoadConstantObject(map, typeof(Map));
-                _il.Emit(OpCodes.Beq, ok);
-            }
+            _il.MarkLabel(ok);
+            return;
         }
-        _il.Emit(OpCodes.Br, fail);
+        _il.Emit(OpCodes.Br, ok);
         if (migrate)
         {
             _il.MarkLabel(fail);
