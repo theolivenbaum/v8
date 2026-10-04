@@ -12,6 +12,50 @@ namespace V8Sharp.Runtime;
 
 public static partial class RuntimeTable
 {
+    // V8 compiles a module with only the type and allocates the object from
+    // the instance's map directly; V8Sharp's module also exports a function
+    // `f` that allocates it (struct.new / array.new_fixed) and calls it, since
+    // GC objects are made by the interpreter's store.
+    static readonly byte[] WasmStructModuleBytes =
+    [
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0c, 0x02, 0x50, 0x00, 0x5f, 0x01, 0x7e,
+        0x00, 0x60, 0x00, 0x01, 0x64, 0x00, 0x03, 0x02, 0x01, 0x01, 0x07, 0x05, 0x01, 0x01, 0x66, 0x00,
+        0x00, 0x0a, 0x12, 0x01, 0x10, 0x00, 0x42, 0x8d, 0xe0, 0xb7, 0xd5, 0xdb, 0x81, 0xfc, 0xd6, 0xfa,
+        0x00, 0xfb, 0x00, 0x00, 0x0b,
+    ];
+
+    static readonly byte[] WasmArrayModuleBytes =
+    [
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0b, 0x02, 0x50, 0x00, 0x5e, 0x7e, 0x00,
+        0x60, 0x00, 0x01, 0x64, 0x00, 0x03, 0x02, 0x01, 0x01, 0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00,
+        0x0a, 0x13, 0x01, 0x11, 0x00, 0x42, 0x8d, 0xe0, 0xb7, 0xd5, 0xdb, 0x81, 0xfc, 0xd6, 0xfa, 0x00,
+        0xfb, 0x08, 0x00, 0x01, 0x0b,
+    ];
+
+    // runtime-test-wasm.cc CreateWasmObject (and, under --jitless without
+    // --wasm-jitless, CreateDummyWasmLookAlikeForFuzzing).
+    static JSValue CreateWasmObject(Isolate isolate, byte[] bytes)
+    {
+        if (isolate.Flags.jitless && !isolate.Flags.wasm_jitless)
+        {
+            JSObject dummy = isolate.Factory.NewJSObjectWithNullProto();
+            JSReceiver.SetIntegrityLevel(isolate, dummy, JSReceiver.IntegrityLevel.FROZEN, ShouldThrow.ThrowOnError);
+            return dummy;
+        }
+        // V8's flag default is kV8MaxWasmModuleSize; 0 here means unset.
+        ulong maxModuleSize = isolate.Flags.wasm_max_module_size;
+        if (maxModuleSize != 0 && (ulong)bytes.Length > maxModuleSize)
+        {
+            // CrashUnlessFuzzing.
+            if (isolate.Flags.fuzzing) return JSValue.Undefined;
+            throw new InvalidOperationException("Check failed: module size within --wasm-max-module-size");
+        }
+        WasmModuleObject module = WasmJs.NewModuleFromWireBytes(isolate, bytes)!;
+        WasmInstanceObject instance = InstanceBuilder.Build(isolate, new ErrorThrower(isolate, "CreateWasmObject"), module, null);
+        JSValue f = JSReceiver.GetProperty(isolate, instance.ExportsObject, "f");
+        return Execution.Call(isolate, f, JSValue.Undefined, []);
+    }
+
     static void RegisterWasmTest()
     {
         static JSValue Undefined(Isolate i, ReadOnlySpan<JSValue> a) => JSValue.Undefined;
@@ -35,6 +79,10 @@ public static partial class RuntimeTable
         Register(FunctionId.ScheduleGCInStackCheck, Undefined);
         // Runtime_IsAtomicsWaitAllowed.
         Register(FunctionId.IsAtomicsWaitAllowed, static (i, a) => JSValue.FromBoolean(i.AllowAtomicsWait));
+        // Runtime_WasmStruct / Runtime_WasmArray: a struct { i64 } and an
+        // array of i64 holding 0x7AADF00DBAADF00D.
+        Register(FunctionId.WasmStruct, static (i, a) => CreateWasmObject(i, WasmStructModuleBytes));
+        Register(FunctionId.WasmArray, static (i, a) => CreateWasmObject(i, WasmArrayModuleBytes));
 
         // runtime-test-wasm.cc: tiers and code.
         Register(FunctionId.IsWasmCode, static (i, a) =>
