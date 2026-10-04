@@ -36,6 +36,11 @@ public sealed partial class MaglevGraphBuilder
     // Loop headers with several forward predecessors merge them in a
     // pre-header first (V8 requires loops to be entered through the header).
     readonly MergePointInterpreterFrameState?[] _preheaderStates;
+    // Loop peeling (PeelLoop): the headers of the loops whose first iteration
+    // is built before the loop (loop_headers_to_peel_), cleared once peeled,
+    // and the merge of the forward edges into the peeled iteration.
+    readonly bool[] _peelLoop;
+    readonly MergePointInterpreterFrameState?[] _peelEntryStates;
     readonly int[] _predecessorCount;
     readonly int[] _forwardPredecessorCount;
     readonly bool[] _isJumpTarget;
@@ -98,6 +103,8 @@ public sealed partial class MaglevGraphBuilder
         _loopChangesContext = new bool[length];
         _frameAtBytecodeStart = new ValueNode?[InterpreterFrameState.SlotCount(unit)];
         _catchStates = new MergePointInterpreterFrameState?[length];
+        _peelLoop = new bool[length];
+        _peelEntryStates = new MergePointInterpreterFrameState?[length];
     }
 
     public Graph Graph => _graph;
@@ -208,6 +215,186 @@ public sealed partial class MaglevGraphBuilder
             if (header < 0) throw new MaglevBailoutException("OSR offset is not a loop");
             _predecessorCount[header]++;
             _forwardPredecessorCount[header]++;
+        }
+        SelectLoopsToPeel();
+    }
+
+    /// <summary>
+    /// CalculatePredecessorCounts' choice of loops to peel (maglev_loop_peeling):
+    /// innermost, non-resumable loops smaller than maglev_loop_peeling_max_size
+    /// bytes of bytecode, within maglev_loop_peeling_max_size_cumulative per
+    /// compilation.
+    /// </summary>
+    /// <remarks>
+    /// Deviation: V8 peels optimistically (maglev_optimistic_peeled_loops: a
+    /// loop whose peeled iteration changed nothing is merged without a second
+    /// copy); V8Sharp peels one iteration (V8's non-optimistic mode). Loops
+    /// overlapping a try block's start, end or handler, and the loops of an
+    /// OSR compilation up to the OSR loop, are not peeled (V8 recreates the
+    /// catch merge states; V8Sharp's continuation of the OSR loop starts at
+    /// its header).
+    /// </remarks>
+    void SelectLoopsToPeel()
+    {
+        if (!Flags.maglev_loop_peeling) return;
+        foreach (LoopInfo loop in _analysis.GetLoopInfos())
+        {
+            int header = loop.LoopStart;
+            int size = loop.LoopEnd - loop.LoopStart;
+            if (!loop.Innermost || loop.Resumable) continue;
+            if (_info.IsOsr && !_unit.IsInline && header <= _analysis.OsrEntryPoint) continue;
+            if (size >= Flags.maglev_loop_peeling_max_size) continue;
+            if (_info.PeeledBytecodeSize + size >= Flags.maglev_loop_peeling_max_size_cumulative) continue;
+            if (HandlerRangeOverlaps(loop.LoopStart, loop.LoopEnd)) continue;
+            var it = new BytecodeArrayIterator(_unit.Bytecode);
+            it.SetOffset(header);
+            if (it.NextOffset() >= loop.LoopEnd) continue;
+            _peelLoop[header] = true;
+            _info.PeeledBytecodeSize += size;
+        }
+    }
+
+    /// <summary>Whether a try range starts, ends or has its handler inside [start, end).</summary>
+    bool HandlerRangeOverlaps(int start, int end)
+    {
+        byte[] tableBytes = _unit.Bytecode.HandlerTable;
+        if (tableBytes.Length == 0) return false;
+        var table = new Codegen.HandlerTable(tableBytes);
+        for (uint i = 0; i < (uint)table.NumberOfRangeEntries(); i++)
+        {
+            int rangeStart = table.GetRangeStart(i), rangeEnd = table.GetRangeEnd(i), handler = table.GetRangeHandler(i);
+            if (rangeStart >= start && rangeStart < end || rangeEnd > start && rangeEnd < end || handler >= start && handler < end) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// PeelLoop / BuildLoopForPeeling: the first iteration of the loop at
+    /// <paramref name="header"/> as straight-line code from the merged forward
+    /// edges; its back edge enters the loop, whose header starts from the
+    /// peeled iteration's frame (so what the first iteration checked or loaded
+    /// is known in the loop, minus the loop's effects). The interior merge
+    /// states are reset for the loop itself, which BuildBody builds next.
+    /// </summary>
+    void PeelLoop(int header)
+    {
+        _peelLoop[header] = false;
+        LoopInfo loop = _analysis.GetLoopInfoFor(header);
+        int jumpLoop = loop.JumpLoopOffset;
+        if (_info.IsTracing) Console.WriteLine($"[maglev] {_unit} peeling the loop at {header}");
+        _latestCheckpointedFrame = null;
+        if (_info.ActiveLoops.Count > 0) PopFinishedLoops(header);
+        HandleTryBlock(header);
+        ControlNode? fallthrough = null;
+        if (_currentBlock is not null)
+        {
+            MergeIntoPeelEntry(header, _currentBlock);
+            fallthrough = new ControlNode(Opcode.Jump);
+            FinishBlock(fallthrough);
+        }
+        _pendingFallthrough = null;
+        MergePointInterpreterFrameState? entry = _peelEntryStates[header];
+        _peelEntryStates[header] = null;
+        if (entry is null || entry.PredecessorsSoFar == 0)
+        {
+            _currentBlock = null;
+            return;
+        }
+        int firstBlock = _graph.Blocks.Count;
+        BasicBlock entryBlock = StartBlockFromMergeState(entry);
+        entryBlock.Offset = header;
+        if (fallthrough is not null) fallthrough.Target = entryBlock;
+        // The forward edges into the header already built go to the peeled iteration.
+        ResolveEdges(0, firstBlock, o => o == header ? entryBlock : null);
+
+        if (_info.IsTracing) Console.WriteLine($"[maglev] {_unit} @{header} {_it.CurrentBytecode()} (peeled)");
+        VisitSingleBytecode();
+        while (true)
+        {
+            _it.Advance();
+            int offset = _it.CurrentOffset();
+            if (offset == jumpLoop)
+            {
+                ProcessMergePoints(offset);
+                if (_currentBlock is not null) BuildPeeledBackEdge(header);
+                break;
+            }
+            ProcessMergePoints(offset);
+            if (_currentBlock is null) continue;
+            if (_info.IsTracing) Console.WriteLine($"[maglev] {_unit} @{offset} {_it.CurrentBytecode()} (peeled)");
+            VisitSingleBytecode();
+        }
+        // The peeled iteration's edges inside the loop go to its own blocks;
+        // the loop's interior merge points start again for the loop.
+        ResolveEdges(firstBlock, _graph.Blocks.Count, o => o > header && o <= jumpLoop ? ResolveEdge(o) : null);
+        for (int o = header + 1; o <= jumpLoop; o++)
+        {
+            _mergeStates[o] = null;
+            _fallthroughBlocks.Remove(o);
+        }
+        _pendingFallthrough = null;
+        _latestCheckpointedFrame = null;
+        _currentBlock = null;
+    }
+
+    /// <summary>The peeled iteration's back edge: the interrupt check, then the loop's entry edge.</summary>
+    void BuildPeeledBackEdge(int header)
+    {
+        Checkpoint();
+        AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kCanThrow | OpProperties.kNotIdempotent });
+        // JumpLoop clobbers the accumulator.
+        SetAccumulator(GetRootConstant(RootIndex.kUndefinedValue));
+        InitializeLoopHeader(header, _currentBlock!);
+        FinishBlock(new ControlNode(Opcode.Jump) { Target = _mergeStates[header]!.Block });
+    }
+
+    /// <summary>A forward edge into a loop header that is peeled: merged into the peeled iteration's entry.</summary>
+    void MergeIntoPeelEntry(int header, BasicBlock pred)
+    {
+        MergePointInterpreterFrameState? entry = _peelEntryStates[header];
+        if (entry is null)
+        {
+            entry = new MergePointInterpreterFrameState(_unit, header, _forwardPredecessorCount[header], _analysis.GetInLivenessFor(header), null);
+            _peelEntryStates[header] = entry;
+        }
+        entry.Merge(this, _frame, pred);
+    }
+
+    /// <summary>
+    /// Resolves the offset edges of this unit's blocks in
+    /// [<paramref name="from"/>, <paramref name="to"/>) for which
+    /// <paramref name="resolve"/> has a block (ResolveJumpTargets does the rest).
+    /// </summary>
+    void ResolveEdges(int from, int to, Func<int, BasicBlock?> resolve)
+    {
+        for (int b = from; b < to; b++)
+        {
+            ControlNode? c = _graph.Blocks[b].Control;
+            if (c is null || !ReferenceEquals(c.Unit, _unit)) continue;
+            switch (c.Opcode)
+            {
+                case Opcode.Jump:
+                    if (c.Int1 != -1 && c.Target is null) c.Target = resolve(c.Int0);
+                    break;
+                case Opcode.BranchIfToBooleanTrue:
+                case Opcode.BranchIfInt32Compare:
+                case Opcode.BranchIfFloat64Compare:
+                case Opcode.BranchIfReferenceEqual:
+                case Opcode.BranchIfRootConstant:
+                case Opcode.BranchIfUndefinedOrNull:
+                case Opcode.BranchIfJSReceiver:
+                case Opcode.BranchIfInt32ToBooleanTrue:
+                case Opcode.BranchIfFloat64ToBooleanTrue:
+                    c.Target ??= resolve(c.Int0);
+                    c.FalseTarget ??= resolve(c.Int2);
+                    break;
+                case Opcode.Switch:
+                    if (c.Obj1 is int[] offsets)
+                    {
+                        for (int i = 0; i < offsets.Length; i++) c.Targets![i] ??= resolve(offsets[i]);
+                    }
+                    break;
+            }
         }
     }
 
@@ -370,20 +557,13 @@ public sealed partial class MaglevGraphBuilder
         for (; !_it.Done(); _it.Advance())
         {
             int offset = _it.CurrentOffset();
-            if (_info.ActiveLoops.Count > 0) PopFinishedLoops(offset);
-            HandleTryBlock(offset);
-            if (_catchStates[offset] is { } catchState)
+            if (_peelLoop[offset])
             {
-                ProcessMergePointAtExceptionHandlerStart(offset, catchState);
+                // The loop's first iteration, then the loop from its header.
+                PeelLoop(offset);
+                _it.SetOffset(offset);
             }
-            else if (NeedsMergeState(offset))
-            {
-                ProcessMergePoint(offset);
-            }
-            else if (_currentBlock is null && _pendingFallthrough is not null && _pendingFallthroughOffset == offset)
-            {
-                StartFallthroughBlock(offset);
-            }
+            ProcessMergePoints(offset);
             if (_currentBlock is null)
             {
                 // Dead code: no predecessor reached this bytecode.
@@ -393,6 +573,25 @@ public sealed partial class MaglevGraphBuilder
             VisitSingleBytecode();
         }
         if (_info.ActiveLoops.Count > 0) PopFinishedLoops(int.MaxValue);
+    }
+
+    /// <summary>What BuildBody does at an offset before visiting its bytecode: loops, try blocks, merge points.</summary>
+    void ProcessMergePoints(int offset)
+    {
+        if (_info.ActiveLoops.Count > 0) PopFinishedLoops(offset);
+        HandleTryBlock(offset);
+        if (_catchStates[offset] is { } catchState)
+        {
+            ProcessMergePointAtExceptionHandlerStart(offset, catchState);
+        }
+        else if (NeedsMergeState(offset))
+        {
+            ProcessMergePoint(offset);
+        }
+        else if (_currentBlock is null && _pendingFallthrough is not null && _pendingFallthroughOffset == offset)
+        {
+            StartFallthroughBlock(offset);
+        }
     }
 
     /// <summary>
@@ -624,6 +823,11 @@ public sealed partial class MaglevGraphBuilder
     /// </summary>
     void MergeIntoFrameStateFrom(int target, BasicBlock pred)
     {
+        if (_peelLoop[target])
+        {
+            MergeIntoPeelEntry(target, pred);
+            return;
+        }
         if (_analysis.IsLoopHeader(target))
         {
             if (_forwardPredecessorCount[target] > 1)

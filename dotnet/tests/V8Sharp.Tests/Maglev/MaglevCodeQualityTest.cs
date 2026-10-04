@@ -313,6 +313,38 @@ public class MaglevCodeQualityTest
         """,
     };
 
+    public static TheoryData<string> LoopPeelingSnippets => new()
+    {
+        // Peeled loops (PeelLoop): zero, one and many iterations; exits by
+        // break, return and throw in the first iteration and later; continue;
+        // a map change of a checked object inside the loop after the first
+        // iteration; loops in inlined functions; nested loops (the inner one
+        // peeled); the accumulator and registers live after the loop.
+        """
+        (function() {
+          function sum(a, n) { var s = 0; for (var i = 0; i < n; i++) s += a.x * a.v[i % a.v.length]; return s; }
+          function find(a, k) { for (var i = 0; i < a.length; i++) { if (a[i] === k) return i; if (a[i] < 0) break; } return -1; }
+          function skip(a) { var c = 0; for (var i = 0; i < a.length; i++) { if (a[i] & 1) continue; c += a[i]; } return c; }
+          function grow(o, n) { for (var i = 0; i < n; i++) { o.x = o.x + i; if (i == 3) o.y = 'new'; } return o.x + (o.y || ''); }
+          function thrower(a) { for (var i = 0; i < a.length; i++) if (a[i] === 'boom') throw new Error('at ' + i); return 'none'; }
+          function nested(m) { var t = 0; for (var i = 0; i < m.length; i++) for (var j = 0; j < m[i].length; j++) t += m[i][j] * (i + 1); return t; }
+          function outer(a, n) { return sum(a, n) + sum(a, 1); }
+          var out = [], o = { x: 2, v: [1, 2, 3] };
+          for (var k = 0; k < 40; k++) {
+            out.push(sum(o, k % 5), find([5, 6, k, -1, k], k), skip([1, 2, 3, 4, k]), grow({ x: k }, k % 6), outer(o, 3));
+            try { out.push(thrower(k % 4 ? [1, 2] : [1, 'boom'])); } catch (e) { out.push(e.message); }
+            out.push(nested([[1, 2], [k], []]));
+          }
+          out.push(sum({ x: 1.5, v: [0.5, 2] }, 4), sum({ v: [1], x: 3 }, 2), find('abc', 'c'));
+          return out.join();
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(LoopPeelingSnippets))]
+    public void PeeledLoopsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
     [Theory]
     [MemberData(nameof(IndexSnippets))]
     public void ObjectKeysGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);

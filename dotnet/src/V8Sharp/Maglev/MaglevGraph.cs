@@ -248,6 +248,8 @@ public sealed class MaglevCompilationInfo
 
     /// <summary>The bytecode size inlined so far (max_maglev_inlined_bytecode_size_cumulative).</summary>
     public int InlinedBytecodeSize;
+    /// <summary>The bytecode size of the loops peeled so far (total_peeled_bytecode_size).</summary>
+    public int PeeledBytecodeSize;
     /// <summary>The deepest inlining depth reached.</summary>
     public int MaxInliningDepth;
 
