@@ -568,7 +568,9 @@ for now, to be revisited when the reason goes away.
   are estimated as the most values live at once (MaglevStackSlots; frame
   slots of InitialValues are not counted). Without CSE, fewer values live
   long than in V8 (mjsunit/maglev/regress-536945254 still compiles).
-- Loop peeling: one iteration is peeled (V8's non-optimistic mode;
+- Loop peeling: one iteration is peeled (V8's non-optimistic mode; loops
+  that call are not peeled (their header forgets what calls change; the
+  copy costs main-thread graph building and JIT);
   V8 by default peels optimistically and merges the loop without a second
   copy when the peeled iteration changed nothing). Loops overlapping a try
   range (start, end or handler inside the loop) and the loops of an OSR

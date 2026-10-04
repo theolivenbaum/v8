@@ -232,7 +232,10 @@ public sealed partial class MaglevGraphBuilder
     /// overlapping a try block's start, end or handler, and the loops of an
     /// OSR compilation up to the OSR loop, are not peeled (V8 recreates the
     /// catch merge states; V8Sharp's continuation of the OSR loop starts at
-    /// its header).
+    /// its header). Loops that call are not peeled either: their header
+    /// forgets what a call can change anyway (LoopEffects), and the graph is
+    /// built on the main thread, where the peeled copy of their inlined calls
+    /// costs more than it gains (measured on DeltaBlue, EarleyBoyer, Box2D).
     /// </remarks>
     void SelectLoopsToPeel()
     {
@@ -246,6 +249,10 @@ public sealed partial class MaglevGraphBuilder
             if (size >= Flags.maglev_loop_peeling_max_size) continue;
             if (_info.PeeledBytecodeSize + size >= Flags.maglev_loop_peeling_max_size_cumulative) continue;
             if (HandlerRangeOverlaps(loop.LoopStart, loop.LoopEnd)) continue;
+            // A loop that calls forgets at its header what a call can change
+            // (LoopEffects), so a peeled iteration teaches it little and costs
+            // a second copy of its inlined calls.
+            if (PrescanLoopEffects(loop).Cleared) continue;
             var it = new BytecodeArrayIterator(_unit.Bytecode);
             it.SetOffset(header);
             if (it.NextOffset() >= loop.LoopEnd) continue;
