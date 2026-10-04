@@ -58,8 +58,17 @@ namespace Wacs.Core.Runtime
         {
             var saved = _explicitImports;
             var savedStore = Wacs.Core.Runtime.Store.Current;
+            var ctx = GetExecContext();
+            int savedPointer = ctx.InstructionPointer;
+            int savedCallFloor = ctx.FlushCallStackFloor;
+            int savedOpFloor = ctx.FlushOpStackFloor;
+            var savedFrame = ctx.Frame;
             _explicitImports = imports;
             Wacs.Core.Runtime.Store.Current = RuntimeStore;
+            // An instantiation from JavaScript called by wasm runs above the
+            // suspended wasm frames and operands.
+            ctx.FlushCallStackFloor = ctx.StackHeight;
+            ctx.FlushOpStackFloor = ctx.OpStack.Count;
             try
             {
                 return InstantiateModule(module, options);
@@ -68,6 +77,10 @@ namespace Wacs.Core.Runtime
             {
                 _explicitImports = saved;
                 Wacs.Core.Runtime.Store.Current = savedStore;
+                ctx.FlushCallStackFloor = savedCallFloor;
+                ctx.FlushOpStackFloor = savedOpFloor;
+                ctx.InstructionPointer = savedPointer;
+                ctx.Frame = savedFrame;
             }
         }
 

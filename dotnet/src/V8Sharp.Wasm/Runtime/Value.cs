@@ -631,8 +631,9 @@ namespace Wacs.Core.Runtime
 
         public FuncAddr GetFuncAddr(TypesSpace types)
         {
-            if (!Type.Matches(ValType.FuncRef, types))
-                throw new ArgumentException($"Cannot convert non-funcref ({Type}) Value to FuncAddr");
+            // V8Sharp: validation guarantees a function reference. The type
+            // check compared the value's type index against this module's
+            // types, which fails for a reference from another module.
             return new FuncAddr((int)Data.Ptr);
         }
 

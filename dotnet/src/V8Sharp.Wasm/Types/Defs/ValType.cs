@@ -397,6 +397,14 @@ namespace Wacs.Core.Types.Defs
                     var kind = rtt.Expansion is Wacs.Core.Types.StructType ? ValType.StructNN : ValType.ArrayNN;
                     return kind.Matches(rt1, types);
                 }
+                // A host value (an embedder's externref seen as anyref) is
+                // in no type below any.
+                if (refVal.GcRef is not (null or Wacs.Core.Runtime.GC.StoreStruct or Wacs.Core.Runtime.StoreArray
+                        or Wacs.Core.Runtime.Types.ExnInstance or Wacs.Core.Runtime.Concurrency.ContInstance or Wacs.Core.Runtime.VecRef
+                        or Wacs.Core.Runtime.Builtins.JsStringRef or Wacs.Core.Runtime.Concurrency.IDelegateRef))
+                {
+                    return rt1 is ValType.Any;
+                }
 
                 var concreteType = refVal.Type.AsNonNullable();
                 return concreteType.Matches(rt1, types);

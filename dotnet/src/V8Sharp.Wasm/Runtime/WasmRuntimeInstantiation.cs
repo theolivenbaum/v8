@@ -465,7 +465,7 @@ namespace Wacs.Core.Runtime
             {
                 Store.OpenTransaction();
                 
-                if (GetExecContext().OpStack.Count != 0)
+                if (GetExecContext().OpStack.Count != GetExecContext().FlushOpStackFloor)
                     throw new WasmRuntimeException("OpStack should be empty");
 
                 //2, 3, 4 Checks if imports are satisfied
@@ -520,7 +520,8 @@ namespace Wacs.Core.Runtime
                     //Linking may succeed, so we commit the transaction
                     Store.CommitTransaction();
                     Store.OpenTransaction();
-                    GetExecContext().FlushCallStack();
+                    // V8Sharp: the frames are flushed by the outer handler,
+                    // after linking (which needs the module's frame).
                     ExceptionDispatchInfo.Throw(exc);
                 }
                 finally
@@ -739,7 +740,7 @@ namespace Wacs.Core.Runtime
 
             ini.ExecuteInitializer(Context);
             var value = GetExecContext().OpStack.PopAny();
-            if (GetExecContext().OpStack.Count > 0)
+            if (GetExecContext().OpStack.Count > GetExecContext().FlushOpStackFloor)
                 throw new WasmRuntimeException("Values left on stack");
             
             GetExecContext().FlushCallStack();

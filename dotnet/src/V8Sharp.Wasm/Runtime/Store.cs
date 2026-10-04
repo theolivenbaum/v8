@@ -209,13 +209,13 @@ namespace Wacs.Core.Runtime
             if (!Contains(addr))
                 throw new InvalidOperationException("Table does not exist in Store.");
             
-            if (CurrentTransaction == null)
-                return Tables[addr.Value];
-            
-            if (!CurrentTransaction.Tables.ContainsKey(addr))
-            {
-                CurrentTransaction.Tables.Add(addr, this[addr].Clone());
-            }
+            // V8Sharp: a table that exists outside the transaction is written in
+            // place. WACS wrote a copy and swapped it in on commit, which left
+            // holders of the table (WebAssembly.Table objects, other
+            // instances' frames) with a stale instance; V8 does not roll back
+            // element writes of a failed instantiation either.
+            if (CurrentTransaction == null || !CurrentTransaction.Tables.ContainsKey(addr))
+                return this[addr];
 
             return CurrentTransaction.Tables[addr];
         }

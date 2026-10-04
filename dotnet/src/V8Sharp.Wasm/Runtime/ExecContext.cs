@@ -552,12 +552,28 @@ namespace Wacs.Core.Runtime
             return label;
         }
 
+        /// <summary>
+        /// V8Sharp: the call-stack height and operand-stack count that
+        /// <see cref="FlushCallStack"/> unwinds to. An instantiation that runs
+        /// while wasm is suspended in a host call (JavaScript instantiating a
+        /// module from an import) must leave the suspended frames alone.
+        /// </summary>
+        public int FlushCallStackFloor;
+        public int FlushOpStackFloor;
+
         public void FlushCallStack()
         {
-            ClearCallStack();
-            OpStack.Clear();
-
-            Frame = NullFrame;
+            if (FlushCallStackFloor == 0 && FlushOpStackFloor == 0)
+            {
+                ClearCallStack();
+                OpStack.Clear();
+                Frame = NullFrame;
+            }
+            else
+            {
+                UnwindCallStackTo(FlushCallStackFloor);
+                OpStack.Count = FlushOpStackFloor;
+            }
             InstructionPointer = -1;
         }
 

@@ -182,7 +182,7 @@ namespace Wacs.Core.Instructions
                 var ta = context.Frame.Module.TableAddrs[X];
                 var tab = context.Store[ta];
                 int i = context.OpStack.Peek();
-                if (i >= tab.Elements.Count)
+                if ((ulong)i >= (ulong)tab.Elements.Count)
                     throw new TrapException($"Instruction call_indirect could not find element {i}");
                 var r = tab.Elements[i];
                 if (r.IsNullRef)
@@ -285,7 +285,7 @@ namespace Wacs.Core.Instructions
             //9.
             long i = context.OpStack.PopAddr();
             //10.
-            if (i >= tab.Elements.Count)
+            if ((ulong)i >= (ulong)tab.Elements.Count)
                 throw new TrapException($"Instruction call_indirect could not find element {i}");
             //11.
             var r = tab.Elements[(int)i];
@@ -354,7 +354,7 @@ namespace Wacs.Core.Instructions
             //9.
             long i = context.OpStack.PopAddr();
             //10.
-            if (i >= tab.Elements.Count)
+            if ((ulong)i >= (ulong)tab.Elements.Count)
                 throw new TrapException($"Instruction call_indirect could not find element {i}");
             //11.
             var r = tab.Elements[(int)i];
@@ -421,7 +421,7 @@ namespace Wacs.Core.Instructions
                     var ta = context.Frame.Module.TableAddrs[X];
                     var tab = context.Store[ta];
                     int i = context.OpStack.Peek();
-                    if (i >= tab.Elements.Count)
+                    if ((ulong)i >= (ulong)tab.Elements.Count)
                         throw new TrapException($"Instruction call_indirect could not find element {i}");
                     var r = tab.Elements[i];
                     if (r.IsNullRef)
