@@ -2050,13 +2050,35 @@ internal sealed class MaglevCodeGenerator
                 Store(v!);
                 return;
             case Opcode.CheckedObjectToIndex:
+            {
+                // A number inline (an integral double, -0 as 0), strings
+                // through the helper (CheckedObjectToIndex's deferred code).
+                Label slow = _il.DefineLabel(), done = _il.DefineLabel();
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                _il.Emit(OpCodes.Ldfld, s_obj);
+                _il.Emit(OpCodes.Ldsfld, s_numberTag);
+                _il.Emit(OpCodes.Bne_Un, slow);
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                EmitLoadNumber();
+                _il.Emit(OpCodes.Stloc, _tmpDouble);
+                _il.Emit(OpCodes.Ldloc, _tmpDouble);
+                EmitTruncateToInt32();
+                _il.Emit(OpCodes.Stloc, _tmpInt);
+                _il.Emit(OpCodes.Ldloc, _tmpInt);
+                _il.Emit(OpCodes.Conv_R8);
+                _il.Emit(OpCodes.Ldloc, _tmpDouble);
+                _il.Emit(OpCodes.Bne_Un, EagerExit(node.EagerDeoptInfo!));
+                _il.Emit(OpCodes.Br, done);
+                _il.MarkLabel(slow);
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 _il.Emit(OpCodes.Ldloca, _tmpInt);
                 Call(nameof(MaglevBuiltins.TryObjectToIndex));
                 DeoptIfFalse(node);
+                _il.MarkLabel(done);
                 _il.Emit(OpCodes.Ldloc, _tmpInt);
                 Store(v!);
                 return;
+            }
             case Opcode.LoadPropertyCellValue:
                 LoadConstantObject(node.Obj0, typeof(PropertyCell));
                 _il.Emit(OpCodes.Ldfld, s_propertyCellValue);

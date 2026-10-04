@@ -293,6 +293,30 @@ public class MaglevCodeQualityTest
         """,
     };
 
+    public static TheoryData<string> IndexSnippets => new()
+    {
+        // Keyed accesses whose keys are tagged values of unknown type
+        // (CheckedObjectToIndex): integral numbers inline, -0, fractions,
+        // NaN, out of int32 range, negative, array index strings and others.
+        """
+        (function() {
+          var a = [10, 20, 30, 40];
+          function at(o) { return a[o.k]; }
+          function put(o, v) { a[o.k] = v; return a.length; }
+          var keys = [0, 1, 2, 3, -0, 1.5, NaN, 2147483648, -1, '2', '01', 'x', 4294967295, 1e21];
+          var out = [];
+          for (var r = 0; r < 30; r++) for (var k of keys) out.push(at({ k: k }));
+          for (var k of keys) { try { out.push(put({ k: k }, 7)); } catch (e) { out.push(e.constructor.name); } }
+          out.push(a.join(), Object.keys(a).join());
+          return out.join();
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(IndexSnippets))]
+    public void ObjectKeysGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
     [Theory]
     [MemberData(nameof(StoreSnippets))]
     public void InlineStoresGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
