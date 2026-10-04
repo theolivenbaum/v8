@@ -265,6 +265,10 @@ public static class MaglevCompiler
                 var generator = new MaglevCodeGenerator(info, code, optimizeFully: true);
                 (MaglevCodeEntry entry, int ilSize) = generator.Generate();
                 RuntimeHelpers.PrepareMethod(entry.Method.MethodHandle);
+                // The direct entry too (it inlines a small body, or is the
+                // frameless copy of the code): otherwise RyuJIT compiles it on
+                // the main thread at the first direct call.
+                if (code.FastCall is { } fastCall) RuntimeHelpers.PrepareMethod(fastCall.Method.MethodHandle);
                 code.Entry = entry;
                 code.ILSize = ilSize;
                 code.CompiledConcurrently = true;

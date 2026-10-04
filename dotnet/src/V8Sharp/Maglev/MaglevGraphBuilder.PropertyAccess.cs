@@ -369,12 +369,15 @@ public sealed partial class MaglevGraphBuilder
     // the call, so the callee is the arm's constant and the call is direct (or
     // inlined, small functions only); the arms' frames merge after the call.
 
+    // V8SHARP_MAGLEV_NO_CONTINUATIONS=1 turns the continuations off (for comparison).
+    static readonly bool s_noContinuations = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_CONTINUATIONS") == "1";
+
     /// <summary>Calls inside a continuation inline small functions only (only_inline_small_).</summary>
     bool _onlyInlineSmall;
 
     bool TryBuildPolymorphicLoadWithContinuation(ValueNode receiver, List<(Map Map, JSValue Handler)> feedback, Name name)
     {
-        if (feedback.Count < 2 || receiver.Representation != ValueRepresentation.kTagged || _onlyInlineSmall) return false;
+        if (feedback.Count < 2 || receiver.Representation != ValueRepresentation.kTagged || _onlyInlineSmall || s_noContinuations) return false;
         var groups = new List<(List<Map> Maps, PropertyAccessInfo Info)>();
         foreach ((Map map, JSValue handler) in feedback)
         {
