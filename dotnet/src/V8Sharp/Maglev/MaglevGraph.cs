@@ -178,7 +178,12 @@ public sealed class MaglevCompilationUnit
         Feedback = feedback;
         Caller = caller;
         InliningDepth = inliningDepth;
-        ConstantPool = Bytecode.ConstantPoolValues ?? InterpreterRuntime.MaterializeConstantPool(info.Isolate, Bytecode);
+        // A worker thread does not materialize a constant pool (a heap write):
+        // the function is compiled (or inlined) once the interpreter has.
+        ConstantPool = Bytecode.ConstantPoolValues ??
+                       (info.IsConcurrent
+                           ? throw new MaglevConcurrentRetryException("constant pool of " + MaglevCompiler.DebugName(shared) + " not materialized")
+                           : InterpreterRuntime.MaterializeConstantPool(info.Isolate, Bytecode));
     }
 
     public MaglevCompilationInfo Info { get; }
@@ -221,7 +226,15 @@ public sealed class MaglevCompilationUnit
 }
 
 /// <summary>A dependency of the code (CompilationDependency): invalidating it deoptimizes the code.</summary>
-public readonly record struct CompilationDependency(HeapObject Object, Objects.DependentCode.DependencyGroups Groups);
+/// <summary>
+/// A compilation dependency: code depending on <paramref name="Object"/>'s
+/// <paramref name="Groups"/> is invalidated with them (DependentCode). A
+/// concurrent job's commit also discards the code when the object was
+/// invalidated while the job ran, or when <paramref name="Validate"/> (a
+/// re-check of a value the code folded, run on the main thread) fails.
+/// </summary>
+public readonly record struct CompilationDependency(HeapObject? Object, Objects.DependentCode.DependencyGroups Groups,
+    Func<Isolate, bool>? Validate = null);
 
 /// <summary>MaglevCompilationInfo.</summary>
 public sealed class MaglevCompilationInfo
@@ -254,6 +267,13 @@ public sealed class MaglevCompilationInfo
     public int MaxInliningDepth;
 
     public bool IsTracing => Isolate.Flags.trace_maglev_graph_building;
+
+    /// <summary>
+    /// The graph is built on a worker thread (a concurrent job): the builder
+    /// does not write the heap and reads feedback pairs consistently
+    /// (MaglevConcurrentDispatcher.cs).
+    /// </summary>
+    public bool IsConcurrent { get; init; }
 
     // ---- Loop effects (V8: LoopEffects, learnt by loop peeling) -----------------------------------------
 

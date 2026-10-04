@@ -69,12 +69,24 @@ public sealed partial class MaglevGraphBuilder
         InlineCacheState state = nexus.IcState();
         if (state is not (InlineCacheState.MONOMORPHIC or InlineCacheState.POLYMORPHIC)) return null;
         var result = new List<(Map Map, JSValue Handler)>();
-        nexus.ExtractMapsAndHandlers(result);
+        if (_info.IsConcurrent)
+        {
+            // A worker thread reads the pairs as one write of the main thread left them.
+            nexus.ReadConsistently(n =>
+            {
+                result.Clear();
+                return n.ExtractMapsAndHandlers(result);
+            });
+        }
+        else
+        {
+            nexus.ExtractMapsAndHandlers(result);
+        }
         for (int i = 0; i < result.Count; i++)
         {
             (Map map, JSValue handler) = result[i];
             if (!map.IsDeprecated) continue;
-            Map? updated = Map.TryUpdate(Isolate, map);
+            Map? updated = _info.IsConcurrent ? Map.TryUpdateNoWrite(Isolate, map) : Map.TryUpdate(Isolate, map);
             if (updated is null) continue;
             if (!updated.IsMigrationTarget) _hasDeprecatedMapWithoutMigrationTarget = true;
             if (loadName is not null && !result.Exists(e => ReferenceEquals(e.Map, updated)) &&

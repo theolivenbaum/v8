@@ -66,6 +66,8 @@ public static class DependentCode
     {
         if (groups == DependencyGroups.None) return;
         OnDeoptimize?.Invoke(isolate, obj, groups);
+        // Concurrent Maglev jobs commit against the invalidations since they started.
+        isolate.MaglevConcurrentDispatcherIfCreated?.RecordInvalidation(obj, groups);
         if (!s_any || !s_dependentCode.TryGetValue(obj, out Entries? entries)) return;
         List<MaglevCode>? invalidated = null;
         lock (entries)
@@ -104,20 +106,23 @@ public static class DependentCode
     // protector, invalidated through Protectors.OnInvalidate.
     static readonly ConditionalWeakTable<Isolate, Dictionary<string, Cell>> s_protectorCells = new();
 
+    // The cell is created by the first of the protector's invalidation and a
+    // dependency on it (a concurrent Maglev job's graph builder, on its worker
+    // thread, under the lock): an invalidation is always an event on the cell
+    // a dependency uses, so a job that read the protector as intact before it
+    // was invalidated finds the invalidation in the dependency log.
     static DependentCode() => Protectors.OnInvalidate += static (isolate, name) =>
-    {
-        if (s_protectorCells.TryGetValue(isolate, out Dictionary<string, Cell>? cells) && cells.TryGetValue(name, out Cell? cell))
-        {
-            DeoptimizeDependencyGroups(isolate, cell, DependencyGroups.PropertyCellChanged);
-        }
-    };
+        DeoptimizeDependencyGroups(isolate, ProtectorCell(isolate, name), DependencyGroups.PropertyCellChanged);
 
     /// <summary>The object code depending on the protector <paramref name="name"/> registers on.</summary>
     public static HeapObject ProtectorCell(Isolate isolate, string name)
     {
         Dictionary<string, Cell> cells = s_protectorCells.GetValue(isolate, static _ => new Dictionary<string, Cell>());
-        if (!cells.TryGetValue(name, out Cell? cell)) cells[name] = cell = new Cell(JSValue.Undefined);
-        return cell;
+        lock (cells)
+        {
+            if (!cells.TryGetValue(name, out Cell? cell)) cells[name] = cell = new Cell(JSValue.Undefined);
+            return cell;
+        }
     }
 
     static LazyDeoptimizeReason ReasonFor(DependencyGroups groups)

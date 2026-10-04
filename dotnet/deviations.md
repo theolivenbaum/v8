@@ -420,20 +420,42 @@ for now, to be revisited when the reason goes away.
   and materializes the inlined ones at deopt and for stack walks). A deopt
   writes the translation's values into these frames instead of building new
   ones. Deopt exits copy the values into a per-isolate scratch buffer.
-- Concurrent compilation (`--concurrent-recompilation`, on as in V8): the
-  tiering manager's requests build the graph on the main thread (V8 builds it
-  on a worker, with the heap broker's snapshot of the heap); the IL
-  generation and a fully optimized RyuJIT compile (`AggressiveOptimization`,
-  `RuntimeHelpers.PrepareMethod`) run on a process-wide Maglev compile
-  thread (beside the baseline tier's), and the code is installed at the next
-  INSTALL_MAGLEV_CODE interrupt. The dependencies are registered when the
-  graph is built: an invalidation before the install marks the code and the
-  install drops it (V8 validates them at commit). OSR requests are concurrent too
-  (`--concurrent-osr`): the frame keeps running and a later back edge enters
-  the code installed in the OSR cache. `%OptimizeFunctionOnNextCall`,
-  `%OptimizeMaglevOnNextCall`, `%OptimizeOsr` and the compiles of functions
-  a natives test optimizes by hand (`--allow-natives-syntax`) are
-  synchronous (RyuJIT tier 0 first); a loop's tiering OSR stays concurrent.
+- Concurrent compilation (`--concurrent-recompilation`, on as in V8) follows
+  maglev-concurrent-dispatcher.cc (MaglevConcurrentDispatcher.cs): the job is
+  prepared on the main thread, builds the graph and generates the code on one
+  of `--concurrent-maglev-max-threads` (2) process-wide worker threads, which
+  also has RyuJIT compile the IL fully optimized (`AggressiveOptimization`,
+  `RuntimeHelpers.PrepareMethod`), and is finalized at the next
+  INSTALL_MAGLEV_CODE interrupt. Differences: (1) V8's graph builder reads the
+  heap through the JSHeapBroker (persistent handles, the heap's
+  concurrent-access rules, locks around feedback and map updates); V8Sharp's
+  reads the .NET objects directly, reads a property IC's (map, handler) pairs
+  under a per-vector write sequence (a seqlock the main thread bumps around
+  pair writes, `FeedbackVector.PairWriteSequence`), and does not write the
+  heap from the worker (`Map.TryUpdateNoWrite`, no migration target is
+  recorded; functions whose constant pool is not materialized are not
+  inlined). (2) The commit (V8: CompilationDependencies::Commit re-checks
+  each dependency) discards the code when an object it depends on was
+  invalidated (`DependentCode.DeoptimizeDependencyGroups`) after the job was
+  prepared: the dispatcher logs invalidations while jobs are open. (3) An
+  exception on the worker (a read racing with the main thread) fails the job
+  without disabling optimization. (4) The job starts at the tick that
+  decides to optimize, not at the function's next call (V8's tiering
+  builtins on the dispatch handle; V8Sharp's call paths have no such hook):
+  the job's `TieringInProgress` plays the part of V8's request in
+  `TieringManager.InterruptBudgetFor` and `MaybeOptimizeFrame` (OSR budget
+  and urgency). OSR requests are concurrent too (`--concurrent-osr`): the
+  frame keeps running and a later back edge enters the code installed in the
+  OSR cache (the install zeroes the function's budget so that the next back
+  edge looks). `%OptimizeFunctionOnNextCall`, `%OptimizeMaglevOnNextCall`,
+  `%OptimizeOsr` and the compiles of functions a natives test optimizes by
+  hand (`--allow-natives-syntax`) are synchronous (RyuJIT tier 0 first); a
+  loop's tiering OSR stays concurrent. `V8SHARP_MAGLEV_GRAPH_ON_MAIN_THREAD=1`
+  builds a concurrent job's graph on the main thread (for comparison),
+  `V8SHARP_MAGLEV_STRESS_CONCURRENT=1` runs synchronous compiles' ExecuteJob
+  on another thread (a test mode for the worker's graph builder), and
+  `V8SHARP_MAGLEV_REPORT_BACKGROUND_EXCEPTIONS` (1, or a file) reports the
+  worker's exceptions.
 - OSR: the check for OSR code runs at the JumpLoop budget interrupt (V8
   checks the OSR urgency on every back edge), in interpreted and baseline
   frames (`BaselineExecution.BudgetInterruptOnJumpLoopOsr`); OSR code takes
@@ -453,21 +475,25 @@ for now, to be revisited when the reason goes away.
 - Protectors are bools (Protectors.cs), not PropertyCells: code depending on
   one registers on a stand-in Cell per protector, invalidated through
   `Protectors.OnInvalidate`.
-- `MaglevCompiler.kMaxDeoptCount` (8) eager deopts stop the tiering manager
-  from optimizing a function (V8 counts deopts with `--max-deopt-count` per
-  feedback vector only for Turbofan and lets Maglev re-optimize). Explicit
-  requests (`%OptimizeFunctionOnNextCall`) still compile, as in V8.
-- The tiering manager does not optimize functions whose graph exceeds
-  `MaglevCompiler.kMaxTieringGraphNodes` (2000 nodes, `V8SHARP_MAGLEV_MAX_NODES`
-  overrides it) or whose IL exceeds 60000 bytes
-  (`MaglevCodeGenerator.kMaxOptimizedILBytes`, `V8SHARP_MAGLEV_MAX_IL`): the
-  compile time of bigger methods outweighs their gain. V8 optimizes them.
-  Methods over 20000 IL bytes are `AggressiveOptimization` (RyuJIT's tier 0
-  of big methods is MinOpts, slower than the baseline code).
-  `%OptimizeFunctionOnNextCall` still compiles such functions.
+- `MaglevCompiler.kMaxDeoptCount`: no limit by default, as in V8, which
+  lets Maglev re-optimize after any number of deopts (its `--max-deopt-count`
+  is Turbofan's); `V8SHARP_MAGLEV_MAX_DEOPTS` sets one (V8Sharp stopped at 8
+  until 2026-10-04: Gameboy's executeIteration reached it in every cold run).
+- Size limits are V8's (max_maglev_optimized_bytecode_size, 512 KB, in
+  PrepareJob; max_optimized_bytecode_size, 60 KB, stops the ticks). A
+  method beyond RyuJIT's optimization limits (60000 IL bytes, 20000
+  instructions, 2000 blocks, 8000 local references) is compiled by RyuJIT
+  with MinOpts; such code is still well ahead of the baseline tier and the
+  interpreter (zlib). `V8SHARP_MAGLEV_MAX_NODES` and `V8SHARP_MAGLEV_MAX_IL`
+  set limits for experiments. Methods over 20000 IL bytes are
+  `AggressiveOptimization` (RyuJIT's tier 0 of big methods is MinOpts).
 - Deopt exits: constant values of a frame state are literals of the deopt
-  point's translation (V8's StoreLiteral), written by the Deoptimizer; exits
-  whose remaining values are the same share their spill code.
+  point's translation (V8's StoreLiteral), written by the Deoptimizer. V8's
+  exits are a call each and the deoptimizer reads the values from the
+  optimized frame; V8Sharp's values are in IL locals, so an exit spills them
+  to the isolate's scratch buffer, one slot per value, through chains of
+  spill blocks that exits share (an exit stores what a recent exit's block
+  does not and continues there).
 - Typed array stores: V8Sharp's keyed store IC gives typed arrays a slow
   handler (and goes megamorphic), so the element store is built from the
   feedback maps alone, and megamorphic keyed stores call

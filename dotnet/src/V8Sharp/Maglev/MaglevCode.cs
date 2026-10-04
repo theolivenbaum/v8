@@ -69,8 +69,12 @@ public sealed class DeoptFrameData
     /// <summary>The translation's literals (constant values), by register position (where IsConstant); null if none.</summary>
     public JSValue[]? Constants;
     public bool[]? IsConstant;
-    /// <summary>The scratch buffer index of the first value.</summary>
-    public int ScratchStart;
+    /// <summary>
+    /// The scratch buffer index of each register's value (-1 for literals and
+    /// materialized objects). Every value of a code has its own slot, so deopt
+    /// exits whose values overlap share the code that spills them.
+    /// </summary>
+    public int[] ScratchSlots = [];
 }
 
 /// <summary>A deopt exit (DeoptimizationData entry: kind, reason, translation).</summary>
@@ -80,7 +84,6 @@ public sealed class DeoptPoint
     public DeoptimizeReason Reason;
     /// <summary>The frames, outermost first; the last is the frame execution continues in.</summary>
     public DeoptFrameData[] Frames = [];
-    public int ScratchSize;
     /// <summary>Lazy deopts: where the result of the call goes in the top frame.</summary>
     public Register ResultLocation = Register.VirtualAccumulator();
     /// <summary>Lazy deopts: the scratch index of the result, or -1 (the call wrote its outputs to the frame itself).</summary>
@@ -139,6 +142,8 @@ public sealed class MaglevCode
     public CompilationDependency[] Dependencies { get; internal set; } = [];
 
     public int ILSize { get; internal set; }
+    /// <summary>What RyuJIT's optimization limits count (MaglevILEmitter), for --trace-opt-verbose.</summary>
+    public (int Instructions, int BlockBoundaries, int LocalReferences, int Locals) ILCounts { get; internal set; }
     public int NodeCount { get; internal set; }
     public int InlinedFunctionCount { get; internal set; }
 

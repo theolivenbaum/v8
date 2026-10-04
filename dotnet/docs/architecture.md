@@ -589,8 +589,9 @@ code enters a callee's baseline code (`BaselineCalls.CallFromOptimizedCode`).
 that can throw or call out, as IL (RyuJIT stops inlining in big methods:
 what must be cheap there is emitted as IL, not called). Each thread that
 emits code has its own dynamic assemblies (`BaselineCodeSpace`); the
-Sparkplug batches and the Maglev jobs have a background thread each
-(`BaselineCompileThread`, `MaglevCompileThread`).
+Sparkplug batches have a background thread (`BaselineCompileThread`), and
+the Maglev jobs run on the dispatcher's worker threads
+(`MaglevConcurrentDispatcher`, section 9.2).
 
 **Concurrent compilation and RyuJIT.** With `--concurrent-sparkplug` (the
 default, as in V8 on x64), a batch is compiled by one process-wide background
@@ -759,8 +760,9 @@ continue at the bytecode whose check failed; lazy deopts (after a call,
 when the code was invalidated meanwhile: the IL tests
 `MaglevCode.MarkedForDeoptimization` after every call) continue after the
 call with its result. An eager deopt invalidates the code (except OSR early
-exits, and OSR code deopting outside its loop); after `kMaxDeoptCount`
-invalidations the tiering manager does not optimize the function again. A
+exits, and OSR code deopting outside its loop); as in V8 the function is
+optimized again after any number of deopts (`V8SHARP_MAGLEV_MAX_DEOPTS` sets
+a limit). A
 deopt of a check made while reducing a builtin call disallows speculation
 on the call's feedback (out of bounds first only disallows bounds-check
 speculation), as V8's feedback_to_update.
@@ -777,22 +779,42 @@ ranges run from a value's definition to its last use, counting deopt frame
 values, phi inputs at the predecessor's end and lazily pushed inlined
 frames, and a value live into a loop is live through it. This keeps a
 method's locals below RyuJIT's inlining (512) and MinOpts (2000) limits.
-A tiering compile whose IL exceeds 60000 bytes bails out; methods over 20000
-bytes are `AggressiveOptimization` (RyuJIT's tier 0 of big methods is
-MinOpts, slower than the baseline code).
+There is no IL size limit beyond V8's bytecode size limits: RyuJIT compiles
+a method over its optimization limits with MinOpts, which still beats the
+lower tiers; methods over 20000 bytes are `AggressiveOptimization` (RyuJIT's
+tier 0 of big methods is MinOpts).
 Deopt exits spill only non-constant values (constants are literals of the
-deopt point), share spill code between exits with the same values, and end
-in one call that takes the last values (`MaglevBuiltins.Deopt0-4`).
+deopt point). Every spilled value has its own slot of the scratch buffer
+(`DeoptFrameData.ScratchSlots`), so the code that stores a value is the same
+for every exit: an exit stores what one of the last 16 exits' spill blocks
+does not and jumps to it, and the chain ends in `MaglevBuiltins.Deopt0`.
+Consecutive exits share most of their live values, so an exit costs a few
+stores (zlib's biggest function: 434 KB of exit IL before, 33 KB after).
+The IL goes through `MaglevILEmitter`, which counts what RyuJIT's
+optimization limits count and uses the short constant encodings.
 
 **Tiering.** `--maglev` (on by default, as in V8) makes
 `Isolate.UseOptimizer` true; `TieringManager.OnInterruptTick` requests a
 compile once a function's invocation count reaches
-`--invocation-count-for-maglev` (400, V8's). With `--concurrent-recompilation` (the
-default) the graph is built at once and the IL generation and RyuJIT's
-fully optimized compile run on the Maglev compile thread
-(`MaglevCompiler.CompileConcurrently`); INSTALL_MAGLEV_CODE installs the
-code on the feedback vector, which every closure of the CreateClosure site
-shares, unless a dependency was invalidated meanwhile. A frame stuck
+`--invocation-count-for-maglev` (400, V8's). With `--concurrent-recompilation`
+(the default) the request is a `MaglevCompilationJob`
+(MaglevConcurrentDispatcher.cs, maglev-concurrent-dispatcher.cc): PrepareJob
+on the main thread (the bailouts that need no graph, the constant pool, the
+start of the dependency log), ExecuteJob on one of two worker threads (graph
+building, the passes, the IL and RyuJIT's fully optimized compile), and
+FinalizeJob at the next INSTALL_MAGLEV_CODE interrupt, which commits the
+dependencies and installs the code on the feedback vector, which every
+closure of the CreateClosure site shares. The worker reads the heap without
+writing it: the (map, handler) pairs of property feedback are read under the
+vector's pair write sequence (the main thread's `FeedbackNexus.SetFeedback`
+of a pair is a seqlock writer), map updates do not record migration targets,
+and functions whose constant pool the interpreter has not materialized are
+not inlined. While jobs are open, `DependentCode.DeoptimizeDependencyGroups`
+logs every invalidation; the commit discards code that depends on an object
+invalidated after its job was prepared (it is compiled again later). The
+job's `FeedbackVector.TieringInProgress` stands for V8's optimization
+request (V8 starts the job at the function's next call): ticks meanwhile
+get the Maglev OSR budget and raise the OSR urgency. A frame stuck
 in a loop (interpreted or baseline) OSRs at its next JumpLoop budget
 interrupt (`MaglevExecution.TryGetOsrCode`, `RunOsr`); with
 `--concurrent-osr` the OSR compile is a concurrent job too and a later back

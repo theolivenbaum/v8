@@ -332,18 +332,6 @@ internal static class BaselineCompileThread
     public static void Post(Action work) => s_thread.Post(work);
 }
 
-/// <summary>
-/// The process-wide background thread of the concurrent Maglev compiler (V8
-/// posts Maglev jobs to the platform's workers, apart from the Sparkplug
-/// batches): a function's optimized code does not wait behind baseline batches.
-/// </summary>
-internal static class MaglevCompileThread
-{
-    static readonly CompileThread s_thread = new("V8Sharp concurrent Maglev");
-
-    public static void Post(Action work) => s_thread.Post(work);
-}
-
 /// <summary>A background thread that runs compile jobs in order (started on first use).</summary>
 internal sealed class CompileThread(string name)
 {

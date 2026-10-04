@@ -89,38 +89,30 @@ public static class Deoptimizer
             JSValue accumulator = JSValue.Undefined;
             Context? context = null;
             Register[] registers = f.Registers;
+            int[] slots = f.ScratchSlots;
+            JSValue materialized = default;
             if (f.Materialize is { } materialize)
             {
                 // Materialize the elided arguments objects (translated-state.cc's
                 // captured objects) from the frame's arguments, which the code never
-                // writes, before the registers are written.
-                JSValue materialized = default;
+                // writes, before the registers are written. One object, whichever
+                // registers hold it.
                 for (int k = 0; k < registers.Length; k++)
                 {
                     if (materialize[k] == ArgumentsObjectKind.None) continue;
-                    // One object, whichever registers hold it.
-                    if (materialized._obj is null)
-                    {
-                        var frameContext = stack[fp + InterpreterRuntime.kContextOffset].As<Context>();
-                        materialized = materialize[k] == ArgumentsObjectKind.Mapped
-                            ? InterpreterArguments.NewSloppyArguments(isolate, f.Function, frameContext, fp, InterpreterRuntime.FrameArgc(isolate, fp))
-                            : InterpreterArguments.NewStrictArguments(isolate, f.Function, fp, InterpreterRuntime.FrameArgc(isolate, fp));
-                    }
-                    scratch[f.ScratchStart + k] = materialized;
-                }
-            }
-            if (f.IsConstant is { } isConstant)
-            {
-                // The translation's literals.
-                JSValue[] constants = f.Constants!;
-                for (int k = 0; k < registers.Length; k++)
-                {
-                    if (isConstant[k]) scratch[f.ScratchStart + k] = constants[k];
+                    var frameContext = stack[fp + InterpreterRuntime.kContextOffset].As<Context>();
+                    materialized = materialize[k] == ArgumentsObjectKind.Mapped
+                        ? InterpreterArguments.NewSloppyArguments(isolate, f.Function, frameContext, fp, InterpreterRuntime.FrameArgc(isolate, fp))
+                        : InterpreterArguments.NewStrictArguments(isolate, f.Function, fp, InterpreterRuntime.FrameArgc(isolate, fp));
+                    break;
                 }
             }
             for (int k = 0; k < registers.Length; k++)
             {
-                JSValue value = scratch[f.ScratchStart + k];
+                // A spilled value, a literal of the translation, or the materialized object.
+                JSValue value = slots[k] >= 0 ? scratch[slots[k]]
+                    : f.IsConstant is { } isConstant && isConstant[k] ? f.Constants![k]
+                    : materialized;
                 Register r = registers[k];
                 if (r == Register.VirtualAccumulator())
                 {
