@@ -24,11 +24,14 @@ namespace V8Sharp
         /// <summary>Set by the Deoptimizer: the Maglev code returned to continue in the interpreter.</summary>
         public bool MaglevDeoptPending;
 
-        /// <summary>Concurrently compiled Maglev code waiting for INSTALL_MAGLEV_CODE (MaglevConcurrentDispatcher's outgoing queue).</summary>
-        public readonly System.Collections.Concurrent.ConcurrentQueue<Maglev.MaglevCode> MaglevInstallQueue = new();
+        Maglev.MaglevConcurrentDispatcher? _maglevConcurrentDispatcher;
 
-        /// <summary>Maglev compile jobs posted to the background thread and not yet queued for install.</summary>
-        public int MaglevJobsInFlight;
+        /// <summary>Isolate::maglev_concurrent_dispatcher.</summary>
+        public Maglev.MaglevConcurrentDispatcher MaglevConcurrentDispatcher =>
+            _maglevConcurrentDispatcher ??= new Maglev.MaglevConcurrentDispatcher(this);
+
+        /// <summary>The dispatcher, if a Maglev job was ever prepared.</summary>
+        public Maglev.MaglevConcurrentDispatcher? MaglevConcurrentDispatcherIfCreated => _maglevConcurrentDispatcher;
 
         /// <summary>Some function has Maglev code (enables the interpreter's OSR check).</summary>
         public bool MayHaveMaglevCode;
@@ -150,7 +153,10 @@ namespace V8Sharp.Maglev
                              isolate.Flags.allow_natives_syntax && MaglevCompiler.IsMarkedForManualOptimization(function);
             if (isolate.Flags.concurrent_osr && isolate.Flags.concurrent_recompilation && !requested)
             {
-                MaglevCompiler.CompileConcurrently(isolate, function, jumpLoopOffset);
+                // Runtime_CompileOptimizedOSR with a job already running: the frame
+                // keeps going (TieringManager::MaybeOptimizeFrame returns early
+                // while osr_tiering_in_progress).
+                if (!vector.OsrTieringInProgress) MaglevCompiler.CompileConcurrently(isolate, function, jumpLoopOffset);
                 return null;
             }
             MaglevCode? code = MaglevCompiler.Compile(isolate, function, jumpLoopOffset, byTieringManager: true);

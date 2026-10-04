@@ -2,13 +2,20 @@
 // tiering decisions taken when it runs out (OnInterruptTick).
 //
 // V8Sharp's tiers are Ignition, Sparkplug (baseline IL, src/V8Sharp/Baseline)
-// and Maglev (optimized IL, src/V8Sharp/Maglev); there is no Turbofan, so with
-// --maglev V8Sharp behaves like V8 run with --maglev --no-turbofan: the first
-// tick allocates the feedback vector and tiers up to Sparkplug, a later tick
-// optimizes with Maglev (synchronously), and a function stuck in a loop
-// raises its OSR urgency so that its next JumpLoop interrupt OSRs into
-// Maglev code. Maglev is off by default in V8Sharp for now (deviations.md),
-// which makes use_optimizer() false as in a V8 built without optimizers.
+// and Maglev (optimized IL, src/V8Sharp/Maglev); there is no Turbofan, so
+// V8Sharp behaves like V8 run with --no-turbofan: the first tick allocates
+// the feedback vector and tiers up to Sparkplug, a later tick optimizes with
+// Maglev (a concurrent job), and a function stuck in a loop raises its OSR
+// urgency so that its next JumpLoop interrupt OSRs into Maglev code.
+//
+// Deviation: V8 marks the function at the tick (RequestOptimization) and
+// starts the concurrent job at its next call (the tiering builtin of its
+// dispatch handle); V8Sharp has no tiering hook on its call paths and starts
+// the job at the tick. The job's TieringInProgress therefore plays the part
+// of V8's request: the budget while it runs is the Maglev OSR budget
+// (maybe_ml_osr) and ticks meanwhile raise the OSR urgency, as V8's ticks do
+// while the request waits for a call that a function stuck in a loop never
+// makes.
 using V8Sharp.Baseline;
 using V8Sharp.Codegen;
 using V8Sharp.Interpreter;
@@ -136,12 +143,21 @@ public sealed class TieringManager(Isolate isolate)
     static bool TiersUpToMaglev(Isolate isolate, CodeKind? codeKind) =>
         IsMaglevEnabled(isolate) && codeKind is { } kind && CodeKindHelpers.IsUnoptimizedJSFunction(kind);
 
-    /// <summary>The anonymous InterruptBudgetFor of tiering-manager.cc (no tiering is ever in progress).</summary>
+    /// <summary>The anonymous InterruptBudgetFor of tiering-manager.cc.</summary>
     static int InterruptBudgetFor(Isolate isolate, CodeKind? codeKind, JSFunction function,
         CachedTieringDecision cachedTieringDecision, int bytecodeLength)
     {
         FlagList flags = isolate.Flags;
-        if (TiersUpToMaglev(isolate, codeKind))
+        var vector = function.RawFeedbackCell.Value as FeedbackVector;
+        // existing_request == MAGLEV: a queued or running job (see the header).
+        bool requested = vector is { TieringInProgress: true };
+        bool maybeMaglevOsr = flags.maglev_osr && flags.use_osr && requested;
+        bool osrTieringInProgress = vector is { OsrTieringInProgress: true };
+        // Stretch loop interrupts while tiering is already in progress.
+        double osrFactor = osrTieringInProgress ? flags.invocation_count_for_osr_factor_while_tiering_in_progress : 1;
+        if (maybeMaglevOsr) return ScaleInterruptBudget(osrFactor * flags.invocation_count_for_maglev_osr, bytecodeLength);
+
+        if (TiersUpToMaglev(isolate, codeKind) && !requested)
         {
             if (flags.profile_guided_optimization)
             {
@@ -268,42 +284,74 @@ public sealed class TieringManager(Isolate isolate)
     }
 
     /// <summary>
-    /// TieringManager::MaybeOptimizeFrame. Maglev compilation is synchronous
-    /// (V8 marks the function for concurrent optimization and installs the
-    /// code when the job finishes).
+    /// TieringManager::MaybeOptimizeFrame. The decision to optimize starts the
+    /// concurrent job (V8: marks the function, and its next call starts the
+    /// job; see the header).
     /// </summary>
     void MaybeOptimizeFrame(JSFunction function, CodeKind currentCodeKind)
     {
         if (JSFunctionFeedback.GetFeedbackVector(function) is not { } vector) return;
-        if (Maglev.MaglevCompiler.OptimizationDisabled(function.Shared)) return;
-        if (isolate.Flags.allow_natives_syntax && Maglev.MaglevCompiler.IsMarkedForManualOptimization(function)) return;
-
-        if (isolate.Flags.always_osr) TryIncrementOsrUrgency(vector);
-
-        // The function has Maglev code but this frame runs a lower tier: it is
-        // stuck in a loop. OSR kicks in at its next JumpLoop interrupt.
-        if (vector.MaglevCode is not null && currentCodeKind < CodeKind.MAGLEV)
+        // Note: This effectively disables further tiering actions (e.g. OSR, or
+        // tiering up into Maglev) for the function while it is being compiled.
+        if (vector.OsrTieringInProgress)
         {
-            if (isolate.Flags.maglev_osr) TryIncrementOsrUrgency(vector);
+            if (isolate.Flags.trace_opt_verbose)
+            {
+                Console.WriteLine($"[not marking function {Maglev.MaglevCompiler.DebugName(function.Shared)} ({currentCodeKind}) for optimization: already queued]");
+            }
+            return;
+        }
+        if (isolate.Flags.allow_natives_syntax && Maglev.MaglevCompiler.IsMarkedForManualOptimization(function)) return;
+        if (Maglev.MaglevCompiler.OptimizationDisabled(function.Shared)) return;
+
+        if (isolate.Flags.always_osr)
+        {
+            TryRequestOsrAtNextOpportunity(function, vector);
+            // Continue below and do a normal optimized compile as well.
+        }
+
+        bool maglevOsr = isolate.Flags.maglev_osr && isolate.Flags.use_osr;
+        bool waitingForTierup = maglevOsr && currentCodeKind < CodeKind.MAGLEV && vector.MaglevCode is not null;
+        if (vector.TieringInProgress || waitingForTierup)
+        {
+            // OSR kicks in only once we've previously decided to tier up, but we are
+            // still in a lower-tier frame (this implies a long-running loop).
+            TryIncrementOsrUrgency(function, vector);
+            // Return unconditionally and don't run through the optimization decision
+            // again; we've already decided to tier up previously.
             return;
         }
 
         OptimizationDecision d = ShouldOptimize(vector, currentCodeKind);
         if (!d.ShouldOptimize || d.CodeKind != CodeKind.MAGLEV) return;
-        if (Compiler.CompileMaglev(isolate, function, byTieringManager: true) && isolate.Flags.maglev_osr)
+        if (isolate.Flags.trace_opt)
         {
-            // This tick came from the running function's own frame: if it is in
-            // a loop, the next JumpLoop interrupt OSRs.
-            TryIncrementOsrUrgency(vector);
+            Console.WriteLine($"[marking {Maglev.MaglevCompiler.DebugName(function.Shared)} for optimization to MAGLEV, " +
+                              $"{(isolate.Flags.concurrent_recompilation ? "ConcurrencyMode::kConcurrent" : "ConcurrencyMode::kSynchronous")}, reason: hot and stable]");
         }
+        Compiler.CompileMaglev(isolate, function, byTieringManager: true);
+    }
+
+    /// <summary>TrySetOsrUrgency.</summary>
+    void TrySetOsrUrgency(JSFunction function, FeedbackVector vector, int osrUrgency)
+    {
+        if (!isolate.Flags.use_osr) return;
+        if (Maglev.MaglevCompiler.OptimizationDisabled(function.Shared)) return;
+        if (isolate.Flags.trace_osr)
+        {
+            Console.WriteLine($"[OSR - setting osr urgency. function: {Maglev.MaglevCompiler.DebugName(function.Shared)}, " +
+                              $"old urgency: {vector.OsrUrgency}, new urgency: {osrUrgency}]");
+        }
+        vector.OsrUrgency = osrUrgency;
     }
 
     /// <summary>TryIncrementOsrUrgency.</summary>
-    void TryIncrementOsrUrgency(FeedbackVector vector)
-    {
-        if (!isolate.Flags.use_osr) return;
-        if (vector.OsrUrgency < FeedbackVector.kMaxOsrUrgency) vector.OsrUrgency = vector.OsrUrgency + 1;
-    }
+    void TryIncrementOsrUrgency(JSFunction function, FeedbackVector vector) =>
+        TrySetOsrUrgency(function, vector, Math.Min(vector.OsrUrgency + 1, FeedbackVector.kMaxOsrUrgency));
+
+    /// <summary>TryRequestOsrAtNextOpportunity.</summary>
+    void TryRequestOsrAtNextOpportunity(JSFunction function, FeedbackVector vector) =>
+        TrySetOsrUrgency(function, vector, FeedbackVector.kMaxOsrUrgency);
 
     /// <summary>TieringManager::ShouldOptimize.</summary>
     OptimizationDecision ShouldOptimize(FeedbackVector feedbackVector, CodeKind currentCodeKind)

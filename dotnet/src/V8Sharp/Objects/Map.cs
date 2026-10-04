@@ -1744,6 +1744,18 @@ public sealed class Map : HeapObject
         return newMap;
     }
 
+    /// <summary>
+    /// Map::TryUpdate without recording the migration target (MapUpdater::TryUpdateNoLock
+    /// as V8's concurrent compiler calls it): a read of the transition tree only,
+    /// for a Maglev graph built on a worker thread.
+    /// </summary>
+    public static Map? TryUpdateNoWrite(Isolate isolate, Map oldMap)
+    {
+        if (!oldMap.IsDeprecated) return oldMap;
+        if (isolate.Flags.fast_map_update && SearchMigrationTarget(isolate, oldMap) is { } targetMap) return targetMap;
+        return MapUpdater.TryUpdateNoLock(isolate, oldMap);
+    }
+
     internal Map? TryReplayPropertyTransitions(Isolate isolate, Map oldMap)
     {
         int rootNof = NumberOfOwnDescriptors;

@@ -553,6 +553,8 @@ public sealed partial class MaglevGraphBuilder
         // SharedFunctionInfo::GetInlineability: kHasOptimizationDisabled.
         if (MaglevCompiler.OptimizationDisabled(shared)) return "optimization disabled";
         if (target.RawFeedbackCell.Value is not FeedbackVector) return "no feedback vector";
+        // A worker thread does not materialize a constant pool (MaglevCompilationUnit).
+        if (_info.IsConcurrent && bytecode.ConstantPoolValues is null) return "constant pool not materialized";
         if (!isConstruct && shared.IsClassConstructor) return "class constructor";
         if (isConstruct && Globals.IsDerivedConstructor(shared.Kind)) return "derived constructor";
         if (UnsupportedReason(shared, bytecode) is { } reason) return reason;

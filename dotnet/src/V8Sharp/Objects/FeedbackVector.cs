@@ -317,6 +317,20 @@ public sealed class FeedbackVector : HeapObject
     /// <summary>V8Sharp: %OptimizeOsr asked for OSR (the OSR compile is synchronous then).</summary>
     public bool OsrRequestedByNatives;
 
+    /// <summary>FeedbackVector::tiering_in_progress: a concurrent Maglev job is compiling the function.</summary>
+    public bool TieringInProgress;
+
+    /// <summary>FeedbackVector::osr_tiering_in_progress: a concurrent OSR job is compiling one of the function's loops.</summary>
+    public bool OsrTieringInProgress;
+
+    /// <summary>
+    /// The write sequence of the (feedback, extra) pairs (odd while a pair is
+    /// written; V8Sharp's form of V8's feedback_vector_access mutex): a
+    /// concurrent Maglev job reads a pair and retries when the sequence moved
+    /// (FeedbackNexus.ReadConsistently).
+    /// </summary>
+    public int PairWriteSequence;
+
     /// <summary>FeedbackVector::New: allocates and initializes the vector, and installs it in the parent cell.</summary>
     public static FeedbackVector New(Isolate isolate, SharedFunctionInfo shared,
         ClosureFeedbackCellArray closureFeedbackCellArray, FeedbackCell parentFeedbackCell)
@@ -453,16 +467,58 @@ public readonly struct FeedbackNexus
     public (JSValue Feedback, JSValue Extra) GetFeedbackPair() =>
         FeedbackMetadata.GetSlotSize(Kind) == 2 ? (GetFeedback(), GetFeedbackExtra()) : (GetFeedback(), JSValue.Undefined);
 
-    public void SetFeedback(JSValue feedback) => Vector!.Slots[Index] = feedback;
-
-    public void SetFeedback(JSValue feedback, JSValue feedbackExtra)
+    public void SetFeedback(JSValue feedback)
     {
-        JSValue[] slots = Vector!.Slots;
-        slots[Index] = feedback;
-        slots[Index + 1] = feedbackExtra;
+        FeedbackVector vector = Vector!;
+        Interlocked.Increment(ref vector.PairWriteSequence);
+        vector.Slots[Index] = feedback;
+        Volatile.Write(ref vector.PairWriteSequence, vector.PairWriteSequence + 1);
     }
 
-    public void SetFeedbackExtra(JSValue feedbackExtra) => Vector!.Slots[Index + 1] = feedbackExtra;
+    /// <summary>
+    /// FeedbackNexus::SetFeedback of a pair: under the vector's write sequence
+    /// (V8 takes the feedback_vector_access mutex), so a concurrent compile
+    /// never reads half of an update.
+    /// </summary>
+    public void SetFeedback(JSValue feedback, JSValue feedbackExtra)
+    {
+        FeedbackVector vector = Vector!;
+        Interlocked.Increment(ref vector.PairWriteSequence);
+        JSValue[] slots = vector.Slots;
+        slots[Index] = feedback;
+        slots[Index + 1] = feedbackExtra;
+        Volatile.Write(ref vector.PairWriteSequence, vector.PairWriteSequence + 1);
+    }
+
+    public void SetFeedbackExtra(JSValue feedbackExtra)
+    {
+        FeedbackVector vector = Vector!;
+        Interlocked.Increment(ref vector.PairWriteSequence);
+        vector.Slots[Index + 1] = feedbackExtra;
+        Volatile.Write(ref vector.PairWriteSequence, vector.PairWriteSequence + 1);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="read"/> (reads of this slot's feedback) until no
+    /// pair write ran meanwhile (the reader side of PairWriteSequence): a
+    /// concurrent Maglev job's view of a pair is one the main thread wrote.
+    /// </summary>
+    public T ReadConsistently<T>(Func<FeedbackNexus, T> read)
+    {
+        FeedbackVector vector = Vector!;
+        var spin = new SpinWait();
+        while (true)
+        {
+            int before = Volatile.Read(ref vector.PairWriteSequence);
+            if ((before & 1) == 0)
+            {
+                T result = read(this);
+                Interlocked.MemoryBarrier();
+                if (Volatile.Read(ref vector.PairWriteSequence) == before) return result;
+            }
+            spin.SpinOnce();
+        }
+    }
 
     static bool IsUninitializedSentinel(in JSValue v) => ReferenceEquals(v.HeapObjectOrNull, ReadOnlyRoots.uninitialized_symbol);
     static bool IsMegamorphicSentinel(in JSValue v) => ReferenceEquals(v.HeapObjectOrNull, ReadOnlyRoots.megamorphic_symbol);

@@ -548,8 +548,9 @@ code enters a callee's baseline code (`BaselineCalls.CallFromOptimizedCode`).
 that can throw or call out, as IL (RyuJIT stops inlining in big methods:
 what must be cheap there is emitted as IL, not called). Each thread that
 emits code has its own dynamic assemblies (`BaselineCodeSpace`); the
-Sparkplug batches and the Maglev jobs have a background thread each
-(`BaselineCompileThread`, `MaglevCompileThread`).
+Sparkplug batches have a background thread (`BaselineCompileThread`), and
+the Maglev jobs run on the dispatcher's worker threads
+(`MaglevConcurrentDispatcher`, section 9.2).
 
 **Concurrent compilation and RyuJIT.** With `--concurrent-sparkplug` (the
 default, as in V8 on x64), a batch is compiled by one process-wide background
@@ -704,12 +705,25 @@ in one call that takes the last values (`MaglevBuiltins.Deopt0-4`).
 **Tiering.** `--maglev` (on by default, as in V8) makes
 `Isolate.UseOptimizer` true; `TieringManager.OnInterruptTick` requests a
 compile once a function's invocation count reaches
-`--invocation-count-for-maglev` (400, V8's). With `--concurrent-recompilation` (the
-default) the graph is built at once and the IL generation and RyuJIT's
-fully optimized compile run on the Maglev compile thread
-(`MaglevCompiler.CompileConcurrently`); INSTALL_MAGLEV_CODE installs the
-code on the feedback vector, which every closure of the CreateClosure site
-shares, unless a dependency was invalidated meanwhile. A frame stuck
+`--invocation-count-for-maglev` (400, V8's). With `--concurrent-recompilation`
+(the default) the request is a `MaglevCompilationJob`
+(MaglevConcurrentDispatcher.cs, maglev-concurrent-dispatcher.cc): PrepareJob
+on the main thread (the bailouts that need no graph, the constant pool, the
+start of the dependency log), ExecuteJob on one of two worker threads (graph
+building, the passes, the IL and RyuJIT's fully optimized compile), and
+FinalizeJob at the next INSTALL_MAGLEV_CODE interrupt, which commits the
+dependencies and installs the code on the feedback vector, which every
+closure of the CreateClosure site shares. The worker reads the heap without
+writing it: the (map, handler) pairs of property feedback are read under the
+vector's pair write sequence (the main thread's `FeedbackNexus.SetFeedback`
+of a pair is a seqlock writer), map updates do not record migration targets,
+and functions whose constant pool the interpreter has not materialized are
+not inlined. While jobs are open, `DependentCode.DeoptimizeDependencyGroups`
+logs every invalidation; the commit discards code that depends on an object
+invalidated after its job was prepared (it is compiled again later). The
+job's `FeedbackVector.TieringInProgress` stands for V8's optimization
+request (V8 starts the job at the function's next call): ticks meanwhile
+get the Maglev OSR budget and raise the OSR urgency. A frame stuck
 in a loop (interpreted or baseline) OSRs at its next JumpLoop budget
 interrupt (`MaglevExecution.TryGetOsrCode`, `RunOsr`); with
 `--concurrent-osr` the OSR compile is a concurrent job too and a later back
