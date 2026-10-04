@@ -769,13 +769,14 @@ for now, to be revisited when the reason goes away.
   and import.meta callbacks, the source phase ResolveSourceCallback) are
   delegates; the host's dynamic import callback is the phase-taking
   HostImportModuleWithPhaseDynamicallyCallback only. Module source objects
-  exist only for WebAssembly, which is not ported, so every source phase
-  import fails with d8's SyntaxError. The STACK_CHECK of linking and
+  exist only for WebAssembly, whose source phase imports are not
+  implemented (see WebAssembly), so every source phase import fails with
+  d8's SyntaxError. The STACK_CHECK of linking and
   evaluation also requires 32 register-stack slots (the C++ frames of
   Module::Evaluate in V8), so that a deferred module evaluated at the
   recursion limit fails with the RangeError as in V8
-  (modules-import-defer-stack-overflow-on-sync-eval). Not ported:
-  WebAssembly modules and the code cache in the d8 loader.
+  (modules-import-defer-stack-overflow-on-sync-eval). Not ported: the
+  code cache in the d8 loader.
 - Parser flags: the fuzzing flags reach the parser, and
   `RuntimeFuzzing.IsEnabledForFuzzing` is runtime.cc's allowlist; the
   FOR_EACH_INTRINSIC_TEST list it needs is copied into the parsing assembly
@@ -917,7 +918,9 @@ ValueSerializer (Objects/ValueSerializer.cs)
   strings are UTF-16 only.
 - ReadJSObjectProperties defines the properties one by one (V8 first tries
   to follow the expected map transitions); the resulting maps are the same.
-- Not ported: WebAssembly modules and memories, shared structs/arrays and the
+- WebAssembly.Module and WebAssembly.Memory are written and read as V8 does
+  (transfer ids through the delegate; see WebAssembly for recompilation).
+- Not ported: shared structs/arrays and the
   shared-object conveyor, host objects of the API (the delegate hooks exist).
 - ArrayBuffers of 2^31 bytes or more cannot be allocated (byte[] backing).
 
@@ -1395,9 +1398,10 @@ vendored code carry a `V8Sharp:` comment at the site.
   static type the value carried. A JS Number in i31 range or a wasm GC
   object passed as externref keeps that identity (V8 keeps the JS value; the
   difference is not observable). Wasm GC objects reach JavaScript as opaque
-  wrapper objects with a null prototype; property writes and other
-  operations V8 rejects with a TypeError ("WasmObjectsAreOpaque") are not
-  rejected.
+  objects with a null prototype whose maps are wasm maps: defining
+  properties, extensions, prototypes and integrity levels throw V8's
+  WasmObjectsAreOpaque TypeError. A store keyed by a private symbol is
+  accepted (as in the oracle).
 - **JSPI.** `WebAssembly.Suspending` and `WebAssembly.promising` exist, but
   the interpreter cannot suspend a wasm stack: a suspending import that
   returns a promise throws SuspendError.
