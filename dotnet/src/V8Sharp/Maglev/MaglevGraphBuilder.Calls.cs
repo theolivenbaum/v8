@@ -746,6 +746,8 @@ public sealed partial class MaglevGraphBuilder
         // Arguments beyond the formal parameters are in no deopt frame (they are
         // only in the frame), so such a frame is pushed on entry.
         unit.EagerFrame = args.Length > unit.Bytecode.ParameterCount - 1;
+        // A frame pushed on entry holds the receiver and the arguments.
+        if (unit.EagerFrame) foreach (ValueNode input in unit.EntryNode.Inputs) EscapeDuringBuild(input);
 
         BasicBlock callBlock = _currentBlock!;
         var inner = new MaglevGraphBuilder(_info, unit, this, parentFrame, taggedReceiver, taggedArgs, GetConstant(target), context,
@@ -775,7 +777,11 @@ public sealed partial class MaglevGraphBuilder
         if (!returns.TrueForAll(r => ReferenceEquals(r.Value, result)))
         {
             var phi = new Phi(Register.VirtualAccumulator(), -1) { Id = _graph.NewNodeId(), Block = continuation, Unit = _unit };
-            foreach ((BasicBlock _, ValueNode value, KnownNodeAspects _) in returns) phi.InputList.Add(value);
+            foreach ((BasicBlock _, ValueNode value, KnownNodeAspects _) in returns)
+            {
+                EscapeDuringBuild(value);
+                phi.InputList.Add(value);
+            }
             continuation.Phis.Add(phi);
             result = phi;
         }
@@ -833,14 +839,20 @@ public sealed partial class MaglevGraphBuilder
             // FastNewObject from the initial map (depends on it staying the initial map).
             _info.AddDependency(initialMap, Objects.DependentCode.DependencyGroups.InitialMapChanged);
             ValueNode[] args = RegisterValues(first, count);
-            ValueNode receiver = AddNewNode(new ValueNode(Opcode.FastNewObject, ValueRepresentation.kTagged)
+            // BuildInlinedAllocation(CreateJSConstructor(target)), or the
+            // FastNewObject call while the map's slack tracking runs.
+            ValueNode? receiver = TryBuildInlinedAllocation(initialMap);
+            if (receiver is null)
             {
-                Obj0 = initialMap,
-                Obj1 = target,
-                Type = NodeType.kOtherJSReceiver,
-                Properties = OpProperties.kCanAllocate | OpProperties.kNotIdempotent,
-            });
-            RecordKnownMaps(receiver, [initialMap]);
+                receiver = AddNewNode(new ValueNode(Opcode.FastNewObject, ValueRepresentation.kTagged)
+                {
+                    Obj0 = initialMap,
+                    Obj1 = target,
+                    Type = NodeType.kOtherJSReceiver,
+                    Properties = OpProperties.kCanAllocate | OpProperties.kNotIdempotent,
+                });
+                RecordKnownMaps(receiver, [initialMap]);
+            }
             ValueNode? result = TryBuildInlinedCall(target, constructor, receiver, args, ConvertReceiverMode.Any, nexus,
                 isConstruct: true, newTarget);
             if (result is not null)

@@ -69,6 +69,8 @@ public sealed class KnownNodeAspects
     public readonly Dictionary<(ValueNode Context, int Depth, int Slot), ValueNode> LoadedContextSlots;
     /// <summary>loaded_context_constants: immutable slots (never forgotten).</summary>
     public readonly Dictionary<(ValueNode Context, int Depth, int Slot), ValueNode> LoadedContextConstants;
+    /// <summary>virtual_objects: the current versions of the tracked allocations (immutable, shared by clones).</summary>
+    public VirtualObjectList VirtualObjects = VirtualObjectList.Empty;
 
     public KnownNodeAspects()
     {
@@ -84,6 +86,7 @@ public sealed class KnownNodeAspects
         LoadedProperties = new(from.LoadedProperties);
         LoadedContextSlots = new(from.LoadedContextSlots);
         LoadedContextConstants = new(from.LoadedContextConstants);
+        VirtualObjects = from.VirtualObjects;
     }
 
     public KnownNodeAspects Clone()
@@ -164,12 +167,19 @@ public sealed class KnownNodeAspects
     /// maps cannot (their dependency deoptimizes the code when they become
     /// unstable).
     /// </summary>
-    public void ClearUnstableMaps()
+    /// <remarks>
+    /// <paramref name="keepUnescapedAllocations"/>: after a node's side
+    /// effects, the map of an allocation that has not escaped cannot have
+    /// changed (nothing else refers to it); loop headers forget them too.
+    /// </remarks>
+    public void ClearUnstableMaps(bool keepUnescapedAllocations = false)
     {
-        foreach (NodeInfo info in _infos.Values)
+        foreach (KeyValuePair<ValueNode, NodeInfo> e in _infos)
         {
+            NodeInfo info = e.Value;
             if (info.AnyMapIsUnstable)
             {
+                if (keepUnescapedAllocations && e.Key is InlinedAllocation { EscapedDuringBuild: false }) continue;
                 info.PossibleMaps = null;
                 info.AnyMapIsUnstable = false;
                 // A heap object stays a heap object; its finer type came from the maps.
@@ -214,6 +224,7 @@ public sealed class KnownNodeAspects
         Intersect(LoadedProperties, other.LoadedProperties);
         Intersect(LoadedContextSlots, other.LoadedContextSlots);
         Intersect(LoadedContextConstants, other.LoadedContextConstants);
+        VirtualObjects = VirtualObjects.Intersect(other.VirtualObjects);
     }
 
     /// <summary>Forgets the loaded values that are <paramref name="values"/> or have them as object (a loop's phis).</summary>
@@ -247,6 +258,7 @@ public sealed class KnownNodeAspects
         _infos.Clear();
         ClearLoaded();
         LoadedContextConstants.Clear();
+        VirtualObjects = VirtualObjectList.Empty;
     }
 }
 
@@ -515,6 +527,7 @@ public sealed class MergePointInterpreterFrameState
             }
             if (existing is Phi { IsExceptionPhi: true } phi && phi.MergeOffset == MergeOffset && Phis.Contains(phi))
             {
+                MaglevGraphBuilder.EscapeDuringBuild(incoming);
                 phi.InputList.Add(incoming);
                 continue;
             }
@@ -525,6 +538,8 @@ public sealed class MergePointInterpreterFrameState
                 Type = NodeType.kUnknown,
                 IsExceptionPhi = true,
             };
+            MaglevGraphBuilder.EscapeDuringBuild(existing);
+            MaglevGraphBuilder.EscapeDuringBuild(incoming);
             for (int i = 0; i < index; i++) newPhi.InputList.Add(existing);
             newPhi.InputList.Add(incoming);
             Phis.Add(newPhi);

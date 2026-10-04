@@ -306,6 +306,12 @@ public enum Opcode : ushort
     CallBuiltin,
     CallKnownJSFunction,
     FastNewObject,
+    /// <summary>
+    /// InlinedAllocation: an object allocated by the code itself (an
+    /// InlinedAllocation node, Maglev's AllocationBlock folded in), elided
+    /// by the escape analysis when it does not escape (MaglevEscapeAnalysis).
+    /// </summary>
+    InlinedAllocation,
     HandleNoHeapWritesInterrupt,
     /// <summary>V8Sharp: pushes the interpreter frame of an inlined function (frame record and register window).</summary>
     EnterInlinedFrame,
@@ -408,6 +414,12 @@ public abstract class NodeBase(Opcode opcode)
 /// <summary>Node: a non-control node.</summary>
 public class Node(Opcode opcode) : NodeBase(opcode)
 {
+    /// <summary>
+    /// A store into an InlinedAllocation (input 0) that its VirtualObject
+    /// records (TryBuildStoreTaggedFieldToAllocation): a non-escaping use,
+    /// removed with the allocation when the allocation is elided.
+    /// </summary>
+    public bool TrackedStore;
 }
 
 /// <summary>ValueNode: a node that produces a value.</summary>
@@ -552,6 +564,12 @@ public class ControlNode(Opcode opcode) : NodeBase(opcode)
 public abstract class DeoptFrame(DeoptFrame? parent)
 {
     public DeoptFrame? Parent = parent;
+    /// <summary>
+    /// The virtual objects when the frame was created
+    /// (InterpretedDeoptFrame::last_virtual_object): the deopt of a top frame
+    /// materializes its elided allocations (and its parents') from them.
+    /// </summary>
+    public VirtualObjectList VirtualObjects = VirtualObjectList.Empty;
 }
 
 /// <summary>

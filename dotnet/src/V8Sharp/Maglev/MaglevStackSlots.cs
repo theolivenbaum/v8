@@ -64,14 +64,7 @@ internal static class MaglevStackSlots
                     live[i >> 6] &= ~bit;
                     count--;
                 }
-                void UseFrame(DeoptFrame? frame)
-                {
-                    for (DeoptFrame? f = frame; f is not null; f = f.Parent)
-                    {
-                        var interpreted = (InterpretedDeoptFrame)f;
-                        foreach ((Interpreter.Register _, ValueNode value) in interpreted.Values) Use(value);
-                    }
-                }
+                void UseFrame(DeoptFrame? frame) => MaglevEscapeAnalysis.ForEachDeoptValue(frame, Use);
                 void UseSuccessor(BasicBlock successor, BasicBlock from, int throwIndex)
                 {
                     ulong[] successorLive = liveIn[blockIndex[successor]];

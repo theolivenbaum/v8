@@ -71,6 +71,12 @@ public static class Deoptimizer
         InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
         int baseIndex = state.FrameIndex;
         DeoptFrameData[] translation = point.Frames;
+        // TranslatedState::MaterializeCapturedObjects: the elided allocations
+        // the frames hold, once each (a register of any frame that holds one
+        // gets the same object).
+        JSValue[]? captured = point.CapturedObjects is { } capturedObjects
+            ? MaterializeCapturedObjects(capturedObjects, scratch)
+            : null;
 
         if (isolate.Flags.trace_deopt || isolate.Flags.trace_deopt_verbose) TraceDeopt(isolate, code, point);
 
@@ -109,9 +115,11 @@ public static class Deoptimizer
             }
             for (int k = 0; k < registers.Length; k++)
             {
-                // A spilled value, a literal of the translation, or the materialized object.
+                // A spilled value, a literal of the translation, a captured
+                // object, or the materialized arguments object.
                 JSValue value = slots[k] >= 0 ? scratch[slots[k]]
                     : f.IsConstant is { } isConstant && isConstant[k] ? f.Constants![k]
+                    : f.Captured is { } capturedRefs && capturedRefs[k] >= 0 ? captured![capturedRefs[k]]
                     : materialized;
                 Register r = registers[k];
                 if (r == Register.VirtualAccumulator())
@@ -183,6 +191,28 @@ public static class Deoptimizer
             if (invalidate) MaglevCompiler.InvalidateCode(isolate, code, LazyDeoptimizeReason.kEagerDeopt);
         }
         isolate.MaglevDeoptPending = true;
+    }
+
+    /// <summary>
+    /// The objects of a translation's captured objects (elided
+    /// InlinedAllocations): an ordinary object of the allocated map's
+    /// in-object slot class with the map and fields of the deopt point.
+    /// </summary>
+    static JSValue[] MaterializeCapturedObjects(CapturedObjectData[] objects, JSValue[] scratch)
+    {
+        var result = new JSValue[objects.Length];
+        for (int i = 0; i < objects.Length; i++)
+        {
+            CapturedObjectData data = objects[i];
+            JSObject obj = JSObject.NewWithInObjectSlots(data.AllocatedMap);
+            obj.Map = data.Map;
+            for (int f = 0; f < data.FieldSlots.Length; f++)
+            {
+                obj.InObjectSlot(f) = data.FieldSlots[f] >= 0 ? scratch[data.FieldSlots[f]] : data.FieldConstants[f];
+            }
+            result[i] = obj;
+        }
+        return result;
     }
 
     /// <summary>

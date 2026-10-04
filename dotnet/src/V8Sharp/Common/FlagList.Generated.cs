@@ -317,7 +317,7 @@ public sealed partial class FlagList
     public int maglev_allocation_folding = unchecked((int)(2));
     public bool maglev_escape_analysis = true;
     public bool trace_maglev_escape_analysis = false;
-    public bool maglev_object_tracking = false;
+    public bool maglev_object_tracking = true;  // V8: false; V8Sharp tracks the fields of non-escaping allocations (deviations.md)
     public bool trace_maglev_object_tracking = false;
     public bool turbo_string_builder = false;
     public bool trace_osr = false;

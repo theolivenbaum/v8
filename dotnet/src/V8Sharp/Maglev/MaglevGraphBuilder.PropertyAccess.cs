@@ -638,6 +638,7 @@ public sealed partial class MaglevGraphBuilder
             case PropertyAccessInfo.Kind.DataField:
             {
                 ValueNode holder = GetTaggedValue(info.Holder is null ? receiver : GetConstant(info.Holder));
+                if (TryBuildLoadFieldFromAllocation(holder, info.StorageIndex) is { } tracked) return tracked;
                 return BuildLoadProperty(holder, info.StorageIndex, () => BuildLoadField(holder, info));
             }
             case PropertyAccessInfo.Kind.DataConstant:
@@ -798,7 +799,11 @@ public sealed partial class MaglevGraphBuilder
         ValueNode first = results[0].Value!;
         if (results.TrueForAll(r => ReferenceEquals(r.Value, first))) return first;
         var phi = new Phi(Register.VirtualAccumulator(), -1) { Id = _graph.NewNodeId(), Block = join, Unit = _unit };
-        foreach ((BasicBlock _, ValueNode? value, KnownNodeAspects _) in results) phi.InputList.Add(value!);
+        foreach ((BasicBlock _, ValueNode? value, KnownNodeAspects _) in results)
+        {
+            EscapeDuringBuild(value!);
+            phi.InputList.Add(value!);
+        }
         join.Phis.Add(phi);
         return phi;
     }
@@ -930,26 +935,32 @@ public sealed partial class MaglevGraphBuilder
             // BuildStoreField of a Double field: StoreDoubleField writes the
             // untagged value into the field (V8: the field's HeapNumber), no
             // tagging and no write barrier; a non-number deoptimizes.
-            AddNewNode(new Node(Opcode.StoreDoubleField)
+            var storeDouble = new Node(Opcode.StoreDoubleField)
             {
                 Inputs = [receiver, GetFloat64(value)],
                 Int0 = info.StorageIndex,
                 Properties = OpProperties.kCanWrite | OpProperties.kNotIdempotent,
-            });
+            };
+            TryRecordStoreToAllocation(storeDouble, receiver, info.StorageIndex, storeDouble.Inputs[1], null);
+            AddNewNode(storeDouble);
             return;
         }
         ValueNode stored = BuildCheckedFieldValue(value, info);
         switch (info.AccessKind)
         {
             case PropertyAccessInfo.Kind.FieldStore:
-                AddNewNode(new Node(Opcode.StoreTaggedField)
+            {
+                var store = new Node(Opcode.StoreTaggedField)
                 {
                     Inputs = [receiver, stored],
                     Int0 = info.StorageIndex,
                     Int1 = info.Representation.IsDouble ? 1 : 0,
                     Properties = OpProperties.kCanWrite | OpProperties.kNotIdempotent,
-                });
+                };
+                TryRecordStoreToAllocation(store, receiver, info.StorageIndex, stored, null);
+                AddNewNode(store);
                 break;
+            }
             case PropertyAccessInfo.Kind.ConstFieldStore:
                 // A store to a const field must not change its value (StoreHandler kConstField).
                 CallMaglev("CheckConstFieldValue", [receiver, stored],
@@ -957,14 +968,18 @@ public sealed partial class MaglevGraphBuilder
                     DeoptimizeReason.kStoreToConstant);
                 break;
             case PropertyAccessInfo.Kind.TransitionStore:
-                AddNewNode(new Node(Opcode.StoreMapTransition)
+                var transition = new Node(Opcode.StoreMapTransition)
                 {
                     Inputs = [receiver, stored],
                     Int0 = info.StorageIndex,
                     Int1 = info.Representation.IsDouble ? 1 : 0,
                     Obj0 = info.TransitionMap,
                     Properties = OpProperties.kCanWrite | OpProperties.kCanAllocate | OpProperties.kNotIdempotent,
-                });
+                };
+                // V8Sharp: the virtual object records the transition (V8's
+                // StoreMap escapes the allocation; deviations.md).
+                TryRecordStoreToAllocation(transition, receiver, info.StorageIndex, stored, info.TransitionMap);
+                AddNewNode(transition);
                 // The object now has the transition map.
                 NodeInfo nodeInfo = _frame.Known.GetOrCreateInfoFor(receiver);
                 nodeInfo.PossibleMaps = [info.TransitionMap!];

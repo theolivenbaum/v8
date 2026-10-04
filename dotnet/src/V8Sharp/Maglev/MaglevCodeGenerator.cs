@@ -32,7 +32,7 @@ using V8Sharp.Interpreter;
 
 namespace V8Sharp.Maglev;
 
-internal sealed class MaglevCodeGenerator
+internal sealed partial class MaglevCodeGenerator
 {
     static readonly int kJSValueSize = Unsafe.SizeOf<JSValue>();
 
@@ -374,15 +374,7 @@ internal sealed class MaglevCodeGenerator
             if (v.IsConstant) return;
             if (!last.TryGetValue(v, out int l) || l < at) last[v] = at;
         }
-        void UseFrame(DeoptFrame? frame, int at)
-        {
-            for (DeoptFrame? f = frame; f is not null; f = f.Parent)
-            {
-                var i = (InterpretedDeoptFrame)f;
-                foreach ((Register _, ValueNode value) in i.Values) Use(value, at);
-                Use(i.Closure, at);
-            }
-        }
+        void UseFrame(DeoptFrame? frame, int at) => MaglevEscapeAnalysis.ForEachDeoptValue(frame, v => Use(v, at));
         foreach (BasicBlock block in _graph.Blocks)
         {
             if (block.IsDead) continue;
@@ -905,7 +897,7 @@ internal sealed class MaglevCodeGenerator
     /// out (the callee, a throw or a stack walk can observe the frame) or
     /// reads or writes the frame's slots.
     /// </summary>
-    static bool NeedsFrame(Node node) =>
+    internal static bool NeedsFrame(Node node) =>
         node.Opcode is Opcode.CallBuiltin or Opcode.LoadRegister or Opcode.StoreRegister or Opcode.SetCurrentContext or
             Opcode.HandleNoHeapWritesInterrupt ||
         node.Opcode != Opcode.EnterInlinedFrame &&
@@ -1249,6 +1241,7 @@ internal sealed class MaglevCodeGenerator
             _il.MarkLabel(label);
             var spill = new List<ValueNode>();
             var point = new DeoptPoint { Kind = kind, Reason = reason };
+            List<(InlinedAllocation, CapturedObjectData)>? capturedObjects = null;
             // Frames outermost first.
             var frames = new List<InterpretedDeoptFrame>();
             for (DeoptFrame? f = info.TopFrame; f is not null; f = f.Parent) frames.Add((InterpretedDeoptFrame)f);
@@ -1261,6 +1254,7 @@ internal sealed class MaglevCodeGenerator
                 var registers = new Register[f.Values.Length];
                 var slots = new int[f.Values.Length];
                 ArgumentsObjectKind[]? materialize = null;
+                int[]? captured = null;
                 JSValue[]? constants = null;
                 bool[]? isConstant = null;
                 for (int k = 0; k < f.Values.Length; k++)
@@ -1274,6 +1268,12 @@ internal sealed class MaglevCodeGenerator
                         // Deoptimizer writes it, the exit spills nothing.
                         (constants ??= new JSValue[f.Values.Length])[k] = value.ConstantValue();
                         (isConstant ??= new bool[f.Values.Length])[k] = true;
+                        continue;
+                    }
+                    if (value is InlinedAllocation { IsElided: true } allocation)
+                    {
+                        // A captured object: the Deoptimizer materializes it from its fields.
+                        (captured ??= NewCapturedRefs(f.Values.Length))[k] = CapturedObjectIndex(allocation, info, ref capturedObjects, spill);
                         continue;
                     }
                     if (IsElidedArguments(value))
@@ -1297,6 +1297,7 @@ internal sealed class MaglevCodeGenerator
                     NextOffset = f.NextOffset,
                     Registers = registers,
                     Materialize = materialize,
+                    Captured = captured,
                     Constants = constants,
                     IsConstant = isConstant,
                     ScratchSlots = slots,
@@ -1312,6 +1313,7 @@ internal sealed class MaglevCodeGenerator
                 }
             }
             point.Frames = data;
+            if (capturedObjects is not null) point.CapturedObjects = capturedObjects.ConvertAll(static c => c.Item2).ToArray();
             int index = _deoptPoints.Count;
             _deoptPoints.Add(point);
             info.DeoptIndex = index;
@@ -2344,6 +2346,9 @@ internal sealed class MaglevCodeGenerator
                 _il.Emit(OpCodes.Ldc_I4, node.Int0);
                 Call(nameof(MaglevBuiltins.TestTypeOf));
                 Store(v!);
+                return;
+            case Opcode.InlinedAllocation:
+                EmitInlinedAllocation((InlinedAllocation)node);
                 return;
             case Opcode.FastNewObject:
                 _il.Emit(OpCodes.Ldarg_1);
