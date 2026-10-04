@@ -184,7 +184,7 @@ namespace V8Sharp.Wasm
                                           or IndexOutOfRangeException or ArgumentException or InvalidCastException
                                           or KeyNotFoundException or NullReferenceException)
             {
-                throw new WasmCompileException(WasmErrorMessages.ValidationError(e));
+                throw new WasmCompileException(WasmErrorMessages.ValidationError(e, bytes));
             }
             return module;
         }

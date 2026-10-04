@@ -428,6 +428,12 @@ namespace Wacs.Core.Instructions
 
         public override void Validate(IWasmValidationContext context)
         {
+            // V8Sharp: V8's arity check (TypeCheckFallThru) and message.
+            var top = context.ControlFrame;
+            int available = context.OpStack.Height - top.Height;
+            int arity = top.EndTypes.Arity;
+            if (top.Unreachable ? available > arity : available != arity)
+                throw new ValidationException($"expected {arity} elements on the stack for fallthru, found {available}");
             var frame = context.PopControlFrame();
             context.OpStack.ReturnResults(frame.EndTypes);
         }

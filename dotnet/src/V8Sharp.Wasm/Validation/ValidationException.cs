@@ -36,5 +36,8 @@ namespace Wacs.Core.Validation
 
         /// <summary>The mnemonic of the instruction that failed, if any.</summary>
         public string? Instruction { get; set; }
+
+        /// <summary>V8Sharp: the module offset of the instruction that failed, or -1.</summary>
+        public int Offset { get; set; } = -1;
     }
 }

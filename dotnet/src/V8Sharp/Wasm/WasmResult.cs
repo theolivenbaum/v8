@@ -4,6 +4,7 @@
 // Also the mapping of the WACS engine's failures to V8's messages: decoder
 // and validation errors (CompileError) and traps (RuntimeError).
 using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using Wacs.Core.Runtime.Exceptions;
 using Wacs.Core.Runtime.Types;
 using Wacs.Core.OpCodes;
@@ -84,12 +85,18 @@ public static class WasmErrorMessages
     }
 
     /// <summary>A validation failure: "Compiling function #N failed: ..." as V8 reports it.</summary>
-    public static string ValidationError(Exception e)
+    public static string ValidationError(Exception e, byte[] bytes)
     {
         if (e is ValidationException ve && ve.FunctionIndex >= 0)
         {
-            string detail = ve.Instruction is null ? ve.Message : ve.Message + " (" + ve.Instruction + ")";
-            return $"Compiling function #{ve.FunctionIndex} failed: {detail}";
+            // V8: "Compiling function #<index>[:"<name>"] failed: <message> @+<offset>".
+            string? name = WasmNames.Decode(bytes).FunctionNames.TryGetValue((uint)ve.FunctionIndex, out string? n) ? n : null;
+            var text = new StringBuilder("Compiling function #").Append(ve.FunctionIndex);
+            if (name is not null) text.Append(":\"").Append(name).Append('"');
+            text.Append(" failed: ").Append(ve.Message);
+            if (ve.Offset >= 0) text.Append(" @+").Append(ve.Offset);
+            else if (ve.Instruction is not null) text.Append(" (").Append(ve.Instruction).Append(')');
+            return text.ToString();
         }
         return e.Message;
     }

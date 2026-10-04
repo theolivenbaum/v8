@@ -229,6 +229,8 @@ namespace Wacs.Core
 
                     vContext.FunctionIndex = func.Index;
                     vContext.SetExecFrame(funcType, func.Locals);
+                    vContext.InstructionCounter = 0;
+                    vContext.InstructionOffsets = func.InstructionOffsets;
 
                     //*Expression Validator also validates result types
                     try

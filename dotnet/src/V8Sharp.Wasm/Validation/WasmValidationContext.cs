@@ -65,6 +65,10 @@ namespace Wacs.Core.Validation
         private ModuleInstance ValidationModule { get; }
         public RuntimeAttributes Attributes { get; set; } = new();
 
+        /// <summary>V8Sharp: the instructions validated in the current function, and their module offsets.</summary>
+        public int InstructionCounter;
+        public uint[]? InstructionOffsets;
+
         // V8Sharp: V8 rejects a module that mixes the legacy exception
         // handling instructions with try_table/throw_ref
         // (WasmDetectedFeatures legacy_eh and exnref).
@@ -145,6 +149,9 @@ namespace Wacs.Core.Validation
         /// </summary>
         public static void ValidateInstruction(InstructionBase inst, WasmValidationContext ctx)
         {
+            // V8Sharp: instructions validate in decoding order, so the counter
+            // indexes the function's instruction offsets.
+            int index = ctx.InstructionCounter++;
             try
             {
                 inst.Validate(ctx);
@@ -152,6 +159,7 @@ namespace Wacs.Core.Validation
             catch (ValidationException exc) when (exc.Instruction == null)
             {
                 exc.Instruction = inst.Op.GetMnemonic();
+                if (ctx.InstructionOffsets is { } offsets && index < offsets.Length) exc.Offset = (int)offsets[index];
                 throw;
             }
             catch (NotImplementedException)
