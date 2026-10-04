@@ -2015,7 +2015,7 @@ internal sealed class MaglevCodeGenerator
                 Load(node.Inputs[1], ValueRepresentation.kFloat64);
                 Call(nameof(MaglevBuiltins.StoreDoubleFieldFloat64));
                 return;
-            case Opcode.StoreMapTransition when node.Int0 < JSObject.kPropertyArrayStorageBase && InObjectLayout.IsContiguous:
+            case Opcode.StoreMapTransition when node.Int0 < JSObject.kPropertyArrayStorageBase && InObjectLayout.IsContiguous && !s_noInlineTransitions:
             {
                 // An in-object field (a constructor's this.x = ...): the value
                 // into the slot the map already has, then the map (StoreMap +
@@ -2029,7 +2029,17 @@ internal sealed class MaglevCodeGenerator
                     _il.Emit(OpCodes.Ldsfld, s_numberTag);
                     _il.Emit(OpCodes.Stfld, s_obj);
                     _il.Emit(OpCodes.Ldloc, _storeAddress);
-                    Load(UntaggedNumberSource(node.Inputs[1]), ValueRepresentation.kFloat64);
+                    ValueNode number = UntaggedNumberSource(node.Inputs[1]);
+                    if (number.Representation == ValueRepresentation.kTagged)
+                    {
+                        // A checked number (the field's representation check).
+                        Load(number, ValueRepresentation.kTagged);
+                        EmitLoadNumber();
+                    }
+                    else
+                    {
+                        Load(number, ValueRepresentation.kFloat64);
+                    }
                     Call(nameof(MaglevBuiltins.DoubleFieldBits));
                     _il.Emit(OpCodes.Stfld, s_bits);
                 }
@@ -2444,6 +2454,9 @@ internal sealed class MaglevCodeGenerator
         _il.Emit(OpCodes.Call, s_createScalarUnsafe!);
         _il.Emit(OpCodes.Call, s_cvttsd2si);
     }
+
+    // V8SHARP_MAGLEV_NO_INLINE_TRANSITIONS=1: field-adding transitions through the helper (for comparison).
+    static readonly bool s_noInlineTransitions = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_INLINE_TRANSITIONS") == "1";
 
     static readonly FieldInfo s_fixedArrayData = typeof(FixedArray).GetField("_data", BindingFlags.NonPublic | BindingFlags.Instance)!;
     static readonly FieldInfo s_contextSlots = typeof(Context).GetField(nameof(Context.Slots))!;

@@ -387,6 +387,24 @@ public class MaglevCodeQualityTest
     public void ObjectKeysGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
 
     [Fact]
+    public void DoubleFieldTransitionOfATaggedValueCompiles()
+    {
+        // A field-adding transition to a Double field whose value is a tagged
+        // phi (x ? x : 0) stores the number's payload inline; the code must
+        // compile (a failed compile leaves the function unoptimized).
+        Assert.Equal("2.5,8", MaglevCompilerTest.Run("--maglev", """
+            function V(x) { this.initialize(x); }
+            V.prototype = { x: 0.0, initialize: function (x) { this.x = (x ? x : 0); } };
+            var init = V.prototype.initialize;
+            %PrepareFunctionForOptimization(init);
+            new V(0.5); new V(1.5); new V(0);
+            %OptimizeMaglevOnNextCall(init);
+            var v = new V(2.5);
+            [v.x, %GetOptimizationStatus(init) & 8].join();
+            """));
+    }
+
+    [Fact]
     public void InlineElementStoreKeepsItsUntaggedValueLive()
     {
         // The store writes x + 1's int32 (under its tagging): its IL local
