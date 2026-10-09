@@ -725,6 +725,16 @@ for now, to be revisited when the reason goes away.
   `BaselineBuiltins.StoreSlot` and transitions their helper, because the
   shared address locals make RyuJIT take seconds per compile in such
   methods (mjsunit compiler/constructor-inlining: 15 s for 20 KB of IL).
+- Element and typed array accesses index arrays held in IL locals: the
+  .NET array behind an elements node (FixedArray/FixedDoubleArray._data) is
+  loaded where the elements are loaded, and a typed array's backing array
+  and byte offset where its length is loaded (LoadTypedArrayLength, which
+  load elimination keeps until a call); V8 keeps the elements pointer in a
+  register and loads a typed array's data pointer per access. V8Sharp's
+  elements and buffers are replaced (RightTrim, detaching, resizing) only by
+  calls, after which the graph loads them again. Code with catch blocks and
+  split code keep the per-access loads. `V8SHARP_MAGLEV_NO_ELEMENTS_DATA=1`
+  turns both off.
 
 ## Interpreter execution, ICs, runtime, compiler and modules
 
