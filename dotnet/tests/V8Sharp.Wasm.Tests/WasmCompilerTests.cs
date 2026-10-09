@@ -700,9 +700,12 @@ public class WasmCompilerTests
             // A new instance after the code is compiled takes the shared code.
             const late = new WebAssembly.Instance(module, {m: {f: x => -x}}).exports;
             print("late", late.load(8), late.bump(8), late.indirect(1, 5));
+            // Its frames show its own positions (the pc is relative to the function).
+            try { late.bump(70000); } catch (ex) { print(ex.stack); }
             """);
         Assert.Contains("0 100 1116 42 1021", output);
         Assert.Contains("2 102 3118 42 3021", output);
         Assert.Contains("late 0 0 -5", output);
+        Assert.Contains("at load (wasm://wasm/", output);
     }
 }

@@ -74,7 +74,6 @@ internal sealed partial class LiftoffCompiler
     int _pos;
     readonly uint[] _offsets;
     readonly InstructionBase[] _instructions;
-    readonly int _linkedOffset;
 
     readonly DynamicMethod _method;
     readonly ILGenerator _il;
@@ -122,7 +121,6 @@ internal sealed partial class LiftoffCompiler
         _bytes = _data.WireBytes;
         _offsets = _function.Definition.InstructionOffsets;
         _instructions = [.. _function.Body.Instructions.Flatten()];
-        _linkedOffset = _function.LinkedOffset;
         WasmSignature sig = code.Signature;
         string name = "wasm-function[" + code.FunctionIndex.ToString(System.Globalization.CultureInfo.InvariantCulture) + "]";
         _method = new DynamicMethod(name, sig.ReturnType, sig.MethodParameterTypes, typeof(LiftoffCompiler).Module, skipVisibility: true);
@@ -323,7 +321,10 @@ internal sealed partial class LiftoffCompiler
             {
                 Unsupported("instruction offsets do not match the interpreter's");
             }
-            _pc = _linkedOffset + _instIndex;
+            // The pc compiled code records is relative to the function: the
+            // code serves every instance, and each instance links its
+            // function at its own offset (ExecContext.SnapshotFrames adds it).
+            _pc = _instIndex;
             DecodeInstruction();
             _instIndex++;
             _asm.ReleaseTemps();
