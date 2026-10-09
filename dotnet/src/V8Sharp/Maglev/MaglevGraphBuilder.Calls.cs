@@ -1006,6 +1006,11 @@ public sealed partial class MaglevGraphBuilder
             SetAccumulator(constructed);
             return;
         }
+        else if (speculate && count == 0 && feedback.HeapObjectOrNull is AllocationSite site && TryReduceConstructArrayConstructor(
+                     constructor, newTarget, site))
+        {
+            return;
+        }
         else if (speculate && nexus.IcState() == InlineCacheState.UNINITIALIZED && nexus.GetCallCount() == 0)
         {
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForConstruct);
@@ -1034,6 +1039,34 @@ public sealed partial class MaglevGraphBuilder
         SetAccumulator(CallBaseline("Construct", [constructor, newTarget],
             [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.RegIndex(first), BuiltinArg.I(count),
              BuiltinArg.In(1)], RegisterListStores(first, count))!);
+    }
+
+    /// <summary>
+    /// TryReduceConstructArrayConstructor for `new Array()` with an
+    /// AllocationSite as the construct feedback: the checks that the target
+    /// and new.target are the Array function, and the array of the site's
+    /// elements kind allocated by a frame-free helper (MaglevBuiltins.NewArrayFromSite).
+    /// </summary>
+    /// <remarks>
+    /// V8 builds the allocation inline with the site's elements kind and
+    /// depends on the site (DependOnElementsKind); V8Sharp reads the site's
+    /// kind when the array is created and gives the array the site's memento,
+    /// as Runtime_NewArray does, so no dependency is needed.
+    /// </remarks>
+    bool TryReduceConstructArrayConstructor(ValueNode constructor, ValueNode newTarget, AllocationSite site)
+    {
+        if (site.SpeculationDisabled) return false;
+        NativeContext native = (_unit.Function ?? _info.Function).Context.NativeContext;
+        if (native.ArrayFunction is not JSFunction arrayFunction) return false;
+        BuildCheckValue(constructor, arrayFunction, DeoptimizeReason.kWrongConstructor);
+        BuildCheckValue(newTarget, arrayFunction, DeoptimizeReason.kWrongConstructor);
+        ValueNode array = BuildCallBuiltin(s_maglevBuiltins["NewArrayFromSite"], "NewArrayFromSite", [],
+            [BuiltinArg.Isolate, BuiltinArg.C(native), BuiltinArg.C(arrayFunction), BuiltinArg.C(site)], null,
+            OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!;
+        ((CallBuiltinInfo)array.Obj0!).NoFrame = true;
+        array.Type = NodeType.kJSArray;
+        SetAccumulator(array);
+        return true;
     }
 
     // ---- Runtime calls -----------------------------------------------------------------------------------------

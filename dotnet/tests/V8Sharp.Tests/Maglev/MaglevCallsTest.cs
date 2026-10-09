@@ -11,6 +11,29 @@ public class MaglevCallsTest
 {
     public static TheoryData<string> Snippets => new()
     {
+        // `new Array()` with an AllocationSite (TryReduceConstructArrayConstructor):
+        // the site's elements kind changes (smi, double, object), a subclass
+        // and a replaced Array constructor deopt.
+        """
+        (function() {
+          function Coll() { this.elms = new Array(); }
+          Coll.prototype.add = function (x) { this.elms.push(x); return this; };
+          function make(k) {
+            var c = new Coll().add(k);
+            if (k > 20) c.add(k + 0.5);
+            if (k > 35) c.add('s' + k);
+            return c.elms.join(':') + '/' + c.elms.length + '/' + Array.isArray(c.elms);
+          }
+          var out = [];
+          for (var k = 0; k < 50; k++) out.push(make(k));
+          var saved = Array;
+          Array = function () { return { length: 7, push: function () {}, join: function () { return 'fake'; } }; };
+          out.push(make(3));
+          Array = saved;
+          out.push(make(4));
+          return out.join(',');
+        })()
+        """,
         """
         (function() {
           'use strict';
