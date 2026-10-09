@@ -75,6 +75,20 @@ public sealed class InlinedAllocation : ValueNode
     /// <summary>The innermost loop being built when the object was allocated (V8: loop_effects_->allocations).</summary>
     public object? Loop;
     public EscapeAnalysisResult Result;
+    /// <summary>
+    /// The allocations tracked stores put into this one's fields
+    /// (allocations_escape_map: if this one escapes, they do).
+    /// </summary>
+    public List<InlinedAllocation>? StoredAllocations;
+
+    /// <summary>Whether <paramref name="other"/> is reachable from this allocation through tracked stores.</summary>
+    public bool Reaches(InlinedAllocation other)
+    {
+        if (ReferenceEquals(this, other)) return true;
+        if (StoredAllocations is null) return false;
+        foreach (InlinedAllocation a in StoredAllocations) if (a.Reaches(other)) return true;
+        return false;
+    }
 
     public bool IsElided => Result == EscapeAnalysisResult.kElided;
 
@@ -176,6 +190,8 @@ public sealed class VirtualObjectList
 /// </summary>
 internal static class MaglevEscapeAnalysis
 {
+    [ThreadStatic] static bool Trace;
+
     /// <summary>
     /// Decides which allocations escape. An allocation is elided when every
     /// use is a tracked store into it, a deopt frame whose virtual objects
@@ -200,6 +216,7 @@ internal static class MaglevEscapeAnalysis
             return false;
         }
         foreach (InlinedAllocation a in allocations) a.Result = EscapeAnalysisResult.kUnknown;
+        Trace = trace;
 
         // The inlined frames the code pushes: a frame is pushed (lazily) before
         // the first node of its function, or of a function inlined into it,
@@ -213,6 +230,11 @@ internal static class MaglevEscapeAnalysis
                 if (node.Opcode == Opcode.EnterInlinedFrame && node.Obj0 is MaglevCompilationUnit { EagerFrame: true } eager) pushed.Add(eager);
                 if (node.Obj0 is CallBuiltinInfo { Elided: true }) continue;
                 if (node.Unit is not { IsInline: true } unit || !MaglevCodeGenerator.NeedsFrame(node)) continue;
+                if (trace && !pushed.Contains(unit))
+                {
+                    string what = node.Obj0 is CallBuiltinInfo b ? "CallBuiltin " + b.Name : node.Opcode.ToString();
+                    Console.WriteLine($"[maglev] escape analysis: frame of {unit} pushed for n{node.Id} {what}");
+                }
                 for (MaglevCompilationUnit? u = unit; u is { IsInline: true } && pushed.Add(u); u = u.Caller)
                 {
                 }
@@ -224,7 +246,7 @@ internal static class MaglevEscapeAnalysis
             if (block.IsDead) continue;
             foreach (Phi phi in block.Phis)
             {
-                foreach (ValueNode input in phi.Inputs) Escape(input);
+                foreach (ValueNode input in phi.Inputs) Escape(input, phi, trace);
             }
             foreach (Node node in block.Nodes)
             {
@@ -233,18 +255,24 @@ internal static class MaglevEscapeAnalysis
                 for (int i = 0; i < node.Inputs.Length; i++)
                 {
                     if (node.Inputs[i] is not InlinedAllocation) continue;
-                    if (i == 0 && node.TrackedStore) continue;
+                    // (The value of a tracked store escapes with its container.)
+                    if (i <= 1 && node.TrackedStore) continue;
                     if (node.Opcode == Opcode.EnterInlinedFrame && !pushed.Contains((MaglevCompilationUnit)node.Obj0!)) continue;
-                    Escape(node.Inputs[i]);
+                    Escape(node.Inputs[i], node, trace);
                 }
                 CheckDeoptFrame(node.EagerDeoptInfo);
                 CheckDeoptFrame(node.LazyDeoptInfo);
             }
             ControlNode control = block.Control!;
-            foreach (ValueNode input in control.Inputs) Escape(input);
+            foreach (ValueNode input in control.Inputs) Escape(input, control, trace);
             CheckDeoptFrame(control.EagerDeoptInfo);
         }
 
+        // EscapeAllocation: what an escaping allocation holds escapes.
+        foreach (InlinedAllocation a in allocations)
+        {
+            if (a.Result == EscapeAnalysisResult.kEscaped) EscapeStored(a);
+        }
         bool elided = false;
         foreach (InlinedAllocation a in allocations)
         {
@@ -300,6 +328,27 @@ internal static class MaglevEscapeAnalysis
         }
     }
 
+    static void Escape(ValueNode value, NodeBase user, bool trace)
+    {
+        if (trace && value is InlinedAllocation { Result: not EscapeAnalysisResult.kEscaped } escaping)
+        {
+            string what = user.Obj0 is CallBuiltinInfo b ? "CallBuiltin " + b.Name : user.Opcode.ToString();
+            Console.WriteLine($"[maglev] escape analysis: allocation n{escaping.Id} ({escaping.AllocatedMap.InstanceType}) escapes through n{user.Id} {what} ({user.Unit})");
+        }
+        Escape(value);
+    }
+
+    static void EscapeStored(InlinedAllocation a)
+    {
+        if (a.StoredAllocations is null) return;
+        foreach (InlinedAllocation stored in a.StoredAllocations)
+        {
+            if (stored.Result == EscapeAnalysisResult.kEscaped) continue;
+            stored.Result = EscapeAnalysisResult.kEscaped;
+            EscapeStored(stored);
+        }
+    }
+
     static void Escape(ValueNode value)
     {
         if (value is InlinedAllocation a) a.Result = EscapeAnalysisResult.kEscaped;
@@ -319,15 +368,24 @@ internal static class MaglevEscapeAnalysis
             foreach ((Register _, ValueNode value) in frame.Values)
             {
                 if (value is not InlinedAllocation a || a.Result == EscapeAnalysisResult.kEscaped) continue;
-                VirtualObject? vo = objects.Find(a);
-                if (vo is null)
-                {
-                    a.Result = EscapeAnalysisResult.kEscaped;
-                    continue;
-                }
-                // The builder records no allocation in a virtual object's slot.
-                foreach (ValueNode slot in vo.Slots) Escape(slot);
+                CheckCaptured(a, objects);
             }
+        }
+    }
+
+    /// <summary>The virtual objects of an allocation a deopt captures and of the allocations in its fields.</summary>
+    static void CheckCaptured(InlinedAllocation a, VirtualObjectList objects)
+    {
+        VirtualObject? vo = objects.Find(a);
+        if (vo is null)
+        {
+            if (Trace) Console.WriteLine($"[maglev] escape analysis: allocation n{a.Id} escapes: a deopt frame without its virtual object");
+            a.Result = EscapeAnalysisResult.kEscaped;
+            return;
+        }
+        foreach (ValueNode slot in vo.Slots)
+        {
+            if (slot is InlinedAllocation nested && nested.Result != EscapeAnalysisResult.kEscaped) CheckCaptured(nested, objects);
         }
     }
 
@@ -336,6 +394,17 @@ internal static class MaglevEscapeAnalysis
     /// values and closure and, for an elided allocation, the slots of its
     /// virtual object (the captured object's fields) instead of the allocation.
     /// </summary>
+    /// <summary>A deopt value, or the fields of an elided allocation (recursively).</summary>
+    public static void UseCaptured(ValueNode value, VirtualObjectList objects, Action<ValueNode> use)
+    {
+        if (value is InlinedAllocation { IsElided: true } a)
+        {
+            foreach (ValueNode slot in objects.Find(a)!.Slots) UseCaptured(slot, objects, use);
+            return;
+        }
+        use(value);
+    }
+
     public static void ForEachDeoptValue(DeoptFrame? top, Action<ValueNode> use)
     {
         if (top is null) return;
@@ -345,12 +414,7 @@ internal static class MaglevEscapeAnalysis
             var frame = (InterpretedDeoptFrame)f;
             foreach ((Register _, ValueNode value) in frame.Values)
             {
-                if (value is InlinedAllocation { IsElided: true } a)
-                {
-                    foreach (ValueNode slot in objects.Find(a)!.Slots) use(slot);
-                    continue;
-                }
-                use(value);
+                UseCaptured(value, objects, use);
             }
             use(frame.Closure);
         }

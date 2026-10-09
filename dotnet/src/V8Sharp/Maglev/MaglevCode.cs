@@ -98,6 +98,8 @@ public sealed class CapturedObjectData
     public int[] FieldSlots = [];
     /// <summary>The literal of each field whose FieldSlots entry is -1.</summary>
     public JSValue[] FieldConstants = [];
+    /// <summary>The captured object (index in the point's) each field holds, or -1; null if none.</summary>
+    public int[]? FieldCaptured;
 }
 
 /// <summary>A deopt exit (DeoptimizationData entry: kind, reason, translation).</summary>

@@ -152,6 +152,11 @@ public sealed partial class MaglevGraphBuilder
             SetAccumulator(result);
             return;
         }
+        if (TryBuildLoadNamedFromVirtualObject(receiver, (Name)name.Object) is { } known)
+        {
+            SetAccumulator(known);
+            return;
+        }
         SetAccumulator(CallBaseline("GetNamedProperty", [receiver],
             [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.C(name)])!);
     }

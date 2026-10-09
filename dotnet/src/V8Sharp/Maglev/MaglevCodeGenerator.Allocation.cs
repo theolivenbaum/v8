@@ -79,6 +79,7 @@ internal sealed partial class MaglevCodeGenerator
         {
             if (ReferenceEquals(objects[i].Item1, allocation)) return i;
         }
+        int index = objects.Count;
         VirtualObject vo = info.TopFrame.VirtualObjects.Find(allocation)
             ?? throw new InvalidOperationException($"no virtual object for elided allocation n{allocation.Id}");
         var data = new CapturedObjectData
@@ -88,6 +89,7 @@ internal sealed partial class MaglevCodeGenerator
             FieldSlots = new int[vo.Slots.Length],
             FieldConstants = new JSValue[vo.Slots.Length],
         };
+        objects.Add((allocation, data));
         for (int f = 0; f < vo.Slots.Length; f++)
         {
             ValueNode value = vo.Slots[f];
@@ -97,10 +99,16 @@ internal sealed partial class MaglevCodeGenerator
                 data.FieldConstants[f] = value.ConstantValue();
                 continue;
             }
+            if (value is InlinedAllocation { IsElided: true } nested)
+            {
+                // A captured object in a field (materialized with it).
+                data.FieldSlots[f] = -1;
+                (data.FieldCaptured ??= NewCapturedRefs(vo.Slots.Length))[f] = CapturedObjectIndex(nested, info, ref objects, spill);
+                continue;
+            }
             data.FieldSlots[f] = SpillSlot(value);
             spill.Add(value);
         }
-        objects.Add((allocation, data));
-        return objects.Count - 1;
+        return index;
     }
 }

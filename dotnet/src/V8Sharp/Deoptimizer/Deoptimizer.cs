@@ -222,6 +222,13 @@ public static class Deoptimizer
             }
             result[i] = obj;
         }
+        // Fields holding captured objects (all of them exist now).
+        for (int i = 0; i < objects.Length; i++)
+        {
+            if (objects[i].FieldCaptured is not { } nested) continue;
+            var obj = (JSObject)result[i].Object;
+            for (int f = 0; f < nested.Length; f++) if (nested[f] >= 0) obj.InObjectSlot(f) = result[nested[f]];
+        }
         return result;
     }
 

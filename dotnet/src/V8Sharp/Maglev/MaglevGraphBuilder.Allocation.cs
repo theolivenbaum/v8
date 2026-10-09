@@ -124,6 +124,65 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>
+    /// A named load of a tracked allocation whose feedback Maglev cannot use
+    /// (megamorphic: a constructor shared by many classes, as Class.create's):
+    /// the property from the virtual object's map, which is exact (V8 infers
+    /// access infos from the known maps the same way, here without the
+    /// feedback): an own in-object field from the virtual object, a constant
+    /// of a stable prototype chain (const field or descriptor constant),
+    /// with the stable map and field constness dependencies. Null otherwise
+    /// (the generic load lets the object escape).
+    /// </summary>
+    ValueNode? TryBuildLoadNamedFromVirtualObject(ValueNode receiver, Name name)
+    {
+        if (TryGetTrackedObject(receiver, store: false) is not { } vo) return null;
+        Map map = vo.Map;
+        if (map.IsDictionaryMap || map.IsDeprecated || map.HasNamedInterceptor || map.IsAccessCheckNeeded) return null;
+        InternalIndex own = map.InstanceDescriptors.Search(name, map);
+        if (own.IsFound)
+        {
+            PropertyDetails details = map.InstanceDescriptors.GetDetails(own);
+            if (details.Kind != PropertyKind.Data) return null;
+            if (details.Location == PropertyLocation.Descriptor) return GetConstant(map.InstanceDescriptors.GetStrongValue(own));
+            int index = FieldIndex.ForDescriptor(map, own).StorageIndex;
+            return index < vo.Slots.Length ? vo.Slots[index] : null;
+        }
+        var prototypeMaps = new List<Map>();
+        for (JSReceiver? prototype = map.Prototype; prototype is not null; prototype = prototype.Map.Prototype)
+        {
+            Map prototypeMap = prototype.Map;
+            if (prototype is not JSObject holder) return null;
+            if (!prototypeMap.IsStable || prototypeMap.IsDictionaryMap || prototypeMap.IsDeprecated ||
+                prototypeMap.HasNamedInterceptor || prototypeMap.IsAccessCheckNeeded || Map.IsSpecialReceiverMap(prototypeMap))
+            {
+                return null;
+            }
+            prototypeMaps.Add(prototypeMap);
+            DescriptorArray descriptors = prototypeMap.InstanceDescriptors;
+            InternalIndex found = descriptors.Search(name, prototypeMap);
+            if (!found.IsFound) continue;
+            PropertyDetails details = descriptors.GetDetails(found);
+            if (details.Kind != PropertyKind.Data) return null;
+            JSValue value;
+            if (details.Location == PropertyLocation.Descriptor)
+            {
+                value = descriptors.GetStrongValue(found);
+            }
+            else
+            {
+                if (details.Constness != PropertyConstness.Const) return null;
+                value = holder.FieldAt(FieldIndex.ForDescriptor(prototypeMap, found).StorageIndex);
+                if (value.IsTheHole || ReferenceEquals(value._obj, Oddball.Uninitialized)) return null;
+                _info.AddDependency(prototypeMap.FindFieldOwner(found), Objects.DependentCode.DependencyGroups.FieldConst);
+            }
+            foreach (Map m in prototypeMaps) _info.AddDependency(m, Objects.DependentCode.DependencyGroups.PrototypeCheck);
+            if (_info.IsTracing) Console.WriteLine($"[maglev] property {name} of virtual object n{vo.Allocation.Id} from its prototype chain");
+            return GetConstant(value);
+        }
+        return null;
+    }
+
+    /// <summary>
     /// TryBuildLoadTaggedFieldFromAllocation: the value of in-object field
     /// <paramref name="storageIndex"/> of a tracked allocation, or null.
     /// </summary>
@@ -147,7 +206,14 @@ public sealed partial class MaglevGraphBuilder
     {
         if (TryGetTrackedObject(receiver, store: true) is not { } vo || storageIndex >= vo.Slots.Length) return false;
         // This avoids loops in the object graph (V8 does not track a store of an allocation either).
-        if (value is InlinedAllocation) return false;
+        if (value is InlinedAllocation stored)
+        {
+            // A tracked allocation in a field: it escapes with this one
+            // (V8's allocations_escape_map); none that reaches this one
+            // (no cycles in the captured objects).
+            if (stored.EscapedDuringBuild || TryGetTrackedObject(stored, store: false) is null || stored.Reaches(vo.Allocation)) return false;
+            (vo.Allocation.StoredAllocations ??= []).Add(stored);
+        }
         store.TrackedStore = true;
         _frame.Known.VirtualObjects = _frame.Known.VirtualObjects.With(vo.WithSlot(storageIndex, value, newMap ?? vo.Map));
         if (_info.IsTracing) Console.WriteLine($"[maglev] setting field {storageIndex} of virtual object n{vo.Allocation.Id}: n{value.Id}");
@@ -167,10 +233,12 @@ public sealed partial class MaglevGraphBuilder
         ValueNode[] inputs = node.Inputs;
         // An inlined function's elidable arguments object: whether it needs
         // the frame is decided after the graph is built (MaglevEscapeAnalysis).
-        if (node.Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None }) return;
+        // (Its ArgumentsKind is set after the node is added.)
+        if (node.Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None } or
+            CallBuiltinInfo { Method.Name: nameof(MaglevBuiltins.CreateInlinedArguments) }) return;
         if (node.Opcode != Opcode.EnterInlinedFrame)
         {
-            for (int i = node.TrackedStore ? 1 : 0; i < inputs.Length; i++) EscapeDuringBuild(inputs[i]);
+            for (int i = node.TrackedStore ? 2 : 0; i < inputs.Length; i++) EscapeDuringBuild(inputs[i]);
         }
         if (_unit.IsInline && MaglevCodeGenerator.NeedsFrame(node))
         {
@@ -199,6 +267,9 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>A use that lets the object escape (a phi input, a call argument ...): its fields are no longer tracked.</summary>
     internal static void EscapeDuringBuild(ValueNode value)
     {
-        if (value is InlinedAllocation allocation) allocation.EscapedDuringBuild = true;
+        if (value is not InlinedAllocation { EscapedDuringBuild: false } allocation) return;
+        allocation.EscapedDuringBuild = true;
+        // What it holds is reachable now.
+        if (allocation.StoredAllocations is { } stored) foreach (InlinedAllocation a in stored) EscapeDuringBuild(a);
     }
 }

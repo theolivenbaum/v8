@@ -255,6 +255,12 @@ public sealed partial class MaglevGraphBuilder
     ValueNode? TryReduceFunctionPrototypeApply(ValueNode function, ValueNode[] args)
     {
         if (function.Representation != ValueRepresentation.kTagged) return null;
+        // A constant applied function (e.g. a method of a virtual object's
+        // prototype): the known-target reduction, which can inline it.
+        if (function.Opcode == Opcode.Constant && function.Value0.HeapObjectOrNull is JSFunction constant)
+        {
+            return TryReduceFunctionPrototypeApplyCallWithReceiver(constant, function, args, default);
+        }
         if (args.Length == 0)
         {
             ValueNode undefined = GetRootConstant(RootIndex.kUndefinedValue);
@@ -602,6 +608,10 @@ public sealed partial class MaglevGraphBuilder
     // ---- Inlining (BuildInlineFunction) ---------------------------------------------------------------------
 
     /// <summary>Whether <paramref name="target"/> can be inlined here (MaglevGraphBuilder::ShouldInlineCall).</summary>
+    /// <summary>The call being considered passes an allocation that has not escaped (TryBuildInlinedCall).</summary>
+    bool _callReceivesFreshAllocation;
+    static readonly bool s_inlineForEscapeAnalysis = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_INLINE_FOR_EA") != "1";
+
     string? ShouldInlineCall(JSFunction target, FeedbackNexus nexus, bool isConstruct)
     {
         if (!Flags.maglev_inlining) return "inlining disabled";
@@ -625,7 +635,11 @@ public sealed partial class MaglevGraphBuilder
         if (_onlyInlineSmall && !small) return "polymorphic continuation (small functions only)";
         int depth = _unit.InliningDepth + 1;
         if (depth > Flags.max_maglev_hard_inline_depth) return "too deep";
-        if (!small && depth > MaxInlineDepth) return "inline depth";
+        // V8Sharp: a call that receives an allocation which has not escaped
+        // is inlined deeper (up to the hard depth limit), so the object can
+        // stay virtual (V8's Turbofan inlines such calls; Maglev's depth limit
+        // would make the call escape it).
+        if (!small && depth > MaxInlineDepth && !(_callReceivesFreshAllocation && s_inlineForEscapeAnalysis)) return "inline depth";
         if (length > MaxInlinedBytecodeSize) return "too big";
         if (!small && _info.InlinedBytecodeSize + length > MaxInlinedBytecodeSizeCumulative) return "budget";
         if (!small)
@@ -700,7 +714,10 @@ public sealed partial class MaglevGraphBuilder
     ValueNode? TryBuildInlinedCall(JSFunction target, ValueNode closure, ValueNode receiver, ValueNode[] args, ConvertReceiverMode mode,
         FeedbackNexus nexus, bool isConstruct, ValueNode? newTarget)
     {
+        _callReceivesFreshAllocation = receiver is InlinedAllocation { EscapedDuringBuild: false } ||
+            Array.Exists(args, static a => a is InlinedAllocation { EscapedDuringBuild: false });
         string? reason = ShouldInlineCall(target, nexus, isConstruct);
+        _callReceivesFreshAllocation = false;
         if (reason is not null)
         {
             if (_info.IsTracing) Console.WriteLine($"[maglev] not inlining {MaglevCompiler.DebugName(target.Shared)}: {reason}");

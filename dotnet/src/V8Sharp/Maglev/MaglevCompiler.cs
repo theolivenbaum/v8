@@ -488,7 +488,10 @@ public static class MaglevCompiler
                 {
                     if (value is InlinedAllocation { IsElided: true } allocation)
                     {
-                        foreach (ValueNode slot in frame!.VirtualObjects.Find(allocation)!.Slots) slot.UseCount++;
+                        foreach (ValueNode slot in frame!.VirtualObjects.Find(allocation)!.Slots)
+                        {
+                            MaglevEscapeAnalysis.UseCaptured(slot, frame.VirtualObjects, static v => v.UseCount++);
+                        }
                     }
                     if (!visited) value.UseCount++;
                 }

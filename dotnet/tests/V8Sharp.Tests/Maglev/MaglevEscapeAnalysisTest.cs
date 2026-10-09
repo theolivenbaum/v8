@@ -230,6 +230,34 @@ public class MaglevEscapeAnalysisTest
           return out.join();
         })()
         """,
+        // Allocations in each other's fields (captured objects in captured
+        // objects): elided together, materialized together at a deopt (with
+        // their identities), escaping together; and the megamorphic
+        // constructor of Class.create (the virtual object's map gives the
+        // method).
+        """
+        (function() {
+          function Vec(x, y) { this.x = x; this.y = y; }
+          function Body(x, y) { this.pos = new Vec(x, y); this.vel = new Vec(0, 0); }
+          var keep;
+          function f(a, b, k) {
+            var body = new Body(a, b);
+            var p = body.pos;
+            body.vel.x = p.x - p.y;
+            var t = body.vel.x * 2;
+            if (k == 37) keep = body;
+            return t + ':' + (body.pos === p) + ':' + body.vel.x + ':' + Object.keys(body).join('') + ':' + p.y;
+          }
+          var Class = { create: function() { return function() { this.initialize.apply(this, arguments); } } };
+          var classes = [];
+          for (var c = 0; c < 6; c++) { var K = Class.create(); K.prototype = { initialize: function(a, b) { this.a = a; this.b = b; }, sum: function() { return this.a + this.b; } }; classes.push(K); }
+          function g(k) { var o = new classes[0](k, k + 1); return o.sum(); }
+          var out = [];
+          for (var k = 0; k < 40; k++) { for (var c = 1; c < 6; c++) new classes[c](k); out.push(f(k, k + 1, k), g(k)); }
+          out.push(f('s', 1, 0), f(1, {}, 0), f(0.5, 2, 0), keep.pos.x, g('q'));
+          return out.join();
+        })()
+        """,
     };
 
     [Theory]
