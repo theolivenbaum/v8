@@ -178,8 +178,28 @@ public static class MaglevCalls
         };
     }
 
+    /// <summary>A call with the arguments in a span through the callee's direct entry (MaglevCode.FastCall).</summary>
+    internal static JSValue InvokeFastCall(Isolate isolate, MaglevCode code, JSFunction function, JSValue receiver, ReadOnlySpan<JSValue> args)
+    {
+        int argc = args.Length;
+        JSValue A(ReadOnlySpan<JSValue> a, int i) => i < a.Length ? a[i] : default;
+        Delegate fast = code.FastCall!;
+        return code.FastCallArity switch
+        {
+            0 => Unsafe.As<MaglevFastCall0>(fast)(isolate, function, argc, receiver),
+            1 => Unsafe.As<MaglevFastCall1>(fast)(isolate, function, argc, receiver, A(args, 0)),
+            2 => Unsafe.As<MaglevFastCall2>(fast)(isolate, function, argc, receiver, A(args, 0), A(args, 1)),
+            3 => Unsafe.As<MaglevFastCall3>(fast)(isolate, function, argc, receiver, A(args, 0), A(args, 1), A(args, 2)),
+            4 => Unsafe.As<MaglevFastCall4>(fast)(isolate, function, argc, receiver, A(args, 0), A(args, 1), A(args, 2), A(args, 3)),
+            5 => Unsafe.As<MaglevFastCall5>(fast)(isolate, function, argc, receiver, A(args, 0), A(args, 1), A(args, 2), A(args, 3),
+                A(args, 4)),
+            _ => Unsafe.As<MaglevFastCall6>(fast)(isolate, function, argc, receiver, A(args, 0), A(args, 1), A(args, 2), A(args, 3),
+                A(args, 4), A(args, 5)),
+        };
+    }
+
     /// <summary>A call from a register list through the callee's direct entry (MaglevCode.FastCall).</summary>
-    static JSValue InvokeFastCall(Isolate isolate, MaglevCode code, JSFunction function, JSValue receiver, int argsStart, int argc,
+    internal static JSValue InvokeFastCall(Isolate isolate, MaglevCode code, JSFunction function, JSValue receiver, int argsStart, int argc,
         int passedArgc)
     {
         JSValue[] stack = isolate.RegisterStack;
