@@ -717,6 +717,26 @@ two passes share the code's deopt points. When the graph turns out to
 need the frame (the second pass touches it), the frameful direct entry is
 used.
 
+**Allocations and escape analysis.** `new` of a known constructor (with
+the constructor inlined), object literals of primitive fields and `{}` are
+`InlinedAllocation` nodes (MaglevGraphBuilder.Allocation.cs): the IL
+constructs the object of the map's in-object slot class
+(MaglevCodeGenerator.Allocation.cs). While an allocation has not escaped
+(no use but tracked stores into it, deopt frames and the frames of inlined
+calls that are never pushed), KnownNodeAspects keeps its `VirtualObject`
+(map and in-object fields, a new immutable version per store, including map
+transitions); loads of its fields are the stored values and deopt frames
+capture the current `VirtualObjectList`. After the graph is built,
+`MaglevEscapeAnalysis` elides the allocations nothing lets escape (with
+those stored in their fields) and removes their stores; a deopt exit spills
+the fields of the elided objects its frames hold, and the Deoptimizer
+materializes them first (`DeoptPoint.CapturedObjects`, V8's captured
+objects, one object per allocation however many registers hold it). Calls
+that pass a non-escaped allocation are inlined deeper, so constructors
+that call an initializer (Class.create, Box2D's) keep the object virtual;
+an inlined function's arguments object is virtual for apply(thisArg,
+arguments). Contexts and closures are allocated by frame-free helpers.
+
 **Load elimination.** KnownNodeAspects keeps loaded fields (by object and
 storage index), elements, array and FixedArray lengths, and context slots;
 stores update their own key and forget aliases of it, and nodes that can
