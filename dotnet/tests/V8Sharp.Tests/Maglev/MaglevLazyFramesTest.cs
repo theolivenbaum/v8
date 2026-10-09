@@ -121,6 +121,28 @@ public class MaglevLazyFramesTest
           return out.join('|');
         })()
         """,
+        // Arguments objects, rest parameters and apply(this, arguments) in lazy
+        // frames of functions reading their actual arguments (up to six).
+        """
+        (function() {
+          var Class = { create: function () { return function () { this.initialize.apply(this, arguments); }; } };
+          var Vec = Class.create();
+          Vec.prototype = { initialize: function (x, y, z) { this.x = x; this.y = y; this.z = z === undefined ? 0 : z; } };
+          function sum() { var s = 0; for (var i = 0; i < arguments.length; i++) s += arguments[i]; return s + ':' + arguments.length; }
+          function strictSum() { 'use strict'; var s = ''; for (var i = 0; i < arguments.length; i++) s += arguments[i]; return s; }
+          function rest(a, ...r) { return a + '/' + r.join('.') + '/' + r.length; }
+          function peek() { return Array.prototype.join.call(sum2.arguments, ','); }
+          function sum2(a) { if (a > 25) a = 'w'; return peek() + '|' + arguments.length + '|' + a + '|' + arguments[0]; }
+          function drive(k) {
+            var v = new Vec(k, k + 1, k > 30 ? 'z' : undefined);
+            return [v.x + v.y + v.z, sum(k, 2, 3), sum(), sum(1, 2, 3, 4, 5, 6), strictSum('a', k), rest(k), rest(k, 1, 2),
+              rest(k, 1, 2, 3, 4, 5), sum2(k, 'q', 'r'), sum2(k)].join(' ; ');
+          }
+          var out = [];
+          for (var k = 0; k < 40; k++) out.push(drive(k));
+          return out.join('\n');
+        })()
+        """,
         // Deep recursion through lazy frames, and the stack overflow RangeError.
         """
         (function() {
@@ -155,7 +177,7 @@ public class MaglevLazyFramesTest
             JSValue result = Compiler.CompileAndRun(isolate, """
                 function leaf(a) { return a + 1; }
                 function mid(a, b) { return leaf(a) + leaf(b); }
-                function args() { return arguments.length; }
+                function args() { return leaf(arguments.length); }
                 %PrepareFunctionForOptimization(leaf);
                 %PrepareFunctionForOptimization(mid);
                 %PrepareFunctionForOptimization(args);
@@ -174,8 +196,8 @@ public class MaglevLazyFramesTest
             }
             Assert.Equal(MaglevDirectEntryKind.Frameless, Kind(0));
             Assert.Equal(MaglevDirectEntryKind.LazyFrame, Kind(1));
-            // A function reading its actual arguments keeps the frameful entry.
-            Assert.Equal(MaglevDirectEntryKind.Frameful, Kind(2));
+            // A function reading its actual arguments: a lazy frame with six arguments.
+            Assert.Equal(MaglevDirectEntryKind.LazyFrame, Kind(2));
         }
     }
 }

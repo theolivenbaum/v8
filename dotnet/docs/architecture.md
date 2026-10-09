@@ -709,8 +709,8 @@ call `MaglevBuiltins` or the `BaselineBuiltins` the baseline tier uses
 are static fields of the method's type.
 
 **Frames.** Code entered at its frameful entry (`MaglevExecution.Run`
-for OSR, functions with more than six parameters or reading their actual
-arguments, class constructors) runs in the interpreter frame
+for OSR, functions with more than six parameters, calls with more
+arguments than the direct entry takes, class constructors) runs in the interpreter frame
 `InterpreterExecution.EnterFrame` (or `MaglevCalls.EnterFrame`) built:
 registers are not kept in it while the code runs (values live in IL
 locals), only the fixed slots (receiver, arguments, context, closure,
@@ -772,9 +772,12 @@ functions whose code does not read their frame get lazy records as well
 (`EmitPushLazyInlinedFrame`: one activation local per inlining depth,
 `EnterLazyInlinedFrame` instead of EnterInlinedFrame). Calls with up to six
 arguments and constructs with up to three pass their arguments as values
-(no register window in the frame); code that still reads or writes its
-frame (register-list calls with more arguments, arguments objects,
-builtins taking the frame state) keeps the frameful direct entry
+(no register window in the frame); arguments objects, rest parameters
+and apply(this, arguments) of a lazy frame copy its activation's arguments
+into its window first (`MaglevCalls.CreateMappedArgumentsLazy` and the
+others); code that still reads or writes its frame (register-list calls
+with more arguments, other builtins taking the frame state) keeps the
+frameful direct entry
 (`V8SHARP_MAGLEV_TRACE_ENTRIES=1` names the node).
 `V8SHARP_MAGLEV_NO_LAZY_FRAMES=1` and `V8SHARP_MAGLEV_NO_LAZY_INLINED_FRAMES=1`
 turn them off.

@@ -606,7 +606,10 @@ public static class MaglevCalls
         int formal = bytecode.ParameterCount - 1;
         ref JSValue fpRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), record.Fp);
         Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset) = a.Receiver;
-        for (int i = 0; i < formal; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = MaglevActivation.Argument(ref a, i);
+        // The parameter slots the entry reserved: max(argc, formal), all in
+        // the activation (a direct entry takes no more arguments than its arity).
+        int count = Math.Max(a.Argc, formal);
+        for (int i = 0; i < count; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = MaglevActivation.Argument(ref a, i);
         Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset) = function.Context;
         Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset) = function;
         Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset) = vector is null ? JSValue.Undefined : vector;
@@ -616,6 +619,74 @@ public static class MaglevCalls
         MemoryMarshal.CreateSpan(ref fpRef, bytecode.RegisterCount).Clear();
         record.Flags &= ~InterpreterFrameFlags.Lazy;
         record.Activation = 0;
+    }
+
+    // ---- Arguments objects of lazy frames ---------------------------------------------------------------
+    //
+    // The arguments builtins of the outermost frame read the interpreter
+    // frame's parameter slots (BaselineBuiltins.CreateMappedArguments and
+    // others, through the InterpreterState). A lazy frame writes its
+    // activation's receiver and arguments into its reserved window first (the
+    // objects copy them, or alias context slots), and the frame stays lazy.
+
+    /// <summary>Writes the receiver and arguments of the lazy frame at <paramref name="depth"/> to its window; returns its fp.</summary>
+    static int WriteLazyParameters(Isolate isolate, int depth, out JSFunction function, out int argc)
+    {
+        ref InterpreterFrameRecord record = ref isolate.InterpreterFrames[depth];
+        ref MaglevActivation a = ref MaglevActivation.At(record.Activation);
+        function = a.Function;
+        argc = a.Argc;
+        int formal = ((BytecodeArray)function.Shared.FunctionData!).ParameterCount - 1;
+        ref JSValue fpRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), record.Fp);
+        Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset) = a.Receiver;
+        int count = Math.Max(argc, formal);
+        for (int i = 0; i < count; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = MaglevActivation.Argument(ref a, i);
+        return record.Fp;
+    }
+
+    /// <summary>BaselineBuiltins.CreateMappedArguments of a lazy frame.</summary>
+    public static JSValue CreateMappedArgumentsLazy(Isolate isolate, int depth, Context context)
+    {
+        int fp = WriteLazyParameters(isolate, depth, out JSFunction function, out int argc);
+        return InterpreterArguments.NewSloppyArguments(isolate, function, context, fp, argc);
+    }
+
+    /// <summary>BaselineBuiltins.CreateUnmappedArguments of a lazy frame.</summary>
+    public static JSValue CreateUnmappedArgumentsLazy(Isolate isolate, int depth)
+    {
+        int fp = WriteLazyParameters(isolate, depth, out JSFunction function, out int argc);
+        return InterpreterArguments.NewStrictArguments(isolate, function, fp, argc);
+    }
+
+    /// <summary>BaselineBuiltins.CreateRestParameter of a lazy frame.</summary>
+    public static JSValue CreateRestParameterLazy(Isolate isolate, int depth)
+    {
+        int fp = WriteLazyParameters(isolate, depth, out JSFunction function, out int argc);
+        return InterpreterArguments.NewRestParameter(isolate, function, fp, argc);
+    }
+
+    /// <summary>MaglevBuiltins.CallForwardArguments of a lazy frame.</summary>
+    public static JSValue CallForwardArgumentsLazy(Isolate isolate, int depth, JSValue target, JSValue receiver, JSValue argumentsObject)
+    {
+        if (argumentsObject._obj is not null)
+        {
+            return Builtins.BuiltinsFunction.CallWithArrayLike(isolate, target, receiver, argumentsObject);
+        }
+        ref MaglevActivation a = ref MaglevActivation.At(isolate.InterpreterFrames[depth].Activation);
+        int argc = a.Argc;
+        return CallWithValuesN(isolate, target, receiver, argc, argc > 0 ? a.A0 : default, argc > 1 ? a.A1 : default,
+            argc > 2 ? a.A2 : default, argc > 3 ? a.A3 : default, argc > 4 ? a.A4 : default, argc > 5 ? a.A5 : default);
+    }
+
+    /// <summary>A call with up to six arguments as values (CallWithValues0..6).</summary>
+    static JSValue CallWithValuesN(Isolate isolate, JSValue target, JSValue receiver, int argc, JSValue a0, JSValue a1, JSValue a2,
+        JSValue a3, JSValue a4, JSValue a5)
+    {
+        if (TryGetFastCallee(isolate, target, ref receiver, argc, out JSFunction function, out MaglevCode code))
+        {
+            return InvokeFastCallValues(isolate, code, function, receiver, argc, a0, a1, a2, a3, a4, a5);
+        }
+        return CallValuesN(isolate, target, receiver, argc, a0, a1, a2, a3, a4, a5, (int)ConvertReceiverMode.Any);
     }
 
     /// <summary>
@@ -879,8 +950,8 @@ public struct MaglevActivation
     internal static JSValue[] GetArguments(nint address)
     {
         ref MaglevActivation a = ref At(address);
-        int formal = ((BytecodeArray)a.Function.Shared.FunctionData!).ParameterCount - 1;
-        int argc = Math.Min(a.Argc, formal);
+        // (A direct entry takes at most its arity's arguments, all in the activation.)
+        int argc = Math.Min(a.Argc, MaglevFastCalls.kMaxArity);
         if (argc <= 0) return [];
         var result = new JSValue[argc];
         for (int i = 0; i < argc; i++) result[i] = Argument(ref a, i);

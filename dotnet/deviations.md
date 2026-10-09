@@ -416,7 +416,7 @@ for now, to be revisited when the reason goes away.
   local per value. The code is never freed (the assembly
   is not collectible); invalidated code is only unreferenced.
 - Frames: code entered at its frameful entry (OSR, more than six
-  parameters, functions reading their actual arguments, class constructors)
+  parameters, class constructors)
   runs in the interpreter frame the call built, and inlined functions push
   real interpreter frames (V8 has one optimized frame and materializes the
   inlined ones at deopt and for stack walks). A deopt writes the

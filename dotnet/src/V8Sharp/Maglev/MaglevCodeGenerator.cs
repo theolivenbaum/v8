@@ -3136,7 +3136,7 @@ internal sealed partial class MaglevCodeGenerator
         if (_info.IsOsr || _hasCatchBlocks || Flags_NoLazyFrames || Flags_NoFrameless) return Reject(null);
         BytecodeArray bytecode = _info.Toplevel.Bytecode;
         if (bytecode.IncomingNewTargetOrGeneratorRegister.IsValid) return Reject(null);
-        if (_fastCallArity != bytecode.ParameterCount - 1) return Reject(null);
+        if (_fastCallArity != bytecode.ParameterCount - 1 && _fastCallArity != MaglevFastCalls.kMaxArity) return Reject(null);
         foreach (BasicBlock block in _graph.Blocks)
         {
             if (block.IsDead) continue;
@@ -3175,14 +3175,29 @@ internal sealed partial class MaglevCodeGenerator
 
         static bool UsesFrame(CallBuiltinInfo info)
         {
-            if (info.RegisterStores.Length != 0) return true;
+            foreach ((Register r, ValueNode _) in info.RegisterStores)
+            {
+                if (!r.IsParameter) return true;
+            }
             foreach (BuiltinArg arg in info.Args)
             {
-                if (arg.Kind is BuiltinArgKind.State or BuiltinArgKind.RegisterIndex or BuiltinArgKind.RegisterRef) return true;
+                if (arg.Kind is BuiltinArgKind.RegisterIndex or BuiltinArgKind.RegisterRef) return true;
+                if (arg.Kind == BuiltinArgKind.State && LazyTwin(info.Method) is null) return true;
             }
             return false;
         }
     }
+
+    static readonly Dictionary<string, MethodInfo> s_lazyTwins = new(StringComparer.Ordinal)
+    {
+        ["CreateMappedArguments"] = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CreateMappedArgumentsLazy))!,
+        ["CreateUnmappedArguments"] = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CreateUnmappedArgumentsLazy))!,
+        ["CreateRestParameter"] = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CreateRestParameterLazy))!,
+        ["CallForwardArguments"] = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallForwardArgumentsLazy))!,
+    };
+
+    /// <summary>The lazy-frame form of a builtin taking the frame state (its InterpreterState argument the frame depth), or null.</summary>
+    static MethodInfo? LazyTwin(MethodInfo method) => s_lazyTwins.TryGetValue(method.Name, out MethodInfo? twin) ? twin : null;
 
     void GenerateLazy()
     {
@@ -3217,7 +3232,7 @@ internal sealed partial class MaglevCodeGenerator
     /// </summary>
     void EmitLazyPrologue()
     {
-        _activation = _il.DeclareLocal(MaglevActivation.TypeFor(_info.Toplevel.Bytecode.ParameterCount - 1));
+        _activation = _il.DeclareLocal(MaglevActivation.TypeFor(_fastCallArity));
         _lazyStart = _il.DeclareLocal(typeof(int));
         _lazySaved = _il.DeclareLocal(typeof(Context));
         BytecodeArray bytecode = _info.Toplevel.Bytecode;
@@ -3228,7 +3243,8 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldloca, _activation);
         _il.Emit(OpCodes.Ldarg, (short)4);
         _il.Emit(OpCodes.Stfld, AF(_activation, "Receiver"));
-        for (int i = 0; i < formal; i++)
+        // (A function reading its actual arguments takes kMaxArity values.)
+        for (int i = 0; i < _fastCallArity; i++)
         {
             _il.Emit(OpCodes.Ldloca, _activation);
             _il.Emit(OpCodes.Ldarg, (short)(5 + i));
@@ -3250,7 +3266,24 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldarg_1);
         _il.Emit(OpCodes.Ldloc, _baseFrameIndex);
         _il.Emit(OpCodes.Ldloc, _lazyStart);
-        _il.Emit(OpCodes.Ldc_I4, formal);
+        if (_fastCallArity > formal)
+        {
+            // paramSlots = max(argc & int.MaxValue, formal)
+            Label atLeastFormal = _il.DefineLabel(), done = _il.DefineLabel();
+            _il.Emit(OpCodes.Ldarg_3);
+            _il.Emit(OpCodes.Ldc_I4, int.MaxValue);
+            _il.Emit(OpCodes.And);
+            _il.Emit(OpCodes.Dup);
+            _il.Emit(OpCodes.Ldc_I4, formal);
+            _il.Emit(OpCodes.Bge, done);
+            _il.Emit(OpCodes.Pop);
+            _il.Emit(OpCodes.Ldc_I4, formal);
+            _il.MarkLabel(done);
+        }
+        else
+        {
+            _il.Emit(OpCodes.Ldc_I4, formal);
+        }
         _il.Emit(OpCodes.Ldc_I4, bytecode.RegisterCount);
         _il.Emit(OpCodes.Ldarg_2);
         _il.Emit(OpCodes.Ldloca, _activation);
@@ -3849,6 +3882,13 @@ internal sealed partial class MaglevCodeGenerator
     {
         var info = (CallBuiltinInfo)node.Obj0!;
         MethodInfo method = info.Method;
+        bool lazyTwin = false;
+        if (_lazyFrame && node.Unit is not { IsInline: true } && LazyTwin(method) is { } twin)
+        {
+            // A builtin taking the frame state: its lazy-frame form takes the frame depth.
+            method = twin;
+            lazyTwin = true;
+        }
         ParameterInfo[] parameters = method.GetParameters();
         int storeInputBase = node.Inputs.Length - info.RegisterStores.Length;
         for (int i = 0; i < info.RegisterStores.Length; i++)
@@ -3867,6 +3907,11 @@ internal sealed partial class MaglevCodeGenerator
                     _il.Emit(OpCodes.Ldarg_1);
                     break;
                 case BuiltinArgKind.State:
+                    if (lazyTwin)
+                    {
+                        _il.Emit(OpCodes.Ldloc, _baseFrameIndex);
+                        break;
+                    }
                     if (_frameless) throw new FramelessUnsupportedException();
                     _il.Emit(OpCodes.Ldarg_2);
                     break;
