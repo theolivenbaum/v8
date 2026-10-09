@@ -99,6 +99,28 @@ public class MaglevLazyFramesTest
           return out.join('\n');
         })()
         """,
+        // Block contexts in lazy frames (SetCurrentContext without a frame
+        // slot): closures over loop bindings, a call and a deopt inside the
+        // block, and calls with four to six arguments and constructs.
+        """
+        (function() {
+          function P(a, b, c) { this.s = a + b + c; }
+          function six(a, b, c, d, e, f) { return [a, b, c, d, e, f].join('.'); }
+          function outer(k, v) {
+            var fs = [];
+            for (let i = 0; i < 3; i++) {
+              let j = i * k;
+              fs.push(function () { return j + v.n; });
+              if (k == 41) v = { m: 1, n: 'x' };
+              fs.push(six(i, j, k, v.n, 5, 6) + new P(i, j, k).s);
+            }
+            return fs.map(function (f) { return typeof f == 'function' ? f() : f; }).join(',') + new Error().stack.split('\n').length;
+          }
+          var out = [];
+          for (var k = 0; k < 60; k++) out.push(outer(k, { n: k }));
+          return out.join('|');
+        })()
+        """,
         // Deep recursion through lazy frames, and the stack overflow RangeError.
         """
         (function() {

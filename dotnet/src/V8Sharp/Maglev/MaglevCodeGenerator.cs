@@ -2514,7 +2514,17 @@ internal sealed partial class MaglevCodeGenerator
                 return;
             case Opcode.SetCurrentContext:
                 _il.Emit(OpCodes.Ldarg_1);
-                LoadFrameSlotAddress(node.Unit, InterpreterRuntime.kContextOffset);
+                if (_lazyFrame && (node.Unit is not { IsInline: true } || _lazyUnits.Contains(node.Unit)))
+                {
+                    // A lazy frame has no context slot (every deopt translation
+                    // holds the context): only isolate.Context changes.
+                    _lazyContextScratch ??= _il.DeclareLocal(typeof(JSValue));
+                    _il.Emit(OpCodes.Ldloca, _lazyContextScratch);
+                }
+                else
+                {
+                    LoadFrameSlotAddress(node.Unit, InterpreterRuntime.kContextOffset);
+                }
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Call(nameof(MaglevBuiltins.SetCurrentContext));
                 return;
@@ -3099,6 +3109,7 @@ internal sealed partial class MaglevCodeGenerator
     // contexts) keep the frameful entry.
 
     bool _lazyFrame;
+    LocalBuilder? _lazyContextScratch;
     Node? _currentNode;
 
     static string Describe(Node? node) => node is null ? "(prologue or exits)"
@@ -3143,7 +3154,6 @@ internal sealed partial class MaglevCodeGenerator
                 switch (node.Opcode)
                 {
                     case Opcode.LoadRegister:
-                    case Opcode.SetCurrentContext:
                         return Reject(node);
                     case Opcode.StoreRegister when !new Register(node.Int0).IsParameter:
                         return Reject(node);
@@ -3309,7 +3319,6 @@ internal sealed partial class MaglevCodeGenerator
                 switch (node.Opcode)
                 {
                     case Opcode.LoadRegister:
-                    case Opcode.SetCurrentContext:
                     case Opcode.LoadGeneratorField:
                     case Opcode.StoreGeneratorContinuation:
                     case Opcode.GeneratorStore:
