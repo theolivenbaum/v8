@@ -2009,7 +2009,8 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     suspects are the values the loop's deopt exits read (every check keeps
     the frame state live through the loop) and the size of the method
     (RyuJIT's allocator spills whole intervals). The scratch local of the
-    overflow checks was one such interval (removed).
+    overflow checks was one such interval (removed). The cause was the deopt
+    exits' block weights; see "Hot loop code quality" below.
     The branch before main's allocation work (octane-steady, parity
     publishes, 3 runs, against main 53e9d1ba; load 8.8/16.3, idle 0-1%,
     so noisy): geomean of the 15 +2.8% (621 vs 604), DeltaBlue +13%,
