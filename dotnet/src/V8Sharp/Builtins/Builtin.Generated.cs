@@ -1567,6 +1567,11 @@ public enum Builtin
     TemporalPlainMonthDayPrototypeValueOf,  // CPP
     TemporalPlainMonthDayPrototypeToPlainDate,  // CPP
     DatePrototypeToTemporalInstant,  // CPP
+    // V8Sharp: V8 14.7's TFC(InstantiateAsmJs, JSTrampoline) (after
+    // CompileLazy there), removed from this tree with src/asmjs. Appended so
+    // that the generated ids do not move; a trampoline that builds no frame
+    // (kind ASM here).
+    InstantiateAsmJs,
 }
 
 /// <summary>The kind of each builtin (CPP, TFJ, TFC, TFS, TFH, ASM), as in BUILTIN_LIST.</summary>
@@ -1574,7 +1579,7 @@ public enum BuiltinKind : byte { CPP, TFJ, TFC, TFS, TFH, ASM, BCH }
 
 public static partial class BuiltinRegistry
 {
-    public const int kBuiltinCount = 1557;
+    public const int kBuiltinCount = 1558;
 
     static readonly BuiltinKind[] s_kinds =
     [
@@ -1774,5 +1779,6 @@ public static partial class BuiltinRegistry
         BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP,
         BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP, BuiltinKind.CPP,
         BuiltinKind.CPP,
+        BuiltinKind.ASM, // InstantiateAsmJs
     ];
 }

@@ -241,6 +241,8 @@ public static class InterpreterCalls
             {
                 // CompileLazy, then call through the bytecode path.
                 Codegen.Compiler.CompileLazyOrThrow(isolate, function);
+                // An asm.js module compiles to the InstantiateAsmJs builtin (V8 14.7).
+                if (shared.HasBuiltinId) return CallBuiltin(isolate, function, receiver, args, JSValue.Undefined);
                 if (shared.IsClassConstructor) return RuntimeClasses.ThrowConstructorNonCallableError(isolate, function);
                 if (!shared.Native && shared.LanguageMode == V8Sharp.Common.LanguageMode.Sloppy && !receiver.IsJSReceiver)
                 {
@@ -463,6 +465,8 @@ public static class InterpreterCalls
             if (!shared.IsCompiled && !shared.HasBuiltinId)
             {
                 Codegen.Compiler.CompileLazyOrThrow(isolate, function);
+                // An asm.js module compiles to the InstantiateAsmJs builtin (V8 14.7).
+                if (shared.HasBuiltinId) return CallBuiltin(isolate, function, JSValue.TheHole, args, newTarget);
                 return ConstructInterpreted(isolate, function, newTarget, 0, 0, args, useSpan: true);
             }
         }

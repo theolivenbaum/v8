@@ -88,6 +88,8 @@ public sealed class Shell
             var shell = new Shell(isolate);
             shell.Register();
             isolate.ConsoleDelegate = new D8Console();
+            // PrintMessageCallback for warnings and info messages (asm.js).
+            isolate.MessageListener = D8MessageListener.Create(static s => Console.Out.Write(s));
             // PrintMessageCallback: exceptions caught by the engine's verbose
             // TryCatches (microtask and FinalizationRegistry callbacks).
             isolate.DefaultMicrotaskQueue.UncaughtException += (_, e) => shell.ReportException(e);

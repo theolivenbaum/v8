@@ -110,6 +110,17 @@ public static class MessageHandler
         return result;
     }
 
+    /// <summary>
+    /// MessageHandler::ReportMessage for messages that are not uncaught
+    /// exceptions (warnings, info: the asm.js messages, the parser's
+    /// warnings): passes them to the embedder's message listener
+    /// (v8::Isolate::AddMessageListenerWithErrorLevel), if any.
+    /// </summary>
+    public static void ReportMessage(Isolate isolate, MessageLocation? location, JSMessageObject message)
+    {
+        if (isolate.MessageListener is { } listener) listener(isolate, message);
+    }
+
     /// <summary>MessageHandler::GetMessage: the formatted message text.</summary>
     public static JSString GetMessage(Isolate isolate, JSMessageObject message) =>
         MessageFormatter.Format(isolate, message.Type, [message.Argument]);

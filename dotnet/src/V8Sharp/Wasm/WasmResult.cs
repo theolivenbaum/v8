@@ -34,8 +34,18 @@ public sealed class ErrorThrower(Isolate isolate, string context)
     [DoesNotReturn]
     public void RuntimeError(string message) => Throw(ErrorType.RuntimeError, message);
 
+    /// <summary>
+    /// ErrorThrower::error_msg: the first error's message, with the context
+    /// name (set before the error is thrown).
+    /// </summary>
+    public string? ErrorMessage { get; private set; }
+
     [DoesNotReturn]
-    void Throw(ErrorType type, string message) => isolate.Throw(Reify(type, message));
+    void Throw(ErrorType type, string message)
+    {
+        ErrorMessage ??= string.IsNullOrEmpty(ContextName) ? message : ContextName + ": " + message;
+        isolate.Throw(Reify(type, message));
+    }
 
     /// <summary>ErrorThrower::Reify: the error object, without throwing it.</summary>
     public JSObject Reify(ErrorType type, string message)

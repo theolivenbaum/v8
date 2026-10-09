@@ -508,6 +508,14 @@ public enum MessageTemplate
     CannotDeepFreezeValue,
     SuppressedErrorDuringDisposal,
     ExpectAnObjectWithUsing,
+    // Asm.js validation related: V8 14.7's templates (between WasmObjectsAreOpaque
+    // and DataCloneError there), removed from this tree with src/asmjs. Kept at
+    // the end so that the ids of this tree's templates (bytecode constants) do
+    // not move.
+    AsmJsInvalid,
+    AsmJsCompiled,
+    AsmJsInstantiated,
+    AsmJsLinkingFailed,
     MessageCount,
 }
 
@@ -1013,6 +1021,10 @@ public static class MessageFormatter
         "Cannot DeepFreeze non-const value %", // CannotDeepFreezeValue
         "An error was suppressed during disposal", // SuppressedErrorDuringDisposal
         "An object is expected with `using` declarations", // ExpectAnObjectWithUsing
+        "Invalid asm.js: %", // AsmJsInvalid
+        "Converted asm.js to WebAssembly: %", // AsmJsCompiled
+        "Instantiated asm.js: %", // AsmJsInstantiated
+        "Linking failure in asm.js: %", // AsmJsLinkingFailed
     ];
 
     public static MessageTemplate MessageTemplateFromInt(int messageId)

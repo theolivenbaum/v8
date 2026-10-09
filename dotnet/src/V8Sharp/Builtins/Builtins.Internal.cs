@@ -8,6 +8,8 @@ public static partial class BuiltinRegistry
     static partial void RegisterInternal()
     {
         Register(Builtin.ReturnReceiver, BuiltinsInternal.ReturnReceiver);
+        // V8 14.7's InstantiateAsmJs (builtins-internal-gen.cc).
+        Register(Builtin.InstantiateAsmJs, AsmJs.AsmJsRuntime.InstantiateAsmJsBuiltin);
     }
 }
 

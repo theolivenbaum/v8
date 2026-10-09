@@ -413,6 +413,19 @@ Turbofan/Turboshaft. V8Sharp keeps the tiering policy (interrupt budget,
    are recorded in a per-thread array merged with the interpreter's frames
    for stack traces; wasm exceptions are .NET exceptions caught by IL
    exception filters. Deviations: deviations.md, "WebAssembly".
+5. **asm.js (V8 14.7's src/asmjs).** `src/V8Sharp/AsmJs/` validates a
+   "use asm" module and translates it to a wasm module in one pass
+   (AsmJsParser over AsmJsScanner, emitting through
+   `Wasm/WasmModuleBuilder.cs`), when the module's function is first
+   compiled: Compiler runs AsmJsCompilationJob in place of the bytecode
+   generator, and on success the function's SharedFunctionInfo holds
+   AsmWasmData and the InstantiateAsmJs builtin. Calling the function
+   instantiates the module (with the stdlib, foreign object and heap
+   buffer as 14.7 checks them) and returns its exports; asm.js arithmetic
+   and heap access use the 0xfa opcodes, which the wasm compiler emits
+   inline. A validation or link failure reports V8's message and falls
+   back to the bytecode. This tree removed asm.js; V8Sharp keeps 14.7's
+   pipeline (deviations.md, "asm.js").
 
 ## 10. Testing
 

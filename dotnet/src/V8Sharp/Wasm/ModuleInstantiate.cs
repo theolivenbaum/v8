@@ -30,17 +30,25 @@ public sealed class InstanceBuilder
     readonly TypesSpace _types;
     readonly ModuleInstance _typesModule;
     readonly JSValue[] _sanitizedImports;
+    // asm.js (V8 14.7: asmjs_memory_buffer_ and is_asmjs_module(module_)).
+    readonly bool _isAsmJs;
+    readonly JSArrayBuffer? _asmjsMemoryBuffer;
 
-    InstanceBuilder(Isolate isolate, ErrorThrower thrower, WasmModuleObject moduleObject, JSReceiver? ffi)
+    InstanceBuilder(Isolate isolate, ErrorThrower thrower, WasmModuleObject moduleObject, JSReceiver? ffi,
+        JSArrayBuffer? asmjsMemoryBuffer = null)
     {
         _isolate = isolate;
         _engine = WasmEngine.Get(isolate);
         _thrower = thrower;
         _moduleObject = moduleObject;
+        _isAsmJs = moduleObject.IsAsmJs;
+        _asmjsMemoryBuffer = asmjsMemoryBuffer;
         // V8Sharp: WACS links a module's instruction objects in place, so a
         // second instance gets its own decoded copy of the module.
         _module = moduleObject.ModuleLinked
-            ? WasmEngine.Compile(moduleObject.WireBytes, moduleObject.CompileImports)
+            ? _isAsmJs
+                ? WasmEngine.Compile(moduleObject.WireBytes, asmJs: true, validated: true)
+                : WasmEngine.Compile(moduleObject.WireBytes, moduleObject.CompileImports, validated: true)
             : moduleObject.Module;
         moduleObject.ModuleLinked = true;
         _ffi = ffi;
@@ -61,6 +69,15 @@ public sealed class InstanceBuilder
     public static WasmInstanceObject Build(Isolate isolate, ErrorThrower thrower, WasmModuleObject moduleObject,
         JSReceiver? ffi) =>
         new InstanceBuilder(isolate, thrower, moduleObject, ffi).Build();
+
+    /// <summary>
+    /// WasmEngine::SyncInstantiate for a module translated from asm.js: the
+    /// foreign object is the import object and <paramref name="asmjsMemoryBuffer"/>
+    /// (or an empty buffer) is the memory.
+    /// </summary>
+    public static WasmInstanceObject Build(Isolate isolate, ErrorThrower thrower, WasmModuleObject moduleObject,
+        JSReceiver? ffi, JSArrayBuffer? asmjsMemoryBuffer) =>
+        new InstanceBuilder(isolate, thrower, moduleObject, ffi, asmjsMemoryBuffer).Build();
 
     string ImportName(int index)
     {
@@ -106,6 +123,8 @@ public sealed class InstanceBuilder
             return null!;
         }
 
+        if (_isAsmJs) AttachAsmJsMemory(instance);
+
         var instanceObject = (WasmInstanceObject)JSObject.NewWithMap(_isolate,
             _isolate.NativeContext.WasmInstanceConstructor.InitialMap);
         instanceObject.ModuleObject = _moduleObject;
@@ -121,6 +140,26 @@ public sealed class InstanceBuilder
             ExecuteStartFunction(instance.StartFunc);
         }
         return instanceObject;
+    }
+
+    /// <summary>
+    /// The memory of an asm.js module is its heap buffer (V8: the memory
+    /// object made from asmjs_memory_buffer_, or an empty undetachable buffer
+    /// for degenerate modules). WACS allocated the module's memory (0 pages);
+    /// it now aliases the buffer's bytes.
+    /// </summary>
+    void AttachAsmJsMemory(ModuleInstance instance)
+    {
+        JSArrayBuffer? buffer = _asmjsMemoryBuffer;
+        if (buffer is null)
+        {
+            // Use an empty JSArrayBuffer for degenerate asm.js modules.
+            buffer = _isolate.Factory.NewJSArrayBufferAndBackingStore(0);
+            if (buffer is null) _thrower.RangeError("Out of memory: asm.js memory");
+            buffer.IsDetachable = false;
+        }
+        MemoryInstance memory = _engine.Store[instance.MemAddrs[(Wacs.Core.Types.MemIdx)0]];
+        memory.AttachAsmJsBuffer(buffer.BackingStoreBuffer, (long)buffer.ByteLength);
     }
 
     /// <summary>InstanceBuilder::SanitizeImports: reads every import from the import object.</summary>
@@ -149,8 +188,76 @@ public sealed class InstanceBuilder
                 // No point in continuing if we don't have an imports object.
                 _thrower.TypeError("Imports argument must be present and must be an object");
             }
-            _sanitizedImports[index] = LookupImport(index, import.ModuleName, import.Name);
+            _sanitizedImports[index] = _isAsmJs
+                ? LookupImportAsm(index, import.Name)
+                : LookupImport(index, import.ModuleName, import.Name);
         }
+    }
+
+    /// <summary>InstanceBuilder::LookupImportAsm (V8 14.7).</summary>
+    JSValue LookupImportAsm(int index, string importName)
+    {
+        // Perform lookup of the given {import_name} without causing any observable
+        // side-effect. We only accept accesses that resolve to data properties,
+        // which is indicated by the asm.js spec in section 7 ("Linking") as well.
+        var key = new PropertyKey(_isolate, _isolate.Factory.InternalizeString(importName));
+        var it = new LookupIterator(_isolate, _ffi!, key);
+        switch (it.State)
+        {
+            case LookupIterator.StateKind.ACCESS_CHECK:
+            case LookupIterator.StateKind.TYPED_ARRAY_INDEX_NOT_FOUND:
+            case LookupIterator.StateKind.INTERCEPTOR:
+            case LookupIterator.StateKind.JSPROXY:
+            case LookupIterator.StateKind.WASM_OBJECT:
+            case LookupIterator.StateKind.ACCESSOR:
+            case LookupIterator.StateKind.TRANSITION:
+                _thrower.LinkError(ImportName(index, importName) + ": not a data property");
+                return default;
+            case LookupIterator.StateKind.NOT_FOUND:
+                // Accepting missing properties as undefined does not cause any
+                // observable difference from JavaScript semantics, we are lenient.
+                return JSValue.Undefined;
+            case LookupIterator.StateKind.DATA:
+            {
+                JSValue value = it.GetDataValue();
+                // For legacy reasons, we accept functions for imported globals (see
+                // {ProcessImportedGlobal}), but only if we can easily determine that
+                // their Number-conversion is side effect free and returns NaN (which is
+                // the case as long as "valueOf" (or others) are not overwritten).
+                if (value.HeapObjectOrNull is JSFunction function &&
+                    _module.Imports[index].Desc is WasmModule.ImportDesc.GlobalDesc &&
+                    !HasDefaultToNumberBehaviour(function))
+                {
+                    _thrower.LinkError(ImportName(index, importName) + ": function has special ToNumber behaviour");
+                }
+                return value;
+            }
+            default:
+                throw new InvalidOperationException("unreachable");
+        }
+    }
+
+    /// <summary>module-instantiate.cc HasDefaultToNumberBehaviour (V8 14.7).</summary>
+    bool HasDefaultToNumberBehaviour(JSFunction function)
+    {
+        // Disallow providing a [Symbol.toPrimitive] member.
+        var toPrimitiveIt = new LookupIterator(_isolate, function, Roots.ReadOnlyRoots.to_primitive_symbol);
+        if (toPrimitiveIt.State != LookupIterator.StateKind.NOT_FOUND) return false;
+
+        // The {valueOf} member must be the default "ObjectPrototypeValueOf".
+        var valueOfIt = new LookupIterator(_isolate, function, Roots.ReadOnlyRoots.valueOf_string);
+        if (valueOfIt.State != LookupIterator.StateKind.DATA) return false;
+        if (valueOfIt.GetDataValue().HeapObjectOrNull is not JSFunction valueOf) return false;
+        if (valueOf.Shared.BuiltinId != Builtin.ObjectPrototypeValueOf) return false;
+
+        // The {toString} member must be the default "FunctionPrototypeToString".
+        var toStringIt = new LookupIterator(_isolate, function, Roots.ReadOnlyRoots.toString_string);
+        if (toStringIt.State != LookupIterator.StateKind.DATA) return false;
+        if (toStringIt.GetDataValue().HeapObjectOrNull is not JSFunction toString) return false;
+        if (toString.Shared.BuiltinId != Builtin.FunctionPrototypeToString) return false;
+
+        // Just a default function, which will convert to "Nan". Accept this.
+        return true;
     }
 
     /// <summary>InstanceBuilder::LookupImport.</summary>
@@ -364,6 +471,27 @@ public sealed class InstanceBuilder
         {
             _thrower.LinkError(ImportName(index) + ": global import of type v128 must be a WebAssembly.Global");
         }
+        if (_isAsmJs)
+        {
+            // Accepting {JSFunction} on top of just primitive values here is a
+            // workaround to support legacy asm.js code with broken binding. Note
+            // that using {NaN} (or Smi::zero()) here is what using the observable
+            // conversion via {ToPrimitive} would produce as well. {LookupImportAsm}
+            // checked via {HasDefaultToNumberBehaviour} that "valueOf" or friends have
+            // not been patched.
+            if (value.HeapObjectOrNull is JSFunction) value = JSValue.FromNumber(double.NaN);
+            if (!value.IsJSReceiver)
+            {
+                // Conversion is known to fail for Symbols and BigInts.
+                if (value.HeapObjectOrNull is Symbol or BigInt)
+                {
+                    _thrower.LinkError(ImportName(index) + ": global import must be a number");
+                }
+                double number = ObjectOps.ToNumber(_isolate, value).Number;
+                value = JSValue.FromNumber(type == ValType.I32 ? Base.Numbers.Conversions.DoubleToInt32(number) : number);
+            }
+        }
+
         if (value.HeapObjectOrNull is WasmGlobalObject globalObject)
         {
             if (globalObject.IsMutable != mutable)
@@ -440,9 +568,21 @@ public sealed class InstanceBuilder
             globalIndex++;
         }
 
-        JSObject exportsObject = isolate.Factory.NewSlowJSObjectWithNullProto();
+        JSObject exportsObject;
+        PropertyAttributes attributes;
+        if (_isAsmJs)
+        {
+            // asm.js: a plain object whose properties are writable and
+            // configurable, not frozen.
+            exportsObject = isolate.Factory.NewJSObject(isolate.NativeContext.ObjectFunction);
+            attributes = PropertyAttributes.NONE;
+        }
+        else
+        {
+            exportsObject = isolate.Factory.NewSlowJSObjectWithNullProto();
+            attributes = PropertyAttributes.READ_ONLY | PropertyAttributes.DONT_DELETE;
+        }
         instanceObject.ExportsObject = exportsObject;
-        const PropertyAttributes attributes = PropertyAttributes.READ_ONLY | PropertyAttributes.DONT_DELETE;
 
         foreach (WasmModule.Export export in _module.Exports)
         {
@@ -452,7 +592,15 @@ public sealed class InstanceBuilder
                 case WasmModule.ExportDesc.FuncDesc fd:
                 {
                     FuncAddr address = instance.FuncAddrs[fd.FunctionIndex];
-                    value = _engine.GetOrCreateExportedFunction(address, (int)fd.FunctionIndex.Value, instanceObject);
+                    value = _isAsmJs
+                        ? _engine.GetOrCreateAsmJsExportedFunction(address, (int)fd.FunctionIndex.Value, instanceObject)
+                        : _engine.GetOrCreateExportedFunction(address, (int)fd.FunctionIndex.Value, instanceObject);
+                    if (_isAsmJs && export.Name == AsmJs.AsmJs.kSingleFunctionName)
+                    {
+                        // V8: a property keyed by wasm_asm_single_function_symbol on the instance.
+                        instanceObject.AsmSingleFunction = value;
+                        continue;
+                    }
                     break;
                 }
                 case WasmModule.ExportDesc.TableDesc td:
@@ -476,7 +624,13 @@ public sealed class InstanceBuilder
                     continue;
             }
             JSString name = isolate.Factory.InternalizeString(export.Name);
-            if (name.AsArrayIndex(out uint arrayIndex))
+            if (_isAsmJs)
+            {
+                // asm.js may export a name twice: the last export wins
+                // (V8: JSObject::SetNormalizedProperty).
+                JSObject.DefinePropertyOrElementIgnoreAttributes(isolate, exportsObject, name, value, attributes);
+            }
+            else if (name.AsArrayIndex(out uint arrayIndex))
             {
                 JSObject.AddDataElement(isolate, exportsObject, arrayIndex, value, attributes);
             }
@@ -485,7 +639,10 @@ public sealed class InstanceBuilder
                 JSObject.AddProperty(isolate, exportsObject, name, value, attributes);
             }
         }
-        JSReceiver.SetIntegrityLevel(isolate, exportsObject, JSReceiver.IntegrityLevel.FROZEN, ShouldThrow.DontThrow);
+        if (!_isAsmJs)
+        {
+            JSReceiver.SetIntegrityLevel(isolate, exportsObject, JSReceiver.IntegrityLevel.FROZEN, ShouldThrow.DontThrow);
+        }
     }
 
     /// <summary>InstanceBuilder::ExecuteStartFunction.</summary>

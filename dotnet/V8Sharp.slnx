@@ -15,6 +15,7 @@
     <Project Path="tests/V8Sharp.Tests/V8Sharp.Tests.csproj" />
     <Project Path="tests/V8Sharp.Wasm.Tests/V8Sharp.Wasm.Tests.csproj" />
     <Project Path="tests/V8Sharp.Parity.Tests/V8Sharp.Parity.Tests.csproj" />
+    <Project Path="tests/V8Sharp.AsmJs.Tests/V8Sharp.AsmJs.Tests.csproj" />
     <Project Path="tests/V8Sharp.Conformance.Tests/V8Sharp.Conformance.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">

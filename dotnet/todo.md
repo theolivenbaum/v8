@@ -423,11 +423,30 @@ Design and every deviation: deviations.md, "WebAssembly".
       arithmetic, compact imports, acquire/release atomics, memory control,
       wasm:text-encoder/decoder, wasm source phase imports.
 - [ ] Memories above 2 GiB (managed byte[] backing; memory64 tests).
-- [ ] asm.js. There is nothing to port in this tree: V8 removed src/asmjs
-      (the asm.js-to-wasm translator) upstream, and this revision runs
-      "use asm" modules as ordinary JavaScript, which V8Sharp already does
-      (the 111 mjsunit tests with "use asm" run as JS). The oracle (V8 14.7)
-      still translates asm.js, which is why Octane zlib is so far behind.
+- [x] asm.js (src/V8Sharp/AsmJs, port of V8 14.7.173.23's src/asmjs:
+      asm-scanner, asm-types, asm-parser, asm-js; Wasm/WasmModuleBuilder.cs
+      and Wasm/AsmJsOffsets.cs from wasm-module-builder and the asm.js offset
+      table; the 0xfa asm opcodes in WACS and the IL compiler). This tree's
+      V8 removed src/asmjs; V8Sharp keeps 14.7's pipeline, as the oracle
+      does (deviations.md, "asm.js"). Hooked as in 14.7: "use asm" scopes,
+      AsmJsCompilationJob in the unoptimized compile, InstantiateAsmJs,
+      fallback to bytecode with 14.7's messages and --validate-asm,
+      --suppress-asm-messages, --trace-asm-*; asm.js frames in stack traces
+      at their JavaScript positions. Tests: tests/V8Sharp.AsmJs.Tests (14.7's
+      asm-scanner and asm-types unittests; 14.7's mjsunit asm/,
+      regress/asm/, wasm/asm-*, asm-directive: 171/172, the other needs
+      d8.profiler and fails on the oracle too; message asm-*: 18/18).
+      The instances of a module share its compiled code (WasmSharedCode).
+      Speed (2026-10-09, bench-session.sh, parity publishes, 3 interleaved
+      runs, CPU-time scores; Mandreel is not asm.js and does not change):
+      Octane zlib, before (asm.js run as JS) -> now, vs V8 jit / maglev:
+      octane-quick 434 -> 2246 (V8 4862 / 4322: 46% / 52%), octane-steady
+      793 (V8 1446 / 1378: 55% / 58%), cold octane (wall, compiles
+      included) 4107 -> 25263 (V8 54478 / 57109: 46% / 44%).
+      Open: each instance decodes the wire bytes again (WACS links
+      instruction objects in place); RyuJIT compiles functions above 60 KB
+      of IL with MinOpts (zlib's largest function, 21.7K instructions, is
+      one): splitting huge functions would fix it.
       If a translator is wanted for speed, the plan is: port the last
       upstream src/asmjs (asm-scanner, asm-parser, asm-types, asm-js.cc)
       from git history, emit wasm wire bytes, and instantiate them through

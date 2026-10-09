@@ -195,6 +195,8 @@ public static class BuiltinsCallSite
         if (!IsSecurityTokenCompatible(isolate, frame)) return JSValue.Undefined;
         if (frame.IsStrict) return JSValue.Undefined;
         isolate.CountUsage("kCallSiteAPIGetThisSloppyCall");
+        // An asm.js frame's receiver is its native context's global proxy (V8 14.7).
+        if (frame.IsAsmJsWasm) return frame.Function.Context.NativeContext.GlobalProxyObject;
         JSValue thisObj = frame.ReceiverOrInstance;
         if (thisObj.HeapObjectOrNull is JSReceiver receiver)
         {
