@@ -146,8 +146,16 @@ public static partial class WasmJs
     internal static JSValue CallExportedFunction(Isolate isolate, in BuiltinArguments args)
     {
         var data = (WasmExportedFunctionData)args.Target.Shared.FunctionData!;
-        Value[] results = CallWasm(isolate, data, args.Arguments);
-        return ResultsToJS(data, results);
+        WasmEngine.Activation activation = data.Engine.EnterActivation();
+        try
+        {
+            if (TryCallCompiled(isolate, data, args.Arguments, out JSValue result)) return result;
+            return ResultsToJS(data, CallWasmInActivation(isolate, data, args.Arguments));
+        }
+        finally
+        {
+            data.Engine.LeaveActivation(activation);
+        }
     }
 
     static Value[] CallWasm(Isolate isolate, WasmExportedFunctionData data, ReadOnlySpan<JSValue> arguments)

@@ -124,6 +124,26 @@ namespace Wacs.Core.Runtime.Types
         public Span<byte> AsSpan(nuint offset, int length) => Data.AsSpan((int)offset, length);
 
         /// <summary>
+        /// V8Sharp: memory.grow: grows by <paramref name="numPages"/> and
+        /// returns the old size in pages, or -1. Atomic for a shared memory,
+        /// which threads of other isolates grow concurrently (each grow
+        /// returns a different old size).
+        /// </summary>
+        public long GrowReturningOldSize(long numPages)
+        {
+            if (!Type.Limits.Shared)
+            {
+                long old = Size;
+                return Grow(numPages) ? old : -1;
+            }
+            lock (this)
+            {
+                long old = Size;
+                return Grow(numPages) ? old : -1;
+            }
+        }
+
+        /// <summary>
         /// @Spec 4.5.3.9. Growing memories
         /// </summary>
         public bool Grow(long numPages)

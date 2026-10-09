@@ -119,7 +119,10 @@ namespace Wacs.Core.Instructions
             //9.
             const int err = -1;
             //10,11 TODO: implement optional constraints on memory.grow
-            if (mem.Grow(n))
+            // V8Sharp: the old size and the growth in one step (concurrent
+            // growth of a shared memory by other threads).
+            sz = mem.GrowReturningOldSize(n);
+            if (sz >= 0)
             {
                 switch (type)
                 {

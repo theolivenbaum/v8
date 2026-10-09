@@ -25,21 +25,24 @@ public static class WasmJsTester
     }
 
     /// <summary>Runs <paramref name="source"/> and returns what it printed (and an uncaught exception).</summary>
-    public static string Run(string source, bool withBuilder = true)
+    public static string Run(string source, bool withBuilder = true, bool interpret = false, string? flags = null)
     {
         var output = new StringBuilder();
         string result = "";
-        var thread = new Thread(() => result = RunOnThread(source, withBuilder, output), 256 * 1024 * 1024);
+        var thread = new Thread(() => result = RunOnThread(source, withBuilder, output, interpret, flags), 256 * 1024 * 1024);
         thread.Start();
         thread.Join();
         return result;
     }
 
-    static string RunOnThread(string source, bool withBuilder, StringBuilder output)
+    static string RunOnThread(string source, bool withBuilder, StringBuilder output, bool interpret, string? flags)
     {
         Isolate isolate = Isolate.New();
         using (isolate.Enter())
         {
+            // The interpreter (--wasm-jitless) or the compiler (the default).
+            isolate.Flags.wasm_jitless = interpret;
+            if (flags is not null) isolate.Flags.SetFlagsFromString(flags);
             InstallPrint(isolate, output);
             try
             {

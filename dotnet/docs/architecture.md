@@ -36,7 +36,7 @@ Namespaces: `V8Sharp.<Folder>` (e.g. `V8Sharp.Objects`, `V8Sharp.Interpreter`),
 | `src/heap` (Orinoco GC, spaces, write barriers, handles) | the .NET GC. Objects are ordinary managed objects. `Handle<T>`/`Tagged<T>` disappear: a C# reference is always valid and GC-safe. `DisallowGarbageCollection` scopes are dropped. |
 | `src/snapshot` | none. The bootstrapper builds the native context at start-up. (A later optimisation may cache it.) |
 | `src/codegen`, the architecture backends | none. Machine code comes from RyuJIT: the compiler tiers emit IL (section 9). |
-| `src/wasm` (decoder, Liftoff, TurboFan wasm pipeline, DrumBrake) | WACS, vendored as `src/V8Sharp.Wasm` (decoder, validator, store, interpreter; Apache-2.0, see its README). The JS API on top (`wasm-js.cc`, the JS-facing parts of `wasm-objects.cc` and `module-instantiate.cc`, the JS-to-wasm and wasm-to-JS wrappers) is ported in `src/V8Sharp/Wasm/`. Differences: deviations.md, "WebAssembly". |
+| `src/wasm` (decoder, Liftoff, TurboFan wasm pipeline, DrumBrake) | WACS, vendored as `src/V8Sharp.Wasm` (decoder, validator, store, interpreter; Apache-2.0, see its README), and a port of Liftoff that emits IL (`src/V8Sharp/Wasm/Baseline/`, section 9). The JS API on top (`wasm-js.cc`, the JS-facing parts of `wasm-objects.cc` and `module-instantiate.cc`, the JS-to-wasm and wasm-to-JS wrappers) is ported in `src/V8Sharp/Wasm/`. Differences: deviations.md, "WebAssembly". |
 | CSA / Torque builtins | C# methods. The algorithm, the fast paths and the slow paths follow the `.tq`/`-gen.cc` file; the spec text is the tie-breaker. |
 | `src/sandbox`, pointer compression, `src/trap-handler` | not applicable: managed memory is already safe. |
 | ICU (`V8_INTL_SUPPORT`) | not ported. V8Sharp matches V8 built with `v8_enable_i18n_support=false`. Identifier predicates use .NET's Unicode tables (equivalent to V8's ICU path); case mapping uses the ported `unibrow` tables. |
@@ -396,6 +396,23 @@ Turbofan/Turboshaft. V8Sharp keeps the tiering policy (interrupt budget,
    **deoptimize**: the frame state is materialised back into an interpreter
    frame and execution continues in Ignition, as V8's deoptimizer does.
 3. RyuJIT's own tiering (tier-0/tier-1, dynamic PGO) sits below both.
+4. **WebAssembly (Liftoff analogue).** `src/V8Sharp/Wasm/Baseline/` is
+   liftoff-compiler.cc's single pass over a validated function body, with
+   LiftoffAssembler's value stack (each value on the IL evaluation stack, in
+   an IL local, a constant or a wasm local; spilled at control-flow joins so
+   the IL stack is empty at every branch). Each function becomes one
+   DynamicMethod `R f(WasmCode, P...)` with wasm's numbers unboxed, v128 as
+   `Vector128<byte>` and references as WACS `Value`s; RyuJIT's optimizing
+   compile stands in for TurboFan, so there is one tier. Functions compile
+   lazily on first call through a stub in the instance's function table
+   (V8's lazy compile table), and compile their direct callees ahead so those
+   calls are direct IL calls. Instructions without IL (GC objects, tables,
+   atomics, relaxed SIMD) run WACS's instruction object on its operand
+   stack, and a function the compiler declines runs in the interpreter, which
+   is also the whole tier under `--wasm-jitless`/`--jitless`. Compiled frames
+   are recorded in a per-thread array merged with the interpreter's frames
+   for stack traces; wasm exceptions are .NET exceptions caught by IL
+   exception filters. Deviations: deviations.md, "WebAssembly".
 
 ## 10. Testing
 

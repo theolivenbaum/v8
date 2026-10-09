@@ -36,27 +36,29 @@ namespace Wacs.Core.Instructions.Numeric
         public static readonly NumericInst I64x2ShrS    = new (SimdCode.I64x2ShrS    , ExecuteI64x2ShrS   , ValidateOperands(pop1: ValType.V128, pop2: ValType.I32, push: ValType.V128), -1);
         public static readonly NumericInst I64x2ShrU    = new (SimdCode.I64x2ShrU    , ExecuteI64x2ShrU   , ValidateOperands(pop1: ValType.V128, pop2: ValType.I32, push: ValType.V128), -1);
 
+        // V8Sharp: the 8- and 16-bit shift counts are masked (count & 7, count & 15);
+        // WACS took them modulo the width, which is negative for a negative count.
         internal static void ExecuteI8x16Shl(ExecContext context) 
         {
             int shiftAmount = context.OpStack.PopI32();
             V128 val = context.OpStack.PopV128();
             V128 result = new V128(
-                (byte)(val.U8x16_0 << shiftAmount%8),
-                (byte)(val.U8x16_1 << shiftAmount%8),
-                (byte)(val.U8x16_2 << shiftAmount%8),
-                (byte)(val.U8x16_3 << shiftAmount%8),
-                (byte)(val.U8x16_4 << shiftAmount%8),
-                (byte)(val.U8x16_5 << shiftAmount%8),
-                (byte)(val.U8x16_6 << shiftAmount%8),
-                (byte)(val.U8x16_7 << shiftAmount%8),
-                (byte)(val.U8x16_8 << shiftAmount%8),
-                (byte)(val.U8x16_9 << shiftAmount%8),
-                (byte)(val.U8x16_A << shiftAmount%8),
-                (byte)(val.U8x16_B << shiftAmount%8),
-                (byte)(val.U8x16_C << shiftAmount%8),
-                (byte)(val.U8x16_D << shiftAmount%8),
-                (byte)(val.U8x16_E << shiftAmount%8),
-                (byte)(val.U8x16_F << shiftAmount%8)
+                (byte)(val.U8x16_0 << (shiftAmount & 7)),
+                (byte)(val.U8x16_1 << (shiftAmount & 7)),
+                (byte)(val.U8x16_2 << (shiftAmount & 7)),
+                (byte)(val.U8x16_3 << (shiftAmount & 7)),
+                (byte)(val.U8x16_4 << (shiftAmount & 7)),
+                (byte)(val.U8x16_5 << (shiftAmount & 7)),
+                (byte)(val.U8x16_6 << (shiftAmount & 7)),
+                (byte)(val.U8x16_7 << (shiftAmount & 7)),
+                (byte)(val.U8x16_8 << (shiftAmount & 7)),
+                (byte)(val.U8x16_9 << (shiftAmount & 7)),
+                (byte)(val.U8x16_A << (shiftAmount & 7)),
+                (byte)(val.U8x16_B << (shiftAmount & 7)),
+                (byte)(val.U8x16_C << (shiftAmount & 7)),
+                (byte)(val.U8x16_D << (shiftAmount & 7)),
+                (byte)(val.U8x16_E << (shiftAmount & 7)),
+                (byte)(val.U8x16_F << (shiftAmount & 7))
             );
             context.OpStack.PushV128(result);
         }
@@ -66,22 +68,22 @@ namespace Wacs.Core.Instructions.Numeric
             int shiftAmount = context.OpStack.PopI32();
             V128 val = context.OpStack.PopV128();
             V128 result = new V128(
-                (sbyte)(val.I8x16_0 >> shiftAmount%8),
-                (sbyte)(val.I8x16_1 >> shiftAmount%8),
-                (sbyte)(val.I8x16_2 >> shiftAmount%8),
-                (sbyte)(val.I8x16_3 >> shiftAmount%8),
-                (sbyte)(val.I8x16_4 >> shiftAmount%8),
-                (sbyte)(val.I8x16_5 >> shiftAmount%8),
-                (sbyte)(val.I8x16_6 >> shiftAmount%8),
-                (sbyte)(val.I8x16_7 >> shiftAmount%8),
-                (sbyte)(val.I8x16_8 >> shiftAmount%8),
-                (sbyte)(val.I8x16_9 >> shiftAmount%8),
-                (sbyte)(val.I8x16_A >> shiftAmount%8),
-                (sbyte)(val.I8x16_B >> shiftAmount%8),
-                (sbyte)(val.I8x16_C >> shiftAmount%8),
-                (sbyte)(val.I8x16_D >> shiftAmount%8),
-                (sbyte)(val.I8x16_E >> shiftAmount%8),
-                (sbyte)(val.I8x16_F >> shiftAmount%8)
+                (sbyte)(val.I8x16_0 >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_1 >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_2 >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_3 >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_4 >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_5 >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_6 >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_7 >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_8 >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_9 >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_A >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_B >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_C >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_D >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_E >> (shiftAmount & 7)),
+                (sbyte)(val.I8x16_F >> (shiftAmount & 7))
             );
             context.OpStack.PushV128(result);
         }
@@ -91,22 +93,22 @@ namespace Wacs.Core.Instructions.Numeric
             int shiftAmount = context.OpStack.PopI32();
             V128 val = context.OpStack.PopV128();
             V128 result = new V128(
-                (byte)(val.U8x16_0 >> shiftAmount%8),
-                (byte)(val.U8x16_1 >> shiftAmount%8),
-                (byte)(val.U8x16_2 >> shiftAmount%8),
-                (byte)(val.U8x16_3 >> shiftAmount%8),
-                (byte)(val.U8x16_4 >> shiftAmount%8),
-                (byte)(val.U8x16_5 >> shiftAmount%8),
-                (byte)(val.U8x16_6 >> shiftAmount%8),
-                (byte)(val.U8x16_7 >> shiftAmount%8),
-                (byte)(val.U8x16_8 >> shiftAmount%8),
-                (byte)(val.U8x16_9 >> shiftAmount%8),
-                (byte)(val.U8x16_A >> shiftAmount%8),
-                (byte)(val.U8x16_B >> shiftAmount%8),
-                (byte)(val.U8x16_C >> shiftAmount%8),
-                (byte)(val.U8x16_D >> shiftAmount%8),
-                (byte)(val.U8x16_E >> shiftAmount%8),
-                (byte)(val.U8x16_F >> shiftAmount%8)
+                (byte)(val.U8x16_0 >> (shiftAmount & 7)),
+                (byte)(val.U8x16_1 >> (shiftAmount & 7)),
+                (byte)(val.U8x16_2 >> (shiftAmount & 7)),
+                (byte)(val.U8x16_3 >> (shiftAmount & 7)),
+                (byte)(val.U8x16_4 >> (shiftAmount & 7)),
+                (byte)(val.U8x16_5 >> (shiftAmount & 7)),
+                (byte)(val.U8x16_6 >> (shiftAmount & 7)),
+                (byte)(val.U8x16_7 >> (shiftAmount & 7)),
+                (byte)(val.U8x16_8 >> (shiftAmount & 7)),
+                (byte)(val.U8x16_9 >> (shiftAmount & 7)),
+                (byte)(val.U8x16_A >> (shiftAmount & 7)),
+                (byte)(val.U8x16_B >> (shiftAmount & 7)),
+                (byte)(val.U8x16_C >> (shiftAmount & 7)),
+                (byte)(val.U8x16_D >> (shiftAmount & 7)),
+                (byte)(val.U8x16_E >> (shiftAmount & 7)),
+                (byte)(val.U8x16_F >> (shiftAmount & 7))
             );
             context.OpStack.PushV128(result);
         }
@@ -116,14 +118,14 @@ namespace Wacs.Core.Instructions.Numeric
             int shiftAmount = context.OpStack.PopI32();
             V128 val = context.OpStack.PopV128();
             V128 result = new V128(
-                (ushort)(val.U16x8_0 << shiftAmount%16),
-                (ushort)(val.U16x8_1 << shiftAmount%16),
-                (ushort)(val.U16x8_2 << shiftAmount%16),
-                (ushort)(val.U16x8_3 << shiftAmount%16),
-                (ushort)(val.U16x8_4 << shiftAmount%16),
-                (ushort)(val.U16x8_5 << shiftAmount%16),
-                (ushort)(val.U16x8_6 << shiftAmount%16),
-                (ushort)(val.U16x8_7 << shiftAmount%16)
+                (ushort)(val.U16x8_0 << (shiftAmount & 15)),
+                (ushort)(val.U16x8_1 << (shiftAmount & 15)),
+                (ushort)(val.U16x8_2 << (shiftAmount & 15)),
+                (ushort)(val.U16x8_3 << (shiftAmount & 15)),
+                (ushort)(val.U16x8_4 << (shiftAmount & 15)),
+                (ushort)(val.U16x8_5 << (shiftAmount & 15)),
+                (ushort)(val.U16x8_6 << (shiftAmount & 15)),
+                (ushort)(val.U16x8_7 << (shiftAmount & 15))
             );
             context.OpStack.PushV128(result);
         }
@@ -133,14 +135,14 @@ namespace Wacs.Core.Instructions.Numeric
             int shiftAmount = context.OpStack.PopI32();
             V128 val = context.OpStack.PopV128();
             V128 result = new V128(
-                (short)(val.I16x8_0 >> shiftAmount%16),
-                (short)(val.I16x8_1 >> shiftAmount%16),
-                (short)(val.I16x8_2 >> shiftAmount%16),
-                (short)(val.I16x8_3 >> shiftAmount%16),
-                (short)(val.I16x8_4 >> shiftAmount%16),
-                (short)(val.I16x8_5 >> shiftAmount%16),
-                (short)(val.I16x8_6 >> shiftAmount%16),
-                (short)(val.I16x8_7 >> shiftAmount%16)
+                (short)(val.I16x8_0 >> (shiftAmount & 15)),
+                (short)(val.I16x8_1 >> (shiftAmount & 15)),
+                (short)(val.I16x8_2 >> (shiftAmount & 15)),
+                (short)(val.I16x8_3 >> (shiftAmount & 15)),
+                (short)(val.I16x8_4 >> (shiftAmount & 15)),
+                (short)(val.I16x8_5 >> (shiftAmount & 15)),
+                (short)(val.I16x8_6 >> (shiftAmount & 15)),
+                (short)(val.I16x8_7 >> (shiftAmount & 15))
             );
             context.OpStack.PushV128(result);
         }
@@ -150,14 +152,14 @@ namespace Wacs.Core.Instructions.Numeric
             int shiftAmount = context.OpStack.PopI32();
             V128 val = context.OpStack.PopV128();
             V128 result = new V128(
-                (ushort)(val.U16x8_0 >> shiftAmount%16),
-                (ushort)(val.U16x8_1 >> shiftAmount%16),
-                (ushort)(val.U16x8_2 >> shiftAmount%16),
-                (ushort)(val.U16x8_3 >> shiftAmount%16),
-                (ushort)(val.U16x8_4 >> shiftAmount%16),
-                (ushort)(val.U16x8_5 >> shiftAmount%16),
-                (ushort)(val.U16x8_6 >> shiftAmount%16),
-                (ushort)(val.U16x8_7 >> shiftAmount%16)
+                (ushort)(val.U16x8_0 >> (shiftAmount & 15)),
+                (ushort)(val.U16x8_1 >> (shiftAmount & 15)),
+                (ushort)(val.U16x8_2 >> (shiftAmount & 15)),
+                (ushort)(val.U16x8_3 >> (shiftAmount & 15)),
+                (ushort)(val.U16x8_4 >> (shiftAmount & 15)),
+                (ushort)(val.U16x8_5 >> (shiftAmount & 15)),
+                (ushort)(val.U16x8_6 >> (shiftAmount & 15)),
+                (ushort)(val.U16x8_7 >> (shiftAmount & 15))
             );
             context.OpStack.PushV128(result);
         }

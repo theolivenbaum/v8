@@ -40,6 +40,15 @@ namespace Wacs.Core.Runtime
     {
         public WasmHostException(Value exnRef) : base("wasm exception") => ExnRef = exnRef;
 
+        /// <summary>
+        /// V8Sharp: compiled code's legacy delegate: the compiled frame (its
+        /// index) whose handlers, except try <see cref="DelegateTarget"/>,
+        /// pass the exception on; -1 if none.
+        /// </summary>
+        public int DelegateFrame = -1;
+
+        public int DelegateTarget;
+
         /// <summary>The exnref to throw.</summary>
         public Value ExnRef { get; }
     }
@@ -106,7 +115,7 @@ namespace Wacs.Core.Runtime
             Allocate(store => store.AddFunction(new HostFunction((module, name), type, function) { HostData = hostData }));
 
         /// <summary>The height of the wasm call stack.</summary>
-        public int CallStackHeight => GetExecContext().StackHeight;
+        public int CallStackHeight => GetExecContext().UnifiedHeight;
 
         /// <summary>The linked instruction index being executed (the call of a host function in progress).</summary>
         public int CurrentInstructionPointer => GetExecContext().InstructionPointer;
@@ -162,6 +171,12 @@ namespace Wacs.Core.Runtime
 
             ctx.InstructionPointer = ExecContext.AbortSequence;
             ctx.UnwindFloor = savedHeight;
+            // V8Sharp: cleanup in a finally, not a catch and rethrow: a catch
+            // handler runs above the throwing frames, so rethrowing from it in
+            // every frame of a deep recursion (wasm calling JavaScript or
+            // compiled code calling wasm again) nests the exception dispatches
+            // on the native stack until it overflows.
+            bool completed = false;
             try
             {
                 ctx.InvokeResolved(funcInst);
@@ -173,16 +188,16 @@ namespace Wacs.Core.Runtime
                 for (int i = results.Length - 1; i >= 0; --i)
                     results[i] = ctx.OpStack.PopAny();
                 ctx.GetModule(funcAddr)?.DerefTypes(results);
+                completed = true;
                 return results;
-            }
-            catch
-            {
-                ctx.UnwindCallStackTo(savedHeight);
-                ctx.OpStack.Count = savedCount;
-                throw;
             }
             finally
             {
+                if (!completed)
+                {
+                    ctx.UnwindCallStackTo(savedHeight);
+                    ctx.OpStack.Count = savedCount;
+                }
                 ctx.InstructionPointer = savedPointer;
                 ctx.UnwindFloor = savedFloor;
                 Wacs.Core.Runtime.Store.Current = savedStore;

@@ -209,7 +209,6 @@ regress/wasm/regress-327643791  # FAIL
 regress/wasm/regress-330580823  # FAIL
 regress/wasm/regress-336007398  # FAIL
 regress/wasm/regress-346597059  # FAIL
-regress/wasm/regress-347914831  # FAIL
 regress/wasm/regress-352720899-2  # FAIL
 regress/wasm/regress-361369297  # FAIL
 regress/wasm/regress-364667545  # FAIL
@@ -483,7 +482,6 @@ wasm/shared-everything/wait-queue  # FAIL
 wasm/shared-everything/wrapper-type-checks  # FAIL
 wasm/simd-fp16  # FAIL
 wasm/simd-lane-memory64  # FAIL
-wasm/simd-wasm-interpreter  # FAIL
 wasm/stack-switching  # FAIL
 wasm/stack-switching-argswitch  # FAIL
 wasm/stack-switching-minor-gc  # FAIL

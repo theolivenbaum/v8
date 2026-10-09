@@ -113,9 +113,40 @@ namespace Wacs.Core.Runtime.Types
             Body.LabelTarget.Label.Arity = Type.ResultType.Arity;
         }
 
+        /// <summary>
+        /// V8Sharp: the function's compiled code (V8Sharp's wasm compiler),
+        /// or null while it runs in the interpreter.
+        /// </summary>
+        public ICompiledFunctionCode? Compiled;
+
+        /// <summary>V8Sharp: the compiler declined the function (it stays in the interpreter).</summary>
+        public bool NotCompilable;
+
+        /// <summary>V8Sharp: the compiled code, compiling it lazily if the module has a compiler.</summary>
+        public ICompiledFunctionCode? GetCompiledCode()
+        {
+            var code = Compiled;
+            if (code != null || NotCompilable) return code;
+            if (Module.Compiler is not { } compiler)
+            {
+                return null;
+            }
+            code = compiler.GetCode(this);
+            if (code == null) NotCompilable = true;
+            return code;
+        }
+
         public void Invoke(ExecContext context)
         {
             context.CheckInterrupt();
+
+            // V8Sharp: compiled code runs on the .NET stack.
+            if (GetCompiledCode() is { } compiled)
+            {
+                CallCount++;
+                compiled.InvokeFromInterpreter(context);
+                return;
+            }
 
             //3.
             var funcType = Type;
@@ -176,6 +207,13 @@ namespace Wacs.Core.Runtime.Types
         
         public void TailInvoke(ExecContext context)
         {
+            // V8Sharp: a tail call to compiled code is a call and a return.
+            if (GetCompiledCode() is { } compiled)
+            {
+                CallCount++;
+                context.TailCallCompiled(compiled);
+                return;
+            }
             var frame = context.ReuseFrame();
             //3.
             var funcType = Type;

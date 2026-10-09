@@ -408,64 +408,61 @@ namespace Wacs.Core.Runtime
         /// </summary>
         public WasmStackFrame[] SnapshotCallStack(Wacs.Core.Instructions.InstructionBase? topInstruction = null)
         {
-            int n = _callStack.Count;
+            // V8Sharp: compiled frames are merged in (CompiledFrames).
+            int n = UnifiedHeight;
             if (n == 0) return System.Array.Empty<WasmStackFrame>();
-
-            var frames = new WasmStackFrame[n];
-            // `_callStack` enumerates top-first (the Stack<T>
-            // contract). Each frame's ReturnLabel.ContinuationAddress
-            // is the PC the *caller above this frame* will resume at;
-            // for the top frame that's effectively where execution
-            // would resume if nothing trapped. To make the array
-            // intuitive — index 0 = top of stack, index n-1 = root —
-            // we walk top-first.
-            int idx = 0;
-            // V8Sharp: each frame's pc is the top's instruction pointer, or the
-            // call instruction its callee returns to.
-            int pc = InstructionPointer;
-            foreach (var frame in _callStack)
-            {
-                // Only the top frame is the one currently executing,
-                // so it gets the directly-passed throwing instruction
-                // reference. Lower frames are resolved lazily by the
-                // formatter from ResumeContinuationAddress.
-                var instr = idx == 0 ? topInstruction : null;
-                frames[idx] = new WasmStackFrame(
-                    funcAddr: frame.FuncAddr,
-                    instruction: instr,
-                    resumeContinuationAddress: frame.ReturnLabel.ContinuationAddress,
-                    pc: pc);
-                pc = frame.ReturnLabel.ContinuationAddress;
-                idx++;
-            }
-            return frames;
+            return SnapshotFrames(0, n, InstructionPointer, topInstruction);
         }
 
         /// <summary>
-        /// V8Sharp: the frames between call-stack heights
+        /// V8Sharp: the frames of the interpreter's call stack and of compiled
+        /// code (<see cref="CompiledFrames"/>), in one count.
+        /// </summary>
+        public int UnifiedHeight => _callStack.Count + CompiledFrames.Sp;
+
+        /// <summary>V8Sharp: the frames of compiled wasm code.</summary>
+        public readonly CompiledFrames CompiledFrames = new();
+
+        /// <summary>
+        /// V8Sharp: the frames between unified call-stack heights
         /// <paramref name="baseHeight"/> (exclusive) and
         /// <paramref name="topHeight"/> (inclusive), top first, with
-        /// <paramref name="topPc"/> as the top frame's pc.
+        /// <paramref name="topPc"/> as the top frame's pc if it is interpreted
+        /// (a compiled frame records its own).
         /// </summary>
-        public WasmStackFrame[] SnapshotFrames(int baseHeight, int topHeight, int topPc)
+        public WasmStackFrame[] SnapshotFrames(int baseHeight, int topHeight, int topPc,
+            Wacs.Core.Instructions.InstructionBase? topInstruction = null)
         {
-            topHeight = System.Math.Min(topHeight, _callStack.Count);
+            var wacs = _callStack.ToArray();
+            System.Array.Reverse(wacs);
+            var merged = CompiledFrames.Merge(wacs.Length);
+            topHeight = System.Math.Min(topHeight, merged.Length);
             int n = topHeight - baseHeight;
             if (n <= 0) return System.Array.Empty<WasmStackFrame>();
             var frames = new WasmStackFrame[n];
-            int skip = _callStack.Count - topHeight;
             int idx = 0;
-            int pc = topPc;
-            foreach (var frame in _callStack)
+            for (int i = topHeight - 1; i >= baseHeight; i--, idx++)
             {
-                if (skip > 0)
+                var (compiled, index, _) = merged[i];
+                if (compiled)
                 {
-                    skip--;
+                    int pc = CompiledFrames.Pc[index];
+                    frames[idx] = new WasmStackFrame((uint)CompiledFrames.Func[index], null, -1, pc);
                     continue;
                 }
-                if (idx == n) break;
-                frames[idx++] = new WasmStackFrame(frame.FuncAddr, null, frame.ReturnLabel.ContinuationAddress, pc);
-                pc = frame.ReturnLabel.ContinuationAddress;
+                var frame = wacs[index];
+                int framePc;
+                if (i == topHeight - 1)
+                {
+                    framePc = topPc;
+                }
+                else
+                {
+                    var (aboveCompiled, aboveIndex, aboveCallerPc) = merged[i + 1];
+                    framePc = aboveCompiled ? aboveCallerPc : wacs[aboveIndex].ReturnLabel.ContinuationAddress;
+                }
+                frames[idx] = new WasmStackFrame(frame.FuncAddr, idx == 0 ? topInstruction : null,
+                    frame.ReturnLabel.ContinuationAddress, framePc);
             }
             return frames;
         }
@@ -513,6 +510,26 @@ namespace Wacs.Core.Runtime
                 // runs, so its handlers must not see the exception: abandon the
                 // frame, then let the dispatch loop throw at the caller's call
                 // site.
+                var abandoned = Frame.ReturnLabel;
+                OpStack.Count = abandoned.StackHeight + abandoned.Arity - Frame.Locals.Length;
+                FunctionReturn();
+                throw;
+            }
+            FunctionReturn();
+        }
+
+        /// <summary>
+        /// V8Sharp: a tail call to compiled code: a plain call followed by a
+        /// return, as for a host function.
+        /// </summary>
+        public void TailCallCompiled(ICompiledFunctionCode code)
+        {
+            try
+            {
+                code.InvokeFromInterpreter(this);
+            }
+            catch (WasmHostException)
+            {
                 var abandoned = Frame.ReturnLabel;
                 OpStack.Count = abandoned.StackHeight + abandoned.Arity - Frame.Locals.Length;
                 FunctionReturn();

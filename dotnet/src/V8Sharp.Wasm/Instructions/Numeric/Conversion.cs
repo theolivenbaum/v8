@@ -180,13 +180,11 @@ namespace Wacs.Core.Instructions.Numeric
                 throw new TrapException("Cannot convert NaN or infinity to integer in i64.trunc_f32_s.");
             
             double truncated = Math.Truncate(value);
-        
-            if (truncated is > 0 and >= 9.2233720368547758E+18)
-                if (decimal.Parse(truncated.ToString("G19")) > (decimal)long.MaxValue)
-                    throw new TrapException("Integer overflow in i64.trunc_f32_s.");
-            if (truncated is < 0 and <= -9.2233720368547758E+18)
-                if (decimal.Parse(truncated.ToString("G19")) < (decimal)long.MinValue)
-                    throw new TrapException("Integer overflow in i64.trunc_f32_s.");
+            // V8Sharp: an exact range check. WACS parsed a "G19"/"G20" string
+            // as a decimal, which throws FormatException for exponent forms.
+            if (!(truncated >= -9223372036854775808.0 && truncated < 9223372036854775808.0))
+                throw new TrapException("Integer overflow in i64.trunc_f32_s.");
+
             
             return (long)truncated;
         }
@@ -198,11 +196,11 @@ namespace Wacs.Core.Instructions.Numeric
                 throw new TrapException("Cannot convert NaN or infinity to integer in i64.trunc_f32_u.");
             
             double truncated = Math.Truncate(value);
-            if (truncated is > 0 and >= 1.8446744073709552E+19)
-                if (decimal.Parse(truncated.ToString("G20")) > (decimal)ulong.MaxValue)
-                    throw new TrapException("Integer overflow in i64.trunc_f32_u.");
-            if (truncated < 0.0) 
+            // V8Sharp: an exact range check. WACS parsed a "G19"/"G20" string
+            // as a decimal, which throws FormatException for exponent forms.
+            if (!(truncated >= 0.0 && truncated < 18446744073709551616.0))
                 throw new TrapException("Integer overflow in i64.trunc_f32_u.");
+
             
             return (ulong)truncated;
         }
@@ -214,13 +212,11 @@ namespace Wacs.Core.Instructions.Numeric
                 throw new TrapException("Cannot convert NaN or infinity to integer in i64.trunc_f64_s.");
             
             double truncated = Math.Truncate(value);
-        
-            if (truncated is > 0 and >= 9.2233720368547758E+18)
-                if (decimal.Parse(truncated.ToString("G19")) > (decimal)long.MaxValue)
-                    throw new TrapException("Integer overflow in i64.trunc_f64_s.");
-            if (truncated is < 0 and <= -9.2233720368547758E+18)
-                if (decimal.Parse(truncated.ToString("G19")) < (decimal)long.MinValue)
-                    throw new TrapException("Integer overflow in i64.trunc_f64_s.");
+            // V8Sharp: an exact range check. WACS parsed a "G19"/"G20" string
+            // as a decimal, which throws FormatException for exponent forms.
+            if (!(truncated >= -9223372036854775808.0 && truncated < 9223372036854775808.0))
+                throw new TrapException("Integer overflow in i64.trunc_f64_s.");
+
             
             return (long)truncated;
         }
@@ -232,11 +228,11 @@ namespace Wacs.Core.Instructions.Numeric
                 throw new TrapException("Cannot convert NaN or infinity to integer in i64.trunc_f64_u.");
             
             double truncated = Math.Truncate(value);
-            if (truncated is > 0 and >= 1.8446744073709552E+19)
-                if (decimal.Parse(truncated.ToString("G20")) > (decimal)ulong.MaxValue)
-                    throw new TrapException("Integer overflow in i64.trunc_f32_u.");
-            if (truncated < 0.0) 
-                throw new TrapException("Integer overflow in i64.trunc_f32_u.");
+            // V8Sharp: an exact range check. WACS parsed a "G19"/"G20" string
+            // as a decimal, which throws FormatException for exponent forms.
+            if (!(truncated >= 0.0 && truncated < 18446744073709551616.0))
+                throw new TrapException("Integer overflow in i64.trunc_f64_u.");
+
             
             return (ulong)truncated;
         }

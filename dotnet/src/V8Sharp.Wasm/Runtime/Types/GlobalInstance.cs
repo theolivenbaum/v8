@@ -84,6 +84,12 @@ namespace Wacs.Core.Runtime.Types
             }
         }
 
+        /// <summary>
+        /// V8Sharp: the value's storage, for compiled code (a global that is
+        /// neither shared nor thread-local).
+        /// </summary>
+        public ref Value ValueRef => ref _value;
+
         public Value Value
         {
             get
