@@ -54,7 +54,7 @@ public class MaglevRegionsTest
                          MaglevCompilerTest.Snippets, MaglevBuiltinReductionTest.Snippets, MaglevCallsTest.Snippets,
                          MaglevCallsTest.FramelessSnippets, MaglevCallsTest.FeedbackCellSnippets, MaglevCodeQualityTest.Snippets, MaglevCodeQualityTest.LoadEliminationSnippets,
                          MaglevCodeQualityTest.FieldRepresentationSnippets, MaglevCodeQualityTest.StoreSnippets,
-                         MaglevCodeQualityTest.IndexSnippets, MaglevCodeQualityTest.LoopPeelingSnippets, MaglevInliningTest.Snippets,
+                         MaglevCodeQualityTest.IndexSnippets, MaglevCodeQualityTest.LoopPeelingSnippets, MaglevInliningTest.Snippets, MaglevGeneratorTest.Snippets,
                          MaglevTypesTest.PrototypeChainSnippets, MaglevTypesTest.PhiTypeSnippets, Snippets,
                      })
             {
@@ -145,8 +145,11 @@ public class MaglevRegionsTest
               return out.join('|');
             })()
             """;
-        int before = V8Sharp.Maglev.MaglevCodeGenerator.SplitCompilations;
         AssertSameWhenSplit(source);
+        // Synchronous compiles: the split certainly happens during the run.
+        int before = V8Sharp.Maglev.MaglevCodeGenerator.SplitCompilations;
+        string interpreted = MaglevCompilerTest.Run("--no-maglev --no-sparkplug", source);
+        Assert.Equal(interpreted, RunSplit("--maglev --no-concurrent-recompilation --invocation-count-for-maglev=2", source, 300));
         Assert.True(V8Sharp.Maglev.MaglevCodeGenerator.SplitCompilations > before, "nothing was split");
     }
 

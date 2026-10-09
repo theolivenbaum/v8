@@ -774,6 +774,36 @@ protectors. `DependentCode` keeps a weak table from the object to the code;
 the object model calls `DeoptimizeDependencyGroups` where V8 does, which
 marks the code (lazy deopt).
 
+**Types and map checks.** As V8's graph builder, a phi's type is the union
+of its inputs' known types on their edges (a loop phi's type is unknown in
+the loop body and becomes the union after the back edge is merged,
+post_loop_type), and the result phis of inlined calls and polymorphic
+accesses get the union of the arms' types. A map load (CheckMaps, LoadMap,
+TransitionElementsKind) records the known type of its input where it is
+built (CheckType): only JSReceivers have a map field in V8Sharp, so the check
+V8's kCheckHeapObject stands for is a receiver check (object half non-null,
+instance type), omitted when the input is known to be a receiver. Prototype
+chain validity is a compilation dependency on the IC handler's validity
+cell (`JSObject`'s invalidation of the cell deoptimizes the code), so no
+check runs in the optimized code (V8 depends on the stable maps of the chain).
+
+**Calls of closures.** A call whose feedback is a FeedbackCell (the closures
+of one CreateClosure site) checks the callee's feedback cell
+(CheckJSFunctionFeedbackCell) and calls the shared function's code directly,
+or inlines it with the closure's context loaded from the closure; the
+inlined frame's closure is the run-time value (spilled for deopts).
+
+**Huge functions.** A graph whose IL exceeds RyuJIT's optimization limits
+(which compile such a method with MinOpts) is emitted again in regions
+(`MaglevCodeGenerator.Regions.cs`): consecutive blocks cut at the least
+loop depth outside inlined bodies, each a method of 40% of the limits as
+the first emission measured them. The code's own method dispatches over
+the regions; an edge into another region stores the values live into its
+target (SSA liveness over the graph) and the target's phis into a Transfer
+struct local to the dispatcher and returns the target's entry id, which the
+target region's entry stub loads. Regions have their own deopt exits and
+share the deopt points.
+
 **Locals.** Values whose live ranges do not overlap share an IL local
 (`MaglevCodeGenerator.TryAllocateSharedLocals`, the role of maglev-regalloc):
 ranges run from a value's definition to its last use, counting deopt frame
