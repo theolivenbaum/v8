@@ -173,7 +173,7 @@ public static class MaglevCompiler
         if (isolate.Flags.maglev_truncation) MaglevTruncation.Run(info.Graph);
         ComputeUseCounts(info.Graph);
         ElideArgumentsObjects(info.Graph);
-        if (MaglevEscapeAnalysis.Run(info.Graph, isolate.Flags.maglev_escape_analysis, info.IsTracing))
+        if (MaglevEscapeAnalysis.Run(info.Graph, isolate.Flags.maglev_escape_analysis, info.IsTracing || isolate.Flags.trace_maglev_escape_analysis))
         {
             // The removed stores' values may be dead now.
             ComputeUseCounts(info.Graph);

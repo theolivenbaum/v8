@@ -75,7 +75,7 @@ public sealed partial class MaglevGraphBuilder
     /// </summary>
     ValueNode? TryBuildFastCreateClosure()
     {
-        if (Constant(ConstantPoolIndex(0)).HeapObjectOrNull is not SharedFunctionInfo shared) return null;
+        if (!Flags.inline_new || Constant(ConstantPoolIndex(0)).HeapObjectOrNull is not SharedFunctionInfo shared) return null;
         if (_unit.Feedback.ClosureFeedbackCellArray is not { } cells || (uint)FeedbackSlot(1) >= (uint)cells.Length) return null;
         FeedbackCell cell = cells.Get(FeedbackSlot(1));
         NativeContext native = (_unit.Function ?? _info.Function).Context.NativeContext;
