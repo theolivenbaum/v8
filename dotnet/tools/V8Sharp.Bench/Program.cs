@@ -102,6 +102,13 @@ public static partial class Program
         }
     }
 
+    /// <summary>
+    /// Lets background compilation threads (V8's, and .NET's tiered
+    /// re-compilation of V8Sharp's emitted IL) finish before a measurement.
+    /// Sleeping costs no thread CPU, which is what the warm suites score.
+    /// </summary>
+    public static void Settle() => Thread.Sleep(int.Parse(Environment.GetEnvironmentVariable("V8SHARP_BENCH_SETTLE_MS") ?? "250", CultureInfo.InvariantCulture));
+
     static int Usage()
     {
         Console.Error.WriteLine("""
@@ -269,11 +276,23 @@ public static partial class Program
                         var measuredRuns = bm.deterministicIterations, warm = measuredRuns * __benchWarmup, n = 0,
                             run = bm.run, last = 0;
                         bm.deterministicIterations = warm + measuredRuns;
+                        var half = warm >> 1;
                         bm.run = function () {
-                          if (n++ === warm) {
-                            // Background compiles queued while warming up finish
-                            // before measuring: compile time is not scored.
+                          if (n === half && half > 0) {
+                            // Halfway through the warm-up: the tiers' background
+                            // compiles finish and install, so the second half runs
+                            // the installed code several times. V8Sharp's tiers emit
+                            // IL that .NET compiles in tiers of its own (quick code
+                            // first, optimized after call counting); these runs let
+                            // it reach its optimized code before measuring.
                             waitForCompilations();
+                          }
+                          if (n++ === warm) {
+                            // Compiles queued since, and .NET's own background
+                            // re-compilation, finish before measuring (settle sleeps,
+                            // which costs no thread CPU): compile time is not scored.
+                            waitForCompilations();
+                            settle();
                             if (!awaited) { print('@compilations-awaited'); awaited = true; }
                             last = cpuTimeMs();
                           }
