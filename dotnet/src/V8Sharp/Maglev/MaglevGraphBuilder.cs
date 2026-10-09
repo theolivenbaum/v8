@@ -348,7 +348,8 @@ public sealed partial class MaglevGraphBuilder
     void BuildPeeledBackEdge(int header)
     {
         Checkpoint();
-        AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kCanThrow | OpProperties.kNotIdempotent });
+        AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kEagerDeopt | OpProperties.kNotIdempotent },
+            DeoptimizeReason.kInterrupt);
         // JumpLoop clobbers the accumulator.
         SetAccumulator(GetRootConstant(RootIndex.kUndefinedValue));
         InitializeLoopHeader(header, _currentBlock!);
@@ -1289,8 +1290,7 @@ public sealed partial class MaglevGraphBuilder
     /// </summary>
     /// <remarks>
     /// The loop interrupt check (HandleNoHeapWritesInterrupt) does not count:
-    /// the interrupts it serves (termination, code installation) run no
-    /// JavaScript.
+    /// it serves no interrupt itself, a pending one deoptimizes eagerly.
     /// </remarks>
     static bool ObservesFrameParameters(Node node) =>
         node.Opcode == Opcode.CallBuiltin && node.Obj0 is not CallBuiltinInfo { NoFrame: true } ||

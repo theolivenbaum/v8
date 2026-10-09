@@ -552,6 +552,15 @@ for now, to be revisited when the reason goes away.
   not inline methods with exception handlers) keep plain exits unless they
   have a loop.
   `V8SHARP_MAGLEV_HOT_DEOPT_EXITS=1` emits the exits as plain returns.
+- Loop interrupt checks (HandleNoHeapWritesInterrupt): a pending interrupt
+  exits to the interpreter at the back edge (an eager deopt with the
+  V8Sharp-only reason `kInterrupt`, which does not invalidate the code), and
+  the interpreter's JumpLoop serves it; V8 calls the runtime in deferred code
+  and continues. A call on the back edge made RyuJIT keep the loop's values
+  live across it in stack slots (it has no deferred spilling), and the check
+  needed the frames of inlined functions. The interrupts are code
+  installation (concurrent compiles), termination and API interrupts; the
+  frame finishes its loop in the interpreter or baseline code until OSR.
 - Deopt exits are shared by the checks of one frame state; the failed
   check's reason is passed to the Deoptimizer at run time (V8 has one exit
   per check, with the reason in the deopt data).

@@ -919,12 +919,10 @@ public static class MaglevBuiltins
         throw new JavaScriptException(exception, message);
     }
 
-    // HandleNoHeapWritesInterrupt: serves pending interrupts (termination) at a loop back edge.
+    // HandleNoHeapWritesInterrupt: a pending interrupt at a loop back edge
+    // exits to the interpreter (kInterrupt), which serves it.
     [MethodImpl(Inline)]
     public static bool HasPendingInterrupts(Isolate isolate) => isolate.StackGuard.HasPendingInterrupts;
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    public static void HandleInterruptsSlow(Isolate isolate) => isolate.StackGuard.HandleInterrupts();
 
     /// <summary>The global proxy of a function's native context (the receiver a sloppy callee sees for undefined).</summary>
     /// <summary>The context of a function (a closure of a feedback cell inlined: its frame's context).</summary>

@@ -1,6 +1,8 @@
 // Tests of the IL Maglev emits for hot loops (MaglevCodeGenerator): cold
 // deopt exits (a try region whose spill chains end in a throw), and that
 // each gives the interpreter's results and deoptimizes where it must.
+using V8Sharp.Codegen;
+
 namespace V8Sharp.Tests.Maglev;
 
 public class MaglevLoopCodeTest
@@ -154,5 +156,55 @@ public class MaglevLoopCodeTest
             r.push(%GetOptimizationStatus(sum) & 8);
             r.join();
             """));
+    }
+
+    [Fact]
+    public void PendingInterruptExitsTheLoopWithoutInvalidating()
+    {
+        // A loop's interrupt check exits to the interpreter at the back edge
+        // when an interrupt is pending (kInterrupt): the interpreter serves it,
+        // the loop finishes there with the same result, and the code stays
+        // valid (the next call runs it).
+        var flags = new FlagList();
+        flags.SetFlagsFromString("--allow-natives-syntax --maglev --no-concurrent-recompilation");
+        Isolate isolate = Isolate.New(flags);
+        using (isolate.Enter())
+        {
+            Compiler.CompileAndRun(isolate, """
+                function spin(n) { var s = 0; for (var i = 0; i < n; i++) s = (s + i * 7) | 0; return s; }
+                %PrepareFunctionForOptimization(spin);
+                spin(10); spin(10);
+                %OptimizeMaglevOnNextCall(spin);
+                spin(10);
+                """);
+            int served = 0;
+            using var stop = new CancellationTokenSource();
+            var requester = new Thread(() =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    isolate.StackGuard.RequestApiInterrupt((_, _) => Interlocked.Increment(ref served), null);
+                    Thread.Sleep(1);
+                }
+            });
+            requester.Start();
+            string result;
+            try
+            {
+                result = ObjectOps.ToString(isolate, Compiler.CompileAndRun(isolate,
+                    "var r = []; for (var k = 0; k < 20; k++) r.push(spin(3000000)); r.push(%GetOptimizationStatus(spin) & 8); r.join()")).ToString();
+            }
+            finally
+            {
+                stop.Cancel();
+                requester.Join();
+            }
+            string expected = ObjectOps.ToString(isolate, Compiler.CompileAndRun(isolate, """
+                var s = 0; for (var i = 0; i < 3000000; i++) s = (s + i * 7) | 0;
+                var e = []; for (var k = 0; k < 20; k++) e.push(s); e.push(8); e.join()
+                """)).ToString();
+            Assert.Equal(expected, result);
+            Assert.True(served > 0);
+        }
     }
 }
