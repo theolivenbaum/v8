@@ -406,7 +406,12 @@ Turbofan/Turboshaft. V8Sharp keeps the tiering policy (interrupt budget,
    compile stands in for TurboFan, so there is one tier. Functions compile
    lazily on first call through a stub in the instance's function table
    (V8's lazy compile table), and compile their direct callees ahead so those
-   calls are direct IL calls. Instructions without IL (GC objects, tables,
+   calls are direct IL calls. Small callees are inlined into the caller's IL
+   instead (V8's InliningTree budget; RyuJIT never inlines across
+   DynamicMethods), direct calls at the first compile, call_indirect and
+   call_ref targets speculatively when the function tiers up on its
+   call-target feedback (inline caches per call site); inlined frames are
+   positions, expanded in stack traces. Instructions without IL (GC objects, tables,
    atomics, relaxed SIMD) run WACS's instruction object on its operand
    stack, and a function the compiler declines runs in the interpreter, which
    is also the whole tier under `--wasm-jitless`/`--jitless`. Compiled frames

@@ -93,8 +93,20 @@ public static partial class WasmJs
     static void RecordUnwoundFrames(Isolate isolate, WasmStackFrame[]? frames, int calleeFuncAddr = -1)
     {
         if (isolate.WasmEngineField?.CurrentActivation is not { } activation || frames is null) return;
-        int own = frames.Length - activation.BaseHeight;
-        WasmStackFrame[] result = own <= 0 ? [] : frames[..own];
+        // The frames above the activation's base height are its own; frames
+        // of inlined functions (which have no height) go with the frame below.
+        int physical = 0;
+        foreach (WasmStackFrame f in frames)
+        {
+            if (!f.Inlined) physical++;
+        }
+        int own = physical - activation.BaseHeight;
+        int end = 0;
+        for (int counted = 0; end < frames.Length && counted < own; end++)
+        {
+            if (!frames[end].Inlined) counted++;
+        }
+        WasmStackFrame[] result = own <= 0 ? [] : frames[..end];
         if (calleeFuncAddr >= 0)
         {
             // A stack overflow shows the function that could not be entered.

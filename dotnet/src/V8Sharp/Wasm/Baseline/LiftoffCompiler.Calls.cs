@@ -9,6 +9,13 @@
 // or to one already compiled, is a direct IL call. Tail calls use IL's
 // tail. prefix, which RyuJIT honours (with its tail-call helper when it
 // cannot make the call a jump).
+//
+// call_indirect and call_ref go through an inline cache per call site
+// (WasmCallSite: the last target and its code, the signature check done
+// when it was filled), which also collects V8's call-target feedback.
+// Callees the inlining tree chose are inlined (LiftoffCompiler.Inlining.cs):
+// direct calls always, call_indirect/call_ref targets behind a check of the
+// target (speculative inlining).
 using System.Reflection;
 using System.Reflection.Emit;
 using Wacs.Core.Runtime;
@@ -38,7 +45,28 @@ internal sealed partial class LiftoffCompiler
         }
     }
 
-    bool CanTailCall => _tryDepth == 0;
+    /// <summary>
+    /// Whether a return_call here is an IL tail call: outside exception
+    /// regions, in the method's function or in a callee whose returns are the
+    /// method's (inlined for tail calls only).
+    /// </summary>
+    bool CanTailCall => _tryDepth == 0 && (_inline is null || _inline.InTailPosition);
+
+    /// <summary>
+    /// Whether a call here may be inlined: not a return_call inside one of
+    /// the function's own try blocks, whose handlers must not see what the
+    /// callee throws (the callee replaces the frame that has them).
+    /// </summary>
+    bool MayInline(bool tail) => (!tail || _inline is not null || _tryDepth == 0) && _il.ILOffset < kMaxILForInlining;
+
+    /// <summary>
+    /// No more inlining once the method has this much IL: RyuJIT compiles
+    /// methods over about 60 KB of IL with MinOpts (no register allocation
+    /// or loop optimization), which costs far more than the calls inlining
+    /// saves. V8's budget counts wire bytes; IL is about 8-17 bytes per
+    /// instruction here.
+    /// </summary>
+    const int kMaxILForInlining = 30_000;
 
     /// <summary>Set during a return_call made as a call (inside an exception region).</summary>
     LocalBuilder? _tailCallFlag;
@@ -55,7 +83,7 @@ internal sealed partial class LiftoffCompiler
             _reachable = false;
             return;
         }
-        if (tail)
+        if (tail && _inline is null)
         {
             // The frame is gone during a tail call: its handlers must not
             // see the callee's exceptions.
@@ -72,7 +100,13 @@ internal sealed partial class LiftoffCompiler
 
     void CallDirect(int funcIndex, bool tail)
     {
+        int callIndex = _callIndex++;
         if (!_reachable) return;
+        if (MayInline(tail) && _plan?.InlinedDirectCall(_instIndex) is { } inlined)
+        {
+            InlineDirectCall(inlined, callIndex, tail);
+            return;
+        }
         WasmCode target = _data.Code[funcIndex];
         WasmSignature sig = target.Signature;
         if (target.State == WasmCodeState.Lazy && target.Instance == _data && !target.Compiling &&
@@ -81,13 +115,16 @@ internal sealed partial class LiftoffCompiler
             WasmModuleCompiler.CountCompileAhead();
             target.Compile();
         }
-        if (target == _code)
+        if (target == _rootCode)
         {
             _asm.PopToStackWithPrefix(sig.Params.Length, () => _il.Emit(OpCodes.Ldarg_0));
             EmitCall(OpCodes.Call, _method, sig, tail);
             return;
         }
-        if (target.State == WasmCodeState.Compiled && target.Method is { } method && target.Instance == _data)
+        // Code that may tier up is called through its slot, which the
+        // tier-up patches (V8: the jump table).
+        if (target.State == WasmCodeState.Compiled && target.Method is { } method && target.Instance == _data &&
+            !target.MayTierUp)
         {
             if (!target.Shareable) _instanceSpecific = true;
             _asm.PopToStackWithPrefix(sig.Params.Length, () =>
@@ -113,41 +150,80 @@ internal sealed partial class LiftoffCompiler
 
     void CallIndirect(int typeIndex, int table, bool tail)
     {
+        int callIndex = _callIndex++;
         if (!_reachable) return;
         DefType expected = _module.Types[(TypeIdx)(uint)typeIndex];
         WasmSignature sig = WasmSignature.Get((FunctionType)expected.Expansion);
+        // The site: its inline cache and, in code that tiers up, its feedback.
+        LocalBuilder site = CallSite().Local;
+        LocalBuilder elements = _tableElements[table];
         int n = sig.Params.Length;
         bool table64 = TableAddressKind(table) == WasmKind.I64;
         _asm.Settle(n + 1);
         int first = _asm.Height - n - 1;
-        EmitStorePc();
-        // RuntimeWasm.ResolveIndirect(index, table, typeIndex, code, pc): the
-        // expected type is the instance's (the code serves every instance).
-        _asm.LoadSettled(first + n);
-        if (!table64) _il.Emit(OpCodes.Conv_U8);
-        _il.Emit(OpCodes.Ldc_I4, table);
-        _il.Emit(OpCodes.Ldc_I4, typeIndex);
-        EmitRuntimeCall(nameof(RuntimeWasm.ResolveIndirect));
-        _il.Emit(OpCodes.Castclass, sig.DelegateType);
-        for (int i = 0; i < n; i++) _asm.LoadSettled(first + i);
-        _asm.Drop(n + 1);
-        EmitCall(OpCodes.Callvirt, sig.Invoke, sig, tail);
+        void LoadIndex()
+        {
+            _asm.LoadSettled(first + n);
+            if (!table64) _il.Emit(OpCodes.Conv_U8);
+        }
+        void EmitGenericCall()
+        {
+            EmitStorePc();
+            // RuntimeWasm.CallIndirectTarget(index, elements, site, code, pc)
+            LoadIndex();
+            _il.Emit(OpCodes.Ldloc, elements);
+            _il.Emit(OpCodes.Ldloc, site);
+            EmitRuntimeCall(nameof(RuntimeWasm.CallIndirectTarget));
+            _il.Emit(OpCodes.Castclass, sig.DelegateType);
+            for (int i = 0; i < n; i++) _asm.LoadSettled(first + i);
+            _asm.Drop(n + 1);
+            EmitCall(OpCodes.Callvirt, sig.Invoke, sig, tail);
+        }
+        List<WasmInliningTree>? cases = MayInline(tail) ? _plan?.InlinedCases(_instIndex) : null;
+        if (cases is { Count: > 0 })
+        {
+            EmitSpeculativeCall(cases, tail ? "return_call_indirect" : "call_indirect", callIndex, sig, first, tail, () =>
+            {
+                LoadIndex();
+                _il.Emit(OpCodes.Ldloc, elements);
+                _il.Emit(OpCodes.Call, RuntimeWasm.Method(nameof(RuntimeWasm.CallIndirectTargetAddress)));
+            }, EmitGenericCall);
+            return;
+        }
+        EmitGenericCall();
     }
 
     void CallRef(int typeIndex, bool tail)
     {
+        int callIndex = _callIndex++;
         if (!_reachable) return;
         DefType type = _module.Types[(TypeIdx)(uint)typeIndex];
         WasmSignature sig = WasmSignature.Get((FunctionType)type.Expansion);
+        LocalBuilder site = CallSite().Local;
         int n = sig.Params.Length;
         _asm.Settle(n + 1);
         int first = _asm.Height - n - 1;
-        EmitStorePc();
-        _asm.LoadSettled(first + n);
-        EmitRuntimeCall(nameof(RuntimeWasm.ResolveRef));
-        _il.Emit(OpCodes.Castclass, sig.DelegateType);
-        for (int i = 0; i < n; i++) _asm.LoadSettled(first + i);
-        _asm.Drop(n + 1);
-        EmitCall(OpCodes.Callvirt, sig.Invoke, sig, tail);
+        void EmitGenericCall()
+        {
+            EmitStorePc();
+            _asm.LoadSettled(first + n);
+            _il.Emit(OpCodes.Ldloc, site);
+            EmitRuntimeCall(nameof(RuntimeWasm.CallRefTarget));
+            _il.Emit(OpCodes.Castclass, sig.DelegateType);
+            for (int i = 0; i < n; i++) _asm.LoadSettled(first + i);
+            _asm.Drop(n + 1);
+            EmitCall(OpCodes.Callvirt, sig.Invoke, sig, tail);
+        }
+        List<WasmInliningTree>? cases = MayInline(tail) ? _plan?.InlinedCases(_instIndex) : null;
+        if (cases is { Count: > 0 })
+        {
+            EmitSpeculativeCall(cases, tail ? "return_call_ref" : "call_ref", callIndex, sig, first, tail, () =>
+            {
+                _asm.LoadSettled(first + n);
+                _il.Emit(OpCodes.Call, RuntimeWasm.Method(nameof(RuntimeWasm.FunctionAddressOf)));
+            }, EmitGenericCall);
+            return;
+        }
+        EmitGenericCall();
     }
 }

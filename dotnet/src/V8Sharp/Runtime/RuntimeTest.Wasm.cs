@@ -1,9 +1,9 @@
 // Port of src/runtime/runtime-test-wasm.cc (the %-natives of the wasm tests)
 // and the wasm entries of runtime-test.cc, as they answer for V8Sharp's
-// interpreter-only WebAssembly (deviations.md, "WebAssembly"): there are no
-// Liftoff or TurboFan tiers, so the tier queries are false, tier-up requests
-// are accepted and ignored, and %IsWasmTieringPredictable() is false so that
-// tests skip their tier assertions.
+// WebAssembly (deviations.md, "WebAssembly"): one compiler stands for Liftoff
+// and TurboFan, so the tier queries are false and %IsWasmTieringPredictable()
+// is false so that tests skip their tier assertions; a tier-up request
+// compiles the function again with its call-target feedback.
 using V8Sharp.Wasm;
 using Wacs.Core.Runtime;
 using Wacs.Core.Types.Defs;
@@ -56,6 +56,16 @@ public static partial class RuntimeTable
         return Execution.Call(isolate, f, JSValue.Undefined, []);
     }
 
+    static JSValue WasmTierUp(ReadOnlySpan<JSValue> args)
+    {
+        if (args.Length > 0 && WasmObjects.GetExportedFunctionData(args[0]) is { } data &&
+            data.Engine.FindCode(data.Address) is { Instance: not null } code)
+        {
+            code.TierUp();
+        }
+        return JSValue.Undefined;
+    }
+
     static void RegisterWasmTest()
     {
         static JSValue Undefined(Isolate i, ReadOnlySpan<JSValue> a) => JSValue.Undefined;
@@ -95,8 +105,10 @@ public static partial class RuntimeTable
         // Bounds checks precede every store: a partially out-of-bounds write
         // writes nothing.
         Register(FunctionId.IsWasmPartialOOBWriteNoop, static (i, a) => JSValue.True);
-        Register(FunctionId.WasmTierUpFunction, Undefined);
-        Register(FunctionId.WasmTriggerTierUpForTesting, Undefined);
+        // The tier-up natives compile the function again with its feedback
+        // (speculative inlining), as V8 compiles it with TurboFan.
+        Register(FunctionId.WasmTierUpFunction, static (i, a) => WasmTierUp(a));
+        Register(FunctionId.WasmTriggerTierUpForTesting, static (i, a) => WasmTierUp(a));
         Register(FunctionId.FreezeWasmLazyCompilation, Undefined);
         Register(FunctionId.SetWasmCompileControls, Undefined);
         Register(FunctionId.SetWasmInstantiateControls, Undefined);

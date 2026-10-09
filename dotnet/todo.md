@@ -398,7 +398,7 @@ Design and every deviation: deviations.md, "WebAssembly".
       differential tests found are fixed in the vendored code (i64.trunc range
       checks, negative SIMD shift counts, racing memory.grow of shared
       memories). Open: tier queries and --trace-wasm* (no second tier),
-      call_indirect through a per-call lookup rather than V8's dispatch table,
+      call_indirect through a per-site inline cache rather than V8's dispatch table,
       JS-to-wasm calls of non-numeric signatures through the generic wrapper,
       GC instructions inline in IL.
       Speed (2026-10-09, micro:wasm, bench-session.sh, parity publish, 3
@@ -411,6 +411,56 @@ Design and every deviation: deviations.md, "WebAssembly".
       DynamicMethods, and call_indirect costs about 3x a direct call; JSCalls
       1.1%: the JS-side call path of API functions dominates, not the
       wrapper). V8 --jitless has no WebAssembly (no DrumBrake in the oracle).
+- [x] Inlining (Baseline/WasmInliningTree.cs, LiftoffCompiler.Inlining.cs;
+      ports src/wasm/inlining-tree.h and the inlining parts of
+      turboshaft-graph-interface.cc; deviations.md, "WebAssembly",
+      "Inlining"). RyuJIT never inlines one DynamicMethod into another, so the
+      compiler inlines wasm callees into the caller's IL itself, with V8's
+      budget and flags (--wasm-inlining, --wasm-inlining-budget,
+      --wasm-inlining-max-size, --wasm-inlining-factor,
+      --wasm-inlining-min-budget, --wasm-inlining-ignore-call-counts,
+      --wasm-inlining-call-indirect, --wasm-tiering-budget): direct calls at
+      the first compile; call_indirect/call_ref targets speculatively, from
+      the feedback of per-site inline caches, when the function tiers up
+      (Liftoff's TierupCheck at returns and loop back edges,
+      %WasmTierUpFunction). Inlined frames are inlined positions that stack
+      traces expand (traps in inlined callees show V8's frames, tail calls
+      included). --trace-wasm-inlining prints V8's trace for the tier-up:
+      test/message/wasm-speculative-inlining.js matches V8's .out exactly
+      under d8sharp (the TestRunner does not capture engine output on
+      Console, so it stays listed). mjsunit/wasm/inlining.js passes up to
+      the parts that need d8.wasm.serializeModule and two validator gaps
+      (call_ref typing, a subtype check). Tests: WasmInliningTests.cs (6
+      facts: interpreter vs compiled vs inlining vs eager tier-up).
+      Evaluated and not taken: emitting functions as static methods of
+      collectible AssemblyBuilder types so RyuJIT inlines them (prototype:
+      RyuJIT inlines a trivial callee across separately created types, 4.0
+      -> 0.47 ns per call, but with the frame bookkeeping wasm frames need
+      (about 60 bytes of IL and a stack-check call) it inlines only with
+      AggressiveInlining and keeps the bookkeeping: 4.4 -> 3.2 ns; such
+      methods start at tier 0 and reach tier 1 later (DynamicMethods are
+      optimized at once), a lazily compiled function needs a type of its
+      own, and the 60 KB MinOpts limit applies alike). Open: inline callees
+      with exception handlers; polymorphic call_indirect beyond 4 targets
+      (V8 deopts, V8Sharp falls back to the cache); passing the instance
+      data as an argument instead of reloading it from the WasmCode at
+      every entry (about 1 ns per call); splitting functions over about 60 KB
+      of IL, which RyuJIT compiles with MinOpts (inlining stops at 30 KB of
+      IL so as not to push a method there).
+      Speed (2026-10-09, bench-session.sh, parity publishes of main aea50a9d
+      and this branch, 3 interleaved runs, warm; fingerprint: Xeon 2.8 GHz,
+      load 2.0, steal 0%, cpu-cal 2086/1842 ms, mem-bw 18.6/19.4 GB/s):
+      micro:wasm main -> inlining (v8:jit): WasmCalls 195 -> 1712 (8963,
+      2.2% -> 19%), WasmFib 681 -> 1531 (2919, 23% -> 52%), WasmLoop 942 ->
+      911, WasmFloat 955 -> 883, WasmJSCalls 37 -> 39 (unchanged within
+      noise), WasmMemory 4049 -> 3315 (6317; runs 4402/3466/4280 vs
+      3856/3338/2752: the loops' machine code is the same but for register
+      names, so this is open, not explained); octane-quick zlib 2710 -> 2615
+      and Mandreel 457 -> 496 (noise; their hot functions are large and
+      call little). Indicative ns per operation (shell, not under the lock):
+      a loop calling a 1-instruction function 5.0 -> 0.62 ns (the empty loop
+      is 0.61), through call_indirect 8.5 -> 3.75 (inline cache) -> 2.4
+      (speculatively inlined), recursive fib 5.7 -> 2.2 ns per call.
 - [ ] Validation message texts: V8 names the operand and the instruction
       that produced it ("expected type i32, found local.get of type i64");
       WACS's validator does not track producers. Some mjsunit
