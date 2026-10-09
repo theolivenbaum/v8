@@ -111,6 +111,7 @@ public sealed class InstanceBuilder
         instanceObject.ModuleObject = _moduleObject;
         instanceObject.Instance = instance;
         _engine.RegisterInstanceObject(instanceObject);
+        WasmModuleCompiler.Attach(_engine, instanceObject);
         _moduleObject.InstanceCount++;
         ProcessExports(instanceObject, imports);
 

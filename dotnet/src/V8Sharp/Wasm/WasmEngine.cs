@@ -94,6 +94,45 @@ namespace V8Sharp.Wasm
 
         public WasmRuntime Runtime { get; }
 
+        ExecContext? _execContext;
+
+        /// <summary>The runtime's execution context on the isolate's thread.</summary>
+        public ExecContext ExecContext => _execContext ??= Runtime.GetExecContext();
+
+        // ---- Compiled code (V8: the code tables of the wasm code manager) -------------
+
+        WasmCode?[] _code = new WasmCode?[64];
+
+        internal void RegisterCode(WasmCode code)
+        {
+            int address = code.Address.Value;
+            if (address >= _code.Length) Array.Resize(ref _code, Math.Max(address + 1, _code.Length * 2));
+            _code[address] = code;
+        }
+
+        internal WasmCode? FindCode(FuncAddr address) =>
+            (uint)address.Value < (uint)_code.Length ? _code[address.Value] : null;
+
+        /// <summary>The code of the function at <paramref name="address"/>, created on first use.</summary>
+        internal WasmCode CodeAt(FuncAddr address)
+        {
+            if ((uint)address.Value < (uint)_code.Length && _code[address.Value] is { } code) return code;
+            return GetOrCreateCode(address);
+        }
+
+        internal WasmCode GetOrCreateCode(FuncAddr address)
+        {
+            if (FindCode(address) is { } existing) return existing;
+            IFunctionInstance function = Store[address];
+            if (function is FunctionInstance { Module.Compiler: WasmInstanceData data } && FindCode(address) is { } owned)
+            {
+                return owned;
+            }
+            var code = new WasmCode(this, null, function, address, -1);
+            RegisterCode(code);
+            return code;
+        }
+
         // ---- Activations (stack traces) -----------------------------------------------
 
         /// <summary>A JS-to-wasm call in progress: the wasm frames above its base height are its own.</summary>
