@@ -277,6 +277,21 @@ public static class MaglevCalls
         return ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), fp);
     }
 
+    /// <summary>
+    /// <see cref="EnterFastFrame"/> with the frame depth and the frame pointer
+    /// computed by the caller into locals (out parameters would keep them in
+    /// memory): the stack checks, the new stack top, and the slot at fp.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ref JSValue EnterFastFrameAt(Isolate isolate, int depth, int fp, int registerCount)
+    {
+        if ((depth & 7) == 0) CheckNativeStack(isolate);
+        int end = fp + registerCount;
+        if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
+        isolate.RegisterStackTop = end;
+        return ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), fp);
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void CheckNativeStack(Isolate isolate)
     {
@@ -381,14 +396,12 @@ public static class MaglevCalls
     /// context (restored by <see cref="LeaveFastFrame"/>).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Context? EnterLazyFrame(Isolate isolate, int paramSlots, int registerCount, JSFunction function, nint activation, int argc,
-        out int start, out int depth)
+    public static Context? EnterLazyFrame(Isolate isolate, int d, int s, int paramSlots, int registerCount, JSFunction function, nint activation,
+        int argc)
     {
-        int d = isolate.InterpreterFrameDepth;
-        depth = d;
+        // (d and s are the frame depth and the register stack top, read by the
+        // caller into locals: out parameters would keep them in memory.)
         if ((d & 7) == 0) CheckNativeStack(isolate);
-        int s = isolate.RegisterStackTop;
-        start = s;
         int fp = s + paramSlots + InterpreterRuntime.kFixedSlotsAboveParams;
         int end = fp + registerCount;
         if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();

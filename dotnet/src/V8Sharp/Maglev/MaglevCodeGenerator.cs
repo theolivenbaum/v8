@@ -2995,7 +2995,7 @@ internal sealed partial class MaglevCodeGenerator
         .First(m => m.Name == nameof(Unsafe.As) && m.GetGenericArguments().Length == 1 && m.GetParameters()[0].ParameterType == typeof(object));
     static readonly FieldInfo s_stIsolate = typeof(InterpreterState).GetField(nameof(InterpreterState.Isolate))!;
     static readonly FieldInfo s_stBaseFrameIndex = typeof(InterpreterState).GetField(nameof(InterpreterState.BaseFrameIndex))!;
-    static readonly MethodInfo s_enterFastFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.EnterFastFrame))!;
+    static readonly MethodInfo s_enterFastFrameAt = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.EnterFastFrameAt))!;
     static readonly MethodInfo s_initializeFastFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.InitializeFastFrame))!;
     static readonly MethodInfo s_storeFrameSlot = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.StoreFrameSlot))!;
     static readonly MethodInfo s_leaveFastFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.LeaveFastFrame))!;
@@ -3112,6 +3112,7 @@ internal sealed partial class MaglevCodeGenerator
         typeof(MaglevActivation).GetField(nameof(MaglevActivation.A2))!, typeof(MaglevActivation).GetField(nameof(MaglevActivation.A3))!,
         typeof(MaglevActivation).GetField(nameof(MaglevActivation.A4))!, typeof(MaglevActivation).GetField(nameof(MaglevActivation.A5))!,
     ];
+    static readonly FieldInfo s_registerStackTop = typeof(Isolate).GetField(nameof(Isolate.RegisterStackTop))!;
     static readonly MethodInfo s_enterLazyFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.EnterLazyFrame))!;
     static readonly MethodInfo s_deoptimizeLazyFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.DeoptimizeLazyFrame))!;
 
@@ -3220,16 +3221,23 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldc_I4, int.MaxValue);
         _il.Emit(OpCodes.And);
         _il.Emit(OpCodes.Stfld, s_activationArgc);
-        // saved = EnterLazyFrame(isolate, formal, registers, function, &activation, argc, out start, out depth)
+        // depth = isolate.InterpreterFrameDepth; start = isolate.RegisterStackTop;
+        // saved = EnterLazyFrame(isolate, depth, start, formal, registers, function, &activation, argc)
         _il.Emit(OpCodes.Ldarg_1);
+        _il.Emit(OpCodes.Ldfld, s_interpreterFrameDepth);
+        _il.Emit(OpCodes.Stloc, _baseFrameIndex);
+        _il.Emit(OpCodes.Ldarg_1);
+        _il.Emit(OpCodes.Ldfld, s_registerStackTop);
+        _il.Emit(OpCodes.Stloc, _lazyStart);
+        _il.Emit(OpCodes.Ldarg_1);
+        _il.Emit(OpCodes.Ldloc, _baseFrameIndex);
+        _il.Emit(OpCodes.Ldloc, _lazyStart);
         _il.Emit(OpCodes.Ldc_I4, formal);
         _il.Emit(OpCodes.Ldc_I4, bytecode.RegisterCount);
         _il.Emit(OpCodes.Ldarg_2);
         _il.Emit(OpCodes.Ldloca, _activation);
         _il.Emit(OpCodes.Conv_U);
         _il.Emit(OpCodes.Ldarg_3);
-        _il.Emit(OpCodes.Ldloca, _lazyStart);
-        _il.Emit(OpCodes.Ldloca, _baseFrameIndex);
         _il.Emit(OpCodes.Call, s_enterLazyFrame);
         _il.Emit(OpCodes.Stloc, _lazySaved);
         _il.BeginExceptionBlock();
@@ -3566,15 +3574,27 @@ internal sealed partial class MaglevCodeGenerator
             il.Emit(OpCodes.Stloc, paramSlots);
             il.MarkLabel(atLeastFormal);
         }
-        // fpRef = EnterFastFrame(isolate, paramSlots, registers, out start, out fp, out depth)
+        // depth = isolate.InterpreterFrameDepth; start = isolate.RegisterStackTop;
+        // fp = start + paramSlots + kFixedSlotsAboveParams;
+        // fpRef = EnterFastFrameAt(isolate, depth, fp, registers)
         il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldfld, s_interpreterFrameDepth);
+        il.Emit(OpCodes.Stloc, depth);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldfld, s_registerStackTop);
+        il.Emit(OpCodes.Stloc, start);
+        il.Emit(OpCodes.Ldloc, start);
         if (paramSlots is not null) il.Emit(OpCodes.Ldloc, paramSlots);
         else il.Emit(OpCodes.Ldc_I4, formal);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Ldc_I4, InterpreterRuntime.kFixedSlotsAboveParams);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Stloc, fp);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Ldloc, depth);
+        il.Emit(OpCodes.Ldloc, fp);
         il.Emit(OpCodes.Ldc_I4, bytecode.RegisterCount);
-        il.Emit(OpCodes.Ldloca, start);
-        il.Emit(OpCodes.Ldloca, fp);
-        il.Emit(OpCodes.Ldloca, depth);
-        il.Emit(OpCodes.Call, s_enterFastFrame);
+        il.Emit(OpCodes.Call, s_enterFastFrameAt);
         il.Emit(OpCodes.Stloc, fpRef);
         // The receiver and the arguments (V8's pushes).
         void StoreSlot(int index, int arg)
