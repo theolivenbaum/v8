@@ -771,7 +771,7 @@ so frames of inlined functions pushed meanwhile stay above it. Inlined
 functions whose code does not read their frame get lazy records as well
 (`EmitPushLazyInlinedFrame`: one activation local per inlining depth,
 `EnterLazyInlinedFrame` instead of EnterInlinedFrame). Calls with up to six
-arguments and constructs with up to three pass their arguments as values
+arguments and constructs with up to six pass their arguments as values
 (no register window in the frame); arguments objects, rest parameters
 and apply(this, arguments) of a lazy frame copy its activation's arguments
 into its window first (`MaglevCalls.CreateMappedArgumentsLazy` and the
