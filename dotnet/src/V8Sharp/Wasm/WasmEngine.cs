@@ -167,6 +167,33 @@ namespace V8Sharp.Wasm
 
         internal Activation? CurrentActivation => _activations.Count > 0 ? _activations[^1] : null;
 
+        // The activations whose innermost frame called a JavaScript import whose
+        // result is being converted to a number (V8: an asm.js frame's
+        // at_to_number_conversion, which selects the position of the coercion).
+        readonly List<Activation> _numberConversions = [];
+
+        /// <summary>The import wrapper converts its result for the current activation's innermost frame.</summary>
+        internal Activation? EnterNumberConversion()
+        {
+            Activation? activation = CurrentActivation;
+            if (activation is not null) _numberConversions.Add(activation);
+            return activation;
+        }
+
+        internal void LeaveNumberConversion(Activation? activation)
+        {
+            if (activation is null) return;
+            int index = _numberConversions.LastIndexOf(activation);
+            if (index >= 0) _numberConversions.RemoveAt(index);
+        }
+
+        /// <summary>Whether the innermost frame of the activation <paramref name="activationFromTop"/> is in a number conversion.</summary>
+        internal bool IsInNumberConversion(int activationFromTop)
+        {
+            int index = _activations.Count - 1 - activationFromTop;
+            return index >= 0 && _numberConversions.Contains(_activations[index]);
+        }
+
         /// <summary>The wasm frames of an activation, top first (0 is the innermost).</summary>
         internal WasmStackFrame[] ActivationFrames(int activationFromTop)
         {

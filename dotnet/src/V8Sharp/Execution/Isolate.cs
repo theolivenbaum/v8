@@ -767,8 +767,18 @@ public sealed partial class Isolate
         /// <summary>CallSiteBuilder::AppendWasmFrame (wasm frames bypass the frame filters).</summary>
         public void AppendWasmFrame(in Wasm.WasmStackTraces.Frame frame, JSFunction wrapper)
         {
-            _elements.Add(new CallSiteInfo(frame.Instance, wrapper, frame.Offset,
-                CallSiteInfo.kIsWasm | CallSiteInfo.kIsSourcePositionComputed)
+            int flags = CallSiteInfo.kIsWasm | CallSiteInfo.kIsSourcePositionComputed;
+            int position = frame.Offset;
+            Wasm.WasmModuleObject module = frame.Instance.ModuleObject;
+            if (module.IsAsmJs)
+            {
+                // V8 14.7: an asm.js frame shows its JavaScript source position.
+                flags |= CallSiteInfo.kIsAsmJsWasm;
+                if (frame.AtNumberConversion) flags |= CallSiteInfo.kIsAsmJsAtNumberConversion;
+                position = Wasm.WasmStackTraces.GetAsmJsSourcePosition(module, frame.FunctionIndex, frame.BodyOffset,
+                    frame.AtNumberConversion);
+            }
+            _elements.Add(new CallSiteInfo(frame.Instance, wrapper, position, flags)
             {
                 WasmFunctionIndex = frame.FunctionIndex,
             });

@@ -44,6 +44,8 @@ public sealed class CallSiteInfo : HeapObject
     public int WasmFunctionIndex;
 
     public bool IsWasm => (Flags & kIsWasm) != 0;
+    public bool IsAsmJsWasm => (Flags & kIsAsmJsWasm) != 0;
+    public bool IsAsmJsAtNumberConversion => (Flags & kIsAsmJsAtNumberConversion) != 0;
 
     public Wasm.WasmInstanceObject GetWasmInstance() => (Wasm.WasmInstanceObject)ReceiverOrInstance.Object;
     public bool IsBuiltin => (Flags & kIsBuiltin) != 0;
@@ -55,8 +57,8 @@ public sealed class CallSiteInfo : HeapObject
     public bool IsPromiseAllSettled() => IsAsync && ReferenceEquals(Function, Function.NativeContext.PromiseAllSettled);
     public bool IsPromiseAny() => IsAsync && ReferenceEquals(Function, Function.NativeContext.PromiseAny);
 
-    public bool IsNative() => !IsWasm && GetScript() is Script script && script.ScriptType == Script.Type.Native;
-    public bool IsEval() => !IsWasm && GetScript() is Script script && script.HasEvalOrigin;
+    public bool IsNative() => (!IsWasm || IsAsmJsWasm) && GetScript() is Script script && script.ScriptType == Script.Type.Native;
+    public bool IsEval() => (!IsWasm || IsAsmJsWasm) && GetScript() is Script script && script.HasEvalOrigin;
     public bool IsUserJavaScript() => !IsWasm && GetSharedFunctionInfo().IsUserJavaScript();
     public bool IsMethodCall() => !IsWasm && !IsToplevel() && !IsConstructor;
 
@@ -68,7 +70,7 @@ public sealed class CallSiteInfo : HeapObject
 
     public static int GetLineNumber(Isolate isolate, CallSiteInfo info)
     {
-        if (info.IsWasm) return 1;
+        if (info.IsWasm && !info.IsAsmJsWasm) return 1;
         if (info.GetScript() is Script script)
         {
             int position = GetSourcePosition(info);
@@ -85,7 +87,7 @@ public sealed class CallSiteInfo : HeapObject
     public static int GetColumnNumber(Isolate isolate, CallSiteInfo info)
     {
         int position = GetSourcePosition(info);
-        if (info.IsWasm) return position + 1;
+        if (info.IsWasm && !info.IsAsmJsWasm) return position + 1;
         if (info.GetScript() is Script script)
         {
             script.GetPositionInfo(position, out Script.PositionInfo positionInfo);
@@ -101,15 +103,21 @@ public sealed class CallSiteInfo : HeapObject
 
     public static int GetEnclosingLineNumber(Isolate isolate, CallSiteInfo info)
     {
-        if (info.IsWasm) return 1;
+        if (info.IsWasm && !info.IsAsmJsWasm) return 1;
         if (info.GetScript() is not Script script) return kNoLineNumberInfo;
+        if (info.IsAsmJsWasm)
+        {
+            int asmPosition = Wasm.WasmStackTraces.GetAsmJsSourcePosition(info.GetWasmInstance().ModuleObject,
+                info.WasmFunctionIndex, 0, info.IsAsmJsAtNumberConversion);
+            return script.GetLineNumber(asmPosition) + 1;
+        }
         int position = info.GetSharedFunctionInfo().FunctionTokenPosition();
         return script.GetLineNumber(position) + 1;
     }
 
     public static int GetEnclosingColumnNumber(Isolate isolate, CallSiteInfo info)
     {
-        if (info.IsWasm)
+        if (info.IsWasm && !info.IsAsmJsWasm)
         {
             // GetWasmFunctionOffset: the offset of the function's code.
             Wasm.WasmModuleObject module = info.GetWasmInstance().ModuleObject;
@@ -120,6 +128,12 @@ public sealed class CallSiteInfo : HeapObject
                 : 0;
         }
         if (info.GetScript() is not Script script) return kNoColumnInfo;
+        if (info.IsAsmJsWasm)
+        {
+            int asmPosition = Wasm.WasmStackTraces.GetAsmJsSourcePosition(info.GetWasmInstance().ModuleObject,
+                info.WasmFunctionIndex, 0, info.IsAsmJsAtNumberConversion);
+            return script.GetColumnNumber(asmPosition) + 1;
+        }
         int position = info.GetSharedFunctionInfo().FunctionTokenPosition();
         return script.GetColumnNumber(position) + 1;
     }
@@ -437,6 +451,7 @@ public sealed class CallSiteInfo : HeapObject
         location = null!;
         if (info.IsWasm)
         {
+            // (For an asm.js frame, the position is in the asm.js module's script.)
             int wasmPos = GetSourcePosition(info);
             location = new MessageLocation(info.GetWasmInstance().ModuleObject.Script, wasmPos, wasmPos + 1, null);
             return true;
@@ -599,7 +614,7 @@ public sealed class CallSiteInfo : HeapObject
     /// <summary>SerializeCallSiteInfo (SerializeJSStackFrame).</summary>
     public static void SerializeCallSiteInfo(Isolate isolate, CallSiteInfo frame, ref IncrementalStringBuilder builder)
     {
-        if (frame.IsWasm)
+        if (frame.IsWasm && !frame.IsAsmJsWasm)
         {
             SerializeWasmStackFrame(isolate, frame, ref builder);
             return;
