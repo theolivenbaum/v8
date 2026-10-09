@@ -416,11 +416,41 @@ public static class MaglevCalls
     }
 
     /// <summary>
+    /// EnterInlinedFrame for a lazy inlined frame (MaglevCodeGenerator, lazy
+    /// inlined frames): reserves the frame's register window, pushes the lazy
+    /// record pointing at the activation the code filled, and switches to the
+    /// function's context.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void EnterLazyInlinedFrame(Isolate isolate, int paramSlots, int registerCount, nint activation, bool isConstruct)
+    {
+        int start = isolate.RegisterStackTop;
+        int fp = start + paramSlots + InterpreterRuntime.kFixedSlotsAboveParams;
+        int end = fp + registerCount;
+        if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
+        int d = isolate.InterpreterFrameDepth;
+        InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
+        if ((uint)d >= (uint)frames.Length) isolate.StackOverflow();
+        isolate.RegisterStackTop = end;
+        ref InterpreterFrameRecord frame = ref frames[d];
+        frame.Fp = fp;
+        frame.Flags = isConstruct
+            ? InterpreterFrameFlags.Maglev | InterpreterFrameFlags.Lazy | InterpreterFrameFlags.Constructor
+            : InterpreterFrameFlags.Maglev | InterpreterFrameFlags.Lazy;
+        frame.ReturnPc = 0;
+        frame.RegisterStart = start;
+        frame.Activation = activation;
+        isolate.InterpreterFrameDepth = d + 1;
+        Context context = MaglevActivation.At(activation).Function.Context;
+        if (!ReferenceEquals(isolate.Context, context)) isolate.Context = context;
+    }
+
+    /// <summary>
     /// Builds the interpreter frame of a lazy frame in its reserved window from
     /// its activation (what MaglevCalls.InitializeFastFrame and the frameful
     /// direct entry write), so the Deoptimizer can continue it.
     /// </summary>
-    internal static void MaterializeLazyFrame(Isolate isolate, ref InterpreterFrameRecord record, FeedbackVector vector)
+    internal static void MaterializeLazyFrame(Isolate isolate, ref InterpreterFrameRecord record, FeedbackVector? vector)
     {
         ref MaglevActivation a = ref MaglevActivation.At(record.Activation);
         JSFunction function = a.Function;
@@ -431,7 +461,7 @@ public static class MaglevCalls
         for (int i = 0; i < formal; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = MaglevActivation.Argument(ref a, i);
         Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset) = function.Context;
         Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset) = function;
-        Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset) = vector;
+        Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset) = vector is null ? JSValue.Undefined : vector;
         InterpreterRuntime.InitializeFrameSlots(ref fpRef, bytecode, a.Argc);
         InterpreterRuntime.SetFramePc(ref fpRef, a.Pc);
         // The registers are undefined, as the frameful entry leaves them.
@@ -449,7 +479,7 @@ public static class MaglevCalls
     public static JSValue DeoptimizeLazyFrame(Isolate isolate, MaglevCode code, int index, int reason, int depth)
     {
         ref InterpreterFrameRecord record = ref isolate.InterpreterFrames[depth];
-        if (record.IsLazy) MaterializeLazyFrame(isolate, ref record, code.FeedbackVector);
+        // (The Deoptimizer builds the interpreter frames of lazy records.)
         var state = new InterpreterState
         {
             Isolate = isolate,

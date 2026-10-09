@@ -268,7 +268,7 @@ internal sealed partial class MaglevCodeGenerator
         if (fastCall is not null && (_info.Isolate.Flags.trace_opt_verbose || s_traceEntries))
         {
             Console.WriteLine($"[maglev direct entry of {MaglevCompiler.DebugName(_info.Function.Shared)}: " +
-                              $"{(frameless is null ? "frameful" : frameless._lazyFrame ? "lazy frame" : "frameless")}]");
+                              $"{(frameless is null ? "frameful" : frameless._lazyFrame ? "lazy frame, " + frameless._lazyUnits.Count + " lazy inlined" : "frameless")}]");
         }
         MethodImplAttributes bodyFlags = MethodImplAttributes.IL;
         if (_optimizeFully || _il.ILOffset <= s_aggressiveMaxIL || _il.ILOffset > kAggressiveILBytes)
@@ -784,6 +784,11 @@ internal sealed partial class MaglevCodeGenerator
             return;
         }
         if (_frameless && (unit is null || !unit.IsInline)) throw new FramelessUnsupportedException();
+        if (unit is not null && _lazyUnits.Contains(unit))
+        {
+            LoadActivationSlotAddress(InlinedActivation(unit), unit.ParameterCount - 1, index);
+            return;
+        }
         if (unit is null || !unit.IsInline) _il.Emit(OpCodes.Ldloc, _fpRef);
         else _il.Emit(OpCodes.Ldloc, unit.FpRefLocal ?? throw new InvalidOperationException("inlined frame not entered"));
         if (index != 0)
@@ -796,14 +801,14 @@ internal sealed partial class MaglevCodeGenerator
 
     void LoadFp(MaglevCompilationUnit? unit)
     {
-        if (_frameless && (unit is null || !unit.IsInline)) throw new FramelessUnsupportedException();
+        if (_frameless && (unit is null || !unit.IsInline || _lazyUnits.Contains(unit))) throw new FramelessUnsupportedException();
         if (unit is null || !unit.IsInline) _il.Emit(OpCodes.Ldloc, _fp);
         else _il.Emit(OpCodes.Ldloc, unit.FpLocal!);
     }
 
     void LoadFrameRecord(MaglevCompilationUnit? unit)
     {
-        if (_frameless && (unit is null || !unit.IsInline)) throw new FramelessUnsupportedException();
+        if (_frameless && (unit is null || !unit.IsInline || _lazyUnits.Contains(unit))) throw new FramelessUnsupportedException();
         if (unit is null || !unit.IsInline) _il.Emit(OpCodes.Ldloc, _frame);
         else _il.Emit(OpCodes.Ldloc, unit.FrameRecordLocal!);
     }
@@ -812,10 +817,10 @@ internal sealed partial class MaglevCodeGenerator
     void StoreBytecodeOffset(NodeBase node)
     {
         if (node.BytecodeOffset < 0) return;
-        if (_lazyFrame && (node.Unit is null || !node.Unit.IsInline))
+        if (_lazyFrame && (node.Unit is null || !node.Unit.IsInline || _lazyUnits.Contains(node.Unit)))
         {
             // A lazy frame's offset is its activation's.
-            _il.Emit(OpCodes.Ldloca, _activation!);
+            _il.Emit(OpCodes.Ldloca, node.Unit is { IsInline: true } unit ? InlinedActivation(unit) : _activation!);
             _il.Emit(OpCodes.Ldc_I4, node.BytecodeOffset);
             _il.Emit(OpCodes.Stfld, s_activationPc);
             return;
@@ -2929,6 +2934,11 @@ internal sealed partial class MaglevCodeGenerator
         Node node = unit.EntryNode!;
         int argc = node.Int0;
         StoreBytecodeOffset(node);
+        if (_lazyUnits.Contains(unit))
+        {
+            EmitPushLazyInlinedFrame(unit);
+            return;
+        }
         // fp = EnterInlinedFrame(isolate, function, bytecode, argc, isConstruct)
         _il.Emit(OpCodes.Ldarg_1);
         // (An inlined closure of a feedback cell: the closure input of EnterInlinedFrame.)
@@ -3157,6 +3167,7 @@ internal sealed partial class MaglevCodeGenerator
 
     void GenerateLazy()
     {
+        ChooseLazyInlinedFrames();
         AllocateLocals();
         _result = _il.DeclareLocal(typeof(JSValue));
         _end = _il.DefineLabel();
@@ -3233,13 +3244,133 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Call, s_leaveFastFrame);
     }
 
-    /// <summary>The address of a lazy frame's parameter slot <paramref name="index"/> in its activation.</summary>
-    void LoadActivationSlotAddress(int index)
+    // Inlined functions of a lazy entry get lazy frame records too (V8 has no
+    // frames for them at all; its stack walker and deoptimizer read them from
+    // the translation): the record's activation (one MaglevActivation local
+    // per inlining depth, as only one unit per depth is pushed at a time)
+    // holds the closure, receiver, arguments and offset, and the register
+    // window is reserved for a deopt to build the interpreter frame in. Units
+    // whose code reads or writes their frame otherwise push interpreter
+    // frames as before.
+
+    readonly HashSet<MaglevCompilationUnit> _lazyUnits = new(ReferenceEqualityComparer.Instance);
+    readonly List<LocalBuilder> _inlinedActivations = [];
+
+    static readonly MethodInfo s_enterLazyInlinedFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.EnterLazyInlinedFrame))!;
+    static readonly bool Flags_NoLazyInlinedFrames = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_LAZY_INLINED_FRAMES") == "1";
+
+    LocalBuilder InlinedActivation(MaglevCompilationUnit unit)
     {
-        for (int i = 0; i <= _fastCallArity; i++)
+        int d = unit.InliningDepth;
+        while (_inlinedActivations.Count < d) _inlinedActivations.Add(_il.DeclareLocal(typeof(MaglevActivation)));
+        return _inlinedActivations[d - 1];
+    }
+
+    void ChooseLazyInlinedFrames()
+    {
+        if (Flags_NoLazyInlinedFrames) return;
+        var units = new HashSet<MaglevCompilationUnit>(ReferenceEqualityComparer.Instance);
+        var excluded = new HashSet<MaglevCompilationUnit>(ReferenceEqualityComparer.Instance);
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Node node in block.Nodes)
+            {
+                if (node.Opcode == Opcode.EnterInlinedFrame && node.Obj0 is MaglevCompilationUnit u)
+                {
+                    int formal = u.ParameterCount - 1;
+                    bool newTarget = node.Int2 != 0 && u.Bytecode.IncomingNewTargetOrGeneratorRegister.IsValid;
+                    if (u.EagerFrame || node.Int0 > formal || formal > MaglevFastCalls.kMaxArity || newTarget) excluded.Add(u);
+                    else units.Add(u);
+                }
+                if (node.Unit is not { IsInline: true } unit) continue;
+                switch (node.Opcode)
+                {
+                    case Opcode.LoadRegister:
+                    case Opcode.SetCurrentContext:
+                    case Opcode.LoadGeneratorField:
+                    case Opcode.StoreGeneratorContinuation:
+                    case Opcode.GeneratorStore:
+                    case Opcode.GeneratorRestoreRegister:
+                        excluded.Add(unit);
+                        break;
+                    case Opcode.StoreRegister when !new Register(node.Int0).IsParameter:
+                        excluded.Add(unit);
+                        break;
+                    case Opcode.CallBuiltin when node.Obj0 is CallBuiltinInfo info && UsesFrameSlots(info):
+                        excluded.Add(unit);
+                        break;
+                    case Opcode.CallKnownJSFunction when node.Obj0 is KnownCallInfo { ArgsFirst.IsValid: true } call && call.Argc >= s_callValues.Length:
+                        excluded.Add(unit);
+                        break;
+                }
+            }
+        }
+        foreach (MaglevCompilationUnit u in units)
+        {
+            if (!excluded.Contains(u)) _lazyUnits.Add(u);
+        }
+
+        static bool UsesFrameSlots(CallBuiltinInfo info)
+        {
+            if (info.RegisterStores.Length != 0) return true;
+            foreach (BuiltinArg arg in info.Args)
+            {
+                if (arg.Kind is BuiltinArgKind.State or BuiltinArgKind.RegisterIndex or BuiltinArgKind.RegisterRef) return true;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Pushes the lazy frame record of an inlined unit: its activation (the
+    /// closure, receiver, arguments, argc) and MaglevCalls.EnterLazyInlinedFrame.
+    /// </summary>
+    void EmitPushLazyInlinedFrame(MaglevCompilationUnit unit)
+    {
+        Node node = unit.EntryNode!;
+        int argc = node.Int0;
+        int formal = unit.ParameterCount - 1;
+        LocalBuilder activation = InlinedActivation(unit);
+        _il.Emit(OpCodes.Ldloca, activation);
+        if (unit.Function is not null) LoadConstantObject(unit.Function, typeof(JSFunction));
+        else LoadAsObject(node.Inputs[argc + 2], typeof(JSFunction));
+        _il.Emit(OpCodes.Stfld, s_activationFunction);
+        _il.Emit(OpCodes.Ldloca, activation);
+        Load(node.Inputs[0], ValueRepresentation.kTagged);
+        _il.Emit(OpCodes.Stfld, s_activationReceiver);
+        for (int i = 0; i < formal; i++)
+        {
+            _il.Emit(OpCodes.Ldloca, activation);
+            if (i < argc) Load(node.Inputs[1 + i], ValueRepresentation.kTagged);
+            else LoadUndefined();
+            _il.Emit(OpCodes.Stfld, s_activationArgs[i]);
+        }
+        _il.Emit(OpCodes.Ldloca, activation);
+        _il.Emit(OpCodes.Ldc_I4, argc);
+        _il.Emit(OpCodes.Stfld, s_activationArgc);
+        _il.Emit(OpCodes.Ldloca, activation);
+        _il.Emit(OpCodes.Ldc_I4_0);
+        _il.Emit(OpCodes.Stfld, s_activationPc);
+        // EnterLazyInlinedFrame(isolate, formal, registers, &activation, isConstruct)
+        _il.Emit(OpCodes.Ldarg_1);
+        _il.Emit(OpCodes.Ldc_I4, formal);
+        _il.Emit(OpCodes.Ldc_I4, unit.RegisterCount);
+        _il.Emit(OpCodes.Ldloca, activation);
+        _il.Emit(OpCodes.Conv_U);
+        _il.Emit(node.Int1 != 0 ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0);
+        _il.Emit(OpCodes.Call, s_enterLazyInlinedFrame);
+    }
+
+    /// <summary>The address of a lazy frame's parameter slot <paramref name="index"/> in its activation.</summary>
+    void LoadActivationSlotAddress(int index) => LoadActivationSlotAddress(_activation!, _fastCallArity, index);
+
+    void LoadActivationSlotAddress(LocalBuilder activation, int formal, int index)
+    {
+        for (int i = 0; i <= formal; i++)
         {
             if (Register.FromParameterIndex(i).Index != index) continue;
-            _il.Emit(OpCodes.Ldloca, _activation!);
+            _il.Emit(OpCodes.Ldloca, activation);
             _il.Emit(OpCodes.Ldflda, i == 0 ? s_activationReceiver : s_activationArgs[i - 1]);
             return;
         }
@@ -3738,6 +3869,15 @@ internal sealed partial class MaglevCodeGenerator
                     {
                         // A lazy frame's closure: the entry's.
                         _il.Emit(OpCodes.Ldarg_2);
+                        if (type == typeof(JSValue)) _il.Emit(OpCodes.Call, s_jsValueFromObject);
+                        else if (type != typeof(JSFunction) && type != typeof(HeapObject) && type != typeof(object)) _il.Emit(OpCodes.Castclass, type);
+                        break;
+                    }
+                    if (_lazyUnits.Contains(node.Unit!))
+                    {
+                        // A lazy inlined frame's closure: its activation's.
+                        _il.Emit(OpCodes.Ldloca, InlinedActivation(node.Unit!));
+                        _il.Emit(OpCodes.Ldfld, s_activationFunction);
                         if (type == typeof(JSValue)) _il.Emit(OpCodes.Call, s_jsValueFromObject);
                         else if (type != typeof(JSFunction) && type != typeof(HeapObject) && type != typeof(object)) _il.Emit(OpCodes.Castclass, type);
                         break;

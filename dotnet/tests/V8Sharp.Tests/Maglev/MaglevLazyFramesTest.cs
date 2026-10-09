@@ -78,6 +78,27 @@ public class MaglevLazyFramesTest
           return out.join();
         })()
         """,
+        // Lazy inlined frames (mid inlined into outer's lazy entry): stack
+        // traces, mid.arguments with a reassigned parameter, a lazy deopt
+        // after the call in the inlined body, exceptions through it.
+        """
+        (function() {
+          var config = { k: 1 };
+          function peek(t) {
+            if (t === 1) return new Error('x').stack.split('\n').slice(1, 5).map(function (s) { return s.trim().replace(/\(.*?:(\d+):(\d+)\)/, '($1:$2)'); }).join('|');
+            if (t === 2) return Array.prototype.join.call(mid.arguments, ',') + ';' + (peek.caller === mid) + ';' + (mid.caller === outer);
+            if (t === 3 && config.k < 3) { config.k++; return 'changed'; }
+            if (t === 4) throw new Error('boom');
+            return 'p' + t;
+          }
+          function mid(t, a) { a = a + 1; var r = peek(t); return r + '/' + a + '/' + config.k; }
+          function outer(t, a) { return mid(t, a) + '#' + a; }
+          function driver(t, a) { try { return outer(t, a); } catch (e) { return 'caught ' + e.message + ' ' + e.stack.split('\n').length; } }
+          var out = [];
+          for (var i = 0; i < 200; i++) out.push(driver(i % 5, i));
+          return out.join('\n');
+        })()
+        """,
         // Deep recursion through lazy frames, and the stack overflow RangeError.
         """
         (function() {
