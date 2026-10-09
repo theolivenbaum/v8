@@ -72,8 +72,14 @@ internal sealed class WasmModuleCompiler
         Isolate isolate = engine.Isolate;
         if (!IsEnabled(isolate)) return;
         ModuleInstance module = instanceObject.Instance;
-        var data = new WasmInstanceData(engine, module, instanceObject.ModuleObject.WireBytes, new WasmModuleCompiler(engine));
+        var data = new WasmInstanceData(engine, module, instanceObject.ModuleObject.WireBytes, new WasmModuleCompiler(engine),
+            instanceObject.ModuleObject.SharedCode);
+        data.AsmJs = instanceObject.ModuleObject.IsAsmJs;
         module.Compiler = data;
+        // The code compiled for earlier instances of the module serves this
+        // one (V8: one NativeModule per module). All of it is installed now:
+        // shared code calls the shared code of its callees directly.
+        data.SharedCode.InstallInto(data);
         if (!isolate.Flags.wasm_lazy_compilation)
         {
             // CompileNativeModule: every function, eagerly.
@@ -126,7 +132,7 @@ internal sealed class WasmModuleCompiler
         {
             Console.Error.WriteLine(result is null
                 ? $"[wasm-compile] function #{code.FunctionIndex} bailed out: {bailout}"
-                : $"[wasm-compile] function #{code.FunctionIndex} compiled");
+                : $"[wasm-compile] function #{code.FunctionIndex} compiled ({instructions} instructions, {code.ILSize} bytes of IL)");
         }
         return result;
     }

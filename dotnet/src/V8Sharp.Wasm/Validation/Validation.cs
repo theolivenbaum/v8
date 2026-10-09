@@ -76,8 +76,11 @@ namespace Wacs.Core.Validation
                 Module.Global.Validator.Validate(global, vctx);
             foreach (var tag in module.Tags)
                 TagType.Validator.Validate(tag, vctx);
-            foreach (var func in module.ValidationFuncs)
-                Module.Function.Validator.Validate(func, vctx);
+            if (_attributes?.SkipFunctionBodies != true)
+            {
+                foreach (var func in module.ValidationFuncs)
+                    Module.Function.Validator.Validate(func, vctx);
+            }
             // V8Sharp: duplicate export names are a validation error (V8's
             // module decoder, "Duplicate export name"); WACS rejected them at
             // instantiation.
@@ -85,7 +88,9 @@ namespace Wacs.Core.Validation
             foreach (var export in module.Exports)
             {
                 Module.Export.Validator.Validate(export, vctx);
-                if (exportNames.TryGetValue(export.Name, out var first))
+                // V8 checks only modules of wasm origin; asm.js modules may export a
+                // name twice (the last export wins).
+                if (!BinaryModuleParser.AsmJsOpcodesAllowed && exportNames.TryGetValue(export.Name, out var first))
                     throw new ValidationException(
                         $"Duplicate export name '{TruncatedUserString(export.Name)}' for {ExportKind(first.Desc)} {ExportIndex(first.Desc)} and {ExportKind(export.Desc)} {ExportIndex(export.Desc)}");
                 exportNames[export.Name] = export;

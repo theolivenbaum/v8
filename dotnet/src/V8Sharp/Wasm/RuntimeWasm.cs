@@ -155,7 +155,7 @@ public static partial class RuntimeWasm
     /// The call_indirect dispatch (V8: the dispatch table load and the
     /// signature check of LiftoffCompiler::CallIndirectImpl).
     /// </summary>
-    public static Delegate ResolveIndirect(long index, int table, int expectedConstant, WasmCode code, int pc)
+    public static Delegate ResolveIndirect(long index, int table, int typeIndex, WasmCode code, int pc)
     {
         WasmInstanceData data = code.Instance!;
         List<Value> elements = data.Tables[table].Elements;
@@ -169,7 +169,7 @@ public static partial class RuntimeWasm
             Trap(MessageTemplate.WasmTrapNullFunc, code, pc);
         }
         WasmCode target = data.Engine.CodeAt(r.GetFuncAddr(data.Module.Types));
-        var expected = (DefType)code.Constants[expectedConstant];
+        DefType expected = data.Module.Types[(TypeIdx)(uint)typeIndex];
         if (!ReferenceEquals(target.LastMatchedType, expected))
         {
             bool matches = target.DefType is { } actual

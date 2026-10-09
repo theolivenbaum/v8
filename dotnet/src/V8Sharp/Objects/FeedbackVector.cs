@@ -1151,6 +1151,8 @@ public static class JSFunctionFeedback
     /// <summary>JSFunction::EnsureClosureFeedbackCellArray.</summary>
     public static void EnsureClosureFeedbackCellArray(Isolate isolate, JSFunction function)
     {
+        // V8 14.7: asm.js modules translated to wasm have no feedback.
+        if (function.Shared.HasAsmWasmData) return;
         if (function.RawFeedbackCell.Value is ClosureFeedbackCellArray or FeedbackVector) return;
 
         // Many closure cell is used as a way to specify that there is no
@@ -1176,6 +1178,9 @@ public static class JSFunctionFeedback
     public static FeedbackVector EnsureFeedbackVector(Isolate isolate, JSFunction function)
     {
         if (function.RawFeedbackCell.Value is FeedbackVector existing) return existing;
+        // V8 14.7: asm.js modules translated to wasm have no feedback vector
+        // (V8 returns without one; the callers of V8Sharp's expect a vector).
+        if (function.Shared.HasAsmWasmData) return FeedbackVector.New(isolate, function.Shared, Objects.ClosureFeedbackCellArray.Empty, new FeedbackCell());
         return CreateAndAttachFeedbackVector(isolate, function);
     }
 
@@ -1192,6 +1197,12 @@ public static class JSFunctionFeedback
     /// <summary>JSFunction::InitializeFeedbackCell.</summary>
     public static void InitializeFeedbackCell(Isolate isolate, JSFunction function, bool resetBudgetForFeedbackAllocation)
     {
+        // The following checks ensure that the feedback vectors are compatible with
+        // the feedback metadata. For Asm / Wasm functions we never allocate / use
+        // feedback vectors, so a mismatch between the metadata and feedback vector is
+        // harmless. The checks could fail for functions that has has_asm_wasm_broken
+        // set at runtime (for ex: failed instantiation). (V8 14.7)
+        if (function.Shared.HasAsmWasmData) return;
         if (HasFeedbackVector(function)) return;
         bool hasClosureFeedbackCellArray = HasClosureFeedbackCellArray(function);
         bool needsFeedbackVector = !isolate.Flags.lazy_feedback_allocation ||

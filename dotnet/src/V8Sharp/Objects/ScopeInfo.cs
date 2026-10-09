@@ -42,6 +42,8 @@ public sealed partial class ScopeInfo : HeapObject
     const int IsWrappedFunctionShift = 28;
     const int HasContextCellsShift = 29;
     const int IsHoistedInContextShift = 30;
+    // V8 14.7's IsAsmModuleBit (removed from this tree with asm.js).
+    const int IsAsmModuleShift = 31;
 
     /// <summary>The packed ScopeFlags.</summary>
     public uint Flags;
@@ -113,6 +115,8 @@ public sealed partial class ScopeInfo : HeapObject
     public bool IsWrappedFunctionScope { get => Bit(IsWrappedFunctionShift); set => SetBit(IsWrappedFunctionShift, value); }
     public bool HasContextCells { get => Bit(HasContextCellsShift); set => SetBit(HasContextCellsShift, value); }
     public bool IsHoistedInContext { get => Bit(IsHoistedInContextShift); set => SetBit(IsHoistedInContextShift, value); }
+    /// <summary>ScopeInfo::IsAsmModule (V8 14.7).</summary>
+    public bool IsAsmModule { get => Bit(IsAsmModuleShift); set => SetBit(IsAsmModuleShift, value); }
 
     public void MarkSomeContextHasExtension() => SomeContextHasExtension = true;
 
@@ -185,6 +189,7 @@ public sealed partial class ScopeInfo : HeapObject
             type == ScopeType.WITH_SCOPE || type == ScopeType.CLASS_SCOPE ||
             (type == ScopeType.BLOCK_SCOPE && SloppyEvalCanExtendVars && IsDeclarationScope) ||
             (type == ScopeType.FUNCTION_SCOPE && SloppyEvalCanExtendVars) ||
+            (type == ScopeType.FUNCTION_SCOPE && IsAsmModule) ||
             type == ScopeType.MODULE_SCOPE;
         if (!hasContext) return 0;
         return ContextHeaderLength() + contextLocals + (functionNameContextSlot ? 1 : 0);

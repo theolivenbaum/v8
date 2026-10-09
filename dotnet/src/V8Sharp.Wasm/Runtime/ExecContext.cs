@@ -446,8 +446,13 @@ namespace Wacs.Core.Runtime
                 var (compiled, index, _) = merged[i];
                 if (compiled)
                 {
+                    // V8Sharp: compiled code records its pc relative to its
+                    // function (one method serves every instance of a module);
+                    // the frame's pc is in the instance's linked instructions.
                     int pc = CompiledFrames.Pc[index];
-                    frames[idx] = new WasmStackFrame((uint)CompiledFrames.Func[index], null, -1, pc);
+                    int func = CompiledFrames.Func[index];
+                    if (pc >= 0 && Store[new FuncAddr(func)] is FunctionInstance linked) pc += linked.LinkedOffset;
+                    frames[idx] = new WasmStackFrame((uint)func, null, -1, pc);
                     continue;
                 }
                 var frame = wacs[index];

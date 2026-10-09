@@ -491,6 +491,13 @@ public sealed partial class FlagList
     public bool print_wasm_code = false;
     public int print_wasm_code_function_index = unchecked((int)(-1));
     public bool print_wasm_stub_code = false;
+    // V8 14.7's asm.js flags (this tree's V8 removed asm.js; deviations.md "asm.js").
+    public bool validate_asm = true;
+    public bool suppress_asm_messages = false;
+    public bool trace_asm_time = false;
+    public bool trace_asm_scanner = false;
+    public bool trace_asm_parser = false;
+    public bool stress_validate_asm = false;
     public bool wasm_lazy_compilation = true;
     public bool trace_wasm_lazy_compilation = false;
     public bool wasm_code_gc = true;
@@ -1549,6 +1556,12 @@ public sealed partial class FlagList
             case "print_wasm_code": if (!ParseBool(value, negated, out bool b_print_wasm_code)) return false; print_wasm_code = b_print_wasm_code; _explicitlySet.Add("print_wasm_code"); return true;
             case "print_wasm_code_function_index": if (negated || !ParseInt(value, out int v_print_wasm_code_function_index)) return false; print_wasm_code_function_index = v_print_wasm_code_function_index; _explicitlySet.Add("print_wasm_code_function_index"); return true;
             case "print_wasm_stub_code": if (!ParseBool(value, negated, out bool b_print_wasm_stub_code)) return false; print_wasm_stub_code = b_print_wasm_stub_code; _explicitlySet.Add("print_wasm_stub_code"); return true;
+            case "validate_asm": if (!ParseBool(value, negated, out bool b_validate_asm)) return false; validate_asm = b_validate_asm; _explicitlySet.Add("validate_asm"); return true;
+            case "suppress_asm_messages": if (!ParseBool(value, negated, out bool b_suppress_asm_messages)) return false; suppress_asm_messages = b_suppress_asm_messages; _explicitlySet.Add("suppress_asm_messages"); return true;
+            case "trace_asm_time": if (!ParseBool(value, negated, out bool b_trace_asm_time)) return false; trace_asm_time = b_trace_asm_time; _explicitlySet.Add("trace_asm_time"); return true;
+            case "trace_asm_scanner": if (!ParseBool(value, negated, out bool b_trace_asm_scanner)) return false; trace_asm_scanner = b_trace_asm_scanner; _explicitlySet.Add("trace_asm_scanner"); return true;
+            case "trace_asm_parser": if (!ParseBool(value, negated, out bool b_trace_asm_parser)) return false; trace_asm_parser = b_trace_asm_parser; _explicitlySet.Add("trace_asm_parser"); return true;
+            case "stress_validate_asm": if (!ParseBool(value, negated, out bool b_stress_validate_asm)) return false; stress_validate_asm = b_stress_validate_asm; _explicitlySet.Add("stress_validate_asm"); return true;
             case "wasm_lazy_compilation": if (!ParseBool(value, negated, out bool b_wasm_lazy_compilation)) return false; wasm_lazy_compilation = b_wasm_lazy_compilation; _explicitlySet.Add("wasm_lazy_compilation"); return true;
             case "trace_wasm_lazy_compilation": if (!ParseBool(value, negated, out bool b_trace_wasm_lazy_compilation)) return false; trace_wasm_lazy_compilation = b_trace_wasm_lazy_compilation; _explicitlySet.Add("trace_wasm_lazy_compilation"); return true;
             case "wasm_code_gc": if (!ParseBool(value, negated, out bool b_wasm_code_gc)) return false; wasm_code_gc = b_wasm_code_gc; _explicitlySet.Add("wasm_code_gc"); return true;
@@ -2191,6 +2204,7 @@ public sealed partial class FlagList
             case "wasm_merged_descriptors": case "wasm_opt": case "wasm_bounds_checks": case "wasm_stack_checks": case "wasm_enforce_bounds_checks": case "wasm_math_intrinsics":
             case "wasm_inlining": case "wasm_inlining_ignore_call_counts": case "trace_wasm_inlining": case "trace_wasm_typer": case "trace_wasm_simd_shuffle": case "wasm_inlining_call_indirect":
             case "wasm_bulkmem_inlining": case "wasm_loop_unrolling": case "wasm_random_rescheduling": case "wasm_loop_peeling": case "trace_wasm_loop_peeling": case "wasm_fuzzer_gen_test":
+            case "validate_asm": case "suppress_asm_messages": case "trace_asm_time": case "trace_asm_scanner": case "trace_asm_parser": case "stress_validate_asm":
             case "print_wasm_code": case "print_wasm_stub_code": case "wasm_lazy_compilation": case "trace_wasm_lazy_compilation": case "wasm_code_gc": case "trace_wasm_code_gc":
             case "stress_wasm_code_gc": case "stress_wasm_memory_moving": case "flush_liftoff_code": case "stress_branch_hinting": case "trace_wasm": case "wasm_gdb_remote":
             case "wasm_pause_waiting_for_debugger": case "trace_wasm_gdb_remote": case "trace_wasm_instances": case "trace_wasm_revectorize": case "wasm_memory64_trap_handling": case "wasm_jitless":
@@ -2357,6 +2371,7 @@ public sealed partial class FlagList
             case "wasm_inlining_max_size": case "wasm_inlining_factor": case "wasm_inlining_min_budget": case "wasm_inlining_ignore_call_counts": case "trace_wasm_inlining": case "trace_wasm_typer":
             case "trace_wasm_simd_shuffle": case "wasm_inlining_call_indirect": case "wasm_bulkmem_inlining": case "wasm_loop_unrolling": case "wasm_random_rescheduling": case "wasm_loop_peeling":
             case "wasm_loop_peeling_max_size": case "trace_wasm_loop_peeling": case "wasm_fuzzer_gen_test": case "print_wasm_code": case "print_wasm_code_function_index": case "print_wasm_stub_code":
+            case "validate_asm": case "suppress_asm_messages": case "trace_asm_time": case "trace_asm_scanner": case "trace_asm_parser": case "stress_validate_asm":
             case "wasm_lazy_compilation": case "trace_wasm_lazy_compilation": case "wasm_code_gc": case "trace_wasm_code_gc": case "stress_wasm_code_gc": case "wasm_max_initial_code_space_reservation":
             case "stress_wasm_memory_moving": case "flush_liftoff_code": case "stress_branch_hinting": case "wasm_max_module_size": case "wasm_disassembly_max_mb": case "wasm_capi_thread_pool_size":
             case "trace_wasm": case "wasm_gdb_remote": case "wasm_gdb_remote_port": case "wasm_pause_waiting_for_debugger": case "trace_wasm_gdb_remote": case "trace_wasm_instances":
@@ -2706,6 +2721,8 @@ public sealed partial class FlagList
             if (wasm_pgo_to_file && single_threaded != false) { single_threaded = false; changed = true; }
             if (wasm_pgo_from_file && developer_only_features != true) { developer_only_features = true; changed = true; }
             if (jitless && wasm_lazy_compilation != false) { wasm_lazy_compilation = false; changed = true; }
+            if (jitless && validate_asm != false) { validate_asm = false; changed = true; }
+            if (disable_optimizing_compilers && validate_asm != false) { validate_asm = false; changed = true; }
             if (wasm_fast_api && experimental != true) { experimental = true; changed = true; }
             if (wasm_assert_types && experimental != true) { experimental = true; changed = true; }
             if (wasm_deopt && experimental != true) { experimental = true; changed = true; }

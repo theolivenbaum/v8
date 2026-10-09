@@ -113,6 +113,14 @@ public sealed partial class Isolate
     /// <summary>Isolate::error_message_param (used by DataView builtins' stack names).</summary>
     public int ErrorMessageParam;
 
+    /// <summary>
+    /// The embedder's message listener for messages of the levels other than
+    /// errors (v8::Isolate::AddMessageListenerWithErrorLevel): d8 prints them
+    /// as "file:line: message". Uncaught exceptions are reported by the
+    /// embedder's own exception handling.
+    /// </summary>
+    public Action<Isolate, JSMessageObject>? MessageListener;
+
     /// <summary>Isolate::console_delegate (v8::debug::SetConsoleDelegate); null: console calls do nothing.</summary>
     public Builtins.ConsoleDelegate? ConsoleDelegate;
 
@@ -759,8 +767,18 @@ public sealed partial class Isolate
         /// <summary>CallSiteBuilder::AppendWasmFrame (wasm frames bypass the frame filters).</summary>
         public void AppendWasmFrame(in Wasm.WasmStackTraces.Frame frame, JSFunction wrapper)
         {
-            _elements.Add(new CallSiteInfo(frame.Instance, wrapper, frame.Offset,
-                CallSiteInfo.kIsWasm | CallSiteInfo.kIsSourcePositionComputed)
+            int flags = CallSiteInfo.kIsWasm | CallSiteInfo.kIsSourcePositionComputed;
+            int position = frame.Offset;
+            Wasm.WasmModuleObject module = frame.Instance.ModuleObject;
+            if (module.IsAsmJs)
+            {
+                // V8 14.7: an asm.js frame shows its JavaScript source position.
+                flags |= CallSiteInfo.kIsAsmJsWasm;
+                if (frame.AtNumberConversion) flags |= CallSiteInfo.kIsAsmJsAtNumberConversion;
+                position = Wasm.WasmStackTraces.GetAsmJsSourcePosition(module, frame.FunctionIndex, frame.BodyOffset,
+                    frame.AtNumberConversion);
+            }
+            _elements.Add(new CallSiteInfo(frame.Instance, wrapper, position, flags)
             {
                 WasmFunctionIndex = frame.FunctionIndex,
             });

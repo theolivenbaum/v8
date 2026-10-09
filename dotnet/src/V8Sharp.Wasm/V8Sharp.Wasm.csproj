@@ -16,6 +16,12 @@
     <None Include="LICENSE;NOTICE;README.md;Compilation/*.md" />
   </ItemGroup>
 
+  <!-- V8Sharp: V8's asm.js opcodes (Instructions/AsmJs.cs) use V8's Math
+       functions and number conversions (V8Sharp.Base has no dependencies). -->
+  <ItemGroup>
+    <ProjectReference Include="../V8Sharp.Base/V8Sharp.Base.csproj" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="V8Sharp" />
     <InternalsVisibleTo Include="V8Sharp.Wasm.Tests" />

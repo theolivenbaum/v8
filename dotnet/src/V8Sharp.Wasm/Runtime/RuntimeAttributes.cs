@@ -27,6 +27,14 @@ namespace Wacs.Core.Runtime
         public bool AllowMixedExceptionHandling { get; set; }
 
         /// <summary>
+        /// V8Sharp: the function bodies were validated when these wire
+        /// bytes were first decoded; a module decoded again from them (one
+        /// per instance, as instances link their instructions in place)
+        /// skips validating the bodies again.
+        /// </summary>
+        public bool SkipFunctionBodies { get; set; }
+
+        /// <summary>
         /// Backend for <c>memory.atomic.wait*</c> / <c>memory.atomic.notify</c>
         /// from the WebAssembly threads proposal. Defaults to
         /// <see cref="NotSupportedPolicy"/> when the runtime detects a
