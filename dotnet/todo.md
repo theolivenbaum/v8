@@ -447,7 +447,20 @@ Design and every deviation: deviations.md, "WebAssembly".
       every entry (about 1 ns per call); splitting functions over about 60 KB
       of IL, which RyuJIT compiles with MinOpts (inlining stops at 30 KB of
       IL so as not to push a method there).
-      Speed: see "Inlining speed" below.
+      Speed (2026-10-09, bench-session.sh, parity publishes of main aea50a9d
+      and this branch, 3 interleaved runs, warm; fingerprint: Xeon 2.8 GHz,
+      load 2.0, steal 0%, cpu-cal 2086/1842 ms, mem-bw 18.6/19.4 GB/s):
+      micro:wasm main -> inlining (v8:jit): WasmCalls 195 -> 1712 (8963,
+      2.2% -> 19%), WasmFib 681 -> 1531 (2919, 23% -> 52%), WasmLoop 942 ->
+      911, WasmFloat 955 -> 883, WasmJSCalls 37 -> 39 (unchanged within
+      noise), WasmMemory 4049 -> 3315 (6317; runs 4402/3466/4280 vs
+      3856/3338/2752: the loops' machine code is the same but for register
+      names, so this is open, not explained); octane-quick zlib 2710 -> 2615
+      and Mandreel 457 -> 496 (noise; their hot functions are large and
+      call little). Indicative ns per operation (shell, not under the lock):
+      a loop calling a 1-instruction function 5.0 -> 0.62 ns (the empty loop
+      is 0.61), through call_indirect 8.5 -> 3.75 (inline cache) -> 2.4
+      (speculatively inlined), recursive fib 5.7 -> 2.2 ns per call.
 - [ ] Validation message texts: V8 names the operand and the instruction
       that produced it ("expected type i32, found local.get of type i64");
       WACS's validator does not track producers. Some mjsunit
