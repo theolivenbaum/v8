@@ -447,6 +447,25 @@ namespace Wacs.Core.Runtime
                 if (compiled)
                 {
                     int pc = CompiledFrames.Pc[index];
+                    if (CompiledFrames.InlinedAt(pc) is { } inlined)
+                    {
+                        // V8Sharp: the frames of functions inlined into this
+                        // one come first (V8 shows inlined frames too).
+                        int count = inlined.Funcs.Length;
+                        System.Array.Resize(ref frames, frames.Length + count - (inlined.ReplacesFrame ? 1 : 0));
+                        for (int k = 0; k < count; k++, idx++)
+                        {
+                            // A function inlined for a tail call stands for the frame it replaced.
+                            bool own = inlined.ReplacesFrame && k == count - 1;
+                            frames[idx] = new WasmStackFrame((uint)inlined.Funcs[k], null, -1, inlined.Pcs[k], inlined: !own);
+                        }
+                        if (inlined.ReplacesFrame)
+                        {
+                            idx--;
+                            continue;
+                        }
+                        pc = inlined.FramePc;
+                    }
                     frames[idx] = new WasmStackFrame((uint)CompiledFrames.Func[index], null, -1, pc);
                     continue;
                 }

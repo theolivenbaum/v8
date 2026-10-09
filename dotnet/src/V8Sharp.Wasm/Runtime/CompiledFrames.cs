@@ -91,6 +91,60 @@ namespace Wacs.Core.Runtime
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void PopSegments(int count) => _segCount = count;
 
+        // Inlined positions (V8: the inlining positions of source positions
+        // in optimized code). A frame whose pc is at or below InlinedPcBase is
+        // in code inlined into it: entry InlinedPcBase - pc names the inlined
+        // frames, innermost first, and the frame's own pc (its call site).
+        public const int InlinedPcBase = -16;
+
+        /// <summary>
+        /// An inlined position: the inlined frames (innermost first) and the
+        /// physical frame's pc, or, when the function was inlined for a tail
+        /// call of the physical frame's function, no pc: the outermost
+        /// inlined frame replaces that frame.
+        /// </summary>
+        public sealed class InlinedPosition
+        {
+            public readonly int[] Funcs;
+            public readonly int[] Pcs;
+            public readonly int FramePc;
+            public readonly bool ReplacesFrame;
+
+            public InlinedPosition(int[] funcs, int[] pcs, int framePc, bool replacesFrame = false)
+            {
+                Funcs = funcs;
+                Pcs = pcs;
+                FramePc = framePc;
+                ReplacesFrame = replacesFrame;
+            }
+        }
+
+        InlinedPosition[] _inlined = new InlinedPosition[16];
+        int _inlinedCount;
+        readonly object _inlinedLock = new();
+
+        /// <summary>Registers an inlined position and returns the pc that names it.</summary>
+        public int AddInlinedPosition(InlinedPosition position)
+        {
+            lock (_inlinedLock)
+            {
+                if (_inlinedCount == _inlined.Length) Array.Resize(ref _inlined, _inlinedCount * 2);
+                _inlined[_inlinedCount] = position;
+                return InlinedPcBase - _inlinedCount++;
+            }
+        }
+
+        /// <summary>The inlined position a pc names, or null for an ordinary pc.</summary>
+        public InlinedPosition? InlinedAt(int pc)
+        {
+            if (pc > InlinedPcBase) return null;
+            int index = InlinedPcBase - pc;
+            lock (_inlinedLock)
+            {
+                return index < _inlinedCount ? _inlined[index] : null;
+            }
+        }
+
         public Value[] EnsureReturns(int count)
         {
             if (Returns.Length < count) Returns = new Value[Math.Max(count, Returns.Length * 2)];
