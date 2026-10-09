@@ -890,6 +890,13 @@ public static class MaglevBuiltins
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void HandleInterruptsSlow(Isolate isolate) => isolate.StackGuard.HandleInterrupts();
 
+    /// <summary>The global proxy of a function's native context (the receiver a sloppy callee sees for undefined).</summary>
+    /// <summary>The context of a function (a closure of a feedback cell inlined: its frame's context).</summary>
+    public static JSValue ContextOfFunction(JSValue function) => ((JSFunction)function._obj!).Context;
+
+    public static JSValue GlobalProxyOfFunction(JSValue function) =>
+        ((JSFunction)function._obj!).Context.NativeContext.GlobalProxyObject;
+
     public static void Unreachable() => throw new InvalidOperationException("V8Sharp: unreachable Maglev code");
 
     // ---- Inlined frames ------------------------------------------------------------------------------------

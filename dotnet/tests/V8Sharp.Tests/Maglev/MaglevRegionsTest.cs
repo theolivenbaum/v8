@@ -52,7 +52,7 @@ public class MaglevRegionsTest
             foreach (TheoryData<string> data in new[]
                      {
                          MaglevCompilerTest.Snippets, MaglevBuiltinReductionTest.Snippets, MaglevCallsTest.Snippets,
-                         MaglevCallsTest.FramelessSnippets, MaglevCodeQualityTest.Snippets, MaglevCodeQualityTest.LoadEliminationSnippets,
+                         MaglevCallsTest.FramelessSnippets, MaglevCallsTest.FeedbackCellSnippets, MaglevCodeQualityTest.Snippets, MaglevCodeQualityTest.LoadEliminationSnippets,
                          MaglevCodeQualityTest.FieldRepresentationSnippets, MaglevCodeQualityTest.StoreSnippets,
                          MaglevCodeQualityTest.IndexSnippets, MaglevCodeQualityTest.LoopPeelingSnippets, MaglevInliningTest.Snippets,
                          MaglevTypesTest.PrototypeChainSnippets, MaglevTypesTest.PhiTypeSnippets, Snippets,

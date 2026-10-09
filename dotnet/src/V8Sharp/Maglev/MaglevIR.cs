@@ -242,6 +242,12 @@ public enum Opcode : ushort
     CheckString,
     CheckSymbol,
     CheckValue,
+    /// <summary>
+    /// The input is a JSFunction whose feedback cell is Obj0 (V8:
+    /// CheckJSFunction, LoadTaggedField of the feedback cell and
+    /// CheckValue, one node here).
+    /// </summary>
+    CheckJSFunctionFeedbackCell,
     CheckInt32IsSmi,
     CheckInt32Condition,
     CheckNotHole,
@@ -716,7 +722,15 @@ public sealed class CallBuiltinInfo(MethodInfo method, BuiltinArg[] args, string
 /// </summary>
 public sealed class KnownCallInfo
 {
-    public JSFunction Target = null!;
+    /// <summary>The callee, when it is a constant (null: the input <see cref="TargetInput"/>).</summary>
+    public JSFunction? Target;
+    /// <summary>
+    /// The input holding the callee when it is not a constant (a closure of a
+    /// feedback cell, checked by CheckJSFunctionFeedbackCell), or -1.
+    /// </summary>
+    public int TargetInput = -1;
+    /// <summary>The input holding the converted receiver when <see cref="HasConvertedReceiver"/>.</summary>
+    public int ConvertedReceiverInput = -1;
     public FeedbackVector Vector = null!;
     /// <summary>The arity of the callee's direct entry (MaglevCode.FastCallArity).</summary>
     public int FormalCount;

@@ -1354,7 +1354,9 @@ internal sealed partial class MaglevCodeGenerator
                     InliningDepth = unit.InliningDepth,
                     Argc = unit.Argc,
                     IsConstruct = unit.IsConstruct,
-                    Function = unit.Function ?? _info.Function,
+                    Function = unit.IsInline ? unit.Function : unit.Function ?? _info.Function,
+                    ClosureScratchSlot = unit.IsInline && unit.Function is null ? SpillSlot(f.Closure) : -1,
+                    Shared = unit.SharedFunctionInfo,
                     Bytecode = unit.Bytecode,
                     FeedbackVector = unit.Feedback,
                     BytecodeOffset = f.BytecodeOffset,
@@ -1365,6 +1367,7 @@ internal sealed partial class MaglevCodeGenerator
                     IsConstant = isConstant,
                     ScratchSlots = slots,
                 };
+                if (data[i].ClosureScratchSlot >= 0) spill.Add(f.Closure);
             }
             if (kind == DeoptimizeKind.kLazy && info is LazyDeoptInfo lazy)
             {
@@ -2056,6 +2059,21 @@ internal sealed partial class MaglevCodeGenerator
                 Call(nameof(MaglevBuiltins.ValueEqualsString));
                 DeoptIfFalse(node);
                 return;
+            case Opcode.CheckJSFunctionFeedbackCell:
+            {
+                Label exit = EagerExit(node.EagerDeoptInfo!);
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                _il.Emit(OpCodes.Ldfld, s_obj);
+                _il.Emit(OpCodes.Isinst, typeof(JSFunction));
+                _il.Emit(OpCodes.Stloc, _tmpObject);
+                _il.Emit(OpCodes.Ldloc, _tmpObject);
+                _il.Emit(OpCodes.Brfalse, exit);
+                _il.Emit(OpCodes.Ldloc, _tmpObject);
+                _il.Emit(OpCodes.Ldfld, s_rawFeedbackCell);
+                LoadConstantObject(node.Obj0, typeof(FeedbackCell));
+                _il.Emit(OpCodes.Bne_Un, exit);
+                return;
+            }
             case Opcode.CheckValue:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 _il.Emit(OpCodes.Ldfld, s_obj);
@@ -2838,7 +2856,9 @@ internal sealed partial class MaglevCodeGenerator
         StoreBytecodeOffset(node);
         // fp = EnterInlinedFrame(isolate, function, bytecode, argc, isConstruct)
         _il.Emit(OpCodes.Ldarg_1);
-        LoadConstantObject(unit.Function, typeof(JSFunction));
+        // (An inlined closure of a feedback cell: the closure input of EnterInlinedFrame.)
+        if (unit.Function is not null) LoadConstantObject(unit.Function, typeof(JSFunction));
+        else LoadAsObject(node.Inputs[argc + 2], typeof(JSFunction));
         LoadConstantObject(unit.Bytecode, typeof(BytecodeArray));
         LoadConstantObject(unit.Feedback, typeof(FeedbackVector));
         _il.Emit(OpCodes.Ldc_I4, argc);
@@ -2884,6 +2904,7 @@ internal sealed partial class MaglevCodeGenerator
 
     static readonly FieldInfo s_vectorMaglevCode = typeof(FeedbackVector).GetField(nameof(FeedbackVector.MaglevCode))!;
     static readonly FieldInfo s_codeFastCall = typeof(MaglevCode).GetField(nameof(MaglevCode.FastCall))!;
+    static readonly FieldInfo s_rawFeedbackCell = typeof(JSFunction).GetField(nameof(JSFunction.RawFeedbackCell))!;
     static readonly FieldInfo s_codeFastCallArity = typeof(MaglevCode).GetField(nameof(MaglevCode.FastCallArity))!;
     static readonly MethodInfo s_unsafeAs = typeof(Unsafe).GetMethods()
         .First(m => m.Name == nameof(Unsafe.As) && m.GetGenericArguments().Length == 1 && m.GetParameters()[0].ParameterType == typeof(object));
@@ -3312,9 +3333,9 @@ internal sealed partial class MaglevCodeGenerator
         }
         _il.Emit(OpCodes.Ldloc, entry);
         _il.Emit(OpCodes.Ldarg_1);
-        LoadConstantObject(info.Target, typeof(JSFunction));
+        LoadCallTarget(node, info, typeof(JSFunction));
         _il.Emit(OpCodes.Ldc_I4, info.Argc);
-        Load(info.HasConvertedReceiver ? node.Inputs[^1] : node.Inputs[0], ValueRepresentation.kTagged);
+        Load(info.HasConvertedReceiver ? node.Inputs[info.ConvertedReceiverInput] : node.Inputs[0], ValueRepresentation.kTagged);
         for (int i = 0; i < info.FormalCount; i++)
         {
             if (i < info.Argc) Load(node.Inputs[1 + i], ValueRepresentation.kTagged);
@@ -3333,7 +3354,7 @@ internal sealed partial class MaglevCodeGenerator
                 EmitStoreTagged(node.Inputs[1 + i]);
             }
             _il.Emit(OpCodes.Ldarg_1);
-            LoadConstantObject(info.Target, typeof(JSValue));
+            LoadCallTarget(node, info, typeof(JSValue));
             Load(node.Inputs[0], ValueRepresentation.kTagged);
             LoadFp(node.Unit);
             _il.Emit(OpCodes.Ldc_I4, info.ArgsFirst.Index);
@@ -3345,7 +3366,7 @@ internal sealed partial class MaglevCodeGenerator
         else
         {
             _il.Emit(OpCodes.Ldarg_1);
-            LoadConstantObject(info.Target, typeof(JSValue));
+            LoadCallTarget(node, info, typeof(JSValue));
             Load(node.Inputs[0], ValueRepresentation.kTagged);
             for (int i = 0; i < info.Argc; i++) Load(node.Inputs[1 + i], ValueRepresentation.kTagged);
             _il.Emit(OpCodes.Ldc_I4, (int)info.Mode);
@@ -3356,6 +3377,18 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldloc, _callResult);
         Store(v);
         if (node.LazyDeoptInfo is not null) EmitLazyDeoptCheck(node, v);
+    }
+
+    /// <summary>The callee of a CallKnownJSFunction: its constant, or its input (a closure of a feedback cell).</summary>
+    void LoadCallTarget(Node node, KnownCallInfo info, Type type)
+    {
+        if (info.Target is { } target)
+        {
+            LoadConstantObject(target, type);
+            return;
+        }
+        if (type == typeof(JSValue)) Load(node.Inputs[info.TargetInput], ValueRepresentation.kTagged);
+        else LoadAsObject(node.Inputs[info.TargetInput], type);
     }
 
     /// <summary>A CallBuiltin node: register stores, the arguments, the call, the result, the lazy deopt check.</summary>
@@ -3436,7 +3469,20 @@ internal sealed partial class MaglevCodeGenerator
                     _il.Emit(OpCodes.Ldelema, typeof(byte));
                     break;
                 case BuiltinArgKind.Closure:
-                    LoadConstantObject(node.Unit!.Function, type);
+                    if (node.Unit!.Function is not null)
+                    {
+                        LoadConstantObject(node.Unit.Function, type);
+                        break;
+                    }
+                    // An inlined closure of a feedback cell: its frame's closure
+                    // slot (the frame is pushed before any builtin call).
+                    LoadFrameSlotAddress(node.Unit, InterpreterRuntime.kClosureOffset);
+                    _il.Emit(OpCodes.Ldobj, typeof(JSValue));
+                    if (type != typeof(JSValue))
+                    {
+                        _il.Emit(OpCodes.Ldfld, s_obj);
+                        if (type != typeof(HeapObject) && type != typeof(object)) _il.Emit(OpCodes.Castclass, type);
+                    }
                     break;
             }
         }

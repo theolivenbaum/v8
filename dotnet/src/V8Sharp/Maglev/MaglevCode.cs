@@ -55,7 +55,11 @@ public sealed class DeoptFrameData
     /// <summary>Inlined frames: the call's argument count and kind (for pushing the frame at a deopt).</summary>
     public int Argc;
     public bool IsConstruct;
-    public JSFunction Function = null!;
+    /// <summary>The frame's function; null when the closure is a run-time value spilled at <see cref="ClosureScratchSlot"/>.</summary>
+    public JSFunction? Function;
+    /// <summary>The scratch slot of the closure of an inlined closure of a feedback cell, or -1.</summary>
+    public int ClosureScratchSlot = -1;
+    public SharedFunctionInfo Shared = null!;
     public BytecodeArray Bytecode = null!;
     public FeedbackVector? FeedbackVector;
     /// <summary>The offset of the bytecode (its prefix included) the frame is at.</summary>

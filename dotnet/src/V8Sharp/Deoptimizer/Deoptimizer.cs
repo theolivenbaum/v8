@@ -77,12 +77,14 @@ public static class Deoptimizer
         for (int i = 0; i < translation.Length; i++)
         {
             DeoptFrameData f = translation[i];
+            // An inlined closure of a feedback cell: the code spilled it.
+            JSFunction function = f.Function ?? (JSFunction)scratch[f.ClosureScratchSlot].Object;
             bool top = i == translation.Length - 1;
             int recordIndex = baseIndex + f.InliningDepth;
             if (i > 0 && isolate.InterpreterFrameDepth <= recordIndex)
             {
                 // A lazily pushed inlined frame the code had not needed yet.
-                MaglevBuiltins.EnterInlinedFrame(isolate, f.Function, f.Bytecode, f.FeedbackVector, f.Argc, f.IsConstruct);
+                MaglevBuiltins.EnterInlinedFrame(isolate, function, f.Bytecode, f.FeedbackVector, f.Argc, f.IsConstruct);
             }
             ref InterpreterFrameRecord record = ref frames[recordIndex];
             int fp = record.Fp;
@@ -102,8 +104,8 @@ public static class Deoptimizer
                     if (materialize[k] == ArgumentsObjectKind.None) continue;
                     var frameContext = stack[fp + InterpreterRuntime.kContextOffset].As<Context>();
                     materialized = materialize[k] == ArgumentsObjectKind.Mapped
-                        ? InterpreterArguments.NewSloppyArguments(isolate, f.Function, frameContext, fp, InterpreterRuntime.FrameArgc(isolate, fp))
-                        : InterpreterArguments.NewStrictArguments(isolate, f.Function, fp, InterpreterRuntime.FrameArgc(isolate, fp));
+                        ? InterpreterArguments.NewSloppyArguments(isolate, function, frameContext, fp, InterpreterRuntime.FrameArgc(isolate, fp))
+                        : InterpreterArguments.NewStrictArguments(isolate, function, fp, InterpreterRuntime.FrameArgc(isolate, fp));
                     break;
                 }
             }
@@ -131,7 +133,7 @@ public static class Deoptimizer
             context ??= stack[fp + InterpreterRuntime.kContextOffset].As<Context>();
             // The fixed slots of the interpreter frame (the entries wrote them;
             // the frame now runs this translation's function and bytecode).
-            stack[fp + InterpreterRuntime.kClosureOffset] = f.Function;
+            stack[fp + InterpreterRuntime.kClosureOffset] = function;
             stack[fp + InterpreterRuntime.kFeedbackVectorOffset] = f.FeedbackVector is null ? JSValue.Undefined : f.FeedbackVector;
             stack[fp + InterpreterRuntime.kBytecodeArrayOffset] = f.Bytecode;
             record.IsBaseline = false;
@@ -209,6 +211,6 @@ public static class Deoptimizer
         string kind = point.Kind == DeoptimizeKind.kEager ? "deopt-eager" : "deopt-lazy";
         string reason = point.Kind == DeoptimizeKind.kEager ? DeoptimizeReasons.ToString(point.Reason) : "(code invalidated)";
         Console.WriteLine($"[bailout (kind: {kind}, reason: {reason}): begin. deoptimizing {MaglevCompiler.DebugName(code.SharedFunctionInfo)}, " +
-                          $"bytecode offset {top.BytecodeOffset} in {MaglevCompiler.DebugName(top.Function.Shared)}, frames {point.Frames.Length}]");
+                          $"bytecode offset {top.BytecodeOffset} in {MaglevCompiler.DebugName(top.Shared)}, frames {point.Frames.Length}]");
     }
 }

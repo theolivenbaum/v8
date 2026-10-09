@@ -170,6 +170,17 @@ public sealed partial class MaglevGraphBuilder
                 return;
             }
         }
+        else if (!s_noFeedbackCellCalls && feedback.HeapObjectOrNull is FeedbackCell cell && !FeedbackVector.IsCleared(feedback) &&
+                 !ReferenceEquals(cell, FeedbackCell.ManyClosuresCell) && cell.Value is FeedbackVector cellVector &&
+                 callee.Representation == ValueRepresentation.kTagged && !cellVector.SharedFunctionInfo.IsClassConstructor &&
+                 TryBuildCallForFeedbackCell(callee, cell, cellVector, receiver, args, argsFirst, mode, nexus) is { } closureCall)
+        {
+            // BuildCallWithFeedback's FeedbackCell case: the closures of one
+            // CreateClosure site (CheckJSFunction, the feedback cell checked,
+            // TryBuildCallKnownJSFunction).
+            SetAccumulator(closureCall);
+            return;
+        }
         else if (speculate && nexus.IcState() == InlineCacheState.UNINITIALIZED && nexus.GetCallCount() == 0)
         {
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForCall);
@@ -358,9 +369,43 @@ public sealed partial class MaglevGraphBuilder
     /// </summary>
     ValueNode? TryBuildDirectCall(JSFunction target, ValueNode receiver, ValueNode[] args, Register argsFirst, ConvertReceiverMode mode)
     {
-        SharedFunctionInfo shared = target.Shared;
-        if (shared.FunctionData is not BytecodeArray bytecode || shared.HasBuiltinId || shared.IsClassConstructor) return null;
         if (target.RawFeedbackCell.Value is not FeedbackVector vector) return null;
+        return TryBuildDirectCall(target, null, target.Shared, vector, receiver, args, argsFirst, mode);
+    }
+
+    /// <summary>
+    /// The call of a closure of the feedback cell <paramref name="cell"/>
+    /// (any closure of one CreateClosure site): the callee is checked to be a
+    /// JSFunction with that cell, then called as a known function whose code
+    /// is the cell's vector's (V8: TryBuildCallKnownJSFunction with the
+    /// closure's context and the cell's dispatch handle).
+    /// </summary>
+    /// <summary>V8SHARP_MAGLEV_NO_FEEDBACK_CELL_CALLS=1: closures of feedback cells are called generically (for A/B measurements).</summary>
+    static readonly bool s_noFeedbackCellCalls = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_FEEDBACK_CELL_CALLS") == "1";
+
+    /// <summary>V8SHARP_MAGLEV_NO_FEEDBACK_CELL_INLINING=1: closures of feedback cells are called, not inlined.</summary>
+    static readonly bool s_noFeedbackCellInlining = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_FEEDBACK_CELL_INLINING") == "1";
+
+    ValueNode? TryBuildCallForFeedbackCell(ValueNode callee, FeedbackCell cell, FeedbackVector vector, ValueNode receiver,
+        ValueNode[] args, Register argsFirst, ConvertReceiverMode mode, FeedbackNexus? nexus)
+    {
+        SharedFunctionInfo shared = vector.SharedFunctionInfo;
+        if (shared.FunctionData is not BytecodeArray || shared.HasBuiltinId || shared.IsClassConstructor) return null;
+        if (!argsFirst.IsValid && args.Length > 3) return null;
+        AddCheck(Opcode.CheckJSFunctionFeedbackCell, callee, DeoptimizeReason.kWrongFeedbackCell, cell);
+        EnsureType(callee, NodeType.kJSFunction);
+        if (!s_noFeedbackCellInlining && nexus is { } n &&
+            TryBuildInlinedCall(null, shared, vector, callee, receiver, args, mode, n, isConstruct: false, null) is { } inlined)
+        {
+            return inlined;
+        }
+        return TryBuildDirectCall(null, callee, shared, vector, receiver, args, argsFirst, mode);
+    }
+
+    ValueNode? TryBuildDirectCall(JSFunction? target, ValueNode? targetNode, SharedFunctionInfo shared, FeedbackVector vector,
+        ValueNode receiver, ValueNode[] args, Register argsFirst, ConvertReceiverMode mode)
+    {
+        if (shared.FunctionData is not BytecodeArray bytecode || shared.HasBuiltinId || shared.IsClassConstructor) return null;
         int formal = bytecode.ParameterCount - 1;
         if (formal > MaglevFastCalls.kMaxArity) return null;
         // The direct entry's arity (MaglevCodeGenerator.DefineFastCallEntry).
@@ -385,13 +430,22 @@ public sealed partial class MaglevGraphBuilder
             if (mode == ConvertReceiverMode.NullOrUndefined ||
                 receiver.Opcode == Opcode.RootConstant && receiver.ConstantValue().IsNullOrUndefined)
             {
-                inputs.Add(GetConstant(target.Context.NativeContext.GlobalProxyObject));
+                // The global proxy of the callee's native context (a closure's: loaded from it).
+                inputs.Add(target is not null
+                    ? GetConstant(target.Context.NativeContext.GlobalProxyObject)
+                    : CallMaglev("GlobalProxyOfFunction", [targetNode!], [BuiltinArg.In(0)], OpProperties.kNone)!);
                 info.HasConvertedReceiver = true;
+                info.ConvertedReceiverInput = inputs.Count - 1;
             }
             else if (!CheckType(receiver, NodeType.kJSReceiver))
             {
                 info.CheckReceiver = true;
             }
+        }
+        if (target is null)
+        {
+            inputs.Add(targetNode!);
+            info.TargetInput = inputs.Count - 1;
         }
         return AddNewNode(new ValueNode(Opcode.CallKnownJSFunction, ValueRepresentation.kTagged)
         {
@@ -587,15 +641,17 @@ public sealed partial class MaglevGraphBuilder
     // ---- Inlining (BuildInlineFunction) ---------------------------------------------------------------------
 
     /// <summary>Whether <paramref name="target"/> can be inlined here (MaglevGraphBuilder::ShouldInlineCall).</summary>
-    string? ShouldInlineCall(JSFunction target, FeedbackNexus nexus, bool isConstruct)
+    string? ShouldInlineCall(JSFunction target, FeedbackNexus nexus, bool isConstruct) =>
+        ShouldInlineCall(target.Shared, target.RawFeedbackCell.Value as FeedbackVector, nexus, isConstruct);
+
+    string? ShouldInlineCall(SharedFunctionInfo shared, FeedbackVector? vector, FeedbackNexus nexus, bool isConstruct)
     {
         if (!Flags.maglev_inlining) return "inlining disabled";
-        SharedFunctionInfo shared = target.Shared;
         if (shared.FunctionData is not BytecodeArray bytecode) return "no bytecode";
         if (shared.HasBuiltinId || shared.Native) return "builtin";
         // SharedFunctionInfo::GetInlineability: kHasOptimizationDisabled.
         if (MaglevCompiler.OptimizationDisabled(shared)) return "optimization disabled";
-        if (target.RawFeedbackCell.Value is not FeedbackVector) return "no feedback vector";
+        if (vector is null) return "no feedback vector";
         // A worker thread does not materialize a constant pool (MaglevCompilationUnit).
         if (_info.IsConcurrent && bytecode.ConstantPoolValues is null) return "constant pool not materialized";
         if (!isConstruct && shared.IsClassConstructor) return "class constructor";
@@ -683,29 +739,36 @@ public sealed partial class MaglevGraphBuilder
     /// call's result, or null when the call is not inlined.
     /// </summary>
     ValueNode? TryBuildInlinedCall(JSFunction target, ValueNode closure, ValueNode receiver, ValueNode[] args, ConvertReceiverMode mode,
-        FeedbackNexus nexus, bool isConstruct, ValueNode? newTarget)
+        FeedbackNexus nexus, bool isConstruct, ValueNode? newTarget) =>
+        TryBuildInlinedCall(target, target.Shared, target.RawFeedbackCell.Value as FeedbackVector, closure, receiver, args, mode, nexus,
+            isConstruct, newTarget);
+
+    /// <param name="target">The callee, or null for a closure of a feedback cell (<paramref name="closure"/> at run time).</param>
+    ValueNode? TryBuildInlinedCall(JSFunction? target, SharedFunctionInfo shared, FeedbackVector? feedbackVector, ValueNode closure,
+        ValueNode receiver, ValueNode[] args, ConvertReceiverMode mode, FeedbackNexus nexus, bool isConstruct, ValueNode? newTarget)
     {
-        string? reason = ShouldInlineCall(target, nexus, isConstruct);
+        string? reason = ShouldInlineCall(shared, feedbackVector, nexus, isConstruct);
         if (reason is not null)
         {
-            if (_info.IsTracing) Console.WriteLine($"[maglev] not inlining {MaglevCompiler.DebugName(target.Shared)}: {reason}");
+            if (_info.IsTracing) Console.WriteLine($"[maglev] not inlining {MaglevCompiler.DebugName(shared)}: {reason}");
             return null;
         }
-        SharedFunctionInfo shared = target.Shared;
         // The receiver a sloppy callee sees (ConvertReceiver).
         if (!isConstruct && !shared.Native && shared.LanguageMode == Common.LanguageMode.Sloppy)
         {
             if (mode == ConvertReceiverMode.NullOrUndefined ||
                 receiver.Opcode == Opcode.RootConstant && receiver.ConstantValue().IsNullOrUndefined)
             {
-                receiver = GetConstant(target.Context.NativeContext.GlobalProxyObject);
+                receiver = target is not null
+                    ? GetConstant(target.Context.NativeContext.GlobalProxyObject)
+                    : CallMaglev("GlobalProxyOfFunction", [closure], [BuiltinArg.In(0)], OpProperties.kNone)!;
             }
             else if (!CheckType(receiver, NodeType.kJSReceiver))
             {
                 return null;
             }
         }
-        var vector = (FeedbackVector)target.RawFeedbackCell.Value!;
+        FeedbackVector vector = feedbackVector!;
         // The inlined code's calls can observe this frame's parameters.
         FlushDirtyParameters();
         var unit = new MaglevCompilationUnit(_info, target, shared, vector, _unit, _unit.InliningDepth + 1);
@@ -723,14 +786,18 @@ public sealed partial class MaglevGraphBuilder
         ValueNode taggedReceiver = GetTaggedValue(receiver);
         var taggedArgs = new ValueNode[args.Length];
         for (int i = 0; i < args.Length; i++) taggedArgs[i] = GetTaggedValue(args[i]);
-        ValueNode context = GetConstant(target.Context);
+        // A closure of a feedback cell: its context is loaded from it (V8: BuildLoadJSFunctionContext).
+        ValueNode context = target is not null
+            ? GetConstant(target.Context)
+            : CallMaglev("ContextOfFunction", [closure], [BuiltinArg.In(0)], OpProperties.kNone)!;
+        ValueNode closureValue = target is not null ? GetConstant(target) : closure;
         DeoptFrame parentFrame = GetDeoptFrameForInlinedCall();
 
         // EnterInlinedFrame: the callee's interpreter frame (record and register window).
         var enterInputs = new List<ValueNode> { taggedReceiver };
         enterInputs.AddRange(taggedArgs);
         enterInputs.Add(context);
-        enterInputs.Add(GetConstant(target));
+        enterInputs.Add(closureValue);
         if (newTarget is not null) enterInputs.Add(GetTaggedValue(newTarget));
         unit.EntryNode = AddNewNode(new Node(Opcode.EnterInlinedFrame)
         {
@@ -748,7 +815,7 @@ public sealed partial class MaglevGraphBuilder
         unit.EagerFrame = args.Length > unit.Bytecode.ParameterCount - 1;
 
         BasicBlock callBlock = _currentBlock!;
-        var inner = new MaglevGraphBuilder(_info, unit, this, parentFrame, taggedReceiver, taggedArgs, GetConstant(target), context,
+        var inner = new MaglevGraphBuilder(_info, unit, this, parentFrame, taggedReceiver, taggedArgs, closureValue, context,
             isConstruct ? newTarget : null);
         inner._frame.Known = _frame.Known.Clone();
         inner.BuildInlined(callBlock);

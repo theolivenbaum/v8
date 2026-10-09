@@ -481,6 +481,16 @@ for now, to be revisited when the reason goes away.
   (object half non-null, instance type at least FIRST_JS_RECEIVER_TYPE),
   omitted (kOmitHeapObjectCheck) when the input's known type where the node
   is built is a JSReceiver.
+- Calls whose feedback is a FeedbackCell (closures of one CreateClosure
+  site; BuildCallWithFeedback): V8's CheckJSFunction, the load of the
+  closure's feedback cell and CheckValue are one node
+  (CheckJSFunctionFeedbackCell); the closure's context and its native
+  context's global proxy (for a sloppy callee's undefined receiver) are
+  loaded by Maglev builtin calls (`ContextOfFunction`,
+  `GlobalProxyOfFunction`) where V8 loads fields. An inlined closure's deopt
+  frames spill the closure (DeoptFrameData.ClosureScratchSlot) as V8's
+  translation stores the function. `V8SHARP_MAGLEV_NO_FEEDBACK_CELL_CALLS=1`
+  and `V8SHARP_MAGLEV_NO_FEEDBACK_CELL_INLINING=1` turn them off.
 - Region splitting (V8Sharp only, MaglevCodeGenerator.Regions.cs): code
   over RyuJIT's optimization limits (60000 IL bytes, 20000 instructions,
   2000 blocks, 2000 locals, 8000 local references, which make RyuJIT compile

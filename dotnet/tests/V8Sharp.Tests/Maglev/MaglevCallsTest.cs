@@ -262,4 +262,62 @@ public class MaglevCallsTest
             r.join();
             """));
     }
+
+    public static TheoryData<string> FeedbackCellSnippets => new()
+    {
+        // Closures of one CreateClosure site (call feedback is their feedback
+        // cell): checked by cell, inlined with the closure's context, deopts
+        // inside them, Error.stack, a named function expression's self
+        // reference, sloppy receivers, another function at the call site.
+        """
+        (function() {
+          function make(k) {
+            var count = 0;
+            return function self(x) {
+              count++;
+              if (x === 'stack') return new Error('e').stack.split('\n')[1].trim().split(' (')[0];
+              if (x === 'self') return self === fs[k - 1];
+              if (typeof x === 'string') return x + k + count;
+              return x * k + count;
+            };
+          }
+          function makeSloppy(k) { return function (x) { return (this === globalThis) + ':' + (x + k); }; }
+          var fs = [make(1), make(2), make(3)];
+          var gs = [makeSloppy(1), makeSloppy(2)];
+          function run(n, arg) {
+            var out = [];
+            for (var i = 0; i < n; i++) { out.push(fs[i % 3](arg === undefined ? i : arg)); out.push(gs[i & 1](i)); }
+            return out.join(',');
+          }
+          var r = [];
+          for (var k = 0; k < 40; k++) r.push(run(5));
+          r.push(run(3, 'str'), run(3, 1.5), run(3, 'stack'), run(3, 'self'));
+          fs[1] = function (x) { return 'other' + x; };
+          r.push(run(4));
+          return r.join('|');
+        })()
+        """,
+        """
+        (function() {
+          // Closures of one site called through a field, as methods and with apply/call; a closure replaced by another.
+          function Counter(step) { var n = 0; this.next = function () { n += step; return n; }; }
+          var cs = [new Counter(1), new Counter(2), new Counter(3)];
+          function tick(k) { var s = 0; for (var i = 0; i < k; i++) s += cs[i % 3].next(); return s; }
+          var out = [];
+          for (var r = 0; r < 40; r++) out.push(tick(6));
+          cs[2].next = function () { return 'x'; };
+          out.push(tick(6));
+          function adder(a) { return function (b, c) { return a + b + (c === undefined ? 0 : c); }; }
+          var as = [adder(1), adder(10)];
+          function use(i) { var f = as[i & 1]; return f(i) + f.call(null, i, 1) + f.apply(null, [i, 2]); }
+          for (var r = 0; r < 40; r++) out.push(use(r));
+          out.push(use(0.5), use('s'));
+          return out.join(',');
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(FeedbackCellSnippets))]
+    public void FeedbackCellCallsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
 }
