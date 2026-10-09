@@ -1534,3 +1534,45 @@ vendored code carry a `V8Sharp:` comment at the site.
   arithmetic, compact imports, acquire/release atomics, memory control,
   source phase imports of wasm modules, the debugger and profiler hooks
   (`%WasmEnterDebugging` does nothing).
+
+### asm.js (src/V8Sharp/AsmJs, port of V8 14.7's src/asmjs)
+
+- **This tree removed asm.js; V8Sharp keeps V8 14.7's pipeline.** The V8
+  revision in UPSTREAM.md deleted src/asmjs and runs "use asm" modules as
+  ordinary JavaScript. The oracle (V8 14.7.173.23) still validates them and
+  translates them to WebAssembly, and Octane zlib depends on it, so V8Sharp
+  ports 14.7's asm-scanner, asm-types, asm-parser and asm-js, and the parts
+  of wasm-module-builder, the asm.js offset table, module-instantiate and
+  the 0xfa asm opcodes they use. They are hooked in where 14.7 does: "use
+  asm" marks the function scope, the unoptimized compile of a function with
+  an asm module runs AsmJsCompilationJob in place of Ignition, success
+  installs AsmWasmData with the InstantiateAsmJs builtin, and a validation or
+  linking failure falls back to the bytecode, with 14.7's messages and flags
+  (--validate-asm, --suppress-asm-messages, --trace-asm-time/-scanner/-parser,
+  --stress-validate-asm). 14.7's tests run from tests/V8Sharp.AsmJs.Tests/v8-14.7
+  (mjsunit asm/, regress/asm/, wasm/asm-*, asm-directive, message asm-*), and
+  the asm-scanner/asm-types unittests are xUnit facts there.
+- **Ids appended.** The InstantiateAsmJs builtin, the InstantiateAsmJs and
+  IsAsmWasmCode runtime functions and the four asm.js MessageTemplates come
+  after this tree's entries, so this tree's ids (and the bytecode golden
+  files) do not move; 14.7 has them in its alphabetical order.
+- **ScopeInfo bit.** The asm-module flag is a ScopeInfo bit set when the
+  ScopeInfo is created; scope deserialization does not read it back (no lazy
+  inner function of a validated module needs it: the module runs as wasm,
+  and one that failed validation runs as ordinary JS).
+- **Feedback.** A function with AsmWasmData gets no feedback cell array or
+  vector, as in 14.7; EnsureFeedbackVector hands callers that need an object
+  a detached empty vector.
+- **Memory.** V8 makes the module's heap ArrayBuffer the wasm memory's
+  backing store. V8Sharp's linear memory is a managed byte[], so the
+  instance's memory aliases the ArrayBuffer's own byte[]
+  (MemoryInstance.AttachAsmJsBuffer); asm.js memories never grow or detach.
+- **Duplicate exports.** An asm.js module may export one name twice (the
+  later one wins, 14.7's TestBadExportTwice). WACS's validator and
+  instantiation reject duplicate export names; both skip the check for a
+  module translated from asm.js.
+- **Stack positions.** V8 knows a frame is at the number conversion of an
+  import's result from the return address in the wasm-to-JS wrapper;
+  V8Sharp marks the activation while the wrapper converts
+  (WasmEngine.EnterNumberConversion), then maps the body offset through the
+  asm.js offset table to the JavaScript position as 14.7 does.
