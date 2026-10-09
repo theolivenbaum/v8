@@ -1729,12 +1729,41 @@ public sealed partial class MaglevGraphBuilder
         if (CheckType(value, NodeType.kSmi)) return;
         if (value.Representation != ValueRepresentation.kTagged)
         {
-            // An untagged int32 is a Smi only in the Smi range.
-            AddCheck(Opcode.CheckInt32IsSmi, GetInt32(value), DeoptimizeReason.kNotASmi);
+            // An untagged int32 is a Smi only in the Smi range (V8 elides the
+            // check when the value's range is known to be in it).
+            ValueNode int32 = GetInt32(value);
+            if (!IsInSmiRange(int32)) AddCheck(Opcode.CheckInt32IsSmi, int32, DeoptimizeReason.kNotASmi);
             return;
         }
         AddCheck(Opcode.CheckSmi, value, DeoptimizeReason.kNotASmi);
         EnsureType(value, NodeType.kSmi);
+    }
+
+    /// <summary>
+    /// Whether an int32 node is in the Smi range by its static range (the
+    /// ranges of maglev-range.h for constants, masks and shifts): a mask with a
+    /// non-negative constant below 2^30, an arithmetic shift right by at least
+    /// one, a logical shift right by at least two.
+    /// </summary>
+    static bool IsInSmiRange(ValueNode v)
+    {
+        const int kSmiMax = (1 << 30) - 1, kSmiMin = -(1 << 30);
+        if (v.IsConstant) return v.TryGetInt32Constant(out int c) && c >= kSmiMin && c <= kSmiMax;
+        switch (v.Opcode)
+        {
+            case Opcode.Int32BitwiseAnd:
+                foreach (ValueNode input in v.Inputs)
+                {
+                    if (input.IsConstant && input.TryGetInt32Constant(out int mask) && mask >= 0 && mask <= kSmiMax) return true;
+                }
+                return false;
+            case Opcode.Int32ShiftRight:
+                return v.Inputs[1].IsConstant && v.Inputs[1].TryGetInt32Constant(out int sar) && (sar & 31) >= 1;
+            case Opcode.Int32ShiftRightLogical:
+                return v.Inputs[1].IsConstant && v.Inputs[1].TryGetInt32Constant(out int shr) && (shr & 31) >= 2;
+            default:
+                return false;
+        }
     }
 
     /// <summary>BuildCheckNumber.</summary>
