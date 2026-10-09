@@ -341,11 +341,27 @@ namespace Wacs.Core
         /// </summary>
         [ThreadStatic] internal static List<uint>? InstructionOffsetRecorder;
 
+        /// <summary>
+        /// V8Sharp: set while a module translated from asm.js is parsed, whose
+        /// function bodies may use V8's asm.js opcodes (prefix 0xFA).
+        /// </summary>
+        [ThreadStatic] public static bool AsmJsOpcodesAllowed;
+
         public static InstructionBase? ParseInstruction(BinaryReader reader)
         {
             InstructionOffsetRecorder?.Add((uint)reader.BaseStream.Position);
             //Splice another byte if the first byte is a prefix
             var first = (OpCode)reader.ReadByte();
+            if (first == OpCode.FA && AsmJsOpcodesAllowed)
+            {
+                // V8Sharp: V8's asm.js compatibility opcodes, decoded only in
+                // modules translated from asm.js (V8: is_asmjs_module).
+                uint asmIndex = reader.ReadLeb128_u32();
+                var asmOp = (AsmJsCode)asmIndex;
+                if (asmIndex > 0xFF || !InstAsmJs.IsDefined(asmOp))
+                    throw new FormatException($"invalid asmjs opcode: 0xfa{asmIndex:x2}");
+                return new InstAsmJs(asmOp);
+            }
             bool prefixed = first is OpCode.FB or OpCode.FC or OpCode.FD or OpCode.FE;
             uint index = prefixed ? reader.ReadLeb128_u32() : 0;
             var opcode = first switch {

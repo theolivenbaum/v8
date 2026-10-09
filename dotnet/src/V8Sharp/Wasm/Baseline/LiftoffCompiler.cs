@@ -332,7 +332,8 @@ internal sealed partial class LiftoffCompiler
         foreach (InstructionBase inst in _instructions)
         {
             byte op = (byte)inst.Op.x00;
-            if (op is >= 0x28 and <= 0x40)
+            if (op is >= 0x28 and <= 0x40 ||
+                inst is InstAsmJs asm && InstAsmJs.AccessSize(asm.Code) != 0)
             {
                 accessesMemory = true;
                 break;
@@ -1059,6 +1060,9 @@ internal sealed partial class LiftoffCompiler
                 return;
             case 0xd6:
                 BrOnNull((int)ReadU32(), onNull: false);
+                return;
+            case WasmOpcodes.kAsmJsPrefix:
+                AsmJsOp(ReadU32());
                 return;
             case WasmOpcodes.kGCPrefix:
                 GCOp(ReadU32());
