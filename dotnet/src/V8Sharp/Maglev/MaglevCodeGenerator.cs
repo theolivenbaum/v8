@@ -820,9 +820,10 @@ internal sealed partial class MaglevCodeGenerator
         if (_lazyFrame && (node.Unit is null || !node.Unit.IsInline || _lazyUnits.Contains(node.Unit)))
         {
             // A lazy frame's offset is its activation's.
-            _il.Emit(OpCodes.Ldloca, node.Unit is { IsInline: true } unit ? InlinedActivation(unit) : _activation!);
+            LocalBuilder activation = node.Unit is { IsInline: true } unit ? InlinedActivation(unit) : _activation!;
+            _il.Emit(OpCodes.Ldloca, activation);
             _il.Emit(OpCodes.Ldc_I4, node.BytecodeOffset);
-            _il.Emit(OpCodes.Stfld, s_activationPc);
+            _il.Emit(OpCodes.Stfld, AF(activation, "Pc"));
             return;
         }
         // InterpreterRuntime.SetFramePc as IL (a call is not inlined once
@@ -968,6 +969,7 @@ internal sealed partial class MaglevCodeGenerator
                 continue;
             }
             int ilBefore = _il.ILOffset, blocksBefore = _il.BlockBoundaries;
+            _currentNode = node;
             EmitNode(node);
             if (s_ilHistogram is not null)
             {
@@ -3096,22 +3098,18 @@ internal sealed partial class MaglevCodeGenerator
     // contexts) keep the frameful entry.
 
     bool _lazyFrame;
+    Node? _currentNode;
+
+    static string Describe(Node? node) => node is null ? "(prologue or exits)"
+        : node.Opcode + (node.Obj0 is CallBuiltinInfo info ? ":" + info.Method.Name : "") + (node.Unit is { IsInline: true } ? " (inlined)" : "");
     LocalBuilder? _activation;
     LocalBuilder? _lazyStart;
     LocalBuilder? _lazySaved;
 
     static readonly bool s_traceEntries = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_TRACE_ENTRIES") == "1";
     static readonly bool Flags_NoLazyFrames = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_LAZY_FRAMES") == "1";
-    static readonly FieldInfo s_activationFunction = typeof(MaglevActivation).GetField(nameof(MaglevActivation.Function))!;
-    static readonly FieldInfo s_activationReceiver = typeof(MaglevActivation).GetField(nameof(MaglevActivation.Receiver))!;
-    static readonly FieldInfo s_activationPc = typeof(MaglevActivation).GetField(nameof(MaglevActivation.Pc))!;
-    static readonly FieldInfo s_activationArgc = typeof(MaglevActivation).GetField(nameof(MaglevActivation.Argc))!;
-    static readonly FieldInfo[] s_activationArgs =
-    [
-        typeof(MaglevActivation).GetField(nameof(MaglevActivation.A0))!, typeof(MaglevActivation).GetField(nameof(MaglevActivation.A1))!,
-        typeof(MaglevActivation).GetField(nameof(MaglevActivation.A2))!, typeof(MaglevActivation).GetField(nameof(MaglevActivation.A3))!,
-        typeof(MaglevActivation).GetField(nameof(MaglevActivation.A4))!, typeof(MaglevActivation).GetField(nameof(MaglevActivation.A5))!,
-    ];
+    /// <summary>A field of the activation local <paramref name="activation"/> (MaglevActivation.TypeFor).</summary>
+    static FieldInfo AF(LocalBuilder activation, string name) => activation.LocalType.GetField(name)!;
     static readonly FieldInfo s_registerStackTop = typeof(Isolate).GetField(nameof(Isolate.RegisterStackTop))!;
     static readonly MethodInfo s_enterLazyFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.EnterLazyFrame))!;
     static readonly MethodInfo s_deoptimizeLazyFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.DeoptimizeLazyFrame))!;
@@ -3123,10 +3121,10 @@ internal sealed partial class MaglevCodeGenerator
     /// </summary>
     bool IsLazyFrameCandidate()
     {
-        if (_info.IsOsr || _hasCatchBlocks || Flags_NoLazyFrames || Flags_NoFrameless) return false;
+        if (_info.IsOsr || _hasCatchBlocks || Flags_NoLazyFrames || Flags_NoFrameless) return Reject(null);
         BytecodeArray bytecode = _info.Toplevel.Bytecode;
-        if (bytecode.IncomingNewTargetOrGeneratorRegister.IsValid) return false;
-        if (_fastCallArity != bytecode.ParameterCount - 1) return false;
+        if (bytecode.IncomingNewTargetOrGeneratorRegister.IsValid) return Reject(null);
+        if (_fastCallArity != bytecode.ParameterCount - 1) return Reject(null);
         foreach (BasicBlock block in _graph.Blocks)
         {
             if (block.IsDead) continue;
@@ -3138,22 +3136,31 @@ internal sealed partial class MaglevCodeGenerator
                     case Opcode.StoreGeneratorContinuation:
                     case Opcode.GeneratorStore:
                     case Opcode.GeneratorRestoreRegister:
-                        return false;
+                        return Reject(node);
                 }
                 if (node.Unit is { IsInline: true }) continue;
                 switch (node.Opcode)
                 {
                     case Opcode.LoadRegister:
                     case Opcode.SetCurrentContext:
-                        return false;
+                        return Reject(node);
                     case Opcode.StoreRegister when !new Register(node.Int0).IsParameter:
-                        return false;
+                        return Reject(node);
                     case Opcode.CallBuiltin when node.Obj0 is CallBuiltinInfo info && UsesFrame(info):
-                        return false;
+                        return Reject(node);
                 }
             }
         }
         return true;
+
+        bool Reject(Node? node)
+        {
+            if (s_traceEntries && node is not null)
+            {
+                Console.WriteLine($"[maglev lazy entry of {MaglevCompiler.DebugName(_info.Function.Shared)} rejected at {Describe(node)}]");
+            }
+            return false;
+        }
 
         static bool UsesFrame(CallBuiltinInfo info)
         {
@@ -3199,28 +3206,28 @@ internal sealed partial class MaglevCodeGenerator
     /// </summary>
     void EmitLazyPrologue()
     {
-        _activation = _il.DeclareLocal(typeof(MaglevActivation));
+        _activation = _il.DeclareLocal(MaglevActivation.TypeFor(_info.Toplevel.Bytecode.ParameterCount - 1));
         _lazyStart = _il.DeclareLocal(typeof(int));
         _lazySaved = _il.DeclareLocal(typeof(Context));
         BytecodeArray bytecode = _info.Toplevel.Bytecode;
         int formal = bytecode.ParameterCount - 1;
         _il.Emit(OpCodes.Ldloca, _activation);
         _il.Emit(OpCodes.Ldarg_2);
-        _il.Emit(OpCodes.Stfld, s_activationFunction);
+        _il.Emit(OpCodes.Stfld, AF(_activation, "Function"));
         _il.Emit(OpCodes.Ldloca, _activation);
         _il.Emit(OpCodes.Ldarg, (short)4);
-        _il.Emit(OpCodes.Stfld, s_activationReceiver);
+        _il.Emit(OpCodes.Stfld, AF(_activation, "Receiver"));
         for (int i = 0; i < formal; i++)
         {
             _il.Emit(OpCodes.Ldloca, _activation);
             _il.Emit(OpCodes.Ldarg, (short)(5 + i));
-            _il.Emit(OpCodes.Stfld, s_activationArgs[i]);
+            _il.Emit(OpCodes.Stfld, AF(_activation, "A" + i));
         }
         _il.Emit(OpCodes.Ldloca, _activation);
         _il.Emit(OpCodes.Ldarg_3);
         _il.Emit(OpCodes.Ldc_I4, int.MaxValue);
         _il.Emit(OpCodes.And);
-        _il.Emit(OpCodes.Stfld, s_activationArgc);
+        _il.Emit(OpCodes.Stfld, AF(_activation, "Argc"));
         // depth = isolate.InterpreterFrameDepth; start = isolate.RegisterStackTop;
         // saved = EnterLazyFrame(isolate, depth, start, formal, registers, function, &activation, argc)
         _il.Emit(OpCodes.Ldarg_1);
@@ -3263,6 +3270,8 @@ internal sealed partial class MaglevCodeGenerator
 
     readonly HashSet<MaglevCompilationUnit> _lazyUnits = new(ReferenceEqualityComparer.Instance);
     readonly List<LocalBuilder> _inlinedActivations = [];
+    // The most formal parameters of the lazy units at each inlining depth (the size of its activation).
+    readonly Dictionary<int, int> _depthArity = new();
 
     static readonly MethodInfo s_enterLazyInlinedFrame = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.EnterLazyInlinedFrame))!;
     static readonly bool Flags_NoLazyInlinedFrames = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_LAZY_INLINED_FRAMES") == "1";
@@ -3270,7 +3279,11 @@ internal sealed partial class MaglevCodeGenerator
     LocalBuilder InlinedActivation(MaglevCompilationUnit unit)
     {
         int d = unit.InliningDepth;
-        while (_inlinedActivations.Count < d) _inlinedActivations.Add(_il.DeclareLocal(typeof(MaglevActivation)));
+        while (_inlinedActivations.Count < d)
+        {
+            int arity = _depthArity.TryGetValue(_inlinedActivations.Count + 1, out int a) ? a : MaglevFastCalls.kMaxArity;
+            _inlinedActivations.Add(_il.DeclareLocal(MaglevActivation.TypeFor(arity)));
+        }
         return _inlinedActivations[d - 1];
     }
 
@@ -3316,7 +3329,10 @@ internal sealed partial class MaglevCodeGenerator
         }
         foreach (MaglevCompilationUnit u in units)
         {
-            if (!excluded.Contains(u)) _lazyUnits.Add(u);
+            if (excluded.Contains(u)) continue;
+            _lazyUnits.Add(u);
+            int formal = u.ParameterCount - 1;
+            if (!_depthArity.TryGetValue(u.InliningDepth, out int max) || formal > max) _depthArity[u.InliningDepth] = formal;
         }
 
         static bool UsesFrameSlots(CallBuiltinInfo info)
@@ -3343,23 +3359,23 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldloca, activation);
         if (unit.Function is not null) LoadConstantObject(unit.Function, typeof(JSFunction));
         else LoadAsObject(node.Inputs[argc + 2], typeof(JSFunction));
-        _il.Emit(OpCodes.Stfld, s_activationFunction);
+        _il.Emit(OpCodes.Stfld, AF(activation, "Function"));
         _il.Emit(OpCodes.Ldloca, activation);
         Load(node.Inputs[0], ValueRepresentation.kTagged);
-        _il.Emit(OpCodes.Stfld, s_activationReceiver);
+        _il.Emit(OpCodes.Stfld, AF(activation, "Receiver"));
         for (int i = 0; i < formal; i++)
         {
             _il.Emit(OpCodes.Ldloca, activation);
             if (i < argc) Load(node.Inputs[1 + i], ValueRepresentation.kTagged);
             else LoadUndefined();
-            _il.Emit(OpCodes.Stfld, s_activationArgs[i]);
+            _il.Emit(OpCodes.Stfld, AF(activation, "A" + i));
         }
         _il.Emit(OpCodes.Ldloca, activation);
         _il.Emit(OpCodes.Ldc_I4, argc);
-        _il.Emit(OpCodes.Stfld, s_activationArgc);
+        _il.Emit(OpCodes.Stfld, AF(activation, "Argc"));
         _il.Emit(OpCodes.Ldloca, activation);
         _il.Emit(OpCodes.Ldc_I4_0);
-        _il.Emit(OpCodes.Stfld, s_activationPc);
+        _il.Emit(OpCodes.Stfld, AF(activation, "Pc"));
         // EnterLazyInlinedFrame(isolate, formal, registers, &activation, isConstruct)
         _il.Emit(OpCodes.Ldarg_1);
         _il.Emit(OpCodes.Ldc_I4, formal);
@@ -3379,7 +3395,7 @@ internal sealed partial class MaglevCodeGenerator
         {
             if (Register.FromParameterIndex(i).Index != index) continue;
             _il.Emit(OpCodes.Ldloca, activation);
-            _il.Emit(OpCodes.Ldflda, i == 0 ? s_activationReceiver : s_activationArgs[i - 1]);
+            _il.Emit(OpCodes.Ldflda, AF(activation, i == 0 ? "Receiver" : "A" + (i - 1)));
             return;
         }
         throw new FramelessUnsupportedException();
@@ -3419,6 +3435,7 @@ internal sealed partial class MaglevCodeGenerator
         }
         catch (FramelessUnsupportedException)
         {
+            if (s_traceEntries) Console.WriteLine($"[maglev {(lazy ? "lazy" : "frameless")} entry of {MaglevCompiler.DebugName(_info.Function.Shared)} failed at {Describe(generator._currentNode)}]");
             _deoptPoints.RemoveRange(deoptPoints, _deoptPoints.Count - deoptPoints);
             _speculationFeedback.RemoveRange(feedback, _speculationFeedback.Count - feedback);
             return null;
@@ -3896,8 +3913,9 @@ internal sealed partial class MaglevCodeGenerator
                     if (_lazyUnits.Contains(node.Unit!))
                     {
                         // A lazy inlined frame's closure: its activation's.
-                        _il.Emit(OpCodes.Ldloca, InlinedActivation(node.Unit!));
-                        _il.Emit(OpCodes.Ldfld, s_activationFunction);
+                        LocalBuilder unitActivation = InlinedActivation(node.Unit!);
+                        _il.Emit(OpCodes.Ldloca, unitActivation);
+                        _il.Emit(OpCodes.Ldfld, AF(unitActivation, "Function"));
                         if (type == typeof(JSValue)) _il.Emit(OpCodes.Call, s_jsValueFromObject);
                         else if (type != typeof(JSFunction) && type != typeof(HeapObject) && type != typeof(object)) _il.Emit(OpCodes.Castclass, type);
                         break;

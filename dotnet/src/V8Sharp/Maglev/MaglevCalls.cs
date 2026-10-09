@@ -689,15 +689,37 @@ public static class MaglevCalls
 /// when objects move); the record is popped before the method returns
 /// (its epilogue and fault block), so only live activations are read.
 /// </remarks>
+[StructLayout(LayoutKind.Explicit)]
 public struct MaglevActivation
 {
-    public JSFunction Function;
-    public JSValue Receiver;
-    public JSValue A0, A1, A2, A3, A4, A5;
+    [FieldOffset(0)] public JSFunction Function;
     /// <summary>The bytecode offset of the current call or throwing node.</summary>
-    public int Pc;
+    [FieldOffset(8)] public int Pc;
     /// <summary>The actual argument count.</summary>
-    public int Argc;
+    [FieldOffset(12)] public int Argc;
+    [FieldOffset(16)] public JSValue Receiver;
+    [FieldOffset(32)] public JSValue A0;
+    [FieldOffset(48)] public JSValue A1;
+    [FieldOffset(64)] public JSValue A2;
+    [FieldOffset(80)] public JSValue A3;
+    [FieldOffset(96)] public JSValue A4;
+    [FieldOffset(112)] public JSValue A5;
+
+    /// <summary>
+    /// The activation local of a code with <paramref name="arity"/> formal
+    /// parameters: the same layout as this struct, cut after its arguments
+    /// (the prologue zeroes the local, so it takes no more stack than it uses).
+    /// </summary>
+    public static Type TypeFor(int arity) => arity switch
+    {
+        0 => typeof(MaglevActivation0),
+        1 => typeof(MaglevActivation1),
+        2 => typeof(MaglevActivation2),
+        3 => typeof(MaglevActivation3),
+        4 => typeof(MaglevActivation4),
+        5 => typeof(MaglevActivation5),
+        _ => typeof(MaglevActivation),
+    };
 
     /// <summary>The activation at <paramref name="address"/> (a live lazy frame record's).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -729,4 +751,76 @@ public struct MaglevActivation
         for (int i = 0; i < argc; i++) result[i] = Argument(ref a, i);
         return result;
     }
+}
+
+// The activation locals by arity (MaglevActivation.TypeFor): MaglevActivation's
+// layout up to their last argument; the stack walker reads them through
+// MaglevActivation, within their arity.
+[StructLayout(LayoutKind.Explicit)]
+public struct MaglevActivation0
+{
+    [FieldOffset(0)] public JSFunction Function;
+    [FieldOffset(8)] public int Pc;
+    [FieldOffset(12)] public int Argc;
+    [FieldOffset(16)] public JSValue Receiver;
+}
+
+[StructLayout(LayoutKind.Explicit)]
+public struct MaglevActivation1
+{
+    [FieldOffset(0)] public JSFunction Function;
+    [FieldOffset(8)] public int Pc;
+    [FieldOffset(12)] public int Argc;
+    [FieldOffset(16)] public JSValue Receiver;
+    [FieldOffset(32)] public JSValue A0;
+}
+
+[StructLayout(LayoutKind.Explicit)]
+public struct MaglevActivation2
+{
+    [FieldOffset(0)] public JSFunction Function;
+    [FieldOffset(8)] public int Pc;
+    [FieldOffset(12)] public int Argc;
+    [FieldOffset(16)] public JSValue Receiver;
+    [FieldOffset(32)] public JSValue A0;
+    [FieldOffset(48)] public JSValue A1;
+}
+
+[StructLayout(LayoutKind.Explicit)]
+public struct MaglevActivation3
+{
+    [FieldOffset(0)] public JSFunction Function;
+    [FieldOffset(8)] public int Pc;
+    [FieldOffset(12)] public int Argc;
+    [FieldOffset(16)] public JSValue Receiver;
+    [FieldOffset(32)] public JSValue A0;
+    [FieldOffset(48)] public JSValue A1;
+    [FieldOffset(64)] public JSValue A2;
+}
+
+[StructLayout(LayoutKind.Explicit)]
+public struct MaglevActivation4
+{
+    [FieldOffset(0)] public JSFunction Function;
+    [FieldOffset(8)] public int Pc;
+    [FieldOffset(12)] public int Argc;
+    [FieldOffset(16)] public JSValue Receiver;
+    [FieldOffset(32)] public JSValue A0;
+    [FieldOffset(48)] public JSValue A1;
+    [FieldOffset(64)] public JSValue A2;
+    [FieldOffset(80)] public JSValue A3;
+}
+
+[StructLayout(LayoutKind.Explicit)]
+public struct MaglevActivation5
+{
+    [FieldOffset(0)] public JSFunction Function;
+    [FieldOffset(8)] public int Pc;
+    [FieldOffset(12)] public int Argc;
+    [FieldOffset(16)] public JSValue Receiver;
+    [FieldOffset(32)] public JSValue A0;
+    [FieldOffset(48)] public JSValue A1;
+    [FieldOffset(64)] public JSValue A2;
+    [FieldOffset(80)] public JSValue A3;
+    [FieldOffset(96)] public JSValue A4;
 }
