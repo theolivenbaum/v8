@@ -111,11 +111,10 @@ public static partial class RuntimeWasm
     public static long MemoryGrow(long delta, int memory, WasmCode code, int pc)
     {
         MemoryInstance mem = code.Instance!.Memories[memory];
-        long old = mem.Size;
         if (delta < 0) return -1;
         try
         {
-            return mem.Grow(delta) ? old : -1;
+            return mem.GrowReturningOldSize(delta);
         }
         catch (OutOfMemoryException)
         {

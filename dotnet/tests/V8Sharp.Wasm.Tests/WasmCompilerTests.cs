@@ -526,6 +526,108 @@ public class WasmCompilerTests
     }
 
     [Fact]
+    public void SimdOperations()
+    {
+        // Every SIMD operation on vectors, compiled (Vector128) against the
+        // interpreter, on random and special lane values. Float results print
+        // NaN lanes as "nan" (wasm leaves their payload open), except abs and
+        // neg, which only change the sign bit.
+        Both("""
+            const simdOps = [
+              [0xe,"s_ss","I8x16Swizzle"],[0x23,"s_ss","I8x16Eq"],[0x24,"s_ss","I8x16Ne"],[0x25,"s_ss","I8x16LtS"],[0x26,"s_ss","I8x16LtU"],
+              [0x27,"s_ss","I8x16GtS"],[0x28,"s_ss","I8x16GtU"],[0x29,"s_ss","I8x16LeS"],[0x2a,"s_ss","I8x16LeU"],[0x2b,"s_ss","I8x16GeS"],
+              [0x2c,"s_ss","I8x16GeU"],[0x2d,"s_ss","I16x8Eq"],[0x2e,"s_ss","I16x8Ne"],[0x2f,"s_ss","I16x8LtS"],[0x30,"s_ss","I16x8LtU"],
+              [0x31,"s_ss","I16x8GtS"],[0x32,"s_ss","I16x8GtU"],[0x33,"s_ss","I16x8LeS"],[0x34,"s_ss","I16x8LeU"],[0x35,"s_ss","I16x8GeS"],
+              [0x36,"s_ss","I16x8GeU"],[0x37,"s_ss","I32x4Eq"],[0x38,"s_ss","I32x4Ne"],[0x39,"s_ss","I32x4LtS"],[0x3a,"s_ss","I32x4LtU"],
+              [0x3b,"s_ss","I32x4GtS"],[0x3c,"s_ss","I32x4GtU"],[0x3d,"s_ss","I32x4LeS"],[0x3e,"s_ss","I32x4LeU"],[0x3f,"s_ss","I32x4GeS"],
+              [0x40,"s_ss","I32x4GeU"],[0x41,"s_ss","F32x4Eq"],[0x42,"s_ss","F32x4Ne"],[0x43,"s_ss","F32x4Lt"],[0x44,"s_ss","F32x4Gt"],
+              [0x45,"s_ss","F32x4Le"],[0x46,"s_ss","F32x4Ge"],[0x47,"s_ss","F64x2Eq"],[0x48,"s_ss","F64x2Ne"],[0x49,"s_ss","F64x2Lt"],
+              [0x4a,"s_ss","F64x2Gt"],[0x4b,"s_ss","F64x2Le"],[0x4c,"s_ss","F64x2Ge"],[0x4d,"s_s","S128Not"],[0x4e,"s_ss","S128And"],
+              [0x4f,"s_ss","S128AndNot"],[0x50,"s_ss","S128Or"],[0x51,"s_ss","S128Xor"],[0x52,"s_sss","S128Select"],
+              [0x53,"i_s","V128AnyTrue"],[0x5e,"s_s","F32x4DemoteF64x2Zero"],[0x5f,"s_s","F64x2PromoteLowF32x4"],[0x60,"s_s","I8x16Abs"],
+              [0x61,"s_s","I8x16Neg"],[0x62,"s_s","I8x16Popcnt"],[0x63,"i_s","I8x16AllTrue"],[0x64,"i_s","I8x16BitMask"],
+              [0x65,"s_ss","I8x16SConvertI16x8"],[0x66,"s_ss","I8x16UConvertI16x8"],[0x67,"s_s","F32x4Ceil"],[0x68,"s_s","F32x4Floor"],
+              [0x69,"s_s","F32x4Trunc"],[0x6a,"s_s","F32x4NearestInt"],[0x6b,"s_si","I8x16Shl"],[0x6c,"s_si","I8x16ShrS"],
+              [0x6d,"s_si","I8x16ShrU"],[0x6e,"s_ss","I8x16Add"],[0x6f,"s_ss","I8x16AddSatS"],[0x70,"s_ss","I8x16AddSatU"],
+              [0x71,"s_ss","I8x16Sub"],[0x72,"s_ss","I8x16SubSatS"],[0x73,"s_ss","I8x16SubSatU"],[0x74,"s_s","F64x2Ceil"],
+              [0x75,"s_s","F64x2Floor"],[0x76,"s_ss","I8x16MinS"],[0x77,"s_ss","I8x16MinU"],[0x78,"s_ss","I8x16MaxS"],
+              [0x79,"s_ss","I8x16MaxU"],[0x7a,"s_s","F64x2Trunc"],[0x7b,"s_ss","I8x16RoundingAverageU"],
+              [0x7c,"s_s","I16x8ExtAddPairwiseI8x16S"],[0x7d,"s_s","I16x8ExtAddPairwiseI8x16U"],[0x7e,"s_s","I32x4ExtAddPairwiseI16x8S"],
+              [0x7f,"s_s","I32x4ExtAddPairwiseI16x8U"],[0x80,"s_s","I16x8Abs"],[0x81,"s_s","I16x8Neg"],[0x82,"s_ss","I16x8Q15MulRSatS"],
+              [0x83,"i_s","I16x8AllTrue"],[0x84,"i_s","I16x8BitMask"],[0x85,"s_ss","I16x8SConvertI32x4"],[0x86,"s_ss","I16x8UConvertI32x4"],
+              [0x87,"s_s","I16x8SConvertI8x16Low"],[0x88,"s_s","I16x8SConvertI8x16High"],[0x89,"s_s","I16x8UConvertI8x16Low"],
+              [0x8a,"s_s","I16x8UConvertI8x16High"],[0x8b,"s_si","I16x8Shl"],[0x8c,"s_si","I16x8ShrS"],[0x8d,"s_si","I16x8ShrU"],
+              [0x8e,"s_ss","I16x8Add"],[0x8f,"s_ss","I16x8AddSatS"],[0x90,"s_ss","I16x8AddSatU"],[0x91,"s_ss","I16x8Sub"],
+              [0x92,"s_ss","I16x8SubSatS"],[0x93,"s_ss","I16x8SubSatU"],[0x94,"s_s","F64x2NearestInt"],[0x95,"s_ss","I16x8Mul"],
+              [0x96,"s_ss","I16x8MinS"],[0x97,"s_ss","I16x8MinU"],[0x98,"s_ss","I16x8MaxS"],[0x99,"s_ss","I16x8MaxU"],
+              [0x9b,"s_ss","I16x8RoundingAverageU"],[0x9c,"s_ss","I16x8ExtMulLowI8x16S"],[0x9d,"s_ss","I16x8ExtMulHighI8x16S"],
+              [0x9e,"s_ss","I16x8ExtMulLowI8x16U"],[0x9f,"s_ss","I16x8ExtMulHighI8x16U"],[0xa0,"s_s","I32x4Abs"],[0xa1,"s_s","I32x4Neg"],
+              [0xa3,"i_s","I32x4AllTrue"],[0xa4,"i_s","I32x4BitMask"],[0xa7,"s_s","I32x4SConvertI16x8Low"],
+              [0xa8,"s_s","I32x4SConvertI16x8High"],[0xa9,"s_s","I32x4UConvertI16x8Low"],[0xaa,"s_s","I32x4UConvertI16x8High"],
+              [0xab,"s_si","I32x4Shl"],[0xac,"s_si","I32x4ShrS"],[0xad,"s_si","I32x4ShrU"],[0xae,"s_ss","I32x4Add"],[0xb1,"s_ss","I32x4Sub"],
+              [0xb5,"s_ss","I32x4Mul"],[0xb6,"s_ss","I32x4MinS"],[0xb7,"s_ss","I32x4MinU"],[0xb8,"s_ss","I32x4MaxS"],
+              [0xb9,"s_ss","I32x4MaxU"],[0xba,"s_ss","I32x4DotI16x8S"],[0xbc,"s_ss","I32x4ExtMulLowI16x8S"],
+              [0xbd,"s_ss","I32x4ExtMulHighI16x8S"],[0xbe,"s_ss","I32x4ExtMulLowI16x8U"],[0xbf,"s_ss","I32x4ExtMulHighI16x8U"],
+              [0xc0,"s_s","I64x2Abs"],[0xc1,"s_s","I64x2Neg"],[0xc3,"i_s","I64x2AllTrue"],[0xc4,"i_s","I64x2BitMask"],
+              [0xc7,"s_s","I64x2SConvertI32x4Low"],[0xc8,"s_s","I64x2SConvertI32x4High"],[0xc9,"s_s","I64x2UConvertI32x4Low"],
+              [0xca,"s_s","I64x2UConvertI32x4High"],[0xcb,"s_si","I64x2Shl"],[0xcc,"s_si","I64x2ShrS"],[0xcd,"s_si","I64x2ShrU"],
+              [0xce,"s_ss","I64x2Add"],[0xd1,"s_ss","I64x2Sub"],[0xd5,"s_ss","I64x2Mul"],[0xd6,"s_ss","I64x2Eq"],[0xd7,"s_ss","I64x2Ne"],
+              [0xd8,"s_ss","I64x2LtS"],[0xd9,"s_ss","I64x2GtS"],[0xda,"s_ss","I64x2LeS"],[0xdb,"s_ss","I64x2GeS"],
+              [0xdc,"s_ss","I64x2ExtMulLowI32x4S"],[0xdd,"s_ss","I64x2ExtMulHighI32x4S"],[0xde,"s_ss","I64x2ExtMulLowI32x4U"],
+              [0xdf,"s_ss","I64x2ExtMulHighI32x4U"],[0xe0,"s_s","F32x4Abs"],[0xe1,"s_s","F32x4Neg"],[0xe3,"s_s","F32x4Sqrt"],
+              [0xe4,"s_ss","F32x4Add"],[0xe5,"s_ss","F32x4Sub"],[0xe6,"s_ss","F32x4Mul"],[0xe7,"s_ss","F32x4Div"],[0xe8,"s_ss","F32x4Min"],
+              [0xe9,"s_ss","F32x4Max"],[0xea,"s_ss","F32x4Pmin"],[0xeb,"s_ss","F32x4Pmax"],[0xec,"s_s","F64x2Abs"],[0xed,"s_s","F64x2Neg"],
+              [0xef,"s_s","F64x2Sqrt"],[0xf0,"s_ss","F64x2Add"],[0xf1,"s_ss","F64x2Sub"],[0xf2,"s_ss","F64x2Mul"],[0xf3,"s_ss","F64x2Div"],
+              [0xf4,"s_ss","F64x2Min"],[0xf5,"s_ss","F64x2Max"],[0xf6,"s_ss","F64x2Pmin"],[0xf7,"s_ss","F64x2Pmax"],
+              [0xf8,"s_s","I32x4SConvertF32x4"],[0xf9,"s_s","I32x4UConvertF32x4"],[0xfa,"s_s","F32x4SConvertI32x4"],
+              [0xfb,"s_s","F32x4UConvertI32x4"],[0xfc,"s_s","I32x4TruncSatF64x2SZero"],[0xfd,"s_s","I32x4TruncSatF64x2UZero"],
+              [0xfe,"s_s","F64x2ConvertLowI32x4S"],[0xff,"s_s","F64x2ConvertLowI32x4U"]];
+            const b = new WasmModuleBuilder();
+            b.addMemory(1, 1);
+            const ld = off => [...wasmI32Const(off), kSimdPrefix, kExprS128LoadMem, 0, 0];
+            for (const [code, sig, name] of simdOps) {
+              const op = SimdInstr(code);
+              let body;
+              if (sig == "s_s") body = [...wasmI32Const(64), ...ld(0), ...op, kSimdPrefix, kExprS128StoreMem, 0, 0];
+              else if (sig == "s_ss") body = [...wasmI32Const(64), ...ld(0), ...ld(16), ...op, kSimdPrefix, kExprS128StoreMem, 0, 0];
+              else if (sig == "s_sss") body = [...wasmI32Const(64), ...ld(0), ...ld(16), ...ld(32), ...op, kSimdPrefix, kExprS128StoreMem, 0, 0];
+              else if (sig == "s_si") body = [...wasmI32Const(64), ...ld(0), ...wasmI32Const(48), kExprI32LoadMem, 0, 0, ...op, kSimdPrefix, kExprS128StoreMem, 0, 0];
+              else body = [...wasmI32Const(64), ...ld(0), ...op, kExprI32StoreMem, 0, 0];
+              b.addFunction(name, kSig_v_v).addBody(body).exportFunc();
+            }
+            b.exportMemoryAs("mem");
+            const e = b.instantiate().exports;
+            const mem8 = new Uint8Array(e.mem.buffer);
+            let seed = 12345;
+            function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed >> 7; }
+            const f32s = [0, -0, 1, -1, 1.5, -2.5, 0.5, -0.5, NaN, Infinity, -Infinity, 3.4e38, -3.4e38, 1e-45, 2147483648, -2147483904,
+              4294967296, 65535.5, -0.75, 2.5];
+            const f64s = [0, -0, 1, -1, 1.5, -2.5, NaN, Infinity, -Infinity, 1.7e308, 5e-324, 2147483647.5, -2147483648.9, 4294967295.5,
+              -0.5, 0.5];
+            function fill(set) {
+              const dv = new DataView(e.mem.buffer);
+              for (let i = 0; i < 48; i++) mem8[i] = rnd() & 0xff;
+              if (set == 1) for (let i = 0; i < 12; i++) dv.setFloat32(i * 4, f32s[rnd() % f32s.length], true);
+              if (set == 2) for (let i = 0; i < 6; i++) dv.setFloat64(i * 8, f64s[rnd() % f64s.length], true);
+              if (set == 3) for (let i = 0; i < 48; i++) mem8[i] = [0, 0x80, 0x7f, 0xff, 1, 0xfe][rnd() % 6];
+              dv.setInt32(48, [0, 1, 7, 8, 15, 16, 31, 33, 63, 64, -1][rnd() % 11], true);
+            }
+            function show(name, sig) {
+              if (sig == "i_s") return String(new Int32Array(e.mem.buffer, 64, 1)[0]);
+              const exact = /Abs|Neg|Eq|Ne|Lt|Gt|Le|Ge/.test(name) || !/^F(32|64)/.test(name);
+              if (exact) return Array.from(mem8.subarray(64, 80)).map(x => x.toString(16)).join(".");
+              const lanes = name.startsWith("F32") ? new Float32Array(e.mem.buffer, 64, 4) : new Float64Array(e.mem.buffer, 64, 2);
+              return Array.from(lanes).map(x => Number.isNaN(x) ? "nan" : Object.is(x, -0) ? "-0" : String(x)).join(",");
+            }
+            for (const [code, sig, name] of simdOps) {
+              const out = [];
+              for (let set = 0; set < 4; set++) for (let k = 0; k < 4; k++) { fill(set); e[name](); out.push(show(name, sig)); }
+              print(name, out.join(" "));
+            }
+            """);
+    }
+
+    [Fact]
     public void TrapStackTraces()
     {
         string output = Both(Prelude + """

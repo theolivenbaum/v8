@@ -292,6 +292,7 @@ internal sealed partial class LiftoffCompiler
         else
         {
             _il.Emit(OpCodes.Ldobj, typeof(Value));
+            if (kind == WasmKind.S128) WasmValues.EmitFromValue(_il, kind);
         }
         _asm.PushStack(kind);
     }
@@ -318,6 +319,7 @@ internal sealed partial class LiftoffCompiler
         else
         {
             _il.Emit(OpCodes.Ldloc, value);
+            if (kind == WasmKind.S128) WasmValues.EmitToValue(_il, kind);
             _il.Emit(OpCodes.Stobj, typeof(Value));
         }
     }

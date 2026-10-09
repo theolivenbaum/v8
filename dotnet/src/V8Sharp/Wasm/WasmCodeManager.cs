@@ -30,7 +30,7 @@ public enum WasmKind : byte
     I64,
     F32,
     F64,
-    /// <summary>v128, held as a <see cref="Value"/> (the interpreter's VecRef form).</summary>
+    /// <summary>v128, held as a Vector128&lt;byte&gt; (WasmSimd.cs).</summary>
     S128,
     /// <summary>Any reference, held as a <see cref="Value"/> (the interpreter's form).</summary>
     Ref,
@@ -55,6 +55,7 @@ public static class WasmKinds
         WasmKind.I64 => typeof(long),
         WasmKind.F32 => typeof(float),
         WasmKind.F64 => typeof(double),
+        WasmKind.S128 => typeof(System.Runtime.Intrinsics.Vector128<byte>),
         _ => typeof(Value),
     };
 
@@ -109,12 +110,14 @@ public static class WasmValues
     internal static void EmitToValue(ILGenerator il, WasmKind kind)
     {
         if (kind < WasmKind.S128) il.Emit(OpCodes.Call, s_from[(int)kind]);
+        else if (kind == WasmKind.S128) il.Emit(OpCodes.Call, typeof(WasmSimd).GetMethod(nameof(WasmSimd.ToValue))!);
     }
 
     /// <summary>Emits the conversion of the <see cref="Value"/> on the IL stack to <paramref name="kind"/>.</summary>
     internal static void EmitFromValue(ILGenerator il, WasmKind kind)
     {
         if (kind < WasmKind.S128) il.Emit(OpCodes.Call, s_to[(int)kind]);
+        else if (kind == WasmKind.S128) il.Emit(OpCodes.Call, typeof(WasmSimd).GetMethod(nameof(WasmSimd.FromValue))!);
     }
 }
 
@@ -284,6 +287,7 @@ public sealed class WasmSignature
                 WasmKind.F64 => nameof(OpStack.PopF64),
                 _ => nameof(OpStack.PopAny),
             })!);
+            if (Params[i] == WasmKind.S128) WasmValues.EmitFromValue(il, WasmKind.S128);
             il.Emit(OpCodes.Stloc, args[i]);
         }
         il.Emit(OpCodes.Ldarg_0);
@@ -422,13 +426,26 @@ public sealed class WasmCode : ICompiledFunctionCode
     }
 
     /// <summary>Compiles the function (once).</summary>
+    /// <summary>Set while the function is being compiled (a call to it from its callees stays a delegate call).</summary>
+    internal bool Compiling;
+
     internal void Compile()
     {
         lock (this)
         {
-            if (State != WasmCodeState.Lazy) return;
+            if (State != WasmCodeState.Lazy || Compiling) return;
             var function = (FunctionInstance)Function;
-            Delegate? compiled = Instance!.Compiler.CompileFunction(this, out string? bailout);
+            Delegate? compiled;
+            string? bailout;
+            Compiling = true;
+            try
+            {
+                compiled = Instance!.Compiler.CompileFunction(this, out bailout);
+            }
+            finally
+            {
+                Compiling = false;
+            }
             if (compiled is null)
             {
                 BailoutReason = bailout;

@@ -142,6 +142,10 @@ public static partial class WasmJs
         int segments = frames.SegmentCount;
         frames.PushSegment(context.StackHeight, ExecContext.AbortSequence);
         ((FunctionInstance)code.Function).CallCount++;
+        // Instructions the interpreter runs for compiled code (casts of
+        // function references) look functions up in the current store.
+        Store? savedStore = Store.Current;
+        Store.Current = engine.Store;
         try
         {
             result = wrapper(code, isolate, arguments);
@@ -173,6 +177,7 @@ public static partial class WasmJs
         {
             frames.Sp = sp;
             frames.PopSegments(segments);
+            Store.Current = savedStore;
         }
     }
 }

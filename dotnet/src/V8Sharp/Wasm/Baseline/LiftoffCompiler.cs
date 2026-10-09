@@ -420,17 +420,10 @@ internal sealed partial class LiftoffCompiler
         for (int i = 0; i < locals.Length; i++)
         {
             WasmKind kind = locals[i];
-            if (kind < WasmKind.S128) continue;
+            // Numeric and vector locals are zero, as IL locals are.
+            if (kind != WasmKind.Ref) continue;
             ValType type = _function.Locals[i];
-            if (kind == WasmKind.S128)
-            {
-                // A fresh zero vector per call (a VecRef is a mutable box).
-                il.Emit(OpCodes.Call, RuntimeWasm.Method(nameof(RuntimeWasm.V128Zero)));
-            }
-            else
-            {
-                EmitLoadConstantValue(AddConstant(new Value(type)));
-            }
+            EmitLoadConstantValue(AddConstant(new Value(type)));
             il.Emit(OpCodes.Stloc, _asm.Locals[paramCount + i]!);
         }
     }

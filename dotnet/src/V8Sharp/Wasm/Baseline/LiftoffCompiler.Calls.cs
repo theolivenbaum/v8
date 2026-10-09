@@ -75,6 +75,12 @@ internal sealed partial class LiftoffCompiler
         if (!_reachable) return;
         WasmCode target = _data.Code[funcIndex];
         WasmSignature sig = target.Signature;
+        if (target.State == WasmCodeState.Lazy && target.Instance == _data && !target.Compiling &&
+            WasmModuleCompiler.MayCompileAhead())
+        {
+            WasmModuleCompiler.CountCompileAhead();
+            target.Compile();
+        }
         if (target == _code)
         {
             _asm.PopToStackWithPrefix(sig.Params.Length, () => _il.Emit(OpCodes.Ldarg_0));

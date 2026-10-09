@@ -144,9 +144,25 @@ internal sealed partial class LiftoffCompiler
         return true;
     }
 
+    /// <summary>A reinterpretation of a constant is a constant of the other kind.</summary>
+    bool TryReinterpretConstant(WasmKind to)
+    {
+        VarState top = _asm.Stack[^1];
+        if (top.Location != VarState.Loc.Const) return false;
+        long bits = to is WasmKind.F32 or WasmKind.I32 ? (int)top.Value : top.Value;
+        _asm.Stack.RemoveAt(_asm.Stack.Count - 1);
+        _asm.PushConst(to, bits);
+        return true;
+    }
+
     void NumericOp(byte opcode)
     {
         const WasmKind I = WasmKind.I32, L = WasmKind.I64, F = WasmKind.F32, D = WasmKind.F64;
+        if (opcode is >= 0xbc and <= 0xbf &&
+            TryReinterpretConstant(opcode switch { 0xbc => I, 0xbd => L, 0xbe => F, _ => D }))
+        {
+            return;
+        }
         switch (opcode)
         {
             // i32 comparisons

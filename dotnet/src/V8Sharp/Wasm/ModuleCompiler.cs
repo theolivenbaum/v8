@@ -17,6 +17,10 @@ namespace V8Sharp.Wasm;
 internal sealed class WasmModuleCompiler
 {
     static readonly bool s_trace = Environment.GetEnvironmentVariable("V8SHARP_TRACE_WASM_COMPILE") == "1";
+
+    /// <summary>V8SHARP_WASM_COMPILE_LOG=file: appends one line per compiled or declined function (coverage statistics).</summary>
+    static readonly string? s_log = Environment.GetEnvironmentVariable("V8SHARP_WASM_COMPILE_LOG");
+    static readonly object s_logLock = new();
     static readonly bool s_disabled = Environment.GetEnvironmentVariable("V8SHARP_WASM_INTERPRETER") == "1";
 
     /// <summary>
@@ -37,6 +41,20 @@ internal sealed class WasmModuleCompiler
     }
 
     readonly WasmEngine _engine;
+
+    // Compile-ahead: a function being compiled compiles the functions it
+    // calls directly first, so that its calls to them are direct IL calls.
+    // Bounded per first call so that one call does not compile a whole module.
+    const int kMaxCompileAheadDepth = 4;
+    const int kMaxCompileAheadFunctions = 64;
+    [ThreadStatic] static int t_compileDepth;
+    [ThreadStatic] static int t_compiledAhead;
+
+    /// <summary>Whether a callee of the function being compiled may be compiled ahead of its first call.</summary>
+    internal static bool MayCompileAhead() =>
+        t_compileDepth <= kMaxCompileAheadDepth && t_compiledAhead < kMaxCompileAheadFunctions;
+
+    internal static void CountCompileAhead() => t_compiledAhead++;
 
     WasmModuleCompiler(WasmEngine engine) => _engine = engine;
 
@@ -79,6 +97,8 @@ internal sealed class WasmModuleCompiler
             bailout = "V8SHARP_WASM_INTERPRET_FUNCTIONS";
             return null;
         }
+        if (t_compileDepth == 0) t_compiledAhead = 0;
+        t_compileDepth++;
         try
         {
             result = LiftoffCompiler.Compile(code, out bailout);
@@ -89,6 +109,17 @@ internal sealed class WasmModuleCompiler
             // function runs in the interpreter.
             bailout = "compiler error: " + e.GetType().Name + ": " + e.Message;
             result = null;
+        }
+        finally
+        {
+            t_compileDepth--;
+        }
+        if (s_log is not null)
+        {
+            lock (s_logLock)
+            {
+                File.AppendAllText(s_log, (result is null ? "bailout\t" + bailout : "compiled") + "\n");
+            }
         }
         if (s_trace)
         {
