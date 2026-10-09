@@ -1009,7 +1009,7 @@ public sealed partial class MaglevGraphBuilder
                 return;
             }
             // Not inlined: the construct stub and the call with the allocated receiver.
-            if (args.Length <= 3)
+            if (args.Length <= MaglevFastCalls.kMaxArity)
             {
                 // The arguments as values (MaglevCalls.ConstructWithReceiverValues).
                 var valueInputs = new ValueNode[3 + args.Length];
@@ -1047,7 +1047,7 @@ public sealed partial class MaglevGraphBuilder
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForConstruct);
             return;
         }
-        if (count <= 3)
+        if (count <= MaglevFastCalls.kMaxArity)
         {
             // The arguments as values (MaglevBuiltins.ConstructValuesN).
             var inputs = new ValueNode[2 + count];

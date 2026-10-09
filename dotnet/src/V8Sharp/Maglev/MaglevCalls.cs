@@ -192,7 +192,13 @@ public static class MaglevCalls
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
     public static JSValue ConstructWithReceiverValues(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, int argc,
-        JSValue a0, JSValue a1, JSValue a2)
+        JSValue a0, JSValue a1, JSValue a2) =>
+        ConstructWithReceiverValues(isolate, target, receiver, newTarget, argc, a0, a1, a2, default, default, default);
+
+    /// <summary>ConstructWithReceiverValues with up to six arguments.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    public static JSValue ConstructWithReceiverValues(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, int argc,
+        JSValue a0, JSValue a1, JSValue a2, JSValue a3, JSValue a4, JSValue a5)
     {
         var function = Unsafe.As<JSFunction>(target._obj!);
         if (function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: { } code } && argc <= code.FastCallArity)
@@ -200,12 +206,12 @@ public static class MaglevCalls
             int stubStart = isolate.AllocateRegisters(InterpreterCalls.kConstructStubFrameSlots);
             // The direct entry (argc's sign bit: a construct, new.target in the isolate).
             isolate.MaglevNewTarget = newTarget;
-            JSValue result = InvokeFastCallValues(isolate, code, function, receiver, argc | int.MinValue, a0, a1, a2, default, default, default);
+            JSValue result = InvokeFastCallValues(isolate, code, function, receiver, argc | int.MinValue, a0, a1, a2, a3, a4, a5);
             isolate.RegisterStackTop = stubStart;
             return result.IsJSReceiver ? result : receiver;
         }
         int window = isolate.AllocateRegisters(argc);
-        StoreWindow(isolate.RegisterStack, window, argc, a0, a1, a2, default, default, default);
+        StoreWindow(isolate.RegisterStack, window, argc, a0, a1, a2, a3, a4, a5);
         try
         {
             return ConstructWithReceiver(isolate, target, receiver, newTarget, window, argc);

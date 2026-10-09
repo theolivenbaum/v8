@@ -915,6 +915,18 @@ public static class MaglevBuiltins
         JSValue a1, JSValue a2) =>
         MaglevCalls.ConstructWithReceiverValues(isolate, target, receiver, newTarget, 3, a0, a1, a2);
 
+    public static JSValue ConstructKnownJSFunction4(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3) =>
+        MaglevCalls.ConstructWithReceiverValues(isolate, target, receiver, newTarget, 4, a0, a1, a2, a3, default, default);
+
+    public static JSValue ConstructKnownJSFunction5(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3, JSValue a4) =>
+        MaglevCalls.ConstructWithReceiverValues(isolate, target, receiver, newTarget, 5, a0, a1, a2, a3, a4, default);
+
+    public static JSValue ConstructKnownJSFunction6(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3, JSValue a4, JSValue a5) =>
+        MaglevCalls.ConstructWithReceiverValues(isolate, target, receiver, newTarget, 6, a0, a1, a2, a3, a4, a5);
+
     public static JSValue ConstructValues0(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget) =>
         ConstructValues(isolate, fv, slot, constructor, newTarget, 0, default, default, default);
 
@@ -929,15 +941,30 @@ public static class MaglevBuiltins
         JSValue a1, JSValue a2) =>
         ConstructValues(isolate, fv, slot, constructor, newTarget, 3, a0, a1, a2);
 
+    public static JSValue ConstructValues4(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3) =>
+        ConstructValues(isolate, fv, slot, constructor, newTarget, 4, a0, a1, a2, a3);
+
+    public static JSValue ConstructValues5(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3, JSValue a4) =>
+        ConstructValues(isolate, fv, slot, constructor, newTarget, 5, a0, a1, a2, a3, a4);
+
+    public static JSValue ConstructValues6(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3, JSValue a4, JSValue a5) =>
+        ConstructValues(isolate, fv, slot, constructor, newTarget, 6, a0, a1, a2, a3, a4, a5);
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     static JSValue ConstructValues(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, int argc,
-        JSValue a0, JSValue a1, JSValue a2)
+        JSValue a0, JSValue a1, JSValue a2, JSValue a3 = default, JSValue a4 = default, JSValue a5 = default)
     {
         int window = isolate.AllocateRegisters(argc);
         JSValue[] stack = isolate.RegisterStack;
         if (argc > 0) stack[window] = a0;
         if (argc > 1) stack[window + 1] = a1;
         if (argc > 2) stack[window + 2] = a2;
+        if (argc > 3) stack[window + 3] = a3;
+        if (argc > 4) stack[window + 4] = a4;
+        if (argc > 5) stack[window + 5] = a5;
         try
         {
             return Baseline.BaselineCalls.Construct(isolate, fv, slot, constructor, newTarget, window, argc);

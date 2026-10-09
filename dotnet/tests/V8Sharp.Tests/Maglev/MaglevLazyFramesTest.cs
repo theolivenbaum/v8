@@ -143,6 +143,23 @@ public class MaglevLazyFramesTest
           return out.join('\n');
         })()
         """,
+        // Constructs with four to six arguments as values: known constructors
+        // (inlined or not), polymorphic ones (the generic construct), and
+        // constructors returning objects.
+        """
+        (function() {
+          function Q(a, b, c, d, e) { this.s = a + b + c + d + e; if (a > 30) return { s: 'obj' + a }; }
+          function R(a, b, c, d, e, f) { this.s = [a, b, c, d, e, f].join(''); new Error().stack; }
+          function S(a, b, c, d) { this.s = a * b * c * d; }
+          function make(k) {
+            var C = k & 1 ? S : function (a, b, c, d) { this.s = a - b - c - d; };
+            return new Q(k, 1, 2, 3, 4).s + '/' + new R(k, 1, 2, 3, 4, 5).s + '/' + new C(k, 2, 3, 4).s;
+          }
+          var out = [];
+          for (var k = 0; k < 40; k++) out.push(make(k));
+          return out.join(',');
+        })()
+        """,
         // Deep recursion through lazy frames, and the stack overflow RangeError.
         """
         (function() {
