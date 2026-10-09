@@ -1965,8 +1965,15 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     through the dispatcher and three or four region calls), PdfJS 908 ->
     624 (no function is split; that row is run-to-run variation, 515-808
     with regions on). Warm, the split code is no faster than MinOpts code
-    of the same function; what it removes is MinOpts' slow code during
-    start-up (see the cold rows below).
+    of the same function. Cold (octane, compile time included, same
+    builds, 3 runs, load 2.6/3.4, cpu-cal 2276/1880 ms, mem-bw 17.6/12.7
+    GB/s): Typescript 3831 -> 4332 (+13%), zlib 4312 -> 4423 (+3%),
+    Mandreel 1329 -> 1353 (+2%), Box2D 1446 -> 1304 (-10%, two small
+    splits; 1215-1360 vs 1287-1527, overlapping). Regions stay on: they
+    are neutral overall and keep huge code out of MinOpts; the per-call
+    cost of the dispatcher for a hot recursive function (parseStatement)
+    is open (splitting only code reached once per call, or entering the
+    first region directly, would remove it).
     Not done: (2) leaner frameful calls. A frameful direct call costs about
     23 ns more than a frameless one (micro, 34.5 vs 11.5 ns); the cost is
     spread over the frame's slot stores, the frame record, the
