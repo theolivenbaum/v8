@@ -94,6 +94,45 @@ namespace V8Sharp.Wasm
 
         public WasmRuntime Runtime { get; }
 
+        ExecContext? _execContext;
+
+        /// <summary>The runtime's execution context on the isolate's thread.</summary>
+        public ExecContext ExecContext => _execContext ??= Runtime.GetExecContext();
+
+        // ---- Compiled code (V8: the code tables of the wasm code manager) -------------
+
+        WasmCode?[] _code = new WasmCode?[64];
+
+        internal void RegisterCode(WasmCode code)
+        {
+            int address = code.Address.Value;
+            if (address >= _code.Length) Array.Resize(ref _code, Math.Max(address + 1, _code.Length * 2));
+            _code[address] = code;
+        }
+
+        internal WasmCode? FindCode(FuncAddr address) =>
+            (uint)address.Value < (uint)_code.Length ? _code[address.Value] : null;
+
+        /// <summary>The code of the function at <paramref name="address"/>, created on first use.</summary>
+        internal WasmCode CodeAt(FuncAddr address)
+        {
+            if ((uint)address.Value < (uint)_code.Length && _code[address.Value] is { } code) return code;
+            return GetOrCreateCode(address);
+        }
+
+        internal WasmCode GetOrCreateCode(FuncAddr address)
+        {
+            if (FindCode(address) is { } existing) return existing;
+            IFunctionInstance function = Store[address];
+            if (function is FunctionInstance { Module.Compiler: WasmInstanceData data } && FindCode(address) is { } owned)
+            {
+                return owned;
+            }
+            var code = new WasmCode(this, null, function, address, -1);
+            RegisterCode(code);
+            return code;
+        }
+
         // ---- Activations (stack traces) -----------------------------------------------
 
         /// <summary>A JS-to-wasm call in progress: the wasm frames above its base height are its own.</summary>
@@ -113,8 +152,8 @@ namespace V8Sharp.Wasm
         {
             var activation = new Activation
             {
-                BaseHeight = Runtime.CallStackHeight,
-                OuterPc = Runtime.CurrentInstructionPointer,
+                BaseHeight = ExecContext.UnifiedHeight,
+                OuterPc = ExecContext.InstructionPointer,
             };
             _activations.Add(activation);
             return activation;
@@ -136,9 +175,9 @@ namespace V8Sharp.Wasm
             Activation activation = _activations[index];
             if (activation.TrapFrames is { } trapFrames) return trapFrames;
             bool innermost = index == _activations.Count - 1;
-            int topHeight = innermost ? Runtime.CallStackHeight : _activations[index + 1].BaseHeight;
-            int topPc = innermost ? Runtime.CurrentInstructionPointer : _activations[index + 1].OuterPc;
-            return Runtime.SnapshotFrames(activation.BaseHeight, topHeight, topPc);
+            int topHeight = innermost ? ExecContext.UnifiedHeight : _activations[index + 1].BaseHeight;
+            int topPc = innermost ? ExecContext.InstructionPointer : _activations[index + 1].OuterPc;
+            return ExecContext.SnapshotFrames(activation.BaseHeight, topHeight, topPc);
         }
 
         internal void RegisterInstanceObject(WasmInstanceObject instance) =>
