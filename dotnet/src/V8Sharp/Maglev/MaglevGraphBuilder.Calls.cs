@@ -131,6 +131,13 @@ public sealed partial class MaglevGraphBuilder
                 SetAccumulator(applied2);
                 return;
             }
+            // TryReduceBuiltin's Function.prototype.call (ReduceFunctionPrototypeCall).
+            if (target.Shared.BuiltinId == Builtins.Builtin.FunctionPrototypeCall && mode != ConvertReceiverMode.NullOrUndefined &&
+                TryReduceFunctionPrototypeCall(receiver, args, nexus) is { } called)
+            {
+                SetAccumulator(called);
+                return;
+            }
             // SaveCallSpeculationScope: the reduction's checks disallow speculation here when they fail.
             ValueNode? reduced = null;
             if (speculate)
@@ -256,6 +263,30 @@ public sealed partial class MaglevGraphBuilder
             return result;
         }
         return null;
+    }
+
+    /// <summary>
+    /// ReduceFunctionPrototypeCall: f.call(thisArg, ...args) is a call of f
+    /// (the receiver of call) with thisArg and the rest: a constant f is
+    /// inlined or called directly (ReduceCallForConstant), any other f takes
+    /// the generic call with the arguments as values.
+    /// </summary>
+    ValueNode? TryReduceFunctionPrototypeCall(ValueNode function, ValueNode[] args, FeedbackNexus nexus)
+    {
+        ValueNode receiver = args.Length > 0 ? GetTaggedValue(args[0]) : GetRootConstant(RootIndex.kUndefinedValue);
+        ConvertReceiverMode mode = args.Length > 0 ? ConvertReceiverMode.Any : ConvertReceiverMode.NullOrUndefined;
+        ValueNode[] rest = args.Length > 1 ? args[1..] : [];
+        if (rest.Length >= s_callWithValues.Length) return null;
+        if (function.Opcode == Opcode.Constant && function.Value0.HeapObjectOrNull is JSFunction f && !f.Shared.IsClassConstructor)
+        {
+            if (TryBuildInlinedCall(f, function, receiver, rest, mode, nexus, isConstruct: false, null) is { } inlined) return inlined;
+            if (TryBuildDirectCall(f, receiver, rest, Register.InvalidValue(), mode) is { } direct) return direct;
+            return BuildCallKnownJSFunction(f, receiver, rest, Register.InvalidValue(), mode);
+        }
+        // (Another receiver of call only when it is known to be a function: the
+        // call builtin's TypeError for a receiver that is not callable is its own.)
+        if (function.Representation != ValueRepresentation.kTagged || !NodeTypes.Is(function.Type, NodeType.kJSFunction)) return null;
+        return BuildCall(function, receiver, rest, Register.InvalidValue(), mode);
     }
 
     /// <summary>
