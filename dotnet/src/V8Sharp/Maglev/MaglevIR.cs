@@ -699,6 +699,14 @@ public sealed class CallBuiltinInfo(MethodInfo method, BuiltinArg[] args, string
     /// pushed inlined frame and does not stop frameless entries.
     /// </summary>
     public bool NoFrame;
+    /// <summary>
+    /// An inlined function's arguments object was used (an input of a node,
+    /// a phi) before an apply(thisArg, arguments) of it: the apply cannot
+    /// pass the call's arguments instead (the object may have changed).
+    /// </summary>
+    public bool ArgumentsUsed;
+    /// <summary>The innermost loop being built when the arguments object was created (a later use in it can precede the apply).</summary>
+    public object? ArgumentsLoop;
 }
 
 /// <summary>

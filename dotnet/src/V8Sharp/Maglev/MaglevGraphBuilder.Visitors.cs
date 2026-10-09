@@ -911,6 +911,7 @@ public sealed partial class MaglevGraphBuilder
         {
             ((CallBuiltinInfo)arguments.Obj0!).ArgumentsKind = mapped ? ArgumentsObjectKind.Mapped : ArgumentsObjectKind.Unmapped;
         }
+        ((CallBuiltinInfo)arguments.Obj0!).ArgumentsLoop = CurrentLoop;
         arguments.Type = NodeType.kOtherJSReceiver;
         return arguments;
     }
@@ -918,7 +919,8 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>Whether <paramref name="value"/> is the arguments object of this inlined function (its arguments are the call's).</summary>
     bool IsInlinedArgumentsObject(ValueNode value) =>
         _unit.IsInline && value.Opcode == Opcode.CallBuiltin && ReferenceEquals(value.Unit, _unit) &&
-        value.Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None, Method.Name: "CreateInlinedArguments" };
+        value.Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None, ArgumentsUsed: false, Method.Name: "CreateInlinedArguments" } info &&
+        ReferenceEquals(info.ArgumentsLoop, CurrentLoop);
 
     /// <summary>The stores of a register list into the frame (the builtin reads it there).</summary>
     (Register, ValueNode)[] RegisterListStores(Register first, int count)

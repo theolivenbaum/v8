@@ -231,6 +231,7 @@ public sealed partial class MaglevGraphBuilder
     void NoteAllocationUses(Node node)
     {
         ValueNode[] inputs = node.Inputs;
+        foreach (ValueNode input in inputs) NoteArgumentsUse(input);
         // An inlined function's elidable arguments object: whether it needs
         // the frame is decided after the graph is built (MaglevEscapeAnalysis).
         // (Its ArgumentsKind is set after the node is added.)
@@ -265,8 +266,14 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>A use that lets the object escape (a phi input, a call argument ...): its fields are no longer tracked.</summary>
+    static void NoteArgumentsUse(ValueNode value)
+    {
+        if (value.Obj0 is CallBuiltinInfo { Method.Name: nameof(MaglevBuiltins.CreateInlinedArguments) } info) info.ArgumentsUsed = true;
+    }
+
     internal static void EscapeDuringBuild(ValueNode value)
     {
+        NoteArgumentsUse(value);
         if (value is not InlinedAllocation { EscapedDuringBuild: false } allocation) return;
         allocation.EscapedDuringBuild = true;
         // What it holds is reachable now.
