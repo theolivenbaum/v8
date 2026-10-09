@@ -95,7 +95,10 @@ internal sealed class WasmModuleCompiler
     /// WasmCompilationUnit::ExecuteFunctionCompilation: compiles one function,
     /// or returns null (the function stays in the interpreter).
     /// </summary>
-    public Delegate? CompileFunction(WasmCode code, out string? bailout)
+    /// <summary>Whether V8SHARP_WASM_INTERPRET_FUNCTIONS keeps the function in the interpreter.</summary>
+    internal static bool IsForcedInterpreted(int functionIndex) => s_interpreted.Contains(functionIndex);
+
+    public Delegate? CompileFunction(WasmCode code, out string? bailout, bool tierUp = false)
     {
         Delegate? result;
         if (s_interpreted.Contains(code.FunctionIndex))
@@ -108,7 +111,7 @@ internal sealed class WasmModuleCompiler
         t_compileDepth++;
         try
         {
-            result = LiftoffCompiler.Compile(code, out bailout, out instructions, out generic);
+            result = LiftoffCompiler.Compile(code, tierUp, out bailout, out instructions, out generic);
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
@@ -132,7 +135,7 @@ internal sealed class WasmModuleCompiler
         {
             Console.Error.WriteLine(result is null
                 ? $"[wasm-compile] function #{code.FunctionIndex} bailed out: {bailout}"
-                : $"[wasm-compile] function #{code.FunctionIndex} compiled ({instructions} instructions, {code.ILSize} bytes of IL)");
+                : $"[wasm-compile] function #{code.FunctionIndex} compiled{(tierUp ? " (tier-up)" : "")} ({instructions} instructions, {code.ILSize} bytes of IL, {code.InlinedCalls} calls inlined)");
         }
         return result;
     }

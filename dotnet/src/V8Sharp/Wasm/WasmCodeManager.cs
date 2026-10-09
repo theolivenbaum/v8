@@ -365,6 +365,28 @@ public sealed class WasmCode : ICompiledFunctionCode
     /// <summary>The last type a call_indirect matched this function against (the check's cache).</summary>
     public DefType? LastMatchedType;
 
+    /// <summary>
+    /// The feedback the function's call_indirect and call_ref sites collect
+    /// (V8: the function's FunctionTypeFeedback), while its code may tier up.
+    /// </summary>
+    public V8Sharp.Wasm.Baseline.WasmFunctionFeedback? Feedback;
+
+    /// <summary>
+    /// The tiering budget (V8: the tiering budget of the instance's
+    /// function, decremented by Liftoff code at returns and loop back edges):
+    /// when it runs out, the function is compiled again with its feedback.
+    /// </summary>
+    public int TieringBudget;
+
+    /// <summary>Whether the code collects feedback and may be replaced by a tier-up (calls to it go through its slot).</summary>
+    public bool MayTierUp;
+
+    /// <summary>Whether the code is the tiered-up compile (with speculative inlining).</summary>
+    public bool TieredUp;
+
+    /// <summary>The number of calls inlined into the current code.</summary>
+    public int InlinedCalls;
+
     /// <summary>The slots holding <see cref="Entry"/> (patched when the code changes).</summary>
     readonly List<(Delegate[] Slots, int Index)> _slots = [];
 
@@ -434,6 +456,35 @@ public sealed class WasmCode : ICompiledFunctionCode
     /// <summary>Compiles the function (once).</summary>
     /// <summary>Set while the function is being compiled (a call to it from its callees stays a delegate call).</summary>
     internal bool Compiling;
+
+    /// <summary>
+    /// The tier-up (V8: TriggerTierUp and the TurboFan compile): compiles the
+    /// function again with the feedback its code collected, and installs it.
+    /// Activations of the old code finish in it.
+    /// </summary>
+    internal void TierUp()
+    {
+        lock (this)
+        {
+            TieringBudget = int.MaxValue;
+            if (State == WasmCodeState.Lazy) Compile();
+            if (State != WasmCodeState.Compiled || TieredUp || Compiling) return;
+            Delegate? compiled;
+            Compiling = true;
+            try
+            {
+                compiled = Instance!.Compiler.CompileFunction(this, out _, tierUp: true);
+            }
+            finally
+            {
+                Compiling = false;
+            }
+            TieredUp = true;
+            if (compiled is null) return;
+            MayTierUp = false;
+            SetEntry(compiled);
+        }
+    }
 
     internal void Compile()
     {
@@ -559,6 +610,54 @@ public sealed class WasmInstanceData : ICompiledModule
     internal readonly WasmSharedCode SharedCode;
     /// <summary>The module was translated from asm.js (its memory is the heap buffer, fixed).</summary>
     internal bool AsmJs;
+
+    double _smallFunctionPercentage = -1;
+
+    /// <summary>
+    /// The share of declared functions with bodies under 50 bytes, in percent
+    /// (V8: num_small_functions / num_declared_functions, counted by the
+    /// module decoder; the inlining budget scales with it).
+    /// </summary>
+    public double SmallFunctionPercentage
+    {
+        get
+        {
+            if (_smallFunctionPercentage < 0)
+            {
+                const int kSmallFunctionThreshold = 50;
+                int declared = 0, small = 0;
+                for (int i = ImportedFunctionCount; i < Code.Length; i++)
+                {
+                    if (Code[i].Function is not FunctionInstance f || f.Module != Module) continue;
+                    declared++;
+                    if (V8Sharp.Wasm.Baseline.WasmInliningTree.WireByteSize(f) < kSmallFunctionThreshold) small++;
+                }
+                _smallFunctionPercentage = declared == 0 ? 0 : small * 100.0 / declared;
+            }
+            return _smallFunctionPercentage;
+        }
+    }
+
+    readonly Dictionary<FunctionInstance, bool> _hasExceptionHandlers = [];
+
+    /// <summary>Whether a function has exception handlers (try, try_table, catch, delegate, rethrow), which V8Sharp does not inline.</summary>
+    internal bool HasExceptionHandlers(FunctionInstance function)
+    {
+        lock (_hasExceptionHandlers)
+        {
+            if (_hasExceptionHandlers.TryGetValue(function, out bool result)) return result;
+            foreach (uint offset in function.Definition.InstructionOffsets)
+            {
+                if (WireBytes[offset] is 0x06 or 0x07 or 0x09 or 0x18 or 0x19 or 0x1f)
+                {
+                    result = true;
+                    break;
+                }
+            }
+            _hasExceptionHandlers[function] = result;
+            return result;
+        }
+    }
 
     internal WasmInstanceData(WasmEngine engine, ModuleInstance module, byte[] wireBytes, WasmModuleCompiler compiler,
         WasmSharedCode sharedCode)

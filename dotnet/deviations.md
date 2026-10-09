@@ -1466,7 +1466,9 @@ vendored code carry a `V8Sharp:` comment at the site.
   function as a DynamicMethod; RyuJIT compiles it with full optimization on
   its first call, which is what TurboFan's tier is for (register allocation,
   inlining of helpers, bounds-check and constant folding), so there is no
-  second V8Sharp tier and no dynamic tiering. Functions compile lazily on
+  separate optimizing compiler. The compiler inlines wasm callees itself
+  (below, "Inlining"); the only tier-up is the recompile of a function with
+  call_indirect/call_ref sites once it has call-target feedback. Functions compile lazily on
   their first call (`--wasm-lazy-compilation`, V8's default), or all at
   instantiation with `--no-wasm-lazy-compilation`; `--liftoff`,
   `--no-liftoff`, `--liftoff-only` and `--wasm-tier-up` all select the same
@@ -1477,10 +1479,12 @@ vendored code carry a `V8Sharp:` comment at the site.
   `V8SHARP_WASM_INTERPRETER=1`, and the functions the compiler declines
   (Liftoff's bailout; V8 then uses TurboFan). The tier queries
   (`%IsLiftoffFunction`, `%IsTurboFanFunction`, ...) stay false and
-  `%IsWasmTieringPredictable()` false (tests skip tier assertions); tier-up,
-  deopt and code-flushing natives are accepted and do nothing; the
-  `--trace-wasm*`, `--trace-wasm-inlining`, compilation-hints and
-  `--wasm-*-inlining` outputs are never printed. The WACS IL transpiler is
+  `%IsWasmTieringPredictable()` false (tests skip tier assertions);
+  `%WasmTierUpFunction` and `%WasmTriggerTierUpForTesting` recompile with
+  feedback, the deopt and code-flushing natives are accepted and do nothing;
+  `--trace-wasm-inlining` is printed by the tier-up compile only (V8's
+  TurboFan compile), the other `--trace-wasm*` and compilation-hints outputs
+  are never printed. The WACS IL transpiler is
   not used.
 - **Compiled code: calls and values.** A compiled function is
   `R f(WasmCode code, P0 p0, ...)` with i32/i64/f32/f64 as int/long/float/
@@ -1491,8 +1495,12 @@ vendored code carry a `V8Sharp:` comment at the site.
   (the instance's function slots, which start as the lazy-compile stub and
   are patched when the callee compiles; V8's jump table) or, for the
   function itself and callees already compiled, direct IL calls;
-  call_indirect looks the table entry's code up and checks the signature
-  with a one-entry cache per callee. return_call uses IL's `tail.` prefix,
+  call_indirect and call_ref go through an inline cache per call site (the
+  function address of the last target and its code; a hit needs no
+  signature check, which was done when the entry was cached), which also
+  records V8's call-target feedback (up to four targets with counts, else
+  megamorphic). V8 calls through its dispatch table and checks the
+  signature on every call. return_call uses IL's `tail.` prefix,
   except inside an exception region, where it is a call and a return whose
   exceptions the frame's handlers do not see. Imports of JavaScript and
   functions the compiler declined are called with Values
@@ -1504,6 +1512,43 @@ vendored code carry a `V8Sharp:` comment at the site.
   most of these). JS-to-wasm calls of compiled functions with numeric
   signatures use compiled wrappers (V8's specialized wrappers); the others
   the generic wrapper.
+- **Inlining** (`Baseline/WasmInliningTree.cs`, `LiftoffCompiler.Inlining.cs`;
+  V8: inlining-tree.h and the inlining of turboshaft-graph-interface.cc).
+  RyuJIT never inlines one DynamicMethod into another, so a call between
+  compiled functions always costs a call (about 5 ns, 9 ns for
+  call_indirect). The compiler inlines wasm callees into the caller's IL
+  with V8's InliningTree: candidates by score (call count / size), V8's
+  budget (`--wasm-inlining-budget`, `--wasm-inlining-max-size`,
+  `--wasm-inlining-factor`, `--wasm-inlining-min-budget`, the small-function
+  scaling, 60 callees, depth 7), `--no-wasm-inlining` turning it off. V8
+  inlines only in TurboFan, from Liftoff's call counts; V8Sharp's one compile
+  inlines direct calls at once, counting each direct call as made once per
+  call of its caller (so the budget decides; V8 inlines tiny callees
+  regardless of counts too). A function with call_indirect/call_ref sites
+  collects feedback in its inline caches and counts down a tiering budget
+  (`--wasm-tiering-budget`, wire bytes of loop back edges and returns
+  standing for Liftoff's code bytes); when it runs out the function is
+  compiled again and the targets the feedback names are inlined
+  speculatively behind a check of the target's function address
+  (`--wasm-inlining-call-indirect`); any other target takes the inline cache.
+  V8 deoptimizes on a failed check (`--wasm-deopt`); V8Sharp's fallback is
+  the ordinary call. Activations of the replaced code finish in it, and code
+  that may tier up is called through its slot. Not inlined (V8 inlines
+  them): callees with exception handlers (try, try_table, catch, delegate,
+  rethrow), and return_calls inside a try of the calling function (whose
+  handlers must not see the callee's exceptions). An inlined callee's
+  locals are IL locals of the caller, zeroed at each entry; its returns
+  branch to the end of its body. Inlined frames are not pushed on
+  `CompiledFrames`: positions inside them name an inlined position (the
+  inlined functions, their call sites and the frame's own call), which stack
+  traces expand into V8's frames, a tail call's callee replacing its
+  caller's frame. The frame-count stack limit therefore counts inlined
+  frames as part of their caller's. Inlined positions name functions by
+  index and pcs relative to the function, so inlined code is shared by a
+  module's instances like other code; code that collects feedback, and
+  tiered-up code (whose speculative checks name this instance's
+  functions), stays with its instance. Inlining stops once a method has
+  30 KB of IL (RyuJIT compiles methods over about 60 KB with MinOpts).
 - **Compiled code: numbers.** IL arithmetic is IEEE binary32/64 as wasm's;
   shifts mask the count, division and float-to-int conversions trap as
   V8's, min/max/copysign/abs/neg/nearest follow wasm's NaN and signed-zero

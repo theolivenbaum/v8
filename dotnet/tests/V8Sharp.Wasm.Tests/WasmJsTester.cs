@@ -25,17 +25,19 @@ public static class WasmJsTester
     }
 
     /// <summary>Runs <paramref name="source"/> and returns what it printed (and an uncaught exception).</summary>
-    public static string Run(string source, bool withBuilder = true, bool interpret = false, string? flags = null)
+    public static string Run(string source, bool withBuilder = true, bool interpret = false, string? flags = null,
+        Action<Isolate>? inspect = null)
     {
         var output = new StringBuilder();
         string result = "";
-        var thread = new Thread(() => result = RunOnThread(source, withBuilder, output, interpret, flags), 256 * 1024 * 1024);
+        var thread = new Thread(() => result = RunOnThread(source, withBuilder, output, interpret, flags, inspect), 256 * 1024 * 1024);
         thread.Start();
         thread.Join();
         return result;
     }
 
-    static string RunOnThread(string source, bool withBuilder, StringBuilder output, bool interpret, string? flags)
+    static string RunOnThread(string source, bool withBuilder, StringBuilder output, bool interpret, string? flags,
+        Action<Isolate>? inspect)
     {
         Isolate isolate = Isolate.New();
         using (isolate.Enter())
@@ -56,6 +58,7 @@ public static class WasmJsTester
             {
                 output.Append("uncaught: ").Append(ObjectOps.ToString(isolate, e.Value).ToString()).Append('\n');
             }
+            inspect?.Invoke(isolate);
             isolate.Deinit();
         }
         return output.ToString();

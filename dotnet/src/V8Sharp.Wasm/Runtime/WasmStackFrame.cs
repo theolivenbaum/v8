@@ -58,16 +58,25 @@ namespace Wacs.Core.Runtime
         /// </summary>
         public readonly int Pc;
 
+        /// <summary>
+        /// V8Sharp: a frame of a function compiled code inlined into its
+        /// caller (V8's inlined frames: shown in stack traces, but no frame
+        /// of their own on the call stack). The frame below it is its caller.
+        /// </summary>
+        public readonly bool Inlined;
+
         public WasmStackFrame(
             uint funcAddr,
             InstructionBase? instruction,
             int resumeContinuationAddress,
-            int pc = -1)
+            int pc = -1,
+            bool inlined = false)
         {
             FuncAddr = funcAddr;
             Instruction = instruction;
             ResumeContinuationAddress = resumeContinuationAddress;
             Pc = pc;
+            Inlined = inlined;
         }
 
         public override string ToString() =>
