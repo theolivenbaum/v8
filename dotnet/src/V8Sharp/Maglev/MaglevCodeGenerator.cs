@@ -3010,6 +3010,7 @@ internal sealed partial class MaglevCodeGenerator
         typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallValues2))!,
         typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallValues3))!,
     ];
+    static readonly MethodInfo s_callValuesN = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallValuesN))!;
 
     LocalBuilder? _callResult;
     LocalBuilder? _calleeCode;
@@ -3773,7 +3774,7 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Br, done);
         // The slow path: the arguments in the caller's registers (or as values).
         _il.MarkLabel(slow);
-        if (info.ArgsFirst.IsValid && info.Argc >= s_callValues.Length)
+        if (info.ArgsFirst.IsValid && info.Argc >= s_callValues.Length && !(_frameless && info.Argc <= MaglevFastCalls.kMaxArity))
         {
             for (int i = 0; i < info.Argc; i++)
             {
@@ -3790,7 +3791,7 @@ internal sealed partial class MaglevCodeGenerator
             _il.Emit(OpCodes.Ldc_I4, (int)info.Mode);
             _il.Emit(OpCodes.Call, s_callKnownSlow);
         }
-        else
+        else if (info.Argc < s_callValues.Length)
         {
             _il.Emit(OpCodes.Ldarg_1);
             LoadCallTarget(node, info, typeof(JSValue));
@@ -3798,6 +3799,22 @@ internal sealed partial class MaglevCodeGenerator
             for (int i = 0; i < info.Argc; i++) Load(node.Inputs[1 + i], ValueRepresentation.kTagged);
             _il.Emit(OpCodes.Ldc_I4, (int)info.Mode);
             _il.Emit(OpCodes.Call, s_callValues[info.Argc]);
+        }
+        else
+        {
+            // A lazy or frameless entry has no register window: up to six
+            // arguments as values (MaglevCalls.CallValuesN).
+            _il.Emit(OpCodes.Ldarg_1);
+            LoadCallTarget(node, info, typeof(JSValue));
+            Load(node.Inputs[0], ValueRepresentation.kTagged);
+            _il.Emit(OpCodes.Ldc_I4, info.Argc);
+            for (int i = 0; i < MaglevFastCalls.kMaxArity; i++)
+            {
+                if (i < info.Argc) Load(node.Inputs[1 + i], ValueRepresentation.kTagged);
+                else LoadUndefined();
+            }
+            _il.Emit(OpCodes.Ldc_I4, (int)info.Mode);
+            _il.Emit(OpCodes.Call, s_callValuesN);
         }
         _il.Emit(OpCodes.Stloc, _callResult);
         _il.MarkLabel(done);

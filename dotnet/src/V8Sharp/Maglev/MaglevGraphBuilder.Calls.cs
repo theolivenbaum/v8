@@ -482,6 +482,9 @@ public sealed partial class MaglevGraphBuilder
         typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues1))!,
         typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues2))!,
         typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues3))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues4))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues5))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues6))!,
     ];
 
     /// <summary>
@@ -975,6 +978,25 @@ public sealed partial class MaglevGraphBuilder
                 return;
             }
             // Not inlined: the construct stub and the call with the allocated receiver.
+            if (args.Length <= 3)
+            {
+                // The arguments as values (MaglevCalls.ConstructWithReceiverValues).
+                var valueInputs = new ValueNode[3 + args.Length];
+                var valueArgs = new BuiltinArg[4 + args.Length];
+                valueInputs[0] = GetConstant(target);
+                valueInputs[1] = receiver;
+                valueInputs[2] = newTarget;
+                valueArgs[0] = BuiltinArg.Isolate;
+                for (int i = 0; i < 3 + args.Length; i++)
+                {
+                    if (i >= 3) valueInputs[i] = args[i - 3];
+                    valueArgs[1 + i] = BuiltinArg.In(i);
+                }
+                ValueNode constructedValues = CallMaglev2("ConstructKnownJSFunction" + args.Length, valueInputs, valueArgs, []);
+                constructedValues.Type = NodeType.kJSReceiver;
+                SetAccumulator(constructedValues);
+                return;
+            }
             var stores = new (Register, ValueNode)[args.Length];
             for (int i = 0; i < args.Length; i++) stores[i] = (new Register(first.Index + i), args[i]);
             ValueNode constructed = CallMaglev2("ConstructKnownJSFunction", [GetConstant(target), receiver, newTarget],
@@ -987,6 +1009,26 @@ public sealed partial class MaglevGraphBuilder
         else if (speculate && nexus.IcState() == InlineCacheState.UNINITIALIZED && nexus.GetCallCount() == 0)
         {
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForConstruct);
+            return;
+        }
+        if (count <= 3)
+        {
+            // The arguments as values (MaglevBuiltins.ConstructValuesN).
+            var inputs = new ValueNode[2 + count];
+            var builtinArgs = new BuiltinArg[5 + count];
+            inputs[0] = constructor;
+            inputs[1] = newTarget;
+            builtinArgs[0] = BuiltinArg.Isolate;
+            builtinArgs[1] = Fv;
+            builtinArgs[2] = BuiltinArg.I(slot);
+            builtinArgs[3] = BuiltinArg.In(0);
+            builtinArgs[4] = BuiltinArg.In(1);
+            for (int i = 0; i < count; i++)
+            {
+                inputs[2 + i] = _frame.Get(new Register(first.Index + i));
+                builtinArgs[5 + i] = BuiltinArg.In(2 + i);
+            }
+            SetAccumulator(CallMaglev2("ConstructValues" + count, inputs, builtinArgs, []));
             return;
         }
         SetAccumulator(CallBaseline("Construct", [constructor, newTarget],
