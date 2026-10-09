@@ -624,7 +624,13 @@ public sealed class InstanceBuilder
                     continue;
             }
             JSString name = isolate.Factory.InternalizeString(export.Name);
-            if (name.AsArrayIndex(out uint arrayIndex))
+            if (_isAsmJs)
+            {
+                // asm.js may export a name twice: the last export wins
+                // (V8: JSObject::SetNormalizedProperty).
+                JSObject.DefinePropertyOrElementIgnoreAttributes(isolate, exportsObject, name, value, attributes);
+            }
+            else if (name.AsArrayIndex(out uint arrayIndex))
             {
                 JSObject.AddDataElement(isolate, exportsObject, arrayIndex, value, attributes);
             }

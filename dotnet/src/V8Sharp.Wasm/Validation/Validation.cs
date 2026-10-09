@@ -85,7 +85,9 @@ namespace Wacs.Core.Validation
             foreach (var export in module.Exports)
             {
                 Module.Export.Validator.Validate(export, vctx);
-                if (exportNames.TryGetValue(export.Name, out var first))
+                // V8 checks only modules of wasm origin; asm.js modules may export a
+                // name twice (the last export wins).
+                if (!BinaryModuleParser.AsmJsOpcodesAllowed && exportNames.TryGetValue(export.Name, out var first))
                     throw new ValidationException(
                         $"Duplicate export name '{TruncatedUserString(export.Name)}' for {ExportKind(first.Desc)} {ExportIndex(first.Desc)} and {ExportKind(export.Desc)} {ExportIndex(export.Desc)}");
                 exportNames[export.Name] = export;
