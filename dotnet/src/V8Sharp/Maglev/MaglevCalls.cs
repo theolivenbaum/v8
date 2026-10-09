@@ -361,6 +361,107 @@ public static class MaglevCalls
         }
     }
 
+    // ---- Lazy optimized frames --------------------------------------------------------------------------
+    //
+    // V8's optimized frame is not an interpreter frame: the caller pushes the
+    // receiver and the arguments, the callee pushes its closure and context,
+    // and stack walks and the deoptimizer read the rest from the deopt data.
+    // A lazy direct entry (MaglevCodeGenerator, "Lazy frames") does the same:
+    // the receiver, the arguments, the closure and the current bytecode offset
+    // live in a MaglevActivation struct on the .NET stack, and the frame record
+    // points at it (InterpreterFrameFlags.Lazy). The entry reserves the
+    // interpreter frame's register window without writing it, so a deopt can
+    // build the interpreter frame in place (MaterializeLazyFrame) below the
+    // frames of inlined functions pushed meanwhile.
+
+    /// <summary>
+    /// The prologue of a lazy direct entry: reserves the frame's register
+    /// window (with the stack checks of EnterFastFrame), pushes the lazy frame
+    /// record and switches to the function's context. Returns the caller's
+    /// context (restored by <see cref="LeaveFastFrame"/>).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Context? EnterLazyFrame(Isolate isolate, int paramSlots, int registerCount, JSFunction function, nint activation, int argc,
+        out int start, out int depth)
+    {
+        int d = isolate.InterpreterFrameDepth;
+        depth = d;
+        if ((d & 7) == 0) CheckNativeStack(isolate);
+        int s = isolate.RegisterStackTop;
+        start = s;
+        int fp = s + paramSlots + InterpreterRuntime.kFixedSlotsAboveParams;
+        int end = fp + registerCount;
+        if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
+        InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
+        if ((uint)d >= (uint)frames.Length) isolate.StackOverflow();
+        isolate.RegisterStackTop = end;
+        InterpreterFrameFlags flags = InterpreterFrameFlags.Maglev | InterpreterFrameFlags.Lazy;
+        if (argc < 0)
+        {
+            // A construct (ConstructWithReceiver): the entry takes no new.target.
+            flags |= InterpreterFrameFlags.Constructor;
+            isolate.MaglevNewTarget = default;
+        }
+        ref InterpreterFrameRecord frame = ref frames[d];
+        frame.Fp = fp;
+        frame.Flags = flags;
+        frame.ReturnPc = 0;
+        frame.RegisterStart = 0;
+        frame.Activation = activation;
+        isolate.InterpreterFrameDepth = d + 1;
+        Context context = function.Context;
+        Context? saved = isolate.Context;
+        if (!ReferenceEquals(saved, context)) isolate.Context = context;
+        return saved;
+    }
+
+    /// <summary>
+    /// Builds the interpreter frame of a lazy frame in its reserved window from
+    /// its activation (what MaglevCalls.InitializeFastFrame and the frameful
+    /// direct entry write), so the Deoptimizer can continue it.
+    /// </summary>
+    internal static void MaterializeLazyFrame(Isolate isolate, ref InterpreterFrameRecord record, FeedbackVector vector)
+    {
+        ref MaglevActivation a = ref MaglevActivation.At(record.Activation);
+        JSFunction function = a.Function;
+        var bytecode = (BytecodeArray)function.Shared.FunctionData!;
+        int formal = bytecode.ParameterCount - 1;
+        ref JSValue fpRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack), record.Fp);
+        Unsafe.Add(ref fpRef, InterpreterRuntime.kReceiverOffset) = a.Receiver;
+        for (int i = 0; i < formal; i++) Unsafe.Add(ref fpRef, InterpreterRuntime.kFirstArgumentOffset - i) = MaglevActivation.Argument(ref a, i);
+        Unsafe.Add(ref fpRef, InterpreterRuntime.kContextOffset) = function.Context;
+        Unsafe.Add(ref fpRef, InterpreterRuntime.kClosureOffset) = function;
+        Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset) = vector;
+        InterpreterRuntime.InitializeFrameSlots(ref fpRef, bytecode, a.Argc);
+        InterpreterRuntime.SetFramePc(ref fpRef, a.Pc);
+        // The registers are undefined, as the frameful entry leaves them.
+        MemoryMarshal.CreateSpan(ref fpRef, bytecode.RegisterCount).Clear();
+        record.Flags &= ~InterpreterFrameFlags.Lazy;
+        record.Activation = 0;
+    }
+
+    /// <summary>
+    /// The deopt exits of a lazy direct entry: materializes the frame,
+    /// deoptimizes into it and continues in the interpreter; returns the
+    /// call's result (the entry's epilogue pops the frame).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static JSValue DeoptimizeLazyFrame(Isolate isolate, MaglevCode code, int index, int reason, int depth)
+    {
+        ref InterpreterFrameRecord record = ref isolate.InterpreterFrames[depth];
+        if (record.IsLazy) MaterializeLazyFrame(isolate, ref record, code.FeedbackVector);
+        var state = new InterpreterState
+        {
+            Isolate = isolate,
+            Accumulator = JSValue.Undefined,
+            Fp = record.Fp,
+            FrameIndex = depth,
+            BaseFrameIndex = depth,
+        };
+        V8Sharp.Deoptimizer.Deoptimizer.Deoptimize(isolate, ref state, code, index, reason);
+        return MaglevExecution.ContinueAfterDeopt(isolate, ref state);
+    }
+
     /// <summary>The epilogue of a direct call (EnterFrame's finally).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void LeaveFastFrame(Isolate isolate, int depth, int start, Context? saved)
@@ -527,5 +628,62 @@ public static class MaglevCalls
             isolate.RegisterStackTop = start;
             if (!ReferenceEquals(isolate.Context, savedContext)) isolate.Context = savedContext;
         }
+    }
+}
+
+/// <summary>
+/// The activation of a lazy optimized frame (MaglevCalls, "Lazy optimized
+/// frames"): what V8's optimized frame holds for the stack walker and the
+/// deoptimizer (the closure, the arguments the caller pushed, the receiver)
+/// and the bytecode offset of the current call (V8 maps the return address
+/// to it). A local of the lazy direct entry, on the .NET stack; its frame
+/// record holds its address.
+/// </summary>
+/// <remarks>
+/// Deviation (V8Sharp only): the record refers to a .NET stack location by
+/// address. The local is address-exposed, so RyuJIT keeps it in memory and
+/// reports its references to the GC for the whole method (which updates them
+/// when objects move); the record is popped before the method returns
+/// (its epilogue and fault block), so only live activations are read.
+/// </remarks>
+public struct MaglevActivation
+{
+    public JSFunction Function;
+    public JSValue Receiver;
+    public JSValue A0, A1, A2, A3, A4, A5;
+    /// <summary>The bytecode offset of the current call or throwing node.</summary>
+    public int Pc;
+    /// <summary>The actual argument count.</summary>
+    public int Argc;
+
+    /// <summary>The activation at <paramref name="address"/> (a live lazy frame record's).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ref MaglevActivation At(nint address) =>
+        ref Unsafe.As<byte, MaglevActivation>(ref Unsafe.AddByteOffset(ref Unsafe.NullRef<byte>(), address));
+
+    /// <summary>Argument <paramref name="i"/> (below MaglevFastCalls.kMaxArity).</summary>
+    public static ref JSValue Argument(ref MaglevActivation a, int i)
+    {
+        switch (i)
+        {
+            case 0: return ref a.A0;
+            case 1: return ref a.A1;
+            case 2: return ref a.A2;
+            case 3: return ref a.A3;
+            case 4: return ref a.A4;
+            default: return ref a.A5;
+        }
+    }
+
+    /// <summary>The arguments of the activation at <paramref name="address"/> (its formal parameters' slots, as passed).</summary>
+    internal static JSValue[] GetArguments(nint address)
+    {
+        ref MaglevActivation a = ref At(address);
+        int formal = ((BytecodeArray)a.Function.Shared.FunctionData!).ParameterCount - 1;
+        int argc = Math.Min(a.Argc, formal);
+        if (argc <= 0) return [];
+        var result = new JSValue[argc];
+        for (int i = 0; i < argc; i++) result[i] = Argument(ref a, i);
+        return result;
     }
 }

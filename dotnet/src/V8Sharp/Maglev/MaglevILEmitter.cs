@@ -169,6 +169,12 @@ internal sealed class MaglevILEmitter(ILGenerator il)
         il.BeginExceptFilterBlock();
     }
 
+    public void BeginFaultBlock()
+    {
+        BlockBoundaries++;
+        il.BeginFaultBlock();
+    }
+
     public void BeginCatchBlock(Type? exceptionType)
     {
         BlockBoundaries++;
