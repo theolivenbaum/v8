@@ -372,15 +372,35 @@ Design and every deviation: deviations.md, "WebAssembly".
       opcodes and imports below), about 50 error-message texts, then d8
       hooks (FastCAPI, worker `send`, profiler), JSPI suspension, tier
       assertions and memories above 2 GiB.
-- [ ] Compiled tier. The WACS IL transpiler (Wacs.Transpiler, 63K lines)
-      does not integrate cleanly: it depends on Wacs.ComponentModel, uses
-      unsafe code and targets PersistedAssemblyBuilder/AOT output rather than
-      in-process DynamicMethods. Next step: emit IL per function the way the
-      Maglev backend does (DynamicMethod over the validated instruction
-      stream), with the interpreter as the deopt-free fallback; the vendored
-      switch runtime (BytecodeCompiler/GeneratedDispatcher) is a cheaper
-      intermediate step (a flat bytecode interpreter instead of instruction
-      objects).
+- [x] Compiled tier (src/V8Sharp/Wasm/Baseline, ModuleCompiler.cs,
+      WasmCodeManager.cs, RuntimeWasm*.cs, WasmSimd.cs, WasmJs.FastWrappers.cs;
+      ports of liftoff-compiler.cc, liftoff-assembler.h, function-compiler.cc,
+      the lazy-compile and tiering parts of module-compiler.cc and the
+      specialized JS-to-wasm wrappers): one IL compiler (DynamicMethod per
+      function, RyuJIT optimizes it in place of TurboFan), lazy by default,
+      eager with --no-wasm-lazy-compilation; the interpreter runs everything
+      with --wasm-jitless/--jitless or V8SHARP_WASM_INTERPRETER=1.
+      Covered in IL: all numeric ops (exact trap, NaN and signed-zero
+      semantics), control flow (br_table as switch), loads/stores on all
+      memories incl. memory64 and shared memories, memory.size/grow/copy/fill,
+      globals, direct/indirect/ref calls and tail calls, imports, exceptions
+      (exnref try_table and legacy try/catch/delegate/rethrow as IL exception
+      filters), reference types, SIMD on Vector128 (about 190 ops), interrupt
+      checks in loops, stack checks at entries, wasm frames in stack traces.
+      Through the interpreter's instruction objects from compiled code: GC
+      instructions, table and bulk-memory ops other than memory.copy/fill,
+      atomics, relaxed SIMD, shared/thread-local globals. Coverage over the
+      whole mjsunit run (2026-10-09, V8SHARP_WASM_COMPILE_LOG): 32654
+      functions compiled, 0 declined; 12217 of 19.7M instructions (0.06%) run
+      as interpreter instructions, in 7732 functions. Tests:
+      tests/V8Sharp.Wasm.Tests/WasmCompilerTests.cs (16 differential facts,
+      interpreter vs compiled, 53 facts in the project). Interpreter bugs the
+      differential tests found are fixed in the vendored code (i64.trunc range
+      checks, negative SIMD shift counts, racing memory.grow of shared
+      memories). Open: tier queries and --trace-wasm* (no second tier),
+      call_indirect through a per-call lookup rather than V8's dispatch table,
+      JS-to-wasm calls of non-numeric signatures through the generic wrapper,
+      GC instructions inline in IL.
 - [ ] Validation message texts: V8 names the operand and the instruction
       that produced it ("expected type i32, found local.get of type i64");
       WACS's validator does not track producers. Some mjsunit
@@ -401,8 +421,8 @@ Design and every deviation: deviations.md, "WebAssembly".
       If a translator is wanted for speed, the plan is: port the last
       upstream src/asmjs (asm-scanner, asm-parser, asm-types, asm-js.cc)
       from git history, emit wasm wire bytes, and instantiate them through
-      WasmEngine, falling back to JS on validation failure as V8 did; it
-      only pays off once the compiled wasm tier exists.
+      WasmEngine, falling back to JS on validation failure as V8 did. The
+      compiled wasm tier it needed now exists.
 
 ### Builtin failures seen by the interpreter port
 
@@ -455,6 +475,7 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | 2026-10-04 | mjsunit | 8375 | 8902 | 94.1% | WebAssembly: has_webassembly on, so 1300 more tests run (were SKIP); mjsunit/wasm 341/511, regress/wasm 627/782; 0 non-wasm newly failing, +2 (maglev/regress-539121142, regress/regress-447206453); the 327 wasm failures recorded in mjsunit.v8sharp.txt (see "WebAssembly" above) |
 | 2026-10-04 | message | 356 | 371 | 96.0% | WebAssembly: 38 wasm message tests run (were SKIP); the 15 left print --trace-wasm* or tiering output |
 | 2026-10-04 | test262 | 94881 | 95123 | 99.7% | WebAssembly branch, built-ins and the rest: 0 newly failing, 0 newly passing |
+| 2026-10-09 | mjsunit | 8377 | 8902 | 94.1% | WebAssembly compiler on (lazy IL compilation of every wasm function): 0 newly failing; mjsunit/wasm + regress/wasm 970/1293 (was 964 with the interpreter: +regress-347914831, +simd-wasm-interpreter) |
 | 2026-10-04 | mjsunit | 7393 | 7587 | 97.4% | baseline pass 2, --always-sparkplug: -2, both failing in the interpreter too with --no-lazy-feedback-allocation: regress-class-initializer-eval, es6/for-of-array-iterator-optimization-maglev-eager-next-call (assertMaglevved) |
 | 2026-10-04 | test262 | 94881 | 95123 | 99.75% | baseline pass 2, default flags and --always-sparkplug: 0 newly failing, 0 newly passing (one staging/sm TypedArray test failed before the elements kind check, 57147b31) |
 | 2026-10-04 | mjsunit | 7399 | 7602 | 97.3% | baseline pass 2 merged with Maglev on by default (75d8926c), default flags: 0 newly failing (regress-331074427 crashed under memory pressure from a concurrent run; passes alone, with regress-1189077 and regress-3359) |
