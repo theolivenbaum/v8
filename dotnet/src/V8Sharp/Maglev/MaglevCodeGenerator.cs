@@ -3116,7 +3116,6 @@ internal sealed partial class MaglevCodeGenerator
                     case Opcode.StoreRegister:
                     case Opcode.LoadRegister:
                     case Opcode.CallKnownJSFunction:
-                    case Opcode.HandleNoHeapWritesInterrupt:
                     case Opcode.SetCurrentContext:
                     case Opcode.LoadGeneratorField:
                     case Opcode.StoreGeneratorContinuation:
@@ -3127,7 +3126,6 @@ internal sealed partial class MaglevCodeGenerator
                         return false;
                 }
             }
-            if (block.Control is { Opcode: Opcode.JumpLoop }) return false;
         }
         return true;
     }
