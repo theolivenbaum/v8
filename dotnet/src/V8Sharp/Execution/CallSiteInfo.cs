@@ -35,11 +35,17 @@ public sealed class CallSiteInfo : HeapObject
     }
 
     public JSValue ReceiverOrInstance;
+    /// <summary>The function; for a wasm frame, the exported function whose call it belongs to.</summary>
     public JSFunction Function;
     public int CodeOffsetOrSourcePosition;
     public int Flags;
 
-    public bool IsWasm => false;
+    /// <summary>The wasm function index (V8 stores it as the function of a wasm frame).</summary>
+    public int WasmFunctionIndex;
+
+    public bool IsWasm => (Flags & kIsWasm) != 0;
+
+    public Wasm.WasmInstanceObject GetWasmInstance() => (Wasm.WasmInstanceObject)ReceiverOrInstance.Object;
     public bool IsBuiltin => (Flags & kIsBuiltin) != 0;
     public bool IsStrict => (Flags & kIsStrict) != 0;
     public bool IsConstructor => (Flags & kIsConstructor) != 0;
@@ -49,19 +55,20 @@ public sealed class CallSiteInfo : HeapObject
     public bool IsPromiseAllSettled() => IsAsync && ReferenceEquals(Function, Function.NativeContext.PromiseAllSettled);
     public bool IsPromiseAny() => IsAsync && ReferenceEquals(Function, Function.NativeContext.PromiseAny);
 
-    public bool IsNative() => GetScript() is Script script && script.ScriptType == Script.Type.Native;
-    public bool IsEval() => GetScript() is Script script && script.HasEvalOrigin;
-    public bool IsUserJavaScript() => GetSharedFunctionInfo().IsUserJavaScript();
-    public bool IsMethodCall() => !IsToplevel() && !IsConstructor;
+    public bool IsNative() => !IsWasm && GetScript() is Script script && script.ScriptType == Script.Type.Native;
+    public bool IsEval() => !IsWasm && GetScript() is Script script && script.HasEvalOrigin;
+    public bool IsUserJavaScript() => !IsWasm && GetSharedFunctionInfo().IsUserJavaScript();
+    public bool IsMethodCall() => !IsWasm && !IsToplevel() && !IsConstructor;
 
     public bool IsToplevel() => ReceiverOrInstance.HeapObjectOrNull is JSGlobalProxy || ReceiverOrInstance.IsNullOrUndefined;
 
     public SharedFunctionInfo GetSharedFunctionInfo() => Function.Shared;
 
-    public Script? GetScript() => Function.Shared.Script;
+    public Script? GetScript() => IsWasm ? GetWasmInstance().ModuleObject.Script : Function.Shared.Script;
 
     public static int GetLineNumber(Isolate isolate, CallSiteInfo info)
     {
+        if (info.IsWasm) return 1;
         if (info.GetScript() is Script script)
         {
             int position = GetSourcePosition(info);
@@ -78,6 +85,7 @@ public sealed class CallSiteInfo : HeapObject
     public static int GetColumnNumber(Isolate isolate, CallSiteInfo info)
     {
         int position = GetSourcePosition(info);
+        if (info.IsWasm) return position + 1;
         if (info.GetScript() is Script script)
         {
             script.GetPositionInfo(position, out Script.PositionInfo positionInfo);
@@ -93,6 +101,7 @@ public sealed class CallSiteInfo : HeapObject
 
     public static int GetEnclosingLineNumber(Isolate isolate, CallSiteInfo info)
     {
+        if (info.IsWasm) return 1;
         if (info.GetScript() is not Script script) return kNoLineNumberInfo;
         int position = info.GetSharedFunctionInfo().FunctionTokenPosition();
         return script.GetLineNumber(position) + 1;
@@ -100,6 +109,16 @@ public sealed class CallSiteInfo : HeapObject
 
     public static int GetEnclosingColumnNumber(Isolate isolate, CallSiteInfo info)
     {
+        if (info.IsWasm)
+        {
+            // GetWasmFunctionOffset: the offset of the function's code.
+            Wasm.WasmModuleObject module = info.GetWasmInstance().ModuleObject;
+            int defined = info.WasmFunctionIndex - module.Module.ImportedFunctions.Count;
+            return defined >= 0 && defined < module.Module.Funcs.Count &&
+                   module.Module.Funcs[defined].InstructionOffsets is { Length: > 0 } offsets
+                ? (int)offsets[0]
+                : 0;
+        }
         if (info.GetScript() is not Script script) return kNoColumnInfo;
         int position = info.GetSharedFunctionInfo().FunctionTokenPosition();
         return script.GetColumnNumber(position) + 1;
@@ -205,6 +224,11 @@ public sealed class CallSiteInfo : HeapObject
 
     public static JSValue GetFunctionName(Isolate isolate, CallSiteInfo info)
     {
+        if (info.IsWasm)
+        {
+            string? wasmName = Wasm.WasmStackTraces.GetFunctionName(info.GetWasmInstance().ModuleObject, info.WasmFunctionIndex);
+            return wasmName is null ? JSValue.Null : isolate.Factory.NewStringFromUtf16(wasmName);
+        }
         JSFunction function = info.Function;
         if (function.Shared.HasBuiltinId)
         {
@@ -222,6 +246,11 @@ public sealed class CallSiteInfo : HeapObject
 
     public static JSString GetFunctionDebugName(Isolate isolate, CallSiteInfo info)
     {
+        if (info.IsWasm)
+        {
+            return isolate.Factory.NewStringFromUtf16(
+                Wasm.WasmStackTraces.GetFunctionDebugName(info.GetWasmInstance().ModuleObject, info.WasmFunctionIndex));
+        }
         JSString name = JSFunction.GetDebugName(isolate, info.Function);
         if (name.Length == 0 && info.IsEval()) name = ReadOnlyRoots.eval_string;
         return name;
@@ -383,6 +412,7 @@ public sealed class CallSiteInfo : HeapObject
 
     public static JSValue GetTypeName(Isolate isolate, CallSiteInfo info)
     {
+        if (info.IsWasm) return JSValue.Null;
         if (!info.IsMethodCall()) return JSValue.Null;
         JSReceiver receiver = ObjectOps.ToObject(isolate, info.ReceiverOrInstance);
         if (receiver is JSProxy) return ReadOnlyRoots.Proxy_string;
@@ -405,6 +435,12 @@ public sealed class CallSiteInfo : HeapObject
     public static bool ComputeLocation(Isolate isolate, CallSiteInfo info, out MessageLocation location)
     {
         location = null!;
+        if (info.IsWasm)
+        {
+            int wasmPos = GetSourcePosition(info);
+            location = new MessageLocation(info.GetWasmInstance().ModuleObject.Script, wasmPos, wasmPos + 1, null);
+            return true;
+        }
         SharedFunctionInfo shared = info.GetSharedFunctionInfo();
         if (!shared.IsSubjectToDebugging()) return false;
         Script script = shared.Script!;
@@ -525,9 +561,49 @@ public sealed class CallSiteInfo : HeapObject
         }
     }
 
+    /// <summary>SerializeWasmStackFrame.</summary>
+    static void SerializeWasmStackFrame(Isolate isolate, CallSiteInfo frame, ref IncrementalStringBuilder builder)
+    {
+        Wasm.WasmModuleObject module = frame.GetWasmInstance().ModuleObject;
+        string? moduleName = Wasm.WasmStackTraces.GetModuleName(module);
+        string? functionName = Wasm.WasmStackTraces.GetFunctionName(module, frame.WasmFunctionIndex);
+        bool hasName = moduleName is not null || functionName is not null;
+        if (hasName)
+        {
+            if (moduleName is null)
+            {
+                builder.AppendString(isolate.Factory.NewStringFromUtf16(functionName!));
+            }
+            else
+            {
+                builder.AppendString(isolate.Factory.NewStringFromUtf16(moduleName));
+                if (functionName is not null)
+                {
+                    builder.AppendCharacter('.');
+                    builder.AppendString(isolate.Factory.NewStringFromUtf16(functionName));
+                }
+            }
+            builder.AppendCStringLiteral(" (");
+        }
+        JSValue url = frame.GetScriptNameOrSourceURL();
+        if (IsNonEmptyString(url)) builder.AppendString(url.As<JSString>());
+        else builder.AppendCStringLiteral("<anonymous>");
+        builder.AppendCharacter(':');
+        builder.AppendCStringLiteral("wasm-function[");
+        builder.AppendInt(frame.WasmFunctionIndex);
+        builder.AppendCStringLiteral("]:");
+        builder.AppendCStringLiteral("0x" + (GetColumnNumber(isolate, frame) - 1).ToString("x", System.Globalization.CultureInfo.InvariantCulture));
+        if (hasName) builder.AppendCharacter(')');
+    }
+
     /// <summary>SerializeCallSiteInfo (SerializeJSStackFrame).</summary>
     public static void SerializeCallSiteInfo(Isolate isolate, CallSiteInfo frame, ref IncrementalStringBuilder builder)
     {
+        if (frame.IsWasm)
+        {
+            SerializeWasmStackFrame(isolate, frame, ref builder);
+            return;
+        }
         JSValue functionName = GetFunctionName(isolate, frame);
         if (frame.IsAsync)
         {

@@ -8,7 +8,7 @@ namespace V8Sharp.Objects;
 /// time: its callback and length. SharedFunctionInfo.FunctionData holds it and
 /// the function runs through Builtin.HandleApiCallOrConstruct.
 /// </summary>
-public sealed class FunctionTemplateInfo(BuiltinFunction callback) : HeapObject(InstanceType.FunctionTemplateInfoType)
+public class FunctionTemplateInfo(BuiltinFunction callback) : HeapObject(InstanceType.FunctionTemplateInfoType)
 {
     public readonly BuiltinFunction Callback = callback;
 

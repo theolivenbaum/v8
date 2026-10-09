@@ -830,6 +830,10 @@ public abstract partial class JSReceiver
             case JSModuleNamespace ns:
                 return JSModuleNamespace.DefineOwnProperty(isolate, ns, key, ref desc, shouldThrow);
         }
+        if (Map.IsWasmObjectMap(obj.Map))
+        {
+            return ObjectOps.ReturnFailure(isolate, ShouldThrow.ThrowOnError, MessageTemplate.WasmObjectsAreOpaque);
+        }
         // OrdinaryDefineOwnProperty, by virtue of calling
         // DefineOwnPropertyIgnoreAttributes, can handle arguments
         // (https://tc39.es/ecma262/#sec-arguments-exotic-objects-defineownproperty-p-desc).

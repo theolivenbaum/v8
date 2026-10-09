@@ -487,6 +487,20 @@ public sealed partial class D8Shell : IJsHost
     void ReportExceptionLocked(RealmState realm, JsExceptionInfo info)
     {
         string? text = CallHelper(realm, "exceptionToString", info.Exception) as string;
+        if (info.WasmFunctionIndex >= 0)
+        {
+            if (text is null) return;
+            // Print wasm-function[(function index)]:(offset): (message).
+            _stdout.Append("wasm-function[").Append(info.WasmFunctionIndex.ToString(CultureInfo.InvariantCulture))
+                .Append("]:0x").Append(info.StartColumn.ToString("x", CultureInfo.InvariantCulture)).Append(": ")
+                .Append(text).Append('\n');
+            if (CallHelper(realm, "exceptionStack", info.Exception) is string wasmStack)
+            {
+                _stdout.Append(wasmStack).Append('\n');
+            }
+            _stdout.Append('\n');
+            return;
+        }
         var loc = info.Line >= 0 ? info : LocationFromStack(realm, info);
         if (loc.Line >= 0 && CallHelper(realm, "callOnError", "Uncaught " + text, loc.ResourceName, (double)loc.Line,
                 (double)(loc.StartColumn + 1), info.Exception) is true)

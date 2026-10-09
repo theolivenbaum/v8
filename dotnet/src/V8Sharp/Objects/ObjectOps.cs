@@ -2093,6 +2093,10 @@ public static class ObjectOps
 
         if (it.ExtendingNonExtensible(receiver))
         {
+            if (Map.IsWasmObjectMap(receiver.Map))
+            {
+                return ReturnFailure(isolate, ShouldThrow.ThrowOnError, MessageTemplate.WasmObjectsAreOpaque);
+            }
             return ReturnFailure(isolate, GetShouldThrow(it.Isolate, shouldThrow),
                 semantics == EnforceDefineSemantics.Define ? MessageTemplate.DefineDisallowed : MessageTemplate.ObjectNotExtensible,
                 it.GetName());

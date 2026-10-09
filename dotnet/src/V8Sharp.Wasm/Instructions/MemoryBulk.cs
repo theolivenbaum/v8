@@ -1,0 +1,500 @@
+// Copyright 2024 Kelvin Nishikawa
+// 
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+// 
+//     http://www.apache.org/licenses/LICENSE-2.0
+// 
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System;
+using System.IO;
+using Wacs.Core.OpCodes;
+using Wacs.Core.Runtime;
+using Wacs.Core.Runtime.Types;
+using Wacs.Core.Types;
+using Wacs.Core.Types.Defs;
+using Wacs.Core.Utilities;
+using Wacs.Core.Validation;
+
+// 5.4.6 Memory Instructions
+namespace Wacs.Core.Instructions
+{
+    //0x3F
+    public class InstMemorySize : InstructionBase
+    {
+        public InstMemorySize() : base(ByteCode.MemorySize, +1) { }
+
+        private MemIdx M;
+        public int MemIndex => (int)M.Value;
+        
+        /// <summary>
+        /// @Spec 3.3.7.10. memory.size
+        /// </summary>
+        public override void Validate(IWasmValidationContext context)
+        {
+            context.Assert(context.Mems.Contains(M),
+                "Instruction {0} failed with invalid context memory {1}.",Op.GetMnemonic(),M);
+            var mem = context.Mems[M];
+            var at = mem.Limits.AddressType;
+            context.OpStack.PushType(at.ToValType());   // +1
+        }
+
+        // @Spec 4.4.7.8. memory.size
+        public override void Execute(ExecContext context)
+        {
+            //2.
+            context.Assert( context.Frame.Module.MemAddrs.Contains(M),
+                $"Instruction {Op.GetMnemonic()} failed. Memory {M} was not in the Context.");
+            //3.
+            var a = context.Frame.Module.MemAddrs[M];
+            //4.
+            context.Assert( context.Store.Contains(a),
+                $"Instruction {Op.GetMnemonic()} failed. Memory address {a} was not in the Store.");
+            //5.
+            var mem = context.Store[a];
+            //6.
+            var type = mem.Type.Limits.AddressType;
+            context.OpStack.PushValue(new Value(type, mem.Size));
+        }
+
+        public override InstructionBase Parse(BinaryReader reader)
+        {
+            M = (MemIdx)reader.ReadByte();
+            return this;
+        }
+
+        public override void RenderBinary(BinaryWriter writer) =>
+            writer.Write((byte)M.Value);
+    }
+
+    //0x40
+    public class InstMemoryGrow : InstructionBase
+    {
+        public InstMemoryGrow() : base(ByteCode.MemoryGrow) { }
+
+        private MemIdx M;
+        public int MemIndex => (int)M.Value;
+
+        /// <summary>
+        /// @Spec 3.3.7.11. memory.grow
+        /// </summary>
+        public override void Validate(IWasmValidationContext context)
+        {
+            context.Assert(context.Mems.Contains(M),
+                "Instruction {0} failed with invalid context memory {1}.",Op.GetMnemonic(),M);
+            var mem = context.Mems[M];
+            var at = mem.Limits.AddressType.ToValType();
+            context.OpStack.PopType(at);    // -1
+            context.OpStack.PushType(at);   // +0
+        }
+
+        // @Spec 4.4.7.9. memory.grow
+        public override void Execute(ExecContext context)
+        {
+            //2.
+            context.Assert( context.Frame.Module.MemAddrs.Contains(M),
+                $"Instruction {Op.GetMnemonic()} failed. Memory {M} was not in the Context.");
+            //3.
+            var a = context.Frame.Module.MemAddrs[M];
+            //4.
+            context.Assert( context.Store.Contains(a),
+                $"Instruction {Op.GetMnemonic()} failed. Memory address {a} was not in the Store.");
+            //5.
+            var mem = context.Store[a];
+            var type = mem.Type.Limits.AddressType.ToValType();
+            
+            //6.
+            long sz = mem.Size;
+            //7.
+            context.Assert( context.OpStack.Peek().IsInt,
+                $"Instruction {Op.GetMnemonic()} failed. Wrong type on stack.");
+            //8.
+            long n = context.OpStack.PopAddr();
+            //9.
+            const int err = -1;
+            //10,11 TODO: implement optional constraints on memory.grow
+            if (mem.Grow(n))
+            {
+                switch (type)
+                {
+                    case ValType.I32:
+                        context.OpStack.PushU32((uint)sz);
+                        break;
+                    case ValType.I64:
+                        context.OpStack.PushI64(sz);
+                        break;
+                }
+            }
+            else
+            {
+                switch (type)
+                {
+                    case ValType.I32:
+                        context.OpStack.PushI32(err);
+                        break;
+                    case ValType.I64:
+                        context.OpStack.PushI64(err);
+                        break;
+                }
+            }
+        }
+
+        public override InstructionBase Parse(BinaryReader reader)
+        {
+            M = (MemIdx)reader.ReadByte();
+            return this;
+        }
+
+        public override void RenderBinary(BinaryWriter writer) =>
+            writer.Write((byte)M.Value);
+    }
+
+    //0xFC_08
+    public class InstMemoryInit : InstructionBase
+    {
+        public InstMemoryInit() : base(ByteCode.MemoryInit, -3) { }
+
+        private DataIdx X;
+        private MemIdx Y;
+        public int DataIndex => (int)X.Value;
+        public int MemoryIndex => (int)Y.Value;
+        
+        /// <summary>
+        /// @Spec 3.3.7.14. memory.init
+        /// </summary>
+        public override void Validate(IWasmValidationContext context)
+        {
+            context.Assert(context.Mems.Contains(Y),
+                "Instruction {0} failed with invalid context memory {1}.",Op.GetMnemonic(),Y);
+
+            context.Assert(context.Datas.Contains(X),
+                "Instruction {0} failed with invalid context data {1}.",Op.GetMnemonic(), X);
+
+            var mem = context.Mems[Y];
+            var at = mem.Limits.AddressType.ToValType();
+            
+            context.OpStack.PopI32();       // -1
+            context.OpStack.PopI32();       // -2
+            context.OpStack.PopType(at);    // -3
+        }
+
+        // @Spec 4.4.7.12. memory.init x
+        public override void Execute(ExecContext context)
+        {
+            //2.
+            context.Assert( context.Frame.Module.MemAddrs.Contains(Y),
+                $"Instruction {Op.GetMnemonic()} failed. Address for Memory {Y} did not exist in the context.");
+            //3.
+            var ma = context.Frame.Module.MemAddrs[Y];
+            //4.
+            context.Assert( context.Store.Contains(ma),
+                $"Instruction {Op.GetMnemonic()} failed. Address for Memory {Y} was not in the Store.");
+            //5.
+            var mem = context.Store[ma];
+            var at = mem.Type.Limits.AddressType;
+            
+            //6.
+            context.Assert( context.Frame.Module.DataAddrs.Contains(X),
+                $"Instruction {Op.GetMnemonic()} failed. Address for Data {X} did not exist in the context.");
+            //7.
+            var da = context.Frame.Module.DataAddrs[X];
+            //8.
+            context.Assert( context.Store.Contains(da),
+                $"Instruction {Op.GetMnemonic()} failed. Address for Data {X} was not in the Store.");
+            //9.
+            var data = context.Store[da];
+            
+            //10.
+            context.Assert( context.OpStack.Peek().IsI32,
+                $"Instruction {Op.GetMnemonic()} failed. Wrong type on stack.");
+            //11.
+            long n = (uint)context.OpStack.PopI32();
+            //12.
+            context.Assert( context.OpStack.Peek().IsI32,
+                $"Instruction {Op.GetMnemonic()} failed. Wrong type on stack.");
+            //13.
+            long s = (uint)context.OpStack.PopI32();
+            //14.
+            context.Assert( context.OpStack.Peek().IsInt,
+                $"Instruction {Op.GetMnemonic()} failed. Wrong type on stack.");
+            //15.
+            long d = context.OpStack.PopAddr();
+
+            // Wrap-safe unsigned bounds for memory64; data segment is
+            // always byte[]-bounded so its check stays in long.
+            if ((ulong)s > (ulong)data.Data.Length
+                || (ulong)data.Data.Length - (ulong)s < (ulong)n)
+                throw new TrapException($"Instruction {Op.GetMnemonic()} failed. Data underflow.");
+            if ((ulong)d > (ulong)mem.ByteLength
+                || (ulong)mem.ByteLength - (ulong)d < (ulong)n)
+                throw new TrapException($"Instruction {Op.GetMnemonic()} failed. Memory overflow.");
+
+            // Bulk Span.CopyTo (memmove); mode-aware via mem.AsSpan
+            // and zero-cost on byte[] (Span over the array's data).
+            // (nuint)d for the dst guest memory keeps the AsSpan
+            // dispatch in the unsigned range past 2 GiB. The data
+            // segment is byte[]-bounded so int casts on s/n are safe.
+            if (n == 0) return;
+            new ReadOnlySpan<byte>(data.Data, (int)s, (int)n)
+                .CopyTo(mem.AsSpan((nuint)d, (int)n));
+        }
+
+        public override InstructionBase Parse(BinaryReader reader)
+        {
+            X = (DataIdx)reader.ReadLeb128_u32();
+            Y = (MemIdx)reader.ReadByte();
+            return this;
+        }
+
+        public override void RenderBinary(BinaryWriter writer)
+        {
+            writer.WriteLeb128_u32(X.Value);
+            writer.Write((byte)Y.Value);
+        }
+
+        public InstructionBase Immediate(DataIdx x, MemIdx y)
+        {
+            X = x;
+            Y = y;
+            return this;
+        }
+
+        public override string RenderText(ExecContext? context) => $"{base.RenderText(context)} {X.Value}";
+    }
+
+    //0xFC_09
+    public class InstDataDrop : InstructionBase
+    {
+        public InstDataDrop() : base(ByteCode.DataDrop) { }
+
+        private DataIdx X;
+        public int DataIndex => (int)X.Value;
+        
+        /// <summary>
+        /// @Spec 3.3.7.15. data.drop
+        /// </summary>
+        public override void Validate(IWasmValidationContext context)
+        {
+            context.Assert(context.Datas.Contains(X),
+                "Instruction {0} failed with invalid context data {1}.",Op.GetMnemonic(),X);
+        }
+
+        // @Spec 4.4.7.13
+        public override void Execute(ExecContext context)
+        {
+            //2.
+            context.Assert( context.Frame.Module.DataAddrs.Contains(X),
+                $"Instruction {Op.GetMnemonic()} failed. Address for Data {X} did not exist in the context.");
+            //3.
+            var a = context.Frame.Module.DataAddrs[X];
+            //4.
+            context.Assert( context.Store.Contains(a),
+                $"Instruction {Op.GetMnemonic()} failed. Address for Data {X} was not in the Store.");
+            //5.
+            context.Store.DropData(a);
+        }
+
+        public override InstructionBase Parse(BinaryReader reader)
+        {
+            X = (DataIdx)reader.ReadLeb128_u32();
+            return this;
+        }
+
+        public override void RenderBinary(BinaryWriter writer) =>
+            writer.WriteLeb128_u32(X.Value);
+
+        public InstructionBase Immediate(DataIdx x)
+        {
+            X = x;
+            return this;
+        }
+
+        public override string RenderText(ExecContext? context) => $"{base.RenderText(context)} {X.Value}";
+    }
+
+    //0xFC_0A
+    public class InstMemoryCopy : InstructionBase
+    {
+        public InstMemoryCopy() : base(ByteCode.MemoryCopy, -3) { }
+
+        private MemIdx DstX;
+        private MemIdx SrcY;
+        public int DstMemIndex => (int)DstX.Value;
+        public int SrcMemIndex => (int)SrcY.Value;
+        
+        /// <summary>
+        /// @Spec 3.3.7.13. memory.copy
+        /// </summary>
+        public override void Validate(IWasmValidationContext context)
+        {
+            context.Assert(context.Mems.Contains(SrcY),
+                "Instruction {0} failed with invalid context memory {1}.",Op.GetMnemonic(),SrcY);
+            context.Assert(context.Mems.Contains(DstX),
+                "Instruction {0} failed with invalid context memory {1}.",Op.GetMnemonic(), DstX);
+
+            var memSrcY = context.Mems[SrcY];
+            var memDstX = context.Mems[DstX];
+            var atS = memSrcY.Limits.AddressType;
+            var atD = memDstX.Limits.AddressType;
+            var atN = atS.Min(atD);
+            
+            context.OpStack.PopType(atN.ToValType());   // -1
+            context.OpStack.PopType(atD.ToValType());   // -2
+            context.OpStack.PopType(atS.ToValType());   // -3
+        }
+
+        // @Spec 4.4.7.11. memory.copy
+        public override void Execute(ExecContext context)
+        {
+            //2.
+            context.Assert( context.Frame.Module.MemAddrs.Contains(SrcY),
+                
+                $"Instruction {Op.GetMnemonic()} failed. Address for Memory {SrcY} did not exist in the context.");
+            //3.
+            context.Assert( context.Frame.Module.MemAddrs.Contains(DstX),
+                
+                $"Instruction {Op.GetMnemonic()} failed. Address for Memory {DstX} did not exist in the context.");
+            //4.
+            var sa = context.Frame.Module.MemAddrs[SrcY];
+            //5.
+            var da = context.Frame.Module.MemAddrs[DstX];
+            //6.
+            context.Assert( context.Store.Contains(da),
+                $"Instruction {Op.GetMnemonic()} failed. Address for Memory {SrcY} was not in the Store.");
+            //7.
+            context.Assert( context.Store.Contains(da),
+                $"Instruction {Op.GetMnemonic()} failed. Address for Memory {DstX} was not in the Store.");
+            //8.
+            var memSrc = context.Store[sa];
+            //9.
+            var memDst = context.Store[da];
+            
+            //10.
+            context.Assert( context.OpStack.Peek().IsInt,
+                $"Instruction {Op.GetMnemonic()} failed. Wrong type on stack.");
+            //11.
+            long n = context.OpStack.PopAddr();
+            //12.
+            context.Assert( context.OpStack.Peek().IsInt,
+                $"Instruction {Op.GetMnemonic()} failed. Wrong type on stack.");
+            //13.
+            long s = context.OpStack.PopAddr();
+            //14.
+            context.Assert( context.OpStack.Peek().IsInt,
+                $"Instruction {Op.GetMnemonic()} failed. Wrong type on stack.");
+            //15.
+            long d = context.OpStack.PopAddr();
+            //16. Wrap-safe unsigned bounds — memory64 addresses
+            // can sit anywhere in [0, 2^64); the spec wraps in u64
+            // arithmetic but out-of-bounds at the byte level still
+            // traps.
+            if ((ulong)s > (ulong)memSrc.ByteLength
+                || (ulong)memSrc.ByteLength - (ulong)s < (ulong)n)
+                throw new TrapException($"Instruction {Op.GetMnemonic()} failed. Source memory overflow.");
+            if ((ulong)d > (ulong)memDst.ByteLength
+                || (ulong)memDst.ByteLength - (ulong)d < (ulong)n)
+                throw new TrapException($"Instruction {Op.GetMnemonic()} failed. Destination memory overflow.");
+
+            // Span<byte>.CopyTo dispatches to Buffer.Memmove and
+            // handles overlap correctly across both modes. Both src
+            // and dst go through the (nuint, int) AsSpan overload so
+            // the high half of NativePointer memory addresses round-
+            // trip without sign truncation.
+            if (n == 0) return;
+            memSrc.AsSpan((nuint)s, (int)n).CopyTo(memDst.AsSpan((nuint)d, (int)n));
+        }
+
+        public override InstructionBase Parse(BinaryReader reader)
+        {
+            DstX = (MemIdx)reader.ReadByte();
+            SrcY = (MemIdx)reader.ReadByte();
+            return this;
+        }
+
+        public override void RenderBinary(BinaryWriter writer)
+        {
+            writer.Write((byte)DstX.Value);
+            writer.Write((byte)SrcY.Value);
+        }
+    }
+
+    //0xFC_0B
+    public class InstMemoryFill : InstructionBase
+    {
+        public InstMemoryFill() : base(ByteCode.MemoryFill, -3) { }
+
+        private MemIdx X;
+        public int MemoryIndex => (int)X.Value;
+        
+        /// <summary>
+        /// @Spec 3.3.7.12. memory.fill
+        /// </summary>
+        public override void Validate(IWasmValidationContext context)
+        {
+            context.Assert(context.Mems.Contains(X),
+                "Instruction {0} failed with invalid context memory {1}.",Op.GetMnemonic(),X);
+            
+            var mem = context.Mems[X];
+            var at = mem.Limits.AddressType;
+            context.OpStack.PopType(at.ToValType());    // -1
+            context.OpStack.PopI32();                   // -2  
+            context.OpStack.PopType(at.ToValType());    // -3
+        }
+
+        // @Spec 4.4.7.10. memory.fill
+        public override void Execute(ExecContext context)
+        {
+            //2.
+            context.Assert( context.Frame.Module.MemAddrs.Contains(X),
+                
+                $"Instruction {Op.GetMnemonic()} failed. Address for Memory {X} did not exist in the context.");
+            //3.
+            var a = context.Frame.Module.MemAddrs[X];
+            //4.
+            context.Assert( context.Store.Contains(a),
+                $"Instruction {Op.GetMnemonic()} failed. Address for Memory {X} was not in the Store.");
+            //5.
+            var mem = context.Store[a];
+            var at = mem.Type.Limits.AddressType;
+
+            //6.
+            context.Assert( context.OpStack.Peek().IsI32,
+                $"Instruction {Op.GetMnemonic()} failed. Wrong type on stack.");
+            //7.
+            long n = (uint)context.OpStack.PopI32();
+            //8,9. YOLO
+            var val = context.OpStack.PopAny();
+            uint cU32 = val;
+            //10.
+            context.Assert( context.OpStack.Peek().IsInt,
+                $"Instruction {Op.GetMnemonic()} failed. Wrong type on stack.");
+            //11.
+            long d = context.OpStack.PopAddr();
+            //12. Wrap-safe unsigned bounds for memory64.
+            if ((ulong)d > (ulong)mem.ByteLength
+                || (ulong)mem.ByteLength - (ulong)d < (ulong)n)
+                throw new TrapException("Instruction memory.fill failed. Buffer overflow");
+
+            // Bulk Span.Fill — mode-aware via mem.AsSpan. The
+            // (nuint, int) overload preserves the full unsigned dst
+            // range so NativePointer memories past 2 GiB don't wrap.
+            if (n == 0) return;
+            mem.AsSpan((nuint)d, (int)n).Fill((byte)(0xFF & cU32));
+        }
+
+        public override InstructionBase Parse(BinaryReader reader)
+        {
+            X = (MemIdx)reader.ReadByte();
+            return this;
+        }
+
+        public override void RenderBinary(BinaryWriter writer) =>
+            writer.Write((byte)X.Value);
+    }
+}

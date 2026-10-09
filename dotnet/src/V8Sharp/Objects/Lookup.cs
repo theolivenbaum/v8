@@ -478,6 +478,7 @@ public struct LookupIterator
                 {
                     if (isElement || !_name!.IsAnyPrivate) return StateKind.MODULE_NAMESPACE;
                 }
+                if (Map.IsWasmObjectMap(map)) return StateKind.WASM_OBJECT;
                 if (map.IsAccessCheckNeeded)
                 {
                     if (isElement || !_name!.IsPrivateInternal) return StateKind.ACCESS_CHECK;
