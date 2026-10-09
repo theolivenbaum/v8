@@ -276,6 +276,12 @@ sealed class V8SharpRealm(V8SharpJsIsolate owner, NativeContext context) : IJsRe
             ReferenceEquals(o.Map, Context.SyntaxErrorFunction.InitialMap);
         if (message is null) return new JsExceptionInfo(exception, IsSyntaxError: isSyntax);
         string name = message.Script.Name.HeapObjectOrNull is JSString n ? n.ToString() : "undefined";
+        if (message.Script.ScriptType == Script.Type.Wasm && message.Script.WasmModuleObject is { } wasmModule)
+        {
+            // d8 prints wasm-function[(function index)]:(offset): (message).
+            return new JsExceptionInfo(exception, name, 0, message.StartPosition, message.StartPosition, null, isSyntax,
+                V8Sharp.Wasm.WasmStackTraces.GetContainingFunction(wasmModule, message.StartPosition));
+        }
         int line = message.GetLineNumber();
         if (message.StartPosition < 0) return new JsExceptionInfo(exception, name, line, IsSyntaxError: isSyntax);
         int start = message.GetColumnNumber();

@@ -868,8 +868,11 @@ public sealed class Map : HeapObject
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsSpecialReceiverMap(Map map)
     {
+        // V8 places the wasm object types among the special receivers
+        // (LAST_SPECIAL_RECEIVER_TYPE); V8Sharp's enum has them later.
         bool result = map.InstanceType <= InstanceType.JSSpecialApiObjectType ||
-                      map.InstanceType is InstanceType.JSModuleNamespaceType or InstanceType.JSDeferredModuleNamespaceType;
+                      map.InstanceType is InstanceType.JSModuleNamespaceType or InstanceType.JSDeferredModuleNamespaceType
+                          or InstanceType.WasmStructType or InstanceType.WasmArrayType;
         return result || map.HasNamedInterceptor || map.IsAccessCheckNeeded;
     }
 
@@ -878,6 +881,9 @@ public sealed class Map : HeapObject
         map.InstanceType <= InstanceType.JSPrimitiveWrapperType || IsSpecialReceiverMap(map) || map.HasIndexedInterceptor;
 
     public static bool IsJSGlobalObjectMap(Map map) => map.InstanceType == InstanceType.JSGlobalObjectType;
+
+    /// <summary>IsWasmObjectMap: a wasm struct or array (an opaque receiver).</summary>
+    public static bool IsWasmObjectMap(Map map) => map.InstanceType is InstanceType.WasmStructType or InstanceType.WasmArrayType;
     public static bool IsJSGlobalProxyMap(Map map) => map.InstanceType == InstanceType.JSGlobalProxyType;
     public static bool IsJSProxyMap(Map map) => map.InstanceType == InstanceType.JSProxyType;
     public static bool IsJSObjectMap(Map map) => InstanceTypeChecks.IsJSObject(map.InstanceType);

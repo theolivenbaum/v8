@@ -1,6 +1,7 @@
 // Port of Runtime::IsEnabledForFuzzing (src/runtime/runtime.cc): which
 // runtime functions natives syntax may call under --fuzzing. The test list is
-// FOR_EACH_INTRINSIC_TEST of src/runtime/runtime.h (no WebAssembly).
+// FOR_EACH_INTRINSIC_TEST and FOR_EACH_INTRINSIC_WASM_TEST of
+// src/runtime/runtime.h.
 
 namespace V8Sharp.Runtime;
 
@@ -39,6 +40,10 @@ public static class RuntimeFuzzing
             case FunctionId.IsEfficiencyModeEnabled:
             case FunctionId.BaselineOsr:
             case FunctionId.CompileBaseline:
+            case FunctionId.WasmArray:
+            case FunctionId.WasmStruct:
+            case FunctionId.WasmTierUpFunction:
+            case FunctionId.WasmTriggerTierUpForTesting:
                     return true;
                 default:
                     return false;
@@ -67,6 +72,13 @@ public static class RuntimeFuzzing
             case FunctionId.StringIsFlat:
             case FunctionId.GetInitializerFunction:
             case FunctionId.ArrayBufferDetachForceWasm:
+            case FunctionId.WasmTraceEnter:
+            case FunctionId.WasmTraceExit:
+            case FunctionId.WasmTraceMemory:
+            case FunctionId.WasmTraceGlobal:
+            case FunctionId.CheckIsOnCentralStack:
+            case FunctionId.SetWasmInstantiateControls:
+            case FunctionId.FreezeWasmLazyCompilation:
             case FunctionId.ConstructDouble:
             case FunctionId.SerializeDeserializeNow:
             case FunctionId.CompleteInobjectSlackTracking:
@@ -249,6 +261,44 @@ public static class RuntimeFuzzing
             case FunctionId.GetHoleNaNUpper:
             case FunctionId.GetHoleNaN:
             case FunctionId.GetUndefinedNaN:
+            case FunctionId.BuildRefTypeBitfield:
+            case FunctionId.CheckIsOnCentralStack:
+            case FunctionId.CountUnoptimizedWasmToJSWrapper:
+            case FunctionId.DisallowWasmCodegen:
+            case FunctionId.EstimateCurrentMemoryConsumption:
+            case FunctionId.FlushLiftoffCode:
+            case FunctionId.FreezeWasmLazyCompilation:
+            case FunctionId.GenerateWasmCompilationHints:
+            case FunctionId.GetWasmExceptionTagId:
+            case FunctionId.GetWasmExceptionValues:
+            case FunctionId.GetWasmRecoveredTrapCount:
+            case FunctionId.HasUnoptimizedWasmToJSWrapper:
+            case FunctionId.IsLiftoffFunction:
+            case FunctionId.IsTurboFanFunction:
+            case FunctionId.IsUncompiledWasmFunction:
+            case FunctionId.IsWasmCode:
+            case FunctionId.IsWasmDebugFunction:
+            case FunctionId.IsWasmPartialOOBWriteNoop:
+            case FunctionId.IsWasmTrapHandlerEnabled:
+            case FunctionId.SetWasmCompileControls:
+            case FunctionId.SetWasmInstantiateControls:
+            case FunctionId.WasmArray:
+            case FunctionId.WasmCompiledExportWrappersCount:
+            case FunctionId.WasmDeoptsExecutedCount:
+            case FunctionId.WasmDeoptsExecutedForFunction:
+            case FunctionId.WasmEnterDebugging:
+            case FunctionId.WasmGetNumberOfInstances:
+            case FunctionId.WasmLeaveDebugging:
+            case FunctionId.WasmNumCodeSpaces:
+            case FunctionId.WasmStruct:
+            case FunctionId.WasmSwitchToTheCentralStackCount:
+            case FunctionId.WasmTierUpFunction:
+            case FunctionId.WasmTraceEnter:
+            case FunctionId.WasmTraceExit:
+            case FunctionId.WasmTraceMemory:
+            case FunctionId.WasmTriggerCodeGC:
+            case FunctionId.WasmTraceGlobal:
+            case FunctionId.WasmTriggerTierUpForTesting:
                 return true;
             default:
                 return false;

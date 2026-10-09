@@ -1,0 +1,757 @@
+// Copyright 2024 Kelvin Nishikawa
+// 
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+// 
+//     http://www.apache.org/licenses/LICENSE-2.0
+// 
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Runtime.ExceptionServices;
+using System.Threading;
+using Wacs.Core.Validation;
+using Wacs.Core.Instructions;
+using Wacs.Core.Instructions.Numeric;
+using Wacs.Core.OpCodes;
+using Wacs.Core.Runtime.Concurrency;
+using Wacs.Core.Runtime.Exceptions;
+using Wacs.Core.Runtime.Types;
+using Wacs.Core.Types;
+using Wacs.Core.Types.Defs;
+
+// using System.Diagnostics.CodeAnalysis;
+
+namespace Wacs.Core.Runtime
+{
+    public partial class WasmRuntime
+    {
+        private readonly Dictionary<(string module, string entity), IAddress?> _entityBindings = new();
+
+        // Direct-link-coverage set: <c>(module, entity)</c> pairs that
+        // a transpiler-direct-link bundle resolves at IL-emit time. The
+        // emitted IL hardcodes the call into the bundle's typed
+        // interface and never reads back from <see cref="_entityBindings"/>;
+        // any subsequent <see cref="BindHostFunction{TDelegate}"/> call
+        // for the same entity would silently shadow nothing useful and
+        // risks aliasing the resource-handle namespace across two
+        // independent registries (the bundle's
+        // <c>WasiPreview2Resources</c> + the IBindable's per-host
+        // tables). When an entity is in this set, BindHostFunction
+        // no-ops the registration. Populated by the transpiler's
+        // import pre-pass before <c>configureImports</c> runs.
+        private readonly HashSet<(string module, string entity)>
+            _directLinkProvidedEntities = new();
+
+        private readonly List<ModuleInstance> _moduleInstances = new();
+        private readonly Dictionary<string, ModuleInstance> _registeredModules = new();
+
+        private readonly SharedRuntimeState _shared;
+
+        /// <summary>
+        /// Instantiation-time <see cref="ExecContext"/>. Owns the link-time state
+        /// (<c>_linkLabelStack</c>, <c>LinkConstants</c>, etc.) and is the slot bound
+        /// to the thread that constructed the <see cref="WasmRuntime"/>.
+        /// <para>Module instantiation is single-threaded and always runs against this
+        /// context; see <see cref="InstantiateModule"/>.</para>
+        /// </summary>
+        private readonly ExecContext Context;
+
+        /// <summary>
+        /// Per-thread <see cref="ExecContext"/> slots. Each host thread that enters
+        /// the runtime (e.g. via <c>CreateInvoker</c>) lazily gets its own context
+        /// on first access — with its own operand stack, frame pool, locals pool,
+        /// call stack — while sharing <see cref="_shared"/> (Store, Attributes,
+        /// linked instruction arrays) by reference.
+        ///
+        /// <para>The constructing thread's slot is pre-bound to <see cref="Context"/>
+        /// so the single-threaded case preserves existing behavior exactly.</para>
+        ///
+        /// <para>Keyed by <see cref="Thread.CurrentThread.ManagedThreadId"/> rather
+        /// than using <see cref="ThreadLocal{T}"/> — the latter's managed-slot
+        /// allocation crashed .NET's test host when many short-lived
+        /// <see cref="WasmRuntime"/> instances were created in sequence
+        /// (observed during spec-suite runs). The dictionary approach has the
+        /// same per-thread lookup semantics with bounded-lifetime storage.</para>
+        /// </summary>
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<int, ExecContext> _threadContext
+            = new();
+
+        public ExecContext ExecContext => GetExecContext();
+
+        private IWasmThreadHost? _threadHost;
+
+        /// <summary>
+        /// Spawn wasm threads against this runtime. Lazily creates a default
+        /// <see cref="ThreadBasedHost"/> on first access; hosts that need a custom
+        /// thread strategy (e.g. a Unity main-thread-aware host, or a pooled
+        /// thread-dispatching host) can assign their own implementation.
+        ///
+        /// <para>Both wasi-threads (via a <c>thread-spawn</c> host import adapter
+        /// that calls into this) and shared-everything's future <c>thread.spawn</c>
+        /// instruction dispatch through the same primitive.</para>
+        /// </summary>
+        public IWasmThreadHost ThreadHost
+        {
+            get => _threadHost ??= new ThreadBasedHost(this);
+            set => _threadHost = value ?? throw new ArgumentNullException(nameof(value));
+        }
+
+        /// <summary>
+        /// Returns the calling thread's <see cref="ExecContext"/>, lazily creating
+        /// one on first access for non-constructing threads. Handlers take
+        /// <c>ExecContext ctx</c> as a parameter and stay on one thread — this helper
+        /// is only called from the runtime's outer entry points (CreateInvoker,
+        /// InstantiateModule glue, binding lookups).
+        /// </summary>
+        private ExecContext GetExecContext() =>
+            _threadContext.GetOrAdd(Thread.CurrentThread.ManagedThreadId, _ => new ExecContext(_shared));
+
+        private Store Store => _shared.Store;
+        public Store RuntimeStore => _shared.Store;
+
+        //Cached instructions for module initialization
+        private readonly InstElemDrop _dropInst;
+        private readonly InstI32Const _i32ConstInst;
+        private readonly InstTableInit _tableInitInst;
+        private readonly InstMemoryInit _memoryInitInst;
+        private readonly InstDataDrop _dataDropInst;
+
+        public WasmRuntime(RuntimeAttributes? attributes = null)
+        {
+            _shared = new SharedRuntimeState(new Store(), attributes ?? new RuntimeAttributes());
+            Context = new ExecContext(_shared);
+
+            // Pre-bind the constructing thread's slot to Context so existing
+            // single-threaded use sees identical behavior; any other thread gets
+            // its own fresh ExecContext on first access, sharing _shared by reference.
+            _threadContext[Thread.CurrentThread.ManagedThreadId] = Context;
+
+            //Cached instructions for module initialization
+            _dropInst = SpecFactory.Factory.CreateInstruction<InstElemDrop>(ExtCode.ElemDrop);
+            _i32ConstInst = SpecFactory.Factory.CreateInstruction<InstI32Const>(OpCode.I32Const);
+            _tableInitInst = SpecFactory.Factory.CreateInstruction<InstTableInit>(ExtCode.TableInit);
+            _memoryInitInst = SpecFactory.Factory.CreateInstruction<InstMemoryInit>(ExtCode.MemoryInit);
+            _dataDropInst = SpecFactory.Factory.CreateInstruction<InstDataDrop>(ExtCode.DataDrop);
+        }
+
+        /// <summary>
+        /// @Spec 4.5.3.10. Modules Allocation
+        /// *We also evaluate globals and elements here, per instantiation
+        /// </summary>
+        private ModuleInstance AllocateModule(Module module,
+            MemoryStorageMode memStorage = MemoryStorageMode.ManagedArray)
+        {
+            //20. Include Types from module
+            var moduleInstance = new ModuleInstance(module);
+
+            //Resolve Imports
+            for (int importIndex = 0; importIndex < module.Imports.Length; importIndex++)
+            {
+                var import = module.Imports[importIndex];
+                var entityId = (module: import.ModuleName, entity: import.Name);
+                switch (import.Desc)
+                {
+                    case Module.ImportDesc.FuncDesc funcDesc:
+                        // @Spec 4.5.3.2. @note: Host Functions must be bound to the environment prior to module instantiation!
+                        var type = moduleInstance.Types[funcDesc.TypeIndex];
+                        var funcSig = type.Expansion as FunctionType;
+                        if (funcSig is null)
+                            throw new InvalidDataException($"Function had invalid type:{type}");
+                        if (ResolveImport(importIndex, entityId) is not FuncAddr funcAddr)
+                            throw new NotSupportedException(
+                                $"The imported Function was not provided by the environment: {entityId.module}.{entityId.entity} {funcSig.ToNotation()}");
+                        var functionInstance = Store[funcAddr];
+                        // V8Sharp: an embedder that resolves the imports itself has
+                        // checked their types (across modules, by canonical type);
+                        // the checks below compare types with this module's indices.
+                        if (_explicitImports == null && functionInstance is FunctionInstance wasmFunc)
+                        {
+                            wasmFunc.SetName(entityId.entity);
+                            if (!wasmFunc.DefType.Matches(type, moduleInstance.Types))
+                                throw new NotSupportedException(
+                                    $"Recursive Type mismatch while importing Function {entityId.module}.{entityId.entity}: expected {funcSig.ToNotation()}, env provided Function {functionInstance.Type.ToNotation()}");    
+                        }
+                        if (_explicitImports == null && !functionInstance.Type.Matches(funcSig, moduleInstance.Types))
+                            throw new NotSupportedException(
+                                $"Type mismatch while importing Function {entityId.module}.{entityId.entity}: expected {funcSig.ToNotation()}, env provided Function {functionInstance.Type.ToNotation()}");
+                        //14. external imported addresses first
+                        moduleInstance.FuncAddrs.Add(funcAddr);
+                        break;
+                    case Module.ImportDesc.TableDesc tableDesc:
+                        var tableType = tableDesc.TableDef;
+                        if (ResolveImport(importIndex, entityId) is not TableAddr tableAddr)
+                            throw new NotSupportedException(
+                                $"The imported Table was not provided by the environment: {entityId.module}.{entityId.entity}");
+                        var tableInstance = Store[tableAddr];
+                        if (_explicitImports == null && !tableType.IsCompatibleWith(tableInstance.Type))
+                            throw new NotSupportedException(
+                                $"Type mismatch while importing Table {entityId.module}.{entityId.entity}: expected {tableType}, env provided Table {tableInstance.Type}");
+                        //15. external imported addresses first
+                        moduleInstance.TableAddrs.Add(tableAddr);
+                        break;
+                    case Module.ImportDesc.MemDesc memDesc:
+                        var memType = memDesc.MemDef;
+                        if (ResolveImport(importIndex, entityId) is not MemAddr memAddr)
+                            throw new NotSupportedException(
+                                $"The imported Memory was not provided by the environment: {entityId.module}.{entityId.entity}");
+                        var memInstance = Store[memAddr];
+                        if (_explicitImports == null && !memType.IsCompatibleWith(memInstance.Type))
+                            throw new NotSupportedException(
+                                $"Type mismatch while importing Memory {entityId.module}.{entityId.entity}: expected {memType}, env provided Memory {memInstance.Type}");
+                        //16. external imported addresses first
+                        moduleInstance.MemAddrs.Add(memAddr);
+                        break;
+                    case Module.ImportDesc.GlobalDesc globalDesc:
+                        var globalType = globalDesc.GlobalDef;
+                        if (ResolveImport(importIndex, entityId) is not GlobalAddr globalAddr)
+                            throw new NotSupportedException(
+                                $"The imported Global was not provided by the environment: {entityId.module}.{entityId.entity}");
+                        var globalInstance = Store[globalAddr];
+                        if (_explicitImports == null && globalType.Mutability != globalInstance.Type.Mutability)
+                            throw new NotSupportedException(
+                                $"Mutability mismatch while importing Global {entityId.module}.{entityId.entity} {globalType}, env provided Global {globalInstance.Type}");
+                        if (_explicitImports == null && globalInstance.Type.ContentType.IsDefType() &&
+                            !moduleInstance.Types.Contains(globalInstance.Type.ContentType.Index()))
+                            throw new NotSupportedException(
+                                $"Incompatible import type for Global {entityId.module}.{entityId.entity}: {globalInstance.Type}");
+                        if (_explicitImports == null && !globalInstance.Type.Matches(globalType, moduleInstance.Types))
+                            throw new NotSupportedException(
+                                $"Type mismatch while importing Global {entityId.module}.{entityId.entity}: expected {globalType}, env provided Global {globalInstance.Type}");
+                        
+                        //17. external imported addresses first
+                        moduleInstance.GlobalAddrs.Add(globalAddr);
+                        break;
+                    case Module.ImportDesc.TagDesc tagDesc:
+                        if (ResolveImport(importIndex, entityId) is not TagAddr tagAddr)
+                            throw new NotSupportedException(
+                                $"The imported Tag was not provided by the environment: {entityId.module}.{entityId.entity}");
+                        var tagInstance = Store[tagAddr];
+                        var importedType = tagInstance.Type;
+                        var tagType = moduleInstance.Types[tagDesc.TagDef.TypeIndex];
+                        if (_explicitImports == null && !importedType.Matches(tagType, moduleInstance.Types))
+                            throw new NotSupportedException(
+                                $"Type mismatch while importing Tag {entityId.module}.{entityId.entity}: expected {tagType.Expansion}, env provided Tag {tagInstance.Type}");
+                        
+                        moduleInstance.TagAddrs.Add(tagAddr);
+                        break;
+                }
+            }
+
+            
+            //2. Allocate Functions and capture their addresses in the Store
+            //8. index ordered function addresses
+            foreach (var func in module.Funcs)
+            {
+                var addr = AllocateWasmFunc(Store, func, moduleInstance);
+                moduleInstance.FuncAddrs.Add(addr);
+                // Carry the parsed name (set by AnnotateWhileParsing
+                // — e.g. "$inner|2") onto the FunctionInstance so
+                // stack-trace formatting can label non-exported
+                // functions without falling back to "func@addr".
+                // Export-name overrides happen later in the
+                // instantiation flow and take precedence by
+                // intent: an export gives the function its public
+                // identity.
+                if (!string.IsNullOrEmpty(func.Id))
+                {
+                    var funcInst = Store[addr];
+                    if (string.IsNullOrEmpty(funcInst.Id))
+                        funcInst.SetName(func.Id);
+                }
+            }
+
+            //@Spec 4.5.4 Step 7
+            //3. Allocate Tables and capture their addresses in the Store
+            //9. index ordered table addresses
+            foreach (var table in module.Tables)
+            {
+                var refVal = EvaluateInitializer(moduleInstance, table.Init);
+                moduleInstance.TableAddrs.Add(AllocateTable(Store, table, refVal));
+            }
+
+            //4. Allocate Memories and capture their addresses in the Store
+            //10. index ordered memory addresses
+            foreach (var mem in module.Memories)
+            {
+                moduleInstance.MemAddrs.Add(AllocateMemory(Store, mem, memStorage));
+            }
+            //Make the address space permanent
+            moduleInstance.MemAddrs.Finalize();
+
+            
+            foreach (var tag in module.Tags)
+            {
+                if (tag.Attribute != TagTypeAttribute.Exception)
+                    throw new InvalidDataException($"Tag must be an exception tag, found {tag.Attribute}");
+                if (!moduleInstance.Types.Contains(tag.TypeIndex))
+                    throw new InvalidDataException($"Tag type index {tag.TypeIndex} not found in types");
+                var tagType = moduleInstance.Types[tag.TypeIndex];
+                if (tagType.Expansion is not FunctionType)
+                    throw new InvalidDataException($"Tag type must be a function type, found {tagType.Expansion}");
+
+                moduleInstance.TagAddrs.Add(AllocateTag(Store, tagType));
+            }
+            
+            //5. Allocate Globals and capture their addresses in the Store
+            //11. index ordered global addresses
+            foreach (var global in module.Globals)
+            {
+                var val = EvaluateInitializer(moduleInstance, global.Initializer);
+                moduleInstance.GlobalAddrs.Add(AllocateGlobal(Store, global.Type, val));
+            }
+
+            //6. Allocate Elements
+            //12. index ordered element addresses
+            foreach (var elem in module.Elements)
+            {
+                var refs = EvaluateInitializers(moduleInstance, elem.Initializers);
+                moduleInstance.ElemAddrs.Add(AllocateElement(Store, elem.Type, refs));
+            }
+
+            // @Spec 4.5.4 Step 10
+
+            //7. Allocate Datas
+            //13. index ordered data addresses
+            foreach (var data in module.Datas)
+            {
+                moduleInstance.DataAddrs.Add(AllocateData(Store, data.Init));
+            }
+
+            //18. Collect exports
+            //Process Exports, keep them, so they can be bound with a module name and imported by later modules.
+            HashSet<string> exportedEntities = new();
+            foreach (var export in module.Exports)
+            {
+                if (exportedEntities.Contains(export.Name))
+                    throw new InvalidDataException($"Module had multiple exports named {export.Name}");
+                exportedEntities.Add(export.Name);
+                
+                var desc = export.Desc;
+                ExternalValue val = desc switch
+                {
+                    Module.ExportDesc.FuncDesc funcDesc =>
+                        new ExternalValue.Function(moduleInstance.FuncAddrs[funcDesc.FunctionIndex]),
+                    Module.ExportDesc.TableDesc tableDesc =>
+                        new ExternalValue.Table(moduleInstance.TableAddrs[tableDesc.TableIndex]),
+                    Module.ExportDesc.MemDesc memDesc =>
+                        new ExternalValue.Memory(moduleInstance.MemAddrs[memDesc.MemoryIndex]),
+                    Module.ExportDesc.GlobalDesc globalDesc =>
+                        new ExternalValue.Global(moduleInstance.GlobalAddrs[globalDesc.GlobalIndex]),
+                    Module.ExportDesc.TagDesc tagDesc =>
+                        new ExternalValue.Tag(moduleInstance.TagAddrs[tagDesc.TagIndex]),
+                    _ =>
+                        throw new InvalidDataException($"Invalid Export {desc}")
+                };
+                var exportInstance = new ExportInstance(export.Name, val);
+                //19. indexed export addresses
+                moduleInstance.Exports.Add(exportInstance);
+            }
+
+            //Patch in export names
+            var exportedFuncs = moduleInstance.Exports
+                .Where(exp => exp.Value is ExternalValue.Function);
+            foreach (var export in exportedFuncs)
+            {
+                var funcDesc = export.Value as ExternalValue.Function;
+                var funcAddr = funcDesc!.Address;
+                var funcInst = Store[funcAddr];
+                if (!funcInst.IsExport)
+                {
+                    funcInst.SetName(export.Name);
+                    funcInst.IsExport = true;
+                }
+            }
+
+            // Layer 5a/5b: shared-everything-threads declared-per-instance flags.
+            // Rejects globals/tables that advertise `shared` or
+            // `thread_local` without the runtime opting into the proposal.
+            // Preserves baseline behavior when the flag is off.
+            for (int i = 0; i < moduleInstance.GlobalAddrs.Count; i++)
+            {
+                var g = Store[moduleInstance.GlobalAddrs[(GlobalIdx)(uint)i]];
+                if ((g.Type.Shared || g.Type.ThreadLocal)
+                    && !_shared.Attributes.EnableSharedEverythingThreads)
+                {
+                    throw new NotSupportedException(
+                        $"Global {i} uses a shared-everything-threads annotation (shared/thread_local) " +
+                        "but the runtime has not opted in via RuntimeAttributes.EnableSharedEverythingThreads.");
+                }
+            }
+            for (int i = 0; i < moduleInstance.TableAddrs.Count; i++)
+            {
+                var t = Store[moduleInstance.TableAddrs[(TableIdx)(uint)i]];
+                if (t.Type.Limits.Shared
+                    && !_shared.Attributes.EnableSharedEverythingThreads)
+                {
+                    throw new NotSupportedException(
+                        $"Table {i} is declared shared but the runtime has not opted in " +
+                        "via RuntimeAttributes.EnableSharedEverythingThreads.");
+                }
+            }
+
+            // Mark globals/tables as shared based on:
+            //   - Layer 5a/5b: declared-per-instance `shared` flag (authoritative when present).
+            //   - Layer 2b: module-has-shared-memory approximation (fallback for
+            //     threads-1.0 modules that predate per-declaration annotations).
+            // Either source flips IsShared; declaration-driven instances are
+            // also concurrent-accessible under threads-1.0 runtimes.
+            bool moduleThreadingActive =
+                _shared.Attributes.ConcurrencyPolicy.Mode == Concurrency.ConcurrencyPolicyMode.HostDefined
+                && ModuleHasSharedMemory(moduleInstance);
+
+            for (int i = 0; i < moduleInstance.GlobalAddrs.Count; i++)
+            {
+                var g = Store[moduleInstance.GlobalAddrs[(GlobalIdx)(uint)i]];
+                if (g.Type.Shared || moduleThreadingActive)
+                    g.EnableConcurrentAccess();
+            }
+            for (int i = 0; i < moduleInstance.TableAddrs.Count; i++)
+            {
+                var t = Store[moduleInstance.TableAddrs[(TableIdx)(uint)i]];
+                if (t.Type.Limits.Shared || moduleThreadingActive)
+                    t.EnableConcurrentAccess();
+            }
+
+            return moduleInstance;
+        }
+
+        private bool ModuleHasSharedMemory(ModuleInstance moduleInstance)
+        {
+            for (int i = 0; i < moduleInstance.MemAddrs.Count; i++)
+            {
+                if (Store[moduleInstance.MemAddrs.At(i)].Type.Limits.Shared)
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// @Spec 4.5.4. Instantiation
+        /// </summary>
+        public ModuleInstance InstantiateModule(Module module, RuntimeOptions? options = default)
+        {
+            options ??= new RuntimeOptions();
+            
+            Stopwatch instantiationTimer = new();
+            if (options.TimeInstantiation)
+            {
+                instantiationTimer.Reset();
+                instantiationTimer.Start();
+            }
+            
+            try
+            {
+                //1
+                if (!options.SkipModuleValidation)
+                    module.ValidateAndThrow(GetExecContext().Attributes);
+            }
+            catch (ValidationException exc)
+            {
+                ExceptionDispatchInfo.Throw(exc);
+            }
+            
+            ModuleInstance moduleInstance = null!;
+            try
+            {
+                Store.OpenTransaction();
+                
+                if (GetExecContext().OpStack.Count != GetExecContext().FlushOpStackFloor)
+                    throw new WasmRuntimeException("OpStack should be empty");
+
+                //2, 3, 4 Checks if imports are satisfied
+                moduleInstance = AllocateModule(module, options.MemoryStorage);
+
+                //12.
+                var auxFrame = GetExecContext().ReserveFrame(moduleInstance, 0);
+                //13.
+                GetExecContext().PushFrame(auxFrame);
+                try
+                {
+                    //14, 15
+                    for (int i = 0, l = module.Elements.Length; i < l; ++i)
+                    {
+                        var elem = module.Elements[i];
+                        switch (elem.Mode)
+                        {
+                            case Module.ElementMode.ActiveMode activeMode:
+                                activeMode.Offset.ExecuteInitializer(Context);
+                                _i32ConstInst.Immediate(0).Execute(Context);
+                                _i32ConstInst.Immediate(elem.Initializers.Length).Execute(Context);
+                                _tableInitInst.Immediate(activeMode.TableIndex, (ElemIdx)i).Execute(Context);
+                                _dropInst.Immediate((ElemIdx)i).Execute(Context);
+                                break;
+                            case Module.ElementMode.DeclarativeMode declarativeMode:
+                                _ = declarativeMode;
+                                _dropInst.Immediate((ElemIdx)i).Execute(Context);
+                                break;
+                        }
+                    }
+
+                    //16.
+                    for (int i = 0, l = module.Datas.Length; i < l; ++i)
+                    {
+                        var data = module.Datas[i];
+                        switch (data.Mode)
+                        {
+                            case Module.DataMode.ActiveMode activeMode:
+                                activeMode.Offset.ExecuteInitializer(Context);
+                                _i32ConstInst.Immediate(0).Execute(Context);
+                                _i32ConstInst.Immediate(data.Init.Length).Execute(Context);
+                                _memoryInitInst.Immediate((DataIdx)i, activeMode.MemoryIndex).Execute(Context);
+                                _dataDropInst.Immediate((DataIdx)i).Execute(Context);
+                                break;
+                            case Module.DataMode.PassiveMode: //Do nothing
+                                break;
+                        }
+                    }
+                }
+                catch (TrapException exc)
+                {
+                    //Linking may succeed, so we commit the transaction
+                    Store.CommitTransaction();
+                    Store.OpenTransaction();
+                    // V8Sharp: the frames are flushed by the outer handler,
+                    // after linking (which needs the module's frame).
+                    ExceptionDispatchInfo.Throw(exc);
+                }
+                finally
+                {
+                    if (SuperInstruction)
+                        ApplySuperInstructions(moduleInstance);
+
+                    LinkModule(moduleInstance);
+
+                    GetExecContext().CacheInstructions();
+                }
+                
+                //17. 
+                if (module.StartIndex != FuncIdx.Default)
+                {
+                    if (!moduleInstance.FuncAddrs.Contains(module.StartIndex))
+                        throw new ValidationException("Module StartFunction index was invalid");
+                    
+                    var startAddr = moduleInstance.FuncAddrs[module.StartIndex];
+                    if (!GetExecContext().Store.Contains(startAddr))
+                        throw new WasmRuntimeException("Module StartFunction address not found in the Store.");
+
+                    moduleInstance.StartFunc = startAddr;
+
+                    //Invoke the function!
+                    if (!options.SkipStartFunction)
+                    {
+                        try
+                        {
+                            var startInvoker = CreateStackInvoker(startAddr);
+                            startInvoker(Array.Empty<Value>());
+                        }
+                        catch (TrapException)
+                        {
+                            //see linking.wast: line 412
+                            // We're supposed to commit if the start function traps I guess...
+                            Store.CommitTransaction();
+                            Store.OpenTransaction();
+                            throw;
+                        }
+                    }
+                }
+
+                //18.
+                if (GetExecContext().Frame != auxFrame)
+                    throw new InstantiationException("Execution fault in Module Instantiation.");
+                //19.
+                GetExecContext().PopFrame();
+
+                _moduleInstances.Add(moduleInstance);
+                
+            }
+            catch (WasmRuntimeException exc)
+            {
+                Store.DiscardTransaction();
+                Store.OpenTransaction();
+                GetExecContext().FlushCallStack();
+                ExceptionDispatchInfo.Throw(exc);
+            }
+            catch (OutOfBoundsTableAccessException exc)
+            {
+                //The spec after v1 says to just keep active elements?
+                // see linking.wast:264
+                Store.CommitTransaction();
+                Store.OpenTransaction();
+                GetExecContext().FlushCallStack();
+                ExceptionDispatchInfo.Throw(exc);
+            }
+            catch (TrapException exc)
+            {
+                //Linking may succeed, so we commit the transaction
+                Store.CommitTransaction();
+                Store.OpenTransaction();
+                GetExecContext().FlushCallStack();
+                ExceptionDispatchInfo.Throw(exc);
+            }
+            catch (NotSupportedException exc)
+            {
+                //Unlinkable
+                Store.DiscardTransaction();
+                Store.OpenTransaction();
+                GetExecContext().FlushCallStack();
+                ExceptionDispatchInfo.Throw(exc);
+            }
+            finally
+            {
+                Store.CommitTransaction();
+            }
+
+            if (options.TimeInstantiation)
+            {
+                instantiationTimer.Stop();
+                Console.Error.WriteLine($"Instantiating module took {instantiationTimer.ElapsedMilliseconds:#0.###}ms");
+            }
+            
+            return moduleInstance;
+        }
+
+        /// <summary>
+        /// Serialize all function instructions into the context. When the switch runtime
+        /// is enabled, also eagerly compile every module-owned FunctionInstance — the
+        /// dispatcher's Call-family cases then dereference <c>wasmFunc.SwitchCompiled</c>
+        /// with no null check. Skipped when <see cref="UseSwitchRuntime"/> is off (the
+        /// compile cost would be pure overhead, and poly-side super-instruction rewrites
+        /// may leave <c>WacsCode</c> ops the bytecode compiler doesn't accept).
+        /// </summary>
+        /// <param name="moduleInstance"></param>
+        private void LinkModule(ModuleInstance moduleInstance)
+        {
+            bool eagerCompile = UseSwitchRuntime;
+            foreach (var funcAddr in moduleInstance.FuncAddrs)
+            {
+                var instance = Store[funcAddr];
+                if (instance is FunctionInstance functionInstance)
+                {
+                    if (functionInstance.Module != moduleInstance)
+                        continue;
+                    GetExecContext().LinkFunction(functionInstance);
+
+                    if (eagerCompile && functionInstance.SwitchCompiled == null)
+                    {
+                        functionInstance.SwitchCompiled = Wacs.Core.Compilation.BytecodeCompiler.Compile(
+                            functionInstance.Body.Instructions.Flatten().ToArray(),
+                            functionInstance.Type,
+                            localsCount: functionInstance.Type.ParameterTypes.Arity + functionInstance.Locals.Length,
+                            useSuperInstructions: GetExecContext().Attributes.UseSwitchSuperInstructions,
+                            declaredLocalTypes: functionInstance.Locals);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// @Spec 4.5.3.1. Functions
+        /// </summary>
+        private static FuncAddr AllocateWasmFunc(Store store, Module.Function func, ModuleInstance moduleInst)
+        {
+            return store.AllocateWasmFunction(func, moduleInst);
+        }
+
+        /// <summary>
+        /// @Spec 4.5.3.2. Host Functions
+        /// </summary>
+        private static FuncAddr AllocateHostFunc(Store store, (string module, string entity) id, FunctionType funcType, Type delType, Delegate hostFunc, bool isAsync)
+        {
+            return store.AllocateHostFunction(id, funcType, delType, hostFunc, isAsync);
+        }
+
+        /// <summary>
+        /// @Spec 4.5.3.3. Tables
+        /// </summary>
+        private static TableAddr AllocateTable(Store store, TableType tableType, Value refVal)
+        {
+            var tableInst = new TableInstance(tableType, refVal);
+            var tableAddr = store.AddTable(tableInst);
+            return tableAddr;
+        }
+
+        /// <summary>
+        /// @Spec 4.5.3.4. Memories
+        /// </summary>
+        private static MemAddr AllocateMemory(Store store, MemoryType memType,
+            MemoryStorageMode storage = MemoryStorageMode.ManagedArray)
+        {
+            var memInst = new MemoryInstance(memType, storage);
+            var memAddr = store.AddMemory(memInst);
+            return memAddr;
+        }
+
+        /// <summary>
+        /// @Spec 4.5.3.5. Globals
+        /// </summary>
+        private static GlobalAddr AllocateGlobal(Store store, GlobalType globalType, Value val)
+        {
+            var globalInst = new GlobalInstance(globalType, val);
+            var globalAddr = store.AddGlobal(globalInst);
+            return globalAddr;
+        }
+
+        private static TagAddr AllocateTag(Store store, DefType tagType)
+        {
+            var tagInst = new TagInstance(tagType);
+            var tagAddr = store.AddTag(tagInst);
+            return tagAddr;
+        }
+
+        /// <summary>
+        /// @Spec 4.5.3.6. Element segments
+        /// </summary>
+        private static ElemAddr AllocateElement(Store store, ValType refType, List<Value> refs)
+        {
+            var elemInst = new ElementInstance(refType, refs);
+            var elemAddr = store.AddElement(elemInst);
+            return elemAddr;
+        }
+
+        /// <summary>
+        /// @Spec 4.5.3.7. Data Segments
+        /// </summary>
+        private static DataAddr AllocateData(Store store, byte[] init)
+        {
+            var dataInst = new DataInstance(init);
+            var dataAddr = store.AddData(dataInst);
+            return dataAddr;
+        }
+
+        /// <summary>
+        /// @Spec 4.5.4. Instantiation
+        /// Step 8.1
+        /// Execute instructions without gas
+        /// </summary>
+        private Value EvaluateInitializer(ModuleInstance module, Expression ini)
+        {
+            Frame initFrame = GetExecContext().ReserveFrame(module, 1);
+            GetExecContext().PushFrame(initFrame);
+
+            ini.ExecuteInitializer(Context);
+            var value = GetExecContext().OpStack.PopAny();
+            if (GetExecContext().OpStack.Count > GetExecContext().FlushOpStackFloor)
+                throw new WasmRuntimeException("Values left on stack");
+            
+            GetExecContext().FlushCallStack();
+            return value;
+        }
+
+        private List<Value> EvaluateInitializers(ModuleInstance moduleInstance, Expression[] inis)
+        {
+            return inis.Select(i => EvaluateInitializer(moduleInstance, i)).ToList();
+        }
+    }
+
+   
+}

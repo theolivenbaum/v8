@@ -44,7 +44,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [x] `src/strings/unicode*` (unibrow case mapping, utf8/utf16, utf8-decoder),
       `char-predicates` (ID_Start/ID_Continue via .NET Unicode data) (+
       unicode and char-predicates unittests, full-range oracle comparison).
-      Missing: `Wtf8Decoder` / `StrictUtf8Decoder` (Wasm only).
+      Missing: `Wtf8Decoder` / `StrictUtf8Decoder` (used by V8 for the
+      wasm UTF-8 string builtins, which are not implemented).
 - [x] hashing: `src/strings/string-hasher`, hash seed and rapidhash,
       `src/base/hashing`, `src/base/bits`, `src/base/ieee754` and
       `src/numbers/ieee754` (`math::pow`), `src/base/utils/random-number-generator`
@@ -320,7 +321,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
       import defer (JSDeferredModuleNamespace and its lookup hooks,
       GatherAsynchronousTransitiveDependencies, ReadyForSyncExecution,
       EvaluateForImportDefer), source phase imports (module sources exist
-      only for WebAssembly, not ported: d8's SyntaxError), d8's --bundle
+      only for WebAssembly, whose source phase is not implemented: d8's
+      SyntaxError), d8's --bundle
       (V8Sharp.D8/Bundle.cs, in d8sharp and the TestRunner). test262
       language/module-code, language/import, language/expressions/dynamic-
       import, staging/source-phase-imports: 100%.
@@ -329,6 +331,78 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done (tests green).
 - [x] d8sharp shell (src/V8Sharp.D8): print/write/read/load/quit, Realm,
       d8.file/d8.test basics, performance.now, modules (.mjs), the message
       loop; TestRunner engine V8SharpEngine and the Bench host.
+
+### WebAssembly (src/V8Sharp.Wasm, src/V8Sharp/Wasm)
+
+Design and every deviation: deviations.md, "WebAssembly".
+
+- [x] Engine: WACS (github.com/kelnishi/WACS, commit cad6530, Apache-2.0)
+      vendored as `src/V8Sharp.Wasm` (Wacs.Core: decoder, validator, store,
+      polymorphic interpreter, the switch runtime; WASIp1, the text format,
+      the source generators, the transpiler, the component model and WASI
+      host bindings dropped; src/V8Sharp.Wasm/README.md). No package
+      references (FluentValidation, Microsoft.Extensions.ObjectPool,
+      Fody/InlineIL and CompilerServices.Unsafe uses replaced); safe C# (the
+      native-pointer memory mode removed). Fixes made in the
+      vendored code carry `V8Sharp:` comments: branches to the function
+      label, unwinding, legacy EH (try/catch/catch_all/delegate/rethrow),
+      cross-module reference typing by canonical type, tables written in
+      place, nested instantiation, trap order, V8's limits.
+- [x] JS API (src/V8Sharp/Wasm, port of wasm-js.cc, the JS parts of
+      wasm-objects.cc, module-instantiate.cc, the wrappers):
+      WebAssembly.{Module, Instance, Memory, Table, Global, Tag, Exception,
+      CompileError, LinkError, RuntimeError, validate, compile, instantiate,
+      compileStreaming/instantiateStreaming (--wasm-test-streaming),
+      Suspending, promising, JSTag}, Module.{exports, imports,
+      customSections}, Memory.{grow, buffer, toFixedLengthBuffer,
+      toResizableBuffer}, type reflection, compile-time imports
+      (wasm:js-string builtins, importedStringConstants), shared memories
+      with Atomics and workers, d8 serialization of modules and memories,
+      wasm frames in stack traces and Error.captureStackTrace/CallSite, the
+      d8 message format for uncaught wasm errors, the %Wasm* test natives
+      the mjsunit tests use (tier queries answer as an interpreter).
+- [x] Tests: tests/V8Sharp.Wasm.Tests (37 facts: decoder, validator, JS
+      API, traps, legacy EH, stack traces, string builtins; expected texts
+      taken from the oracle). Conformance (2026-10-04): mjsunit/wasm 341/511
+      as expected (all 539 were SKIP before: has_webassembly was false; 221
+      on the first run with it), mjsunit/regress/wasm 627/782, message
+      356/371 (was 333/333: 38 wasm message tests were SKIP before). The
+      failures are listed in expectations/mjsunit.v8sharp.txt. Clusters of
+      the 327: about 120 CompileErrors from unimplemented proposals (types,
+      opcodes and imports below), about 50 error-message texts, then d8
+      hooks (FastCAPI, worker `send`, profiler), JSPI suspension, tier
+      assertions and memories above 2 GiB.
+- [ ] Compiled tier. The WACS IL transpiler (Wacs.Transpiler, 63K lines)
+      does not integrate cleanly: it depends on Wacs.ComponentModel, uses
+      unsafe code and targets PersistedAssemblyBuilder/AOT output rather than
+      in-process DynamicMethods. Next step: emit IL per function the way the
+      Maglev backend does (DynamicMethod over the validated instruction
+      stream), with the interpreter as the deopt-free fallback; the vendored
+      switch runtime (BytecodeCompiler/GeneratedDispatcher) is a cheaper
+      intermediate step (a flat bytecode interpreter instead of instruction
+      objects).
+- [ ] Validation message texts: V8 names the operand and the instruction
+      that produced it ("expected type i32, found local.get of type i64");
+      WACS's validator does not track producers. Some mjsunit
+      assertThrows/assertCompileError texts fail on this.
+- [ ] --trace-wasm* outputs and tier assertions: the 15 message tests
+      left in expectations/message.v8sharp.txt.
+- [ ] JSPI suspension (needs a resumable interpreter frame stack).
+- [ ] Proposals not implemented (CompileError): stringref, custom
+      descriptors, shared-everything, WasmFX, exact types, fp16, wide
+      arithmetic, compact imports, acquire/release atomics, memory control,
+      wasm:text-encoder/decoder, wasm source phase imports.
+- [ ] Memories above 2 GiB (managed byte[] backing; memory64 tests).
+- [ ] asm.js. There is nothing to port in this tree: V8 removed src/asmjs
+      (the asm.js-to-wasm translator) upstream, and this revision runs
+      "use asm" modules as ordinary JavaScript, which V8Sharp already does
+      (the 111 mjsunit tests with "use asm" run as JS). The oracle (V8 14.7)
+      still translates asm.js, which is why Octane zlib is so far behind.
+      If a translator is wanted for speed, the plan is: port the last
+      upstream src/asmjs (asm-scanner, asm-parser, asm-types, asm-js.cc)
+      from git history, emit wasm wire bytes, and instantiate them through
+      WasmEngine, falling back to JS on validation failure as V8 did; it
+      only pays off once the compiled wasm tier exists.
 
 ### Builtin failures seen by the interpreter port
 
@@ -378,6 +452,9 @@ Performance (Octane scores; V8Sharp interpreter vs the oracle, 2026-09-28):
 | 2026-10-02 | mjsunit | 7386 | 7600 | 97.2% | baseline performance pass, --sparkplug (tiering with concurrent compilation, feedback-guided code): +3 as above, -1 baseline/test-baseline (fixed since: the size limit no longer applies to %CompileBaseline) |
 | 2026-10-02 | mjsunit | 7330 | 7602 | 96.4% | baseline performance pass, default flags (Sparkplug off): 0 newly failing, +1 regress-484904778 |
 | 2026-10-04 | mjsunit | 7404 | 7602 | 97.4% | baseline pass 2 (out-of-line checks, chunks, code cache, specialized paths), default flags (Sparkplug on): 0 newly failing |
+| 2026-10-04 | mjsunit | 8375 | 8902 | 94.1% | WebAssembly: has_webassembly on, so 1300 more tests run (were SKIP); mjsunit/wasm 341/511, regress/wasm 627/782; 0 non-wasm newly failing, +2 (maglev/regress-539121142, regress/regress-447206453); the 327 wasm failures recorded in mjsunit.v8sharp.txt (see "WebAssembly" above) |
+| 2026-10-04 | message | 356 | 371 | 96.0% | WebAssembly: 38 wasm message tests run (were SKIP); the 15 left print --trace-wasm* or tiering output |
+| 2026-10-04 | test262 | 94881 | 95123 | 99.7% | WebAssembly branch, built-ins and the rest: 0 newly failing, 0 newly passing |
 | 2026-10-04 | mjsunit | 7393 | 7587 | 97.4% | baseline pass 2, --always-sparkplug: -2, both failing in the interpreter too with --no-lazy-feedback-allocation: regress-class-initializer-eval, es6/for-of-array-iterator-optimization-maglev-eager-next-call (assertMaglevved) |
 | 2026-10-04 | test262 | 94881 | 95123 | 99.75% | baseline pass 2, default flags and --always-sparkplug: 0 newly failing, 0 newly passing (one staging/sm TypedArray test failed before the elements kind check, 57147b31) |
 | 2026-10-04 | mjsunit | 7399 | 7602 | 97.3% | baseline pass 2 merged with Maglev on by default (75d8926c), default flags: 0 newly failing (regress-331074427 crashed under memory pressure from a concurrent run; passes alone, with regress-1189077 and regress-3359) |

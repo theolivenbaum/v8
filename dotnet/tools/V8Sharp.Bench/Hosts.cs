@@ -34,6 +34,7 @@ sealed class OracleHost : IBenchHost
         _engine.AddHostObject("__load", new Action<string>(f => LoadFile(Path.Combine(_workDir, f))));
         _engine.AddHostObject("__read", new Func<string, string>(f => File.ReadAllText(Path.Combine(_workDir, f))));
         _engine.AddHostObject("cpuTimeMs", new Func<double>(Program.ThreadCpuTimeMs));
+        _engine.AddHostObject("settle", new Action(Program.Settle));
         _engine.Execute("""
             (function () {
               const p = __print, l = __load, r = __read;
@@ -84,6 +85,8 @@ sealed class V8SharpHost : IBenchHost
                 static (Isolate i, in BuiltinArguments a) => JSValue.FromNumber(Program.ThreadCpuTimeMs()));
             // octane-steady: compiles queued during the warm-up finish before the
             // measured runs, so the score is the generated code, not RyuJIT.
+            Install(context, global, "settle",
+                static (Isolate i, in BuiltinArguments a) => { Program.Settle(); return JSValue.Undefined; });
             Install(context, global, "waitForCompilations",
                 static (Isolate i, in BuiltinArguments a) => { i.WaitForBackgroundCompilation(); return JSValue.Undefined; });
             // Bytes the CLR allocated on this thread (micro/cpu.js prints bytes per iteration).

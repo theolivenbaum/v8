@@ -3,6 +3,7 @@
     <Project Path="src/V8Sharp.Base/V8Sharp.Base.csproj" />
     <Project Path="src/V8Sharp.Parsing/V8Sharp.Parsing.csproj" />
     <Project Path="src/V8Sharp.RegExp/V8Sharp.RegExp.csproj" />
+    <Project Path="src/V8Sharp.Wasm/V8Sharp.Wasm.csproj" />
     <Project Path="src/V8Sharp/V8Sharp.csproj" />
     <Project Path="src/V8Sharp.D8/V8Sharp.D8.csproj" />
     <Project Path="src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />
@@ -12,6 +13,7 @@
     <Project Path="tests/V8Sharp.Parsing.Tests/V8Sharp.Parsing.Tests.csproj" />
     <Project Path="tests/V8Sharp.RegExp.Tests/V8Sharp.RegExp.Tests.csproj" />
     <Project Path="tests/V8Sharp.Tests/V8Sharp.Tests.csproj" />
+    <Project Path="tests/V8Sharp.Wasm.Tests/V8Sharp.Wasm.Tests.csproj" />
     <Project Path="tests/V8Sharp.Parity.Tests/V8Sharp.Parity.Tests.csproj" />
     <Project Path="tests/V8Sharp.Conformance.Tests/V8Sharp.Conformance.Tests.csproj" />
   </Folder>

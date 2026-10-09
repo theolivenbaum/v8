@@ -124,6 +124,7 @@ public static class BuiltinsCallSite
     {
         CallSiteInfo frame = CheckCallSite(isolate, in args, "getFunction");
         if (!IsSecurityTokenCompatible(isolate, frame)) return JSValue.Undefined;
+        if (frame.IsWasm) return frame.IsStrict ? JSValue.Undefined : JSValue.FromInt(frame.WasmFunctionIndex);
         JSFunction function = frame.Function;
         if (frame.IsStrict || function.Shared.IsToplevel) return JSValue.Undefined;
         // Get function's creation context. Return undefined if not available.

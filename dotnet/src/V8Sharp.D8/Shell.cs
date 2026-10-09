@@ -402,6 +402,14 @@ public sealed class Shell
         {
             output.Append(exceptionString).Append('\n');
         }
+        else if (message.Script.ScriptType == Script.Type.Wasm && message.Script.WasmModuleObject is { } wasmModule)
+        {
+            // Print wasm-function[(function index)]:(offset): (message).
+            output.Append("wasm-function[")
+                .Append(V8Sharp.Wasm.WasmStackTraces.GetContainingFunction(wasmModule, message.StartPosition))
+                .Append("]:0x").Append(message.StartPosition.ToString("x", System.Globalization.CultureInfo.InvariantCulture))
+                .Append(": ").Append(exceptionString).Append('\n');
+        }
         else
         {
             // Print (filename):(line number): (message).

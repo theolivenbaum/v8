@@ -25,8 +25,8 @@ sealed partial class Genesis
 
     /// <summary>
     /// Genesis::InstallSpecialObjects, which Bootstrapper::InstallExtensions
-    /// runs on every new context: Error.stackTraceLimit. (Wasm and the
-    /// memory corruption API are not ported.)
+    /// runs on every new context: Error.stackTraceLimit and WebAssembly
+    /// (WasmJs::Install). (The memory corruption API is not ported.)
     /// </summary>
     public static void InstallSpecialObjects(Isolate isolate, NativeContext nativeContext)
     {
@@ -34,6 +34,8 @@ sealed partial class Genesis
         JSFunction error = nativeContext.ErrorFunction;
         JSObject.AddProperty(isolate, error, ReadOnlyRoots.stackTraceLimit_string,
             JSValue.FromInt(isolate.Flags.stack_trace_limit), PropertyAttributes.NONE);
+
+        Wasm.WasmJs.Install(isolate, nativeContext);
     }
 
     public Genesis(Isolate isolate, MicrotaskQueue? microtaskQueue)
@@ -65,6 +67,9 @@ sealed partial class Genesis
         InstallErrorStackAccessorFunctions();
         BuiltinsConsole.InstallExtrasBindings(isolate, _nativeContext);
         ConfigureGlobalObject();
+
+        // WasmJs::PrepareForSnapshot (V8_ENABLE_WEBASSEMBLY).
+        Wasm.WasmJs.PrepareForSnapshot(isolate, _nativeContext, (target, name, index) => InstallError(target, name, index));
 
         _nativeContext.MicrotaskQueue = microtaskQueue ?? isolate.DefaultMicrotaskQueue;
 

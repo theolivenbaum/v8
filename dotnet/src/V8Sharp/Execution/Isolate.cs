@@ -534,8 +534,21 @@ public sealed partial class Isolate
         IJavaScriptFrames? frames = isolate.Frames;
         if (frames is not null)
         {
+            int wasmActivation = 0;
             for (int i = 0; !builder.Full && frames.TryGetFrame(i, out JavaScriptFrameSummary summary); i++)
             {
+                // V8Sharp: an exported wasm function's frame stands for the
+                // wasm frames of its call (V8 shows the wasm frames, not the
+                // JS-to-wasm wrapper).
+                if (summary.Function.Shared.FunctionData is Wasm.WasmExportedFunctionData)
+                {
+                    foreach (Wasm.WasmStackTraces.Frame wasmFrame in Wasm.WasmStackTraces.CollectFrames(isolate, wasmActivation++))
+                    {
+                        if (builder.Full) break;
+                        builder.AppendWasmFrame(wasmFrame, summary.Function);
+                    }
+                    continue;
+                }
                 builder.AppendJavaScriptFrame(summary);
             }
         }
@@ -743,6 +756,16 @@ public sealed partial class Isolate
             _elements.Add(new CallSiteInfo(summary.Receiver, function, summary.SourcePosition, flags));
         }
 
+        /// <summary>CallSiteBuilder::AppendWasmFrame (wasm frames bypass the frame filters).</summary>
+        public void AppendWasmFrame(in Wasm.WasmStackTraces.Frame frame, JSFunction wrapper)
+        {
+            _elements.Add(new CallSiteInfo(frame.Instance, wrapper, frame.Offset,
+                CallSiteInfo.kIsWasm | CallSiteInfo.kIsSourcePositionComputed)
+            {
+                WasmFunctionIndex = frame.FunctionIndex,
+            });
+        }
+
         public void AppendAsyncFrame(JSGeneratorObject generatorObject)
         {
             JSFunction function = generatorObject.Function;
@@ -816,6 +839,12 @@ public sealed partial class Isolate
 
         readonly bool IsNotHidden(JSFunction function)
         {
+            // TODO(szuend): Remove this check once the flag is enabled
+            //               by default.
+            if (!isolate.Flags.experimental_stack_trace_frames && function.Shared.IsApiFunction)
+            {
+                return false;
+            }
             // Functions defined not in user scripts are not visible unless directly
             // exposed, in which case the native flag is set.
             // The --builtins-in-stack-traces command line flag allows including

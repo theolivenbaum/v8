@@ -401,7 +401,10 @@ public static class BuiltinsArrayBuffer
         // [RAB] Let hostHandled be ? HostResizeArrayBuffer(O, newByteLength).
         // [GSAB] Let hostHandled be ? HostGrowArrayBuffer(O, newByteLength).
         // If hostHandled is handled, return undefined.
-        // (No WebAssembly memories in V8Sharp.)
+        if (backingStore.IsWasmMemory)
+        {
+            return V8Sharp.Wasm.WasmMemoryObjectOps.ResizeBuffer(isolate, arrayBuffer, newByteLength, methodName);
+        }
 
         if (!isShared)
         {

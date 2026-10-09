@@ -58,10 +58,18 @@ V8 ships its builtins precompiled and compiles JavaScript on background
 threads; V8Sharp's tiers emit IL that RyuJIT compiles. The warm suites
 (`octane-steady`, `octane-quick`) measure the generated code, not compilers:
 each benchmark warms up for 2x its measured iterations
-(`V8SHARP_BENCH_WARMUP`), then both engines wait for their background
-compiles to finish and install (`waitForCompilations()`: V8Sharp's
-`Isolate.WaitForBackgroundCompilation`, V8's `%WaitForBackgroundOptimization`)
-before the measured runs start, and scores use main-thread CPU time only.
+(`V8SHARP_BENCH_WARMUP`). Halfway through the warm-up both engines wait for
+their background compiles to finish and install (`waitForCompilations()`:
+V8Sharp's `Isolate.WaitForBackgroundCompilation`, V8's
+`%WaitForBackgroundOptimization`); the second half then runs the installed
+code several times, because the IL V8Sharp's tiers emit is itself compiled by
+.NET in tiers (quick code first, optimized after call counting, plus OSR).
+Before the measured runs both engines wait again and `settle()` (a sleep,
+`V8SHARP_BENCH_SETTLE_MS`, default 250, which costs no thread CPU) so .NET's
+background re-compilation finishes. Scores use main-thread CPU time only.
+For any other measurement of generated code (micro-benchmarks, A/B of a
+tier), do the same: warm up, wait for the tiers, run the compiled code a few
+more times, then measure.
 Cold `octane` still includes compilation: report it separately, as start-up.
 Warm numbers taken before this rule (2026-10-04) are not comparable.
 
