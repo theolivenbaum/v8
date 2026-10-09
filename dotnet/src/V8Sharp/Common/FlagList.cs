@@ -14,6 +14,14 @@ public sealed partial class FlagList
 {
     HashSet<string> _explicitlySet = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// V8Sharp only (no V8 flag): Maglev code of more IL bytes than this is
+    /// split into regions of about half of it (MaglevCodeGenerator.Regions.cs);
+    /// 0 splits only code over RyuJIT's optimization limits. Tests and
+    /// experiments set it (V8SHARP_MAGLEV_SPLIT_IL).
+    /// </summary>
+    public int MaglevSplitILBytes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_SPLIT_IL"), out int split) ? split : 0;
+
     /// <summary>The process default flags (V8's v8_flags); new isolates copy them.</summary>
     public static FlagList Default { get; } = new();
 

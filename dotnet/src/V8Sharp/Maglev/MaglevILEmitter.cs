@@ -39,11 +39,34 @@ internal sealed class MaglevILEmitter(ILGenerator il)
         il.MarkLabel(label);
     }
 
+    /// <summary>Arguments are locals to RyuJIT: their loads count as local references.</summary>
+    static bool IsArgumentAccess(OpCode op) =>
+        op == OpCodes.Ldarg_0 || op == OpCodes.Ldarg_1 || op == OpCodes.Ldarg_2 || op == OpCodes.Ldarg_3 ||
+        op == OpCodes.Ldarg_S || op == OpCodes.Ldarg || op == OpCodes.Ldarga_S || op == OpCodes.Ldarga ||
+        op == OpCodes.Starg_S || op == OpCodes.Starg;
+
     public void Emit(OpCode op)
     {
         Instructions++;
+        if (IsArgumentAccess(op)) LocalReferences++;
         if (op.FlowControl is FlowControl.Return or FlowControl.Throw) BlockBoundaries++;
         il.Emit(op);
+    }
+
+    /// <summary>A one-byte operand (ldarg.s, ldloc.s ...).</summary>
+    public void Emit(OpCode op, byte value)
+    {
+        Instructions++;
+        if (IsArgumentAccess(op)) LocalReferences++;
+        il.Emit(op, value);
+    }
+
+    /// <summary>A two-byte operand (ldarg, ldloc ...).</summary>
+    public void Emit(OpCode op, short value)
+    {
+        Instructions++;
+        if (IsArgumentAccess(op)) LocalReferences++;
+        il.Emit(op, value);
     }
 
     public void Emit(OpCode op, int value)

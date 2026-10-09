@@ -141,6 +141,9 @@ public sealed class MaglevCode
     /// <summary>The dependencies registered for the code (CompilationDependencies).</summary>
     public CompilationDependency[] Dependencies { get; internal set; } = [];
 
+    /// <summary>The region methods of code split for RyuJIT's limits (MaglevCodeGenerator.Regions.cs), or null.</summary>
+    public System.Reflection.MethodInfo[]? RegionMethods { get; internal set; }
+
     public int ILSize { get; internal set; }
     /// <summary>What RyuJIT's optimization limits count (MaglevILEmitter), for --trace-opt-verbose.</summary>
     public (int Instructions, int BlockBoundaries, int LocalReferences, int Locals) ILCounts { get; internal set; }

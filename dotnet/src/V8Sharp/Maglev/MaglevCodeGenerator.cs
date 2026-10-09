@@ -32,7 +32,7 @@ using V8Sharp.Interpreter;
 
 namespace V8Sharp.Maglev;
 
-internal sealed class MaglevCodeGenerator
+internal sealed partial class MaglevCodeGenerator
 {
     static readonly int kJSValueSize = Unsafe.SizeOf<JSValue>();
 
@@ -66,6 +66,7 @@ internal sealed class MaglevCodeGenerator
     LocalBuilder _tmpObject => _tmpObjectLocal ??= _il.DeclareLocal(typeof(HeapObject));
 
     readonly List<(FieldBuilder Field, object? Value)> _staticConstants = [];
+    // (Shared with the region generators: their methods are on the same type.)
     readonly Dictionary<(object, Type), FieldBuilder> _constantFields = new();
     List<DeoptPoint> _deoptPoints = [];
     readonly Dictionary<(DeoptFrame, DeoptimizeReason, int), Label> _eagerExits = new();
@@ -181,6 +182,8 @@ internal sealed class MaglevCodeGenerator
     // Diagnostics: V8SHARP_IL_HISTOGRAM=1 prints the IL bytes and block boundaries per node kind at exit.
     static readonly Dictionary<string, (int Count, int Bytes, int Blocks)>? s_ilHistogram = InitHistogram();
 
+    static readonly int s_histogramTop = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_IL_HISTOGRAM_TOP"), out int top) ? top : 30;
+
     static Dictionary<string, (int, int, int)>? InitHistogram()
     {
         if (Environment.GetEnvironmentVariable("V8SHARP_IL_HISTOGRAM") != "1") return null;
@@ -193,7 +196,7 @@ internal sealed class MaglevCodeGenerator
             long count = 0, bytes = 0, blocks = 0;
             foreach ((string _, int c, int by, int bl) in list) { count += c; bytes += by; blocks += bl; }
             Console.Error.WriteLine($"IL {bytes,8} {count,7} {blocks,7} (total: bytes, nodes, blocks)");
-            for (int i = 0; i < list.Count && i < 30; i++)
+            for (int i = 0; i < list.Count && i < s_histogramTop; i++)
             {
                 Console.Error.WriteLine($"IL {list[i].Item3,8} {list[i].Item2,7} {list[i].Item4,7} {list[i].Item1}");
             }
@@ -210,29 +213,42 @@ internal sealed class MaglevCodeGenerator
 
     public (MaglevCodeEntry Entry, int ILSize) Generate()
     {
-        AllocateLocals();
-        EmitPrologue();
-        foreach (BasicBlock block in _graph.Blocks)
+        int bodySize;
+        if (_plan is not null)
         {
-            if (!block.IsDead && block.IsExceptionHandler) _catchBlocks.Add(block);
+            // The regions, and this method as their dispatcher (MaglevCodeGenerator.Regions.cs).
+            EmitSplit();
+            bodySize = _il.ILOffset;
         }
-        _hasCatchBlocks = _catchBlocks.Count > 0;
-        if (_hasCatchBlocks) EmitTryRegionStart();
-        var blocks = new List<BasicBlock>(_graph.Blocks.Count);
-        foreach (BasicBlock block in _graph.Blocks)
+        else
         {
-            if (!block.IsDead) blocks.Add(block);
+            AllocateLocals();
+            EmitPrologue();
+            foreach (BasicBlock block in _graph.Blocks)
+            {
+                if (!block.IsDead && block.IsExceptionHandler) _catchBlocks.Add(block);
+            }
+            _hasCatchBlocks = _catchBlocks.Count > 0;
+            if (_hasCatchBlocks) EmitTryRegionStart();
+            var blocks = new List<BasicBlock>(_graph.Blocks.Count);
+            foreach (BasicBlock block in _graph.Blocks)
+            {
+                if (!block.IsDead) blocks.Add(block);
+            }
+            _blockCosts = new(blocks.Count, ReferenceEqualityComparer.Instance);
+            for (int i = 0; i < blocks.Count; i++)
+            {
+                _nextBlock = i + 1 < blocks.Count ? blocks[i + 1] : null;
+                EmitBlock(blocks[i]);
+            }
+            _nextBlock = null;
+            EmitEdgeStubs();
+            bodySize = _il.ILOffset;
+            EmitDeoptExits();
+            if (_hasCatchBlocks) EmitTryRegionEnd();
+            // Over RyuJIT's optimization limits: the code again, in regions.
+            if (ExceedsJitLimits() && TryGenerateSplit() is { } split) return split;
         }
-        for (int i = 0; i < blocks.Count; i++)
-        {
-            _nextBlock = i + 1 < blocks.Count ? blocks[i + 1] : null;
-            EmitBlock(blocks[i]);
-        }
-        _nextBlock = null;
-        EmitEdgeStubs();
-        int bodySize = _il.ILOffset;
-        EmitDeoptExits();
-        if (_hasCatchBlocks) EmitTryRegionEnd();
         if (_il.ILOffset > kMaxOptimizedILBytes && !_info.Isolate.Flags.allow_natives_syntax)
         {
             // V8SHARP_MAGLEV_MAX_IL: a limit for experiments (none by default;
@@ -247,7 +263,7 @@ internal sealed class MaglevCodeGenerator
         }
 
         MethodBuilder? fastCall = DefineFastCallEntry();
-        MaglevCodeGenerator? frameless = fastCall is not null ? TryGenerateFramelessEntry() : null;
+        MaglevCodeGenerator? frameless = fastCall is not null && _plan is null ? TryGenerateFramelessEntry() : null;
         MethodImplAttributes bodyFlags = MethodImplAttributes.IL;
         if (_optimizeFully || _il.ILOffset <= s_aggressiveMaxIL || _il.ILOffset > kAggressiveILBytes)
         {
@@ -265,6 +281,14 @@ internal sealed class MaglevCodeGenerator
         _code.ILCounts = (_il.Instructions, _il.BlockBoundaries, _il.LocalReferences, _il.Locals);
         long createStart = System.Diagnostics.Stopwatch.GetTimestamp();
         Type type = BaselineCodeSpace.CreateType(_type);
+        if (_plan is not null)
+        {
+            BaselineCodeSpace.CreateType(_plan.Transfer);
+            var regionMethods = new MethodInfo[_plan.Generators.Length];
+            for (int k = 0; k < regionMethods.Length; k++) regionMethods[k] = type.GetMethod(_plan.Generators[k]._method.Name)!;
+            _code.RegionMethods = regionMethods;
+            if (s_splitFilter is not null) foreach (MethodInfo m in regionMethods) DumpIL(m);
+        }
         foreach ((FieldBuilder field, object? value) in _staticConstants)
         {
             type.GetField(field.Name)!.SetValue(null, value);
@@ -360,9 +384,15 @@ internal sealed class MaglevCodeGenerator
     /// is a loop header's phi. Code with catch blocks keeps one local per
     /// value: their trampolines read the values of the throwing node.
     /// </summary>
-    bool TryAllocateSharedLocals()
+    bool TryAllocateSharedLocals() => TryAllocateSharedLocals(_graph.Blocks, null, null);
+
+    /// <param name="blocks">The blocks of the method (a region's, or all).</param>
+    /// <param name="preassigned">Values that have their locals already (a region's entry values).</param>
+    /// <param name="usesAtEnd">Values used at the end of a block besides its own uses (a region's exit stubs).</param>
+    bool TryAllocateSharedLocals(List<BasicBlock> blocks, HashSet<ValueNode>? preassigned,
+        Dictionary<BasicBlock, List<ValueNode>>? usesAtEnd)
     {
-        foreach (BasicBlock block in _graph.Blocks)
+        foreach (BasicBlock block in blocks)
         {
             if (!block.IsDead && block.IsExceptionHandler) return false;
         }
@@ -386,7 +416,7 @@ internal sealed class MaglevCodeGenerator
                 Use(i.Closure, at);
             }
         }
-        foreach (BasicBlock block in _graph.Blocks)
+        foreach (BasicBlock block in blocks)
         {
             if (block.IsDead) continue;
             blockStart[block] = pos++;
@@ -412,11 +442,15 @@ internal sealed class MaglevCodeGenerator
             blockEnd[block] = end;
             foreach (ValueNode input in c.Inputs) Use(input, end);
             UseFrame(c.EagerDeoptInfo?.TopFrame, end);
+            if (usesAtEnd is not null && usesAtEnd.TryGetValue(block, out List<ValueNode>? atEnd))
+            {
+                foreach (ValueNode v in atEnd) Use(v, end);
+            }
         }
         // Phis: inputs used at the end of their predecessor; the phi is defined
         // at the end of its first predecessor in emission order.
         var loops = new List<(int Start, int End)>();
-        foreach (BasicBlock block in _graph.Blocks)
+        foreach (BasicBlock block in blocks)
         {
             if (block.IsDead) continue;
             int loopEnd = -1;
@@ -437,12 +471,14 @@ internal sealed class MaglevCodeGenerator
                     Use(phi.Inputs[k], e);
                     if (e < first) first = e;
                 }
+                // (A phi with its own local still reads its inputs at the predecessors' ends.)
+                if (preassigned is not null && preassigned.Contains(phi)) continue;
                 def[phi] = first;
                 if (loopEnd >= 0) Use(phi, loopEnd);
             }
         }
         // Lazily pushed inlined frames read their call's receiver and arguments.
-        foreach (BasicBlock block in _graph.Blocks)
+        foreach (BasicBlock block in blocks)
         {
             if (block.IsDead) continue;
             foreach (Node node in block.Nodes)
@@ -475,7 +511,7 @@ internal sealed class MaglevCodeGenerator
         foreach (KeyValuePair<ValueNode, int> d in def)
         {
             ValueNode v = d.Key;
-            if (v.IsConstant || v.UseCount <= 0) continue;
+            if (v.IsConstant || v.UseCount <= 0 || preassigned is not null && preassigned.Contains(v)) continue;
             int l = last.TryGetValue(v, out int x) ? x : d.Value;
             values.Add((d.Value, Math.Max(l, d.Value), v));
         }
@@ -858,6 +894,17 @@ internal sealed class MaglevCodeGenerator
     /// <summary>Returns the value on the stack (from inside the try region: through _result).</summary>
     void EmitReturn()
     {
+        if (InRegionMode)
+        {
+            // The dispatcher returns Transfer.result.
+            _il.Emit(OpCodes.Stloc, _tmpValue);
+            _il.Emit(OpCodes.Ldarg_3);
+            _il.Emit(OpCodes.Ldloc, _tmpValue);
+            _il.Emit(OpCodes.Stfld, _plan!.ResultField);
+            _il.Emit(OpCodes.Ldc_I4_M1);
+            _il.Emit(OpCodes.Ret);
+            return;
+        }
         if (!_hasCatchBlocks)
         {
             _il.Emit(OpCodes.Ret);
@@ -870,6 +917,14 @@ internal sealed class MaglevCodeGenerator
     // ---- Blocks ------------------------------------------------------------------------------------------
 
     void EmitBlock(BasicBlock block)
+    {
+        int costBytes = _il.ILOffset, costInstructions = _il.Instructions, costBlocks = _il.BlockBoundaries, costRefs = _il.LocalReferences;
+        EmitBlockBody(block);
+        _blockCosts?.Add(block, (_il.ILOffset - costBytes, _il.Instructions - costInstructions, _il.BlockBoundaries - costBlocks,
+            _il.LocalReferences - costRefs));
+    }
+
+    void EmitBlockBody(BasicBlock block)
     {
         _il.MarkLabel(BlockLabel(block));
         foreach (Node node in block.Nodes)
@@ -939,6 +994,7 @@ internal sealed class MaglevCodeGenerator
     /// <summary>The label of the edge <paramref name="from"/> -> <paramref name="to"/>: a stub with phi moves when the target has phis.</summary>
     Label EdgeLabel(BasicBlock from, BasicBlock to)
     {
+        if (LeavesRegion(to)) return ExitLabel(from, to);
         if (to.Phis.Exists(static p => p.Local is not null))
         {
             Label stub = _il.DefineLabel();
@@ -970,6 +1026,11 @@ internal sealed class MaglevCodeGenerator
         {
             case Opcode.Jump:
             case Opcode.JumpLoop:
+                if (LeavesRegion(c.Target!))
+                {
+                    _il.Emit(OpCodes.Br, ExitLabel(block, c.Target!));
+                    return;
+                }
                 EmitPhiMoves(block, c.Target!);
                 if (!ReferenceEquals(c.Target, _nextBlock)) _il.Emit(OpCodes.Br, BlockLabel(c.Target!));
                 return;

@@ -172,6 +172,7 @@ public sealed class MaglevCompilationJob
                 TimeSpan jitBefore = System.Runtime.JitInfo.GetCompilationTime(currentThread: true);
                 RuntimeHelpers.PrepareMethod(entry.Method.MethodHandle);
                 if (code.FastCall is { } fastCall) RuntimeHelpers.PrepareMethod(fastCall.Method.MethodHandle);
+                if (code.RegionMethods is { } regions) foreach (System.Reflection.MethodInfo region in regions) RuntimeHelpers.PrepareMethod(region.MethodHandle);
                 JitMs = (System.Runtime.JitInfo.GetCompilationTime(currentThread: true) - jitBefore).TotalMilliseconds;
             }
             code.Entry = entry;

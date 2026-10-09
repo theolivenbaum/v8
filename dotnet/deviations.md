@@ -465,9 +465,35 @@ for now, to be revisited when the reason goes away.
 - Bytecode liveness is computed by an iterative fixed point over all
   bytecodes (V8 does one backward pass plus a loop fix-up pass); the result
   is the same.
-- Prototype chain checks of property accesses use the IC handler's validity
-  cell (CheckValidityCell) and the stable-map dependency, not V8's
-  per-holder map checks from the broker's PropertyAccessInfo.
+- Prototype chain checks of property accesses: the code depends on the IC
+  handler's validity cell (a compilation dependency in the PrototypeCheck
+  group; `JSObject.InvalidateOnePrototypeValidityCellInternal` deoptimizes
+  the dependent code, through `Isolate.Current`) where V8 depends on the
+  stable maps of the prototype chain (DependOnStablePrototypeChains); the
+  cell is invalidated whenever a map on the chain changes, so the two
+  invalidate in the same places. No check runs in the optimized code
+  (`V8SHARP_MAGLEV_VALIDITY_CELL_CHECKS=1` restores the run-time
+  CheckValidityCell of V8Sharp before 2026-10-09).
+- CheckType: V8's kCheckHeapObject is a Smi check before a map load. Only
+  JSReceivers have a map in V8Sharp (undefined and numbers are not heap
+  objects in JSValue, strings and oddballs have no map field), so the check
+  CheckMaps, LoadMap and TransitionElementsKind make is a receiver check
+  (object half non-null, instance type at least FIRST_JS_RECEIVER_TYPE),
+  omitted (kOmitHeapObjectCheck) when the input's known type where the node
+  is built is a JSReceiver.
+- Region splitting (V8Sharp only, MaglevCodeGenerator.Regions.cs): code
+  over RyuJIT's optimization limits (60000 IL bytes, 20000 instructions,
+  2000 blocks, 2000 locals, 8000 local references, which make RyuJIT compile
+  a method with MinOpts) is emitted again as several IL methods, one per
+  region of consecutive blocks cut at the least loop depth and outside
+  inlined function bodies, each planned for 40% of the limits (RyuJIT counts more than the emitter does: at 60% two of zlib's regions still got MinOpts)
+  (`V8SHARP_MAGLEV_REGION_BUDGET`) from the first emission's per-block costs.
+  The code's method dispatches over the regions; an edge into another
+  region stores the values live into its target (SSA liveness) and the
+  target's phis in a per-activation Transfer struct and returns the
+  target's entry id. Code with catch blocks is not split.
+  `V8SHARP_MAGLEV_NO_REGIONS=1` turns it off; `V8SHARP_MAGLEV_SPLIT_IL=n`
+  (FlagList.MaglevSplitILBytes) splits any code over n bytes for tests.
 - Generic nodes call the baseline tier's builtins (`BaselineBuiltins`), which
   collect feedback like the interpreter does; V8's generic Maglev nodes call
   builtins that mostly do not. Calls with consecutive argument registers call

@@ -92,6 +92,22 @@ internal sealed class BaselineCodeSpace
         }
     }
 
+    /// <summary>Another static method on a type defined by <see cref="DefineMethod(string, Type, Type[])"/>.</summary>
+    public static MethodBuilder DefineMethod(TypeBuilder type, string name, Type returnType, Type[] parameterTypes)
+    {
+        lock (s_lock) return type.DefineMethod(name, MethodAttributes.Public | MethodAttributes.Static, returnType, parameterTypes);
+    }
+
+    /// <summary>A public value type nested in <paramref name="type"/> (created after it, with CreateType).</summary>
+    public static TypeBuilder DefineNestedValueType(TypeBuilder type, string name)
+    {
+        lock (s_lock)
+        {
+            return type.DefineNestedType(name, TypeAttributes.NestedPublic | TypeAttributes.Sealed | TypeAttributes.SequentialLayout,
+                typeof(ValueType));
+        }
+    }
+
     (TypeBuilder Type, MethodBuilder Method) DefineMethodLocked(string name)
     {
         int id = ++_counter;
