@@ -439,7 +439,18 @@ namespace Wacs.Core.Runtime
             topHeight = System.Math.Min(topHeight, merged.Length);
             int n = topHeight - baseHeight;
             if (n <= 0) return System.Array.Empty<WasmStackFrame>();
-            var frames = new WasmStackFrame[n];
+            // V8Sharp: inlined frames add to the count (counted first: a deep
+            // stack of frames with inlined callees must not resize per frame).
+            int extra = 0;
+            for (int i = topHeight - 1; i >= baseHeight; i--)
+            {
+                var (isCompiled, at, _) = merged[i];
+                if (isCompiled && CompiledFrames.InlinedAt(CompiledFrames.Pc[at]) is { } position)
+                {
+                    extra += position.Funcs.Length - (position.ReplacesFrame ? 1 : 0);
+                }
+            }
+            var frames = new WasmStackFrame[n + extra];
             int idx = 0;
             for (int i = topHeight - 1; i >= baseHeight; i--, idx++)
             {
@@ -459,7 +470,6 @@ namespace Wacs.Core.Runtime
                         // are named by function index in the frame's module
                         // and by pcs relative to the function.
                         int count = inlined.Funcs.Length;
-                        System.Array.Resize(ref frames, frames.Length + count - (inlined.ReplacesFrame ? 1 : 0));
                         for (int k = 0; k < count; k++, idx++)
                         {
                             FuncAddr addr = physical.Module.FuncAddrs[(Wacs.Core.Types.FuncIdx)(uint)inlined.Funcs[k]];
@@ -494,6 +504,7 @@ namespace Wacs.Core.Runtime
                 frames[idx] = new WasmStackFrame(frame.FuncAddr, idx == 0 ? topInstruction : null,
                     frame.ReturnLabel.ContinuationAddress, framePc);
             }
+            if (idx != frames.Length) System.Array.Resize(ref frames, idx);
             return frames;
         }
 
