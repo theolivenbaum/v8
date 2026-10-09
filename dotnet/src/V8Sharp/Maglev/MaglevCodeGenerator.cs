@@ -228,6 +228,7 @@ internal sealed partial class MaglevCodeGenerator
             {
                 if (!block.IsDead && block.IsExceptionHandler) _catchBlocks.Add(block);
             }
+            if (_catchBlocks.Count == 0) PlanElementsData();
             _hasCatchBlocks = _catchBlocks.Count > 0;
             if (_hasCatchBlocks) EmitTryRegionStart();
             var blocks = new List<BasicBlock>(_graph.Blocks.Count);
@@ -304,6 +305,59 @@ internal sealed partial class MaglevCodeGenerator
         CreateTypeMs += System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalMilliseconds;
         return (entry, _il.ILOffset);
     }
+
+    // ---- Elements data ----------------------------------------------------------------------------------
+
+    // The array behind an elements node (FixedArray._data, FixedDoubleArray._data)
+    // in a local of its own, loaded once where the elements are loaded: an
+    // element access is then one array access, where it loaded the FixedArray's
+    // field each time (RyuJIT cannot hoist that load past the byref stores of
+    // a loop). Elements are only replaced in place (RightTrim) by calls, after
+    // which the graph loads them again, as for V8's elements pointer.
+    // V8SHARP_MAGLEV_NO_ELEMENTS_DATA=1 turns it off.
+    static readonly bool s_noElementsData = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_ELEMENTS_DATA") == "1";
+    Dictionary<ValueNode, LocalBuilder>? _elementsData;
+    const int kMaxElementsDataLocals = 64;
+
+    void PlanElementsData()
+    {
+        if (s_noElementsData) return;
+        var kinds = new Dictionary<ValueNode, int>(ReferenceEqualityComparer.Instance);
+        void Mark(ValueNode elements, int kind)
+        {
+            if (elements.Opcode != Opcode.LoadElements) return;
+            kinds[elements] = kinds.GetValueOrDefault(elements) | kind;
+        }
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Node node in block.Nodes)
+            {
+                switch (node.Opcode)
+                {
+                    case Opcode.LoadFixedArrayElement:
+                    case Opcode.StoreFixedArrayElement:
+                        Mark(node.Inputs[0], 1);
+                        break;
+                    case Opcode.LoadFixedDoubleArrayElement:
+                    case Opcode.LoadHoleyFixedDoubleArrayElement:
+                    case Opcode.StoreFixedDoubleArrayElement:
+                        Mark(node.Inputs[0], 2);
+                        break;
+                }
+            }
+        }
+        foreach (KeyValuePair<ValueNode, int> e in kinds)
+        {
+            if (e.Value == 3 || e.Key.Local is null) continue;
+            _elementsData ??= new(ReferenceEqualityComparer.Instance);
+            if (_elementsData.Count >= kMaxElementsDataLocals) break;
+            _elementsData[e.Key] = _il.DeclareLocal(e.Value == 1 ? typeof(JSValue[]) : typeof(double[]));
+        }
+    }
+
+    LocalBuilder? ElementsData(ValueNode elements) =>
+        _elementsData is not null && _elementsData.TryGetValue(elements, out LocalBuilder? data) ? data : null;
 
     Label BlockLabel(BasicBlock block)
     {
@@ -2375,8 +2429,22 @@ internal sealed partial class MaglevCodeGenerator
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Call(nameof(MaglevBuiltins.LoadElements));
                 Store(v!);
+                if (_elementsData is not null && _elementsData.TryGetValue(v!, out LocalBuilder? elementsData))
+                {
+                    Load(v!);
+                    Call(elementsData.LocalType == typeof(double[]) ? nameof(MaglevBuiltins.FixedDoubleArrayDataOf) : nameof(MaglevBuiltins.FixedArrayDataOf));
+                    _il.Emit(OpCodes.Stloc, elementsData);
+                }
                 return;
             case Opcode.LoadFixedArrayElement:
+                if (ElementsData(node.Inputs[0]) is { } loadData)
+                {
+                    _il.Emit(OpCodes.Ldloc, loadData);
+                    Load(node.Inputs[1], ValueRepresentation.kInt32);
+                    _il.Emit(OpCodes.Ldelem, typeof(JSValue));
+                    Store(v!);
+                    return;
+                }
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 Call(nameof(MaglevBuiltins.LoadFixedArrayElement));
@@ -2389,6 +2457,14 @@ internal sealed partial class MaglevCodeGenerator
                 return;
             case Opcode.LoadFixedDoubleArrayElement:
             case Opcode.LoadHoleyFixedDoubleArrayElement:
+                if (ElementsData(node.Inputs[0]) is { } doubleData)
+                {
+                    _il.Emit(OpCodes.Ldloc, doubleData);
+                    Load(node.Inputs[1], ValueRepresentation.kInt32);
+                    _il.Emit(OpCodes.Ldelem_R8);
+                    Store(v!);
+                    return;
+                }
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 Call(nameof(MaglevBuiltins.LoadFixedDoubleArrayElement));
@@ -2399,14 +2475,29 @@ internal sealed partial class MaglevCodeGenerator
                 // value tagged for the store) writes its payload, and a
                 // reference equal to the slot's leaves it (no write barrier),
                 // as V8's StoreFixedArrayElementNoWriteBarrier for Smis.
-                Load(node.Inputs[0], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Ldfld, s_obj);
-                _il.Emit(OpCodes.Ldfld, s_fixedArrayData);
+                if (ElementsData(node.Inputs[0]) is { } storeData)
+                {
+                    _il.Emit(OpCodes.Ldloc, storeData);
+                }
+                else
+                {
+                    Load(node.Inputs[0], ValueRepresentation.kTagged);
+                    _il.Emit(OpCodes.Ldfld, s_obj);
+                    _il.Emit(OpCodes.Ldfld, s_fixedArrayData);
+                }
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 _il.Emit(OpCodes.Ldelema, typeof(JSValue));
                 EmitStoreTagged(UntaggedNumberSource(node.Inputs[2]));
                 return;
             case Opcode.StoreFixedDoubleArrayElement:
+                if (ElementsData(node.Inputs[0]) is { } storeDoubleData)
+                {
+                    _il.Emit(OpCodes.Ldloc, storeDoubleData);
+                    Load(node.Inputs[1], ValueRepresentation.kInt32);
+                    Load(node.Inputs[2], ValueRepresentation.kFloat64);
+                    Call(nameof(MaglevBuiltins.StoreDoubleData));
+                    return;
+                }
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 Load(node.Inputs[2], ValueRepresentation.kFloat64);
@@ -3189,6 +3280,7 @@ internal sealed partial class MaglevCodeGenerator
     void GenerateFrameless()
     {
         AllocateLocals();
+        PlanElementsData();
         EmitPrologue();
         foreach (BasicBlock block in _graph.Blocks)
         {

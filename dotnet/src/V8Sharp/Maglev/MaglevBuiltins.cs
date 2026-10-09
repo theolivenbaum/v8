@@ -345,6 +345,21 @@ public static class MaglevBuiltins
     [MethodImpl(Inline)]
     public static JSValue LoadFixedArrayElement(JSValue elements, int index) => Unsafe.As<FixedArray>(elements._obj!)._data[index];
 
+    /// <summary>The array of a FixedArray, or null for other elements (no access follows then).</summary>
+    [MethodImpl(Inline)]
+    public static JSValue[]? FixedArrayDataOf(JSValue elements) => (elements._obj as FixedArray)?._data;
+
+    [MethodImpl(Inline)]
+    public static double[]? FixedDoubleArrayDataOf(JSValue elements) => (elements._obj as FixedDoubleArray)?._data;
+
+    [MethodImpl(Inline)]
+    public static void StoreDoubleData(double[] data, int index, double value)
+    {
+        // Every NaN but the hole is stored canonical (FixedDoubleArray::set).
+        if (double.IsNaN(value)) value = double.NaN;
+        data[index] = value;
+    }
+
     [MethodImpl(Inline)]
     public static double LoadFixedDoubleArrayElement(JSValue elements, int index) =>
         Unsafe.As<FixedDoubleArray>(elements._obj!)._data[index];
