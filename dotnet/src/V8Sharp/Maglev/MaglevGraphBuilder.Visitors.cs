@@ -1029,11 +1029,14 @@ public sealed partial class MaglevGraphBuilder
                     SetAccumulator(GetConstant(value));
                     return;
                 }
-                ValueNode load = AddNewNode(new ValueNode(Opcode.LoadPropertyCellValue, ValueRepresentation.kTagged)
-                {
-                    Obj0 = cell,
-                    Properties = OpProperties.kCanRead,
-                });
+                // V8 loads the cell's value field (BuildLoadTaggedField), so
+                // load elimination applies: a loop reads a global once.
+                ValueNode load = BuildLoadProperty(GetConstant(JSValue.FromObject(cell)), PropertyKeys.kPropertyCellValue,
+                    () => AddNewNode(new ValueNode(Opcode.LoadPropertyCellValue, ValueRepresentation.kTagged)
+                    {
+                        Obj0 = cell,
+                        Properties = OpProperties.kCanRead,
+                    }));
                 if (type == PropertyCellType.ConstantType)
                 {
                     if (value.IsSmi) load.Type = NodeType.kSmi;

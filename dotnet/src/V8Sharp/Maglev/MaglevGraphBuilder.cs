@@ -1122,10 +1122,15 @@ public sealed partial class MaglevGraphBuilder
                     known.ClearLoaded(keepValidityCells: true);
                     _info.RecordLoopEffect(clearsAll: true);
                     return;
+                case Opcode.StorePropertyCellValue:
+                    known.ForgetPropertyKey(PropertyKeys.kPropertyCellValue);
+                    _info.RecordLoopEffect(propertyKey: PropertyKeys.kPropertyCellValue);
+                    known.LoadedProperties[(GetConstant(JSValue.FromObject((PropertyCell)node.Obj0!)), PropertyKeys.kPropertyCellValue)] =
+                        node.Inputs[0];
+                    return;
                 case Opcode.StoreFixedArrayElement:
                 case Opcode.StoreFixedDoubleArrayElement:
                 case Opcode.StoreTypedArrayElement:
-                case Opcode.StorePropertyCellValue:
                 case Opcode.StoreRegister:
                 case Opcode.EnterInlinedFrame:
                 case Opcode.StoreGeneratorContinuation:

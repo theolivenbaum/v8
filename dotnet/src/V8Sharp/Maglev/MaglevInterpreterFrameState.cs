@@ -54,6 +54,8 @@ public static class PropertyKeys
     /// <summary>The length of a FixedArray(Base) (the object is the elements).</summary>
     public const int kFixedArrayLength = -3;
     public const int kTypedArrayLength = -4;
+    /// <summary>A global property cell's value (the object is the cell's constant).</summary>
+    public const int kPropertyCellValue = -5;
 }
 
 /// <summary>
