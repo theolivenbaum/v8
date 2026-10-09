@@ -1310,20 +1310,79 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Brtrue, exit);
     }
 
+    // Deopt exits are cold for RyuJIT (V8Sharp only, deviations.md): RyuJIT
+    // knows nothing of how often a branch is taken, and its profile synthesis
+    // gives a conditional branch out of a loop 10% (and any other 48%), so a
+    // loop with a few checks looked barely hotter than its exits, and its
+    // values went to stack slots. A path that ends in a throw gets 0%: the
+    // exits run in a try region whose spill chains end in a throw, caught by
+    // the region's own handler, which returns the deopt's result. Only the
+    // result is live across the handler.
+    static readonly bool s_coldDeoptExits = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_HOT_DEOPT_EXITS") != "1";
+    static readonly ConstructorInfo s_deoptUnwindCtor = typeof(MaglevDeoptUnwind).GetConstructor(Type.EmptyTypes)!;
+    LocalBuilder? _deoptResult;
+    bool _coldExits;
+
     void EmitDeoptExits()
     {
         _deoptReason ??= _il.DeclareLocal(typeof(int));
         _deoptIndex ??= _il.DeclareLocal(typeof(int));
-        foreach ((Label stub, Label exit, int reason) in _eagerStubs)
+        // RyuJIT does not inline a method with exception handlers, so a small
+        // body without loops, which its direct entry inlines, keeps plain exits.
+        _coldExits = s_coldDeoptExits && _pendingExits.Count > 0 &&
+                     (_frameless || InRegionMode || _il.ILOffset > kInlineIntoFastCallILBytes || HasLoops());
+        Label[]? entries = null;
+        if (_coldExits)
         {
-            _il.MarkLabel(stub);
-            _il.Emit(OpCodes.Ldc_I4, reason);
-            _il.Emit(OpCodes.Stloc, _deoptReason);
-            _il.Emit(OpCodes.Br, exit);
+            // Entries from the body: outside the try region, which can only
+            // be entered at its first instruction (the dispatch).
+            LocalBuilder entry = _il.DeclareLocal(typeof(int));
+            _deoptResult ??= _il.DeclareLocal(typeof(JSValue));
+            Label dispatch = _il.DefineLabel();
+            var exitIds = new Dictionary<Label, int>();
+            entries = new Label[_pendingExits.Count];
+            for (int k = 0; k < _pendingExits.Count; k++)
+            {
+                exitIds[_pendingExits[k].Label] = k;
+                entries[k] = _il.DefineLabel();
+            }
+            foreach ((Label stub, Label exit, int reason) in _eagerStubs)
+            {
+                _il.MarkLabel(stub);
+                _il.Emit(OpCodes.Ldc_I4, reason);
+                _il.Emit(OpCodes.Stloc, _deoptReason);
+                _il.Emit(OpCodes.Ldc_I4, exitIds[exit]);
+                _il.Emit(OpCodes.Stloc, entry);
+                _il.Emit(OpCodes.Br, dispatch);
+            }
+            for (int k = 0; k < _pendingExits.Count; k++)
+            {
+                if (_pendingExits[k].Kind != DeoptimizeKind.kLazy) continue;
+                _il.MarkLabel(_pendingExits[k].Label);
+                _il.Emit(OpCodes.Ldc_I4, k);
+                _il.Emit(OpCodes.Stloc, entry);
+                _il.Emit(OpCodes.Br, dispatch);
+            }
+            _il.BeginExceptionBlock();
+            _il.MarkLabel(dispatch);
+            _il.Emit(OpCodes.Ldloc, entry);
+            _il.Emit(OpCodes.Switch, entries);
+            _il.Emit(OpCodes.Br, entries[0]);
         }
-        foreach ((Label label, DeoptInfo info, DeoptimizeKind kind, DeoptimizeReason reason, ValueNode? result) in _pendingExits)
+        else
         {
-            _il.MarkLabel(label);
+            foreach ((Label stub, Label exit, int reason) in _eagerStubs)
+            {
+                _il.MarkLabel(stub);
+                _il.Emit(OpCodes.Ldc_I4, reason);
+                _il.Emit(OpCodes.Stloc, _deoptReason);
+                _il.Emit(OpCodes.Br, exit);
+            }
+        }
+        for (int e = 0; e < _pendingExits.Count; e++)
+        {
+            (Label label, DeoptInfo info, DeoptimizeKind kind, DeoptimizeReason reason, ValueNode? result) = _pendingExits[e];
+            _il.MarkLabel(entries is null ? label : entries[e]);
             var spill = new List<ValueNode>();
             var point = new DeoptPoint { Kind = kind, Reason = reason };
             List<(InlinedAllocation, CapturedObjectData)>? capturedObjects = null;
@@ -1417,6 +1476,40 @@ internal sealed partial class MaglevCodeGenerator
             EmitSpillChain(spill);
         }
         _maxScratch = SpillSlotBase + _spillSlots.Count;
+        if (_coldExits)
+        {
+            _il.BeginCatchBlock(typeof(MaglevDeoptUnwind));
+            _il.Emit(OpCodes.Pop);
+            _il.EndExceptionBlock();
+            _il.Emit(OpCodes.Ldloc, _deoptResult!);
+            EmitReturn();
+        }
+    }
+
+    bool HasLoops()
+    {
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (!block.IsDead && block.IsLoopHeader) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The end of a deopt exit, with the exit's result on the IL stack: the
+    /// return, or with cold exits the result into its local and the throw
+    /// to the exits' handler (EmitDeoptExits).
+    /// </summary>
+    void EmitDeoptExitReturn()
+    {
+        if (!_coldExits)
+        {
+            EmitReturn();
+            return;
+        }
+        _il.Emit(OpCodes.Stloc, _deoptResult!);
+        _il.Emit(OpCodes.Newobj, s_deoptUnwindCtor);
+        _il.Emit(OpCodes.Throw);
     }
 
     // ---- Spill chains ------------------------------------------------------------------------------------------
@@ -1526,7 +1619,7 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldloc, _deoptIndex!);
         _il.Emit(OpCodes.Ldloc, _deoptReason!);
         Call("Deopt0");
-        EmitReturn();
+        EmitDeoptExitReturn();
     }
 
     /// <summary>
@@ -3140,7 +3233,7 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldarg_3);
         _il.Emit(OpCodes.Ldc_I4, argsAt);
         _il.Emit(OpCodes.Call, s_deoptimizeFrameless);
-        _il.Emit(OpCodes.Ret);
+        EmitDeoptExitReturn();
     }
 
     /// <summary>Bytecodes that read the actual arguments beyond the formal parameters.</summary>

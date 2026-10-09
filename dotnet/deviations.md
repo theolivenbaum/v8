@@ -539,6 +539,19 @@ for now, to be revisited when the reason goes away.
   time (V8 only invalidates it for exits inside the loop): a function whose
   own compile failed would otherwise re-enter the OSR code and deoptimize at
   the same exit on every call.
+- Deopt exits are cold for RyuJIT: the exits run in a try region of their
+  own (entered through a switch on the exit), and each spill chain ends in
+  `throw new MaglevDeoptUnwind()`, caught by the region's handler, which
+  returns the deopt's result (V8's exits are deferred code, out of line,
+  and its register allocator knows they are cold). RyuJIT's profile
+  synthesis gives a branch to a path that throws likelihood 0, and a branch
+  out of a loop 10% otherwise (48% for any other branch), so before this a
+  loop with a few checks looked barely hotter than its exits and its values
+  lived in stack slots. A deopt costs one .NET throw within the method.
+  Bodies small enough for their direct entry to inline them (RyuJIT does
+  not inline methods with exception handlers) keep plain exits unless they
+  have a loop.
+  `V8SHARP_MAGLEV_HOT_DEOPT_EXITS=1` emits the exits as plain returns.
 - Deopt exits are shared by the checks of one frame state; the failed
   check's reason is passed to the Deoptimizer at run time (V8 has one exit
   per check, with the reason in the deopt data).
