@@ -113,7 +113,8 @@ namespace Wacs.Core.Runtime
         /// is only called from the runtime's outer entry points (CreateInvoker,
         /// InstantiateModule glue, binding lookups).
         /// </summary>
-        private ExecContext GetExecContext() =>
+        // V8Sharp: internal (the engine's wasm compiler binds compiled code to it).
+        internal ExecContext GetExecContext() =>
             _threadContext.GetOrAdd(Thread.CurrentThread.ManagedThreadId, _ => new ExecContext(_shared));
 
         private Store Store => _shared.Store;
