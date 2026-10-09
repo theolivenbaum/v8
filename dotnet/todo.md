@@ -2082,6 +2082,17 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     stack slots, every check a deopt exit with its frame state live; about
     a third); allocation and GC (EarleyBoyer, Splay, Box2D, RayTrace);
     RegExp (the irregexp port's matcher).
+    Conformance (9159d809 for test262, the merge of main aea50a9d for
+    mjsunit): V8Sharp.Tests 1194/1194 (bytecode goldens included);
+    test262 0 newly failing, default and forced (95123 run each; one
+    flaky CRASH under load, staging/sm/String/replace-math, passed on
+    rerun); mjsunit default 0 newly failing (8902 run); mjsunit forced
+    0 newly failing (8862 run). The merge with main's allocation work had broken
+    four mjsunit tests (es6/unscopables and three more: an arguments
+    object in a closure inlined through its feedback cell took a null
+    JSFunction constant), fixed in 9159d809.
+    regress/regress-crbug-808192 takes 223 s alone with forced Maglev (233 s
+    on main) against a 240 s limit, so it times out under load.
   - Inlined allocation and escape analysis (2026-10-09, 66b7b30b..3b512997;
     V8 files: maglev-ir.h InlinedAllocation/VirtualObject,
     maglev-graph-builder.cc BuildInlinedAllocation, CreateJSConstructor,
