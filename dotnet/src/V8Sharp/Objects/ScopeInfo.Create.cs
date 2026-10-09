@@ -113,6 +113,7 @@ public sealed partial class ScopeInfo : IScopeInfo
             IsWrappedFunctionScope = scope.is_wrapped_function(),
             HasContextCells = scope.has_context_cells(),
             IsHoistedInContext = scope.is_hoisted_in_context(),
+            IsAsmModule = scope.IsAsmModule(),
             ParameterCount = parameterCount,
             StartPositionValue = scope.start_position(),
             EndPositionValue = scope.end_position(),

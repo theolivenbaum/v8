@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The asm.js tests of V8 14.7.173.23, which this tree's revision of V8
+       removed with src/asmjs: the unit tests of test/unittests/asmjs (ported
+       as xUnit facts) and the mjsunit and message tests (v8-14.7/test, run by
+       the TestRunner with the v8sharp engine). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>V8Sharp.AsmJs.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/V8Sharp/V8Sharp.csproj" />
+    <ProjectReference Include="../../src/V8Sharp.D8/V8Sharp.D8.csproj" />
+    <!-- The runner: status files, suites, the d8 shell and both engines. Its
+         worker processes are started from this project's output directory. -->
+    <ProjectReference Include="../../tools/V8Sharp.TestRunner/V8Sharp.TestRunner.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+  </ItemGroup>
+
+</Project>

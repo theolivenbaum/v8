@@ -44,6 +44,7 @@ internal sealed partial class LiftoffCompiler
         c.TryId = ++_nextTryId;
         c.HandlerTags = [];
         c.HandlerTagsConstant = AddConstant(c.HandlerTags);
+        _instanceSpecific = true;
         _il.BeginExceptionBlock();
         _tryDepth++;
     }

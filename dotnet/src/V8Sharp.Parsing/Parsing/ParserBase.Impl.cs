@@ -141,6 +141,9 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
 
     public abstract void CountUsage(UseCounterFeature feature);
 
+    /// <summary>Parser::SetAsmModule (V8 14.7): marks the function scope as an asm.js module.</summary>
+    public abstract void SetAsmModule();
+
     public abstract FunctionLiteral.EagerCompileHint GetEmbedderCompileHint(
         FunctionLiteral.EagerCompileHint current_compile_hint, int position);
 

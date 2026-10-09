@@ -662,4 +662,50 @@ public class WasmCompilerTests
         Assert.Equal("16 6\n", Compiled(source));
         Assert.Equal("16 6\n", Compiled(source, "--no-wasm-lazy-compilation"));
     }
+
+    /// <summary>
+    /// The instances of a module share its compiled code (WasmSharedCode):
+    /// each instance's memory, globals, table and imports are its own.
+    /// </summary>
+    [Fact]
+    public void InstancesShareCompiledCode()
+    {
+        string output = Both(Prelude + """
+            const b = new WasmModuleBuilder();
+            const imp = b.addImport("m", "f", kSig_i_i);
+            b.addMemory(1, 1);
+            const g = b.addGlobal(kWasmI32, true, false);
+            const store = b.addFunction("store", kSig_v_ii)
+              .addBody([kExprLocalGet, 0, kExprLocalGet, 1, kExprI32StoreMem, 0, 0]).exportFunc();
+            const load = b.addFunction("load", kSig_i_i).addBody([kExprLocalGet, 0, kExprI32LoadMem, 0, 0]).exportFunc();
+            const twice = b.addFunction("twice", kSig_i_i).addBody([kExprLocalGet, 0, kExprI32Const, 2, kExprI32Mul]);
+            const sig = b.addType(kSig_i_i);
+            b.appendToTable([twice.index, imp]);
+            b.addFunction("indirect", kSig_i_ii)
+              .addBody([kExprLocalGet, 1, kExprLocalGet, 0, kExprCallIndirect, sig, kTableZero]).exportFunc();
+            b.addFunction("bump", kSig_i_i).addBody([
+              kExprGlobalGet, g.index, kExprLocalGet, 0, kExprI32Add, kExprGlobalSet, g.index,
+              kExprGlobalGet, g.index, kExprLocalGet, 0, kExprCallFunction, load.index, kExprI32Add,
+              kExprLocalGet, 0, kExprCallFunction, imp, kExprI32Add]).exportFunc();
+            const module = new WebAssembly.Module(b.toBuffer());
+            const instances = [];
+            for (let i = 0; i < 3; i++) {
+              instances.push(new WebAssembly.Instance(module, {m: {f: x => x + 1000 * (i + 1)}}).exports);
+            }
+            instances.forEach((e, i) => e.store(8, 100 + i));
+            for (let round = 0; round < 2; round++) {
+              instances.forEach((e, i) => print(i, e.load(8), e.bump(8), e.indirect(0, 21), e.indirect(1, 21),
+                run(e.indirect, 2, 0)));
+            }
+            // A new instance after the code is compiled takes the shared code.
+            const late = new WebAssembly.Instance(module, {m: {f: x => -x}}).exports;
+            print("late", late.load(8), late.bump(8), late.indirect(1, 5));
+            // Its frames show its own positions (the pc is relative to the function).
+            try { late.bump(70000); } catch (ex) { print(ex.stack); }
+            """);
+        Assert.Contains("0 100 1116 42 1021", output);
+        Assert.Contains("2 102 3118 42 3021", output);
+        Assert.Contains("late 0 0 -5", output);
+        Assert.Contains("at load (wasm://wasm/", output);
+    }
 }

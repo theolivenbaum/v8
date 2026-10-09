@@ -374,6 +374,11 @@ public sealed class ParseInfo
     public bool allow_eval_cache() => _allowEvalCache;
     public void set_allow_eval_cache(bool value) => _allowEvalCache = value;
 
+    // V8 14.7: whether the parse found a "use asm" function.
+    bool _containsAsmModule;
+    public bool contains_asm_module() => _containsAsmModule;
+    public void set_contains_asm_module(bool value) => _containsAsmModule = value;
+
     public LanguageMode language_mode() => _languageMode;
     public void set_language_mode(LanguageMode value) => _languageMode = value;
 

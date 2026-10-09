@@ -164,8 +164,25 @@ public static class WasmStackTraces
     /// <summary>The pc of a frame at its function's entry (the stack check).</summary>
     internal const int FunctionEntryPc = -2;
 
-    /// <summary>A wasm frame: the instance, the function index and the module offset.</summary>
-    public readonly record struct Frame(WasmInstanceObject Instance, int FunctionIndex, int Offset);
+    /// <summary>
+    /// A wasm frame: the instance, the function index, the module offset, the
+    /// offset within the function's body (V8's code offset of the frame), and
+    /// whether an asm.js frame is at the number conversion of an import's result.
+    /// </summary>
+    public readonly record struct Frame(WasmInstanceObject Instance, int FunctionIndex, int Offset, int BodyOffset = 0,
+        bool AtNumberConversion = false);
+
+    /// <summary>
+    /// wasm::GetSourcePosition for an asm.js module (V8 14.7): the JavaScript
+    /// source position of the instruction at <paramref name="bodyOffset"/> of
+    /// function <paramref name="functionIndex"/>.
+    /// </summary>
+    public static int GetAsmJsSourcePosition(WasmModuleObject module, int functionIndex, int bodyOffset,
+        bool atNumberConversion)
+    {
+        int declared = functionIndex - module.Module.ImportedFunctions.Count;
+        return module.AsmJsOffsetInformation!.GetSourcePosition(declared, bodyOffset, atNumberConversion);
+    }
 
     /// <summary>
     /// The wasm frames of the activation <paramref name="activationFromTop"/>
@@ -175,6 +192,7 @@ public static class WasmStackTraces
     {
         var result = new List<Frame>();
         if (isolate.WasmEngineField is not { } engine) return result;
+        bool topInConversion = engine.IsInNumberConversion(activationFromTop);
         foreach (WasmStackFrame frame in engine.ActivationFrames(activationFromTop))
         {
             if (engine.Store[new FuncAddr((int)frame.FuncAddr)] is not FunctionInstance function) continue;
@@ -183,7 +201,9 @@ public static class WasmStackTraces
             int index = frame.Pc - function.LinkedOffset;
             int offset = frame.Pc == FunctionEntryPc ? (int)function.Definition.BodyOffset
                 : index >= 0 && index < offsets.Length ? (int)offsets[index] : 0;
-            result.Add(new Frame(instance, (int)function.Index.Value, offset));
+            int bodyOffset = Math.Max(0, offset - (int)function.Definition.BodyOffset);
+            result.Add(new Frame(instance, (int)function.Index.Value, offset, bodyOffset,
+                AtNumberConversion: topInConversion && result.Count == 0));
         }
         return result;
     }

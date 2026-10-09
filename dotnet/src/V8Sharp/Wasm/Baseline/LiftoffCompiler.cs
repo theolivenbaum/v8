@@ -78,7 +78,6 @@ internal sealed partial class LiftoffCompiler
     int _pos;
     readonly uint[] _offsets;
     readonly InstructionBase[] _instructions;
-    readonly int _linkedOffset;
 
     readonly DynamicMethod _method;
     readonly ILGenerator _il;
@@ -122,6 +121,12 @@ internal sealed partial class LiftoffCompiler
     // The cached memories (array and size) of memories that are not shared.
     LocalBuilder?[] _memArray = [];
     LocalBuilder?[] _memSize = [];
+    // A managed pointer to each cached memory's first byte (accesses add the
+    // address to it: no array load or null check per access).
+    LocalBuilder?[] _memBase = [];
+    // An asm.js instance's memory is its heap buffer, which never grows or
+    // changes: the cached memory is read once, at entry.
+    bool _memoriesFixed;
     bool _cacheMemories;
 
     // The call_indirect/call_ref sites of the method (its own and its
@@ -129,6 +134,9 @@ internal sealed partial class LiftoffCompiler
     // IL local loaded on entry: RyuJIT cannot know the constants do not
     // change, so it would load and cast them at every use in a loop.
     Dictionary<(int Function, int Inst), (LocalBuilder Local, WasmCallSite Site)> _callSites = [];
+    // The elements of the tables call_indirect reads, by table (the
+    // instance's: the code serves every instance).
+    Dictionary<int, LocalBuilder> _tableElements = [];
 
     // The return label for returns from inside exception regions.
     Label _returnLabel;
@@ -149,7 +157,6 @@ internal sealed partial class LiftoffCompiler
         _bytes = _data.WireBytes;
         _offsets = _function.Definition.InstructionOffsets;
         _instructions = [.. _function.Body.Instructions.Flatten()];
-        _linkedOffset = _function.LinkedOffset;
         WasmSignature sig = code.Signature;
         string name = "wasm-function[" + code.FunctionIndex.ToString(System.Globalization.CultureInfo.InvariantCulture) + "]";
         _method = new DynamicMethod(name, sig.ReturnType, sig.MethodParameterTypes, typeof(LiftoffCompiler).Module, skipVisibility: true);
@@ -224,6 +231,10 @@ internal sealed partial class LiftoffCompiler
             // V8 prints the node count of the TurboFan graph; the IL size stands in.
             Console.Out.Write($"[function {code.FunctionIndex}: emitted {compiler._il.ILOffset} nodes]\n");
         }
+        // Code that collects feedback or was compiled from it (speculative
+        // targets are this instance's functions) stays with its instance.
+        code.Shareable = !compiler._instanceSpecific && !compiler._collectFeedback && !tierUp;
+        code.ILSize = compiler._il.ILOffset;
         return compiler._method.CreateDelegate(code.Signature.DelegateType, code);
     }
 
@@ -234,6 +245,14 @@ internal sealed partial class LiftoffCompiler
     static bool InliningEnabled(WasmInstanceData data) => data.Engine.Isolate.Flags.wasm_inlining;
 
     static void Unsupported(string reason) => throw new LiftoffBailout(reason);
+
+    /// <summary>
+    /// Set when the code depends on its instance (a constant that is the
+    /// instance's: an interpreter instruction object, a function reference,
+    /// a catch's tags; or a direct call to code that is not shared), so it
+    /// cannot serve the module's other instances.
+    /// </summary>
+    bool _instanceSpecific;
 
     int AddConstant(object value)
     {
@@ -446,8 +465,14 @@ internal sealed partial class LiftoffCompiler
         foreach (InstructionBase inst in _instructions)
         {
             byte op = (byte)inst.Op.x00;
-            if (op is >= 0x28 and <= 0x40) accessesMemory = true;
-            else if (op == 0x03) _hasLoops = true;
+            if (op is >= 0x28 and <= 0x40 || inst is InstAsmJs asm && InstAsmJs.AccessSize(asm.Code) != 0)
+            {
+                accessesMemory = true;
+            }
+            else if (op == 0x03)
+            {
+                _hasLoops = true;
+            }
         }
         if (_plan is not null)
         {
@@ -459,7 +484,7 @@ internal sealed partial class LiftoffCompiler
                 foreach (uint offset in f.Definition.InstructionOffsets)
                 {
                     byte op = _bytes[offset];
-                    if (op is >= 0x28 and <= 0x40) accessesMemory = true;
+                    if (op is >= 0x28 and <= 0x40 or WasmOpcodes.kAsmJsPrefix) accessesMemory = true;
                     else if (op == 0x03) _hasLoops = true;
                 }
             }
@@ -468,10 +493,14 @@ internal sealed partial class LiftoffCompiler
     }
 
     static readonly FieldInfo s_codeInstance = typeof(WasmCode).GetField(nameof(WasmCode.Instance))!;
+    static readonly FieldInfo s_dataTables = typeof(WasmInstanceData).GetField(nameof(WasmInstanceData.Tables))!;
+    static readonly FieldInfo s_tableElements = typeof(TableInstance).GetField(nameof(TableInstance.Elements))!;
     static readonly FieldInfo s_codeConstants = typeof(WasmCode).GetField(nameof(WasmCode.Constants))!;
     static readonly FieldInfo s_codeFeedback = typeof(WasmCode).GetField(nameof(WasmCode.Feedback))!;
     static readonly FieldInfo s_feedbackInvocations = typeof(WasmFunctionFeedback).GetField(nameof(WasmFunctionFeedback.Invocations))!;
     static readonly FieldInfo s_codeTieringBudget = typeof(WasmCode).GetField(nameof(WasmCode.TieringBudget))!;
+    static readonly FieldInfo s_codeAddress = typeof(WasmCode).GetField(nameof(WasmCode.Address))!;
+    static readonly FieldInfo s_funcAddrValue = typeof(FuncAddr).GetField(nameof(FuncAddr.Value))!;
     static readonly FieldInfo s_dataFrames = typeof(WasmInstanceData).GetField(nameof(WasmInstanceData.Frames))!;
     static readonly FieldInfo s_dataStackGuard = typeof(WasmInstanceData).GetField(nameof(WasmInstanceData.StackGuard))!;
     static readonly FieldInfo s_dataMemories = typeof(WasmInstanceData).GetField(nameof(WasmInstanceData.Memories))!;
@@ -537,7 +566,11 @@ internal sealed partial class LiftoffCompiler
         il.Emit(OpCodes.Ldloc, _framesLocal);
         il.Emit(OpCodes.Ldfld, s_framesFunc);
         il.Emit(OpCodes.Ldloc, _spLocal);
-        il.Emit(OpCodes.Ldc_I4, _code.Address.Value);
+        // The function's address is read from its code, so that the method
+        // serves every instance of the module (WasmSharedCode).
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldflda, s_codeAddress);
+        il.Emit(OpCodes.Ldfld, s_funcAddrValue);
         il.Emit(OpCodes.Stelem_I4);
         il.Emit(OpCodes.Ldloc, _framesLocal);
         il.Emit(OpCodes.Ldfld, s_framesPc);
@@ -553,6 +586,8 @@ internal sealed partial class LiftoffCompiler
 
         _memArray = new LocalBuilder?[_data.Memories.Length];
         _memSize = new LocalBuilder?[_data.Memories.Length];
+        _memBase = new LocalBuilder?[_data.Memories.Length];
+        _memoriesFixed = _data.AsmJs;
         if (_cacheMemories)
         {
             for (int m = 0; m < _data.Memories.Length; m++)
@@ -560,8 +595,9 @@ internal sealed partial class LiftoffCompiler
                 if (_data.Memories[m].Type.Limits.Shared) continue;
                 _memArray[m] = il.DeclareLocal(typeof(byte[]));
                 _memSize[m] = il.DeclareLocal(typeof(long));
+                _memBase[m] = il.DeclareLocal(typeof(byte).MakeByRefType());
             }
-            ReloadMemories();
+            ReloadMemories(entry: true);
         }
 
         // Locals of reference and vector types start as their default values
@@ -614,14 +650,25 @@ internal sealed partial class LiftoffCompiler
                 if (op is < 0x10 or > 0x15) continue;
                 int slot = callIndex++;
                 if (op is 0x10 or 0x12 || _callSites.ContainsKey((functionIndex, i))) continue;
-                List<Value>? elements = null;
+                int typeIndex = -1;
                 if (op is 0x11 or 0x13)
                 {
                     int p = pos + 1;
-                    SkipLeb(ref p);
-                    elements = _data.Tables[(int)ReadLeb(ref p)].Elements;
+                    typeIndex = (int)ReadLeb(ref p);
+                    int table = (int)ReadLeb(ref p);
+                    if (!_tableElements.ContainsKey(table))
+                    {
+                        LocalBuilder elements = _il.DeclareLocal(typeof(List<Value>));
+                        _il.Emit(OpCodes.Ldloc, _dataLocal);
+                        _il.Emit(OpCodes.Ldfld, s_dataTables);
+                        _il.Emit(OpCodes.Ldc_I4, table);
+                        _il.Emit(OpCodes.Ldelem_Ref);
+                        _il.Emit(OpCodes.Ldfld, s_tableElements);
+                        _il.Emit(OpCodes.Stloc, elements);
+                        _tableElements[table] = elements;
+                    }
                 }
-                var site = new WasmCallSite(slot, elements);
+                var site = new WasmCallSite(slot, typeIndex);
                 if (f == _function && _collectFeedback) _code.Feedback!.Sites[i] = site;
                 LocalBuilder local = _il.DeclareLocal(typeof(WasmCallSite));
                 _il.Emit(OpCodes.Ldarg_0);
@@ -632,13 +679,6 @@ internal sealed partial class LiftoffCompiler
                 _il.Emit(OpCodes.Stloc, local);
                 _callSites[(functionIndex, i)] = (local, site);
             }
-        }
-    }
-
-    void SkipLeb(ref int p)
-    {
-        while ((_bytes[p++] & 0x80) != 0)
-        {
         }
     }
 
@@ -659,9 +699,9 @@ internal sealed partial class LiftoffCompiler
     (LocalBuilder Local, WasmCallSite Site) CallSite() => _callSites[((int)_function.Index.Value, _instIndex)];
 
     /// <summary>Re-reads the cached memories (after anything that can grow them).</summary>
-    void ReloadMemories()
+    void ReloadMemories(bool entry = false)
     {
-        if (!_cacheMemories) return;
+        if (!_cacheMemories || (_memoriesFixed && !entry)) return;
         for (int m = 0; m < _memArray.Length; m++)
         {
             if (_memArray[m] is not { } array) continue;
@@ -671,7 +711,10 @@ internal sealed partial class LiftoffCompiler
             _il.Emit(OpCodes.Ldelem_Ref);
             _il.Emit(OpCodes.Dup);
             _il.Emit(OpCodes.Ldfld, s_memoryData);
+            _il.Emit(OpCodes.Dup);
             _il.Emit(OpCodes.Stloc, array);
+            _il.Emit(OpCodes.Call, s_arrayDataReference);
+            _il.Emit(OpCodes.Stloc, _memBase[m]!);
             _il.Emit(OpCodes.Call, s_memoryByteLength);
             _il.Emit(OpCodes.Conv_U8);
             _il.Emit(OpCodes.Stloc, _memSize[m]!);
@@ -688,10 +731,12 @@ internal sealed partial class LiftoffCompiler
 
     /// <summary>
     /// The position of the current instruction as the frame records it: its
-    /// linked instruction index, or in an inlined callee the inlined position
-    /// that names it and the frames it is inlined into.
+    /// index in the function (the code serves every instance, and each
+    /// instance links the function at its own offset: ExecContext.SnapshotFrames
+    /// adds it), or in an inlined callee the inlined position that names it
+    /// and the frames it is inlined into.
     /// </summary>
-    int _pc => _inline is null ? _linkedOffset + _instIndex : InlinedPc();
+    int _pc => _inline is null ? _instIndex : InlinedPc();
 
     /// <summary>Records this frame's position (before a call or a runtime call that can throw).</summary>
     void EmitStorePc()
@@ -1282,6 +1327,9 @@ internal sealed partial class LiftoffCompiler
             case 0xd6:
                 BrOnNull((int)ReadU32(), onNull: false);
                 return;
+            case WasmOpcodes.kAsmJsPrefix:
+                AsmJsOp(ReadU32());
+                return;
             case WasmOpcodes.kGCPrefix:
                 GCOp(ReadU32());
                 return;
@@ -1341,6 +1389,7 @@ internal sealed partial class LiftoffCompiler
         Frame saved = ctx.Frame;
         int height = ctx.OpStack.Count;
         ctx.Frame = _data.InterpreterFrame;
+        _instanceSpecific = true;
         Value value;
         try
         {

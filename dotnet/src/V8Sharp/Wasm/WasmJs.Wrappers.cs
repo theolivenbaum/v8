@@ -284,8 +284,20 @@ public static partial class WasmJs
                     case 0:
                         break;
                     case 1:
-                        results[0] = engine.ToWasmValue(result, resultTypes[0], typesModule);
+                    {
+                        // An asm.js caller's frame is at the conversion of the result
+                        // (V8: at_to_number_conversion) while it runs.
+                        WasmEngine.Activation? converting = engine.EnterNumberConversion();
+                        try
+                        {
+                            results[0] = engine.ToWasmValue(result, resultTypes[0], typesModule);
+                        }
+                        finally
+                        {
+                            engine.LeaveNumberConversion(converting);
+                        }
                         break;
+                    }
                     default:
                     {
                         JSValue[] values = IterableToList(isolate, result);

@@ -527,6 +527,11 @@ public sealed partial class MaglevGraphBuilder
                     _unit.Feedback.Slots[FeedbackSlot(1)].HeapObjectOrNull is AllocationSite { Boilerplate: { } boilerplate } &&
                     LiteralShape.TryCreate(boilerplate, 0) is { } shape)
                 {
+                    if (shape.Nested.Length == 0 && TryBuildInlinedObjectLiteral(boilerplate) is { } literal)
+                    {
+                        SetAccumulator(literal);
+                        break;
+                    }
                     // TryBuildFastCreateObjectOrArrayLiteral for a boilerplate whose nested
                     // values are such boilerplates or arrays of primitives: copies of them
                     // (MaglevBuiltins.CloneObjectLiteral).
@@ -557,6 +562,12 @@ public sealed partial class MaglevGraphBuilder
             }
             case Bytecode.CreateEmptyObjectLiteral:
             {
+                // VisitCreateEmptyObjectLiteral: BuildInlinedAllocation(CreateJSObject(Object's initial map)).
+                if (TryBuildInlinedAllocation((_unit.Function ?? _info.Function).Context.NativeContext.ObjectFunction.InitialMap) is { } empty)
+                {
+                    SetAccumulator(empty);
+                    break;
+                }
                 ValueNode result = CallBaseline("CreateEmptyObjectLiteral", [_frame.Context], [BuiltinArg.Isolate, BuiltinArg.In(0)],
                     properties: OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!;
                 result.Type = NodeType.kOtherJSReceiver;
@@ -573,6 +584,11 @@ public sealed partial class MaglevGraphBuilder
                 break;
             case Bytecode.CreateClosure:
             {
+                if (TryBuildFastCreateClosure() is { } fast)
+                {
+                    SetAccumulator(fast);
+                    break;
+                }
                 ValueNode result = CallBaseline("CreateClosure", [_frame.Context, ClosureNode],
                     [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.C(Constant(ConstantPoolIndex(0))),
                      BuiltinArg.I(FeedbackSlot(1))], properties: OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!;
@@ -583,6 +599,11 @@ public sealed partial class MaglevGraphBuilder
 
             // ---- Contexts ----------------------------------------------------------------------------------
             case Bytecode.CreateBlockContext:
+                if (TryBuildInlinedAllocatedContext(Constant(ConstantPoolIndex(0)).HeapObjectOrNull as ScopeInfo, ContextKind.BlockContext) is { } block)
+                {
+                    SetAccumulator(block);
+                    break;
+                }
                 SetAccumulator(WithType(CallBaseline("CreateBlockContext", [_frame.Context],
                     [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.C(Constant(ConstantPoolIndex(0)))],
                     properties: OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!, NodeType.kContext));
@@ -590,6 +611,12 @@ public sealed partial class MaglevGraphBuilder
             case Bytecode.CreateFunctionContext:
             case Bytecode.CreateFunctionContextWithCells:
             case Bytecode.CreateEvalContext:
+                if (bytecode != Bytecode.CreateEvalContext &&
+                    TryBuildInlinedAllocatedContext(Constant(ConstantPoolIndex(0)).HeapObjectOrNull as ScopeInfo, ContextKind.FunctionContext) is { } function)
+                {
+                    SetAccumulator(function);
+                    break;
+                }
                 SetAccumulator(WithType(CallBaseline("CreateFunctionContext", [_frame.Context],
                     [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.C(Constant(ConstantPoolIndex(0))),
                      BuiltinArg.B(bytecode == Bytecode.CreateEvalContext)],
@@ -607,7 +634,11 @@ public sealed partial class MaglevGraphBuilder
             // ---- Arguments ----------------------------------------------------------------------------------
             case Bytecode.CreateMappedArguments:
             {
-                RequireOutermostFrame();
+                if (_unit.IsInline)
+                {
+                    SetAccumulator(BuildInlinedArgumentsObject(mapped: true));
+                    break;
+                }
                 ValueNode arguments = CallBaseline("CreateMappedArguments", [_frame.Context],
                     [BuiltinArg.Isolate, BuiltinArg.State, BuiltinArg.In(0)], ParameterStores())!;
                 // Elidable when no parameter is context-allocated (no aliasing):
@@ -622,7 +653,11 @@ public sealed partial class MaglevGraphBuilder
             }
             case Bytecode.CreateUnmappedArguments:
             {
-                RequireOutermostFrame();
+                if (_unit.IsInline)
+                {
+                    SetAccumulator(BuildInlinedArgumentsObject(mapped: false));
+                    break;
+                }
                 ValueNode arguments = CallBaseline("CreateUnmappedArguments", [], [BuiltinArg.Isolate, BuiltinArg.State], ParameterStores())!;
                 if (!_info.IsOsr && !WritesParameters(_unit.Bytecode)) ((CallBuiltinInfo)arguments.Obj0!).ArgumentsKind = ArgumentsObjectKind.Unmapped;
                 arguments.Type = NodeType.kOtherJSReceiver;
@@ -847,16 +882,45 @@ public sealed partial class MaglevGraphBuilder
     }
 
     /// <summary>Stores of the parameters into the frame (for builtins that read them from the frame).</summary>
-    (Register, ValueNode)[] ParameterStores()
+    (Register, ValueNode)[] ParameterStores(bool withReceiver = true)
     {
-        var stores = new (Register, ValueNode)[_unit.ParameterCount];
-        for (int i = 0; i < stores.Length; i++)
+        int first = withReceiver ? 0 : 1;
+        var stores = new (Register, ValueNode)[_unit.ParameterCount - first];
+        for (int i = first; i < _unit.ParameterCount; i++)
         {
             Register r = Register.FromParameterIndex(i);
-            stores[i] = (r, _frame.Get(r));
+            stores[i - first] = (r, _frame.Get(r));
         }
         return stores;
     }
+
+    /// <summary>
+    /// BuildVirtualArgumentsObject for an inlined function: the arguments
+    /// object of its (lazily pushed) frame, elided as the outermost
+    /// function's when its only uses are deopt frames and
+    /// f.apply(thisArg, arguments), which calls f with the call's arguments
+    /// (V8 builds an InlinedAllocation of the arguments object from the
+    /// caller's arguments and escape-analyses it).
+    /// </summary>
+    ValueNode BuildInlinedArgumentsObject(bool mapped)
+    {
+        ValueNode arguments = BuildCallBuiltin(s_maglevBuiltins["CreateInlinedArguments"], "CreateInlinedArguments", [],
+            [BuiltinArg.Isolate, BuiltinArg.RegIndex(Register.FromParameterIndex(0)), BuiltinArg.C(_unit.Function), BuiltinArg.B(mapped)],
+            ParameterStores(withReceiver: false), OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!;
+        if (!WritesParameters(_unit.Bytecode) && (!mapped || !HasContextAllocatedParameters(_unit.SharedFunctionInfo.ScopeInfo)))
+        {
+            ((CallBuiltinInfo)arguments.Obj0!).ArgumentsKind = mapped ? ArgumentsObjectKind.Mapped : ArgumentsObjectKind.Unmapped;
+        }
+        ((CallBuiltinInfo)arguments.Obj0!).ArgumentsLoop = CurrentLoop;
+        arguments.Type = NodeType.kOtherJSReceiver;
+        return arguments;
+    }
+
+    /// <summary>Whether <paramref name="value"/> is the arguments object of this inlined function (its arguments are the call's).</summary>
+    bool IsInlinedArgumentsObject(ValueNode value) =>
+        _unit.IsInline && value.Opcode == Opcode.CallBuiltin && ReferenceEquals(value.Unit, _unit) &&
+        value.Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None, ArgumentsUsed: false, Method.Name: "CreateInlinedArguments" } info &&
+        ReferenceEquals(info.ArgumentsLoop, CurrentLoop);
 
     /// <summary>The stores of a register list into the frame (the builtin reads it there).</summary>
     (Register, ValueNode)[] RegisterListStores(Register first, int count)

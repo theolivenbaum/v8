@@ -98,10 +98,12 @@ namespace Wacs.Core.Runtime
         public const int InlinedPcBase = -16;
 
         /// <summary>
-        /// An inlined position: the inlined frames (innermost first) and the
-        /// physical frame's pc, or, when the function was inlined for a tail
-        /// call of the physical frame's function, no pc: the outermost
-        /// inlined frame replaces that frame.
+        /// An inlined position: the inlined frames (innermost first: function
+        /// indices in the physical frame's module, pcs relative to each
+        /// function, so that code shared by a module's instances names each
+        /// instance's frames) and the physical frame's pc, or, when the
+        /// function was inlined for a tail call of the physical frame's
+        /// function, no pc: the outermost inlined frame replaces that frame.
         /// </summary>
         public sealed class InlinedPosition
         {

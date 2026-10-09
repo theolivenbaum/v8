@@ -117,6 +117,7 @@ internal sealed partial class LiftoffCompiler
         if (target.State == WasmCodeState.Compiled && target.Method is { } method && target.Instance == _data &&
             !target.MayTierUp)
         {
+            if (!target.Shareable) _instanceSpecific = true;
             _asm.PopToStackWithPrefix(sig.Params.Length, () =>
             {
                 _il.Emit(OpCodes.Ldloc, _dataLocal);
@@ -144,11 +145,9 @@ internal sealed partial class LiftoffCompiler
         if (!_reachable) return;
         DefType expected = _module.Types[(TypeIdx)(uint)typeIndex];
         WasmSignature sig = WasmSignature.Get((FunctionType)expected.Expansion);
-        int k = AddConstant(expected);
-        // The site (its inline cache and, in code that tiers up, its
-        // feedback) checks the signature against constants[k] on a miss.
-        var (site, siteObject) = CallSite();
-        siteObject.ExpectedConstant = k;
+        // The site: its inline cache and, in code that tiers up, its feedback.
+        LocalBuilder site = CallSite().Local;
+        LocalBuilder elements = _tableElements[table];
         int n = sig.Params.Length;
         bool table64 = TableAddressKind(table) == WasmKind.I64;
         _asm.Settle(n + 1);
@@ -161,8 +160,9 @@ internal sealed partial class LiftoffCompiler
         void EmitGenericCall()
         {
             EmitStorePc();
-            // RuntimeWasm.CallIndirectTarget(index, site, code, pc)
+            // RuntimeWasm.CallIndirectTarget(index, elements, site, code, pc)
             LoadIndex();
+            _il.Emit(OpCodes.Ldloc, elements);
             _il.Emit(OpCodes.Ldloc, site);
             EmitRuntimeCall(nameof(RuntimeWasm.CallIndirectTarget));
             _il.Emit(OpCodes.Castclass, sig.DelegateType);
@@ -176,7 +176,7 @@ internal sealed partial class LiftoffCompiler
             EmitSpeculativeCall(cases, tail ? "return_call_indirect" : "call_indirect", callIndex, sig, first, tail, () =>
             {
                 LoadIndex();
-                _il.Emit(OpCodes.Ldloc, site);
+                _il.Emit(OpCodes.Ldloc, elements);
                 _il.Emit(OpCodes.Call, RuntimeWasm.Method(nameof(RuntimeWasm.CallIndirectTargetAddress)));
             }, EmitGenericCall);
             return;

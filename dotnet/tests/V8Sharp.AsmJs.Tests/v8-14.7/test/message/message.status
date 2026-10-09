@@ -1,0 +1,14 @@
+# Copyright 2008 the V8 project authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+#
+# V8Sharp: the asm.js message tests of V8 14.7.173.23 (test/message/asm-*),
+# which this tree's revision of V8 removed with src/asmjs. These are the
+# entries of 14.7's message.status that concern them.
+
+[
+# TODO(v8:7777): Change this once wasm is supported in jitless mode.
+['not has_webassembly or (variant == jitless and not has_wasm_interpreter)', {
+  'asm-*': [SKIP],
+}],  # not has_webassembly or (variant == jitless and not has_wasm_interpreter)
+]

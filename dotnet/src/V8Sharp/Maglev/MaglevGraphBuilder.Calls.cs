@@ -225,6 +225,17 @@ public sealed partial class MaglevGraphBuilder
             return TryBuildInlinedCall(target, targetNode, args[0], [], ConvertReceiverMode.Any, nexus, isConstruct: false, null) ??
                    BuildCall(targetNode, args[0], [], Register.InvalidValue(), ConvertReceiverMode.Any);
         }
+        if (args.Length == 2 && IsInlinedArgumentsObject(args[1]))
+        {
+            // The applied function gets the inlined call's arguments.
+            ValueNode? inlined = TryBuildInlinedCall(target, targetNode, args[0], _inlinedArguments!, ConvertReceiverMode.Any, nexus,
+                isConstruct: false, null);
+            if (inlined is not null) return inlined;
+            if (_inlinedArguments!.Length < s_callWithValues.Length)
+            {
+                return BuildCall(targetNode, args[0], _inlinedArguments, Register.InvalidValue(), ConvertReceiverMode.Any);
+            }
+        }
         if (args.Length == 2 && !_unit.IsInline && args[1].Opcode == Opcode.CallBuiltin &&
             args[1].Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None } && ReferenceEquals(args[1].Unit, _unit))
         {
@@ -244,6 +255,12 @@ public sealed partial class MaglevGraphBuilder
     ValueNode? TryReduceFunctionPrototypeApply(ValueNode function, ValueNode[] args)
     {
         if (function.Representation != ValueRepresentation.kTagged) return null;
+        // A constant applied function (e.g. a method of a virtual object's
+        // prototype): the known-target reduction, which can inline it.
+        if (function.Opcode == Opcode.Constant && function.Value0.HeapObjectOrNull is JSFunction constant)
+        {
+            return TryReduceFunctionPrototypeApplyCallWithReceiver(constant, function, args, default);
+        }
         if (args.Length == 0)
         {
             ValueNode undefined = GetRootConstant(RootIndex.kUndefinedValue);
@@ -252,6 +269,10 @@ public sealed partial class MaglevGraphBuilder
         if (args.Length == 1 || args[1].Opcode == Opcode.RootConstant && args[1].ConstantValue().IsNullOrUndefined)
         {
             return BuildCall(function, GetTaggedValue(args[0]), [], Register.InvalidValue(), ConvertReceiverMode.Any);
+        }
+        if (args.Length == 2 && IsInlinedArgumentsObject(args[1]) && _inlinedArguments!.Length < s_callWithValues.Length)
+        {
+            return BuildCall(function, GetTaggedValue(args[0]), _inlinedArguments, Register.InvalidValue(), ConvertReceiverMode.Any);
         }
         if (args.Length == 2 && !_unit.IsInline && args[1].Opcode == Opcode.CallBuiltin &&
             args[1].Obj0 is CallBuiltinInfo { ArgumentsKind: not ArgumentsObjectKind.None } && ReferenceEquals(args[1].Unit, _unit))
@@ -587,6 +608,10 @@ public sealed partial class MaglevGraphBuilder
     // ---- Inlining (BuildInlineFunction) ---------------------------------------------------------------------
 
     /// <summary>Whether <paramref name="target"/> can be inlined here (MaglevGraphBuilder::ShouldInlineCall).</summary>
+    /// <summary>The call being considered passes an allocation that has not escaped (TryBuildInlinedCall).</summary>
+    bool _callReceivesFreshAllocation;
+    static readonly bool s_inlineForEscapeAnalysis = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_INLINE_FOR_EA") != "1";
+
     string? ShouldInlineCall(JSFunction target, FeedbackNexus nexus, bool isConstruct)
     {
         if (!Flags.maglev_inlining) return "inlining disabled";
@@ -610,7 +635,11 @@ public sealed partial class MaglevGraphBuilder
         if (_onlyInlineSmall && !small) return "polymorphic continuation (small functions only)";
         int depth = _unit.InliningDepth + 1;
         if (depth > Flags.max_maglev_hard_inline_depth) return "too deep";
-        if (!small && depth > MaxInlineDepth) return "inline depth";
+        // V8Sharp: a call that receives an allocation which has not escaped
+        // is inlined deeper (up to the hard depth limit), so the object can
+        // stay virtual (V8's Turbofan inlines such calls; Maglev's depth limit
+        // would make the call escape it).
+        if (!small && depth > MaxInlineDepth && !(_callReceivesFreshAllocation && s_inlineForEscapeAnalysis)) return "inline depth";
         if (length > MaxInlinedBytecodeSize) return "too big";
         if (!small && _info.InlinedBytecodeSize + length > MaxInlinedBytecodeSizeCumulative) return "budget";
         if (!small)
@@ -668,8 +697,8 @@ public sealed partial class MaglevGraphBuilder
         {
             switch (it.CurrentBytecode())
             {
-                case Bytecode.CreateMappedArguments:
-                case Bytecode.CreateUnmappedArguments:
+                // (An inlined function's arguments object is built from its
+                // pushed frame: BuildInlinedArgumentsObject.)
                 case Bytecode.CreateRestParameter:
                 case Bytecode.ConstructForwardAllArgs:
                     return false;
@@ -685,7 +714,10 @@ public sealed partial class MaglevGraphBuilder
     ValueNode? TryBuildInlinedCall(JSFunction target, ValueNode closure, ValueNode receiver, ValueNode[] args, ConvertReceiverMode mode,
         FeedbackNexus nexus, bool isConstruct, ValueNode? newTarget)
     {
+        _callReceivesFreshAllocation = receiver is InlinedAllocation { EscapedDuringBuild: false } ||
+            Array.Exists(args, static a => a is InlinedAllocation { EscapedDuringBuild: false });
         string? reason = ShouldInlineCall(target, nexus, isConstruct);
+        _callReceivesFreshAllocation = false;
         if (reason is not null)
         {
             if (_info.IsTracing) Console.WriteLine($"[maglev] not inlining {MaglevCompiler.DebugName(target.Shared)}: {reason}");
@@ -745,7 +777,12 @@ public sealed partial class MaglevGraphBuilder
         unit.IsConstruct = isConstruct;
         // Arguments beyond the formal parameters are in no deopt frame (they are
         // only in the frame), so such a frame is pushed on entry.
-        unit.EagerFrame = args.Length > unit.Bytecode.ParameterCount - 1;
+        // V8Sharp: the arguments beyond the formal parameters are in the deopt
+        // frames (AppendExtraArguments), so the frame is pushed lazily too
+        // (EagerFrame stays false; it pushed such frames on entry before).
+        unit.EagerFrame = false;
+        // A frame pushed on entry holds the receiver and the arguments.
+        if (unit.EagerFrame) foreach (ValueNode input in unit.EntryNode.Inputs) EscapeDuringBuild(input);
 
         BasicBlock callBlock = _currentBlock!;
         var inner = new MaglevGraphBuilder(_info, unit, this, parentFrame, taggedReceiver, taggedArgs, GetConstant(target), context,
@@ -775,7 +812,11 @@ public sealed partial class MaglevGraphBuilder
         if (!returns.TrueForAll(r => ReferenceEquals(r.Value, result)))
         {
             var phi = new Phi(Register.VirtualAccumulator(), -1) { Id = _graph.NewNodeId(), Block = continuation, Unit = _unit };
-            foreach ((BasicBlock _, ValueNode value, KnownNodeAspects _) in returns) phi.InputList.Add(value);
+            foreach ((BasicBlock _, ValueNode value, KnownNodeAspects _) in returns)
+            {
+                EscapeDuringBuild(value);
+                phi.InputList.Add(value);
+            }
             continuation.Phis.Add(phi);
             result = phi;
         }
@@ -833,14 +874,20 @@ public sealed partial class MaglevGraphBuilder
             // FastNewObject from the initial map (depends on it staying the initial map).
             _info.AddDependency(initialMap, Objects.DependentCode.DependencyGroups.InitialMapChanged);
             ValueNode[] args = RegisterValues(first, count);
-            ValueNode receiver = AddNewNode(new ValueNode(Opcode.FastNewObject, ValueRepresentation.kTagged)
+            // BuildInlinedAllocation(CreateJSConstructor(target)), or the
+            // FastNewObject call while the map's slack tracking runs.
+            ValueNode? receiver = TryBuildInlinedAllocation(initialMap);
+            if (receiver is null)
             {
-                Obj0 = initialMap,
-                Obj1 = target,
-                Type = NodeType.kOtherJSReceiver,
-                Properties = OpProperties.kCanAllocate | OpProperties.kNotIdempotent,
-            });
-            RecordKnownMaps(receiver, [initialMap]);
+                receiver = AddNewNode(new ValueNode(Opcode.FastNewObject, ValueRepresentation.kTagged)
+                {
+                    Obj0 = initialMap,
+                    Obj1 = target,
+                    Type = NodeType.kOtherJSReceiver,
+                    Properties = OpProperties.kCanAllocate | OpProperties.kNotIdempotent,
+                });
+                RecordKnownMaps(receiver, [initialMap]);
+            }
             ValueNode? result = TryBuildInlinedCall(target, constructor, receiver, args, ConvertReceiverMode.Any, nexus,
                 isConstruct: true, newTarget);
             if (result is not null)

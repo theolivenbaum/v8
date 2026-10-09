@@ -6,6 +6,12 @@ namespace V8Sharp.Wasm;
 
 public static partial class WasmOpcodes
 {
+    /// <summary>
+    /// V8 14.7's prefix of the asm.js compatibility opcodes (FOREACH_ASMJS_COMPAT_OPCODE),
+    /// removed from this tree's wasm-opcodes.h with src/asmjs; kept for the
+    /// asm.js translator (AsmJs/, deviations.md "asm.js").
+    /// </summary>
+    public const byte kAsmJsPrefix = 0xfa;
     public const byte kGCPrefix = 0xfb;
     public const byte kNumericPrefix = 0xfc;
     public const byte kSimdPrefix = 0xfd;

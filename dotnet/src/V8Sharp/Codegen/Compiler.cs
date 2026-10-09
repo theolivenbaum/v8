@@ -320,6 +320,7 @@ namespace V8Sharp.Codegen
             {
                 ReportPendingMessages(isolate, parseInfo, script);
             }
+            ReportWarnings(isolate, parseInfo, script);
             script.State = Script.CompilationState.Compiled;
             return shared;
         }
@@ -329,7 +330,7 @@ namespace V8Sharp.Codegen
         /// literal and every inner function the generator compiles eagerly.
         /// </summary>
         static bool IterativelyExecuteAndFinalizeUnoptimizedCompilationJobs(Isolate isolate, ParseInfo parseInfo,
-            CompilerHeap heap)
+            CompilerHeap heap, bool asmWasmBroken = false)
         {
             DeclarationScope.AllocateScopeInfos(parseInfo, ScopeInfoProviderFor(isolate));
 
@@ -343,6 +344,28 @@ namespace V8Sharp.Codegen
                 SharedFunctionInfo shared = heap.GetOrCreateSharedFunctionInfo(literal, literal.is_toplevel());
                 if (shared.IsCompiled) continue;
 
+                // ExecuteSingleUnoptimizedCompilationJob (V8 14.7): an asm.js module
+                // is validated and translated to wasm; if validation fails, it falls
+                // through to the standard unoptimized compile.
+                if (UseAsmWasm(isolate, literal, asmWasmBroken))
+                {
+                    var asmJob = new AsmJs.AsmJs.AsmJsCompilationJob(isolate, parseInfo, literal, heap.Script.SourceString);
+                    if (asmJob.ExecuteJob())
+                    {
+                        // FinalizeSingleUnoptimizedCompilationJob: InstallUnoptimizedCode
+                        // with the asm_wasm_data.
+                        UpdateSharedFunctionFlagsAfterCompilation(shared, literal);
+                        if (asmJob.FinalizeJob(shared) is { } asmWasmData)
+                        {
+                            shared.FeedbackMetadata = FeedbackMetadata.Empty;
+                            shared.FunctionData = asmWasmData;
+                            shared.BuiltinId = Builtin.InstantiateAsmJs;
+                            continue;
+                        }
+                    }
+                    // asm.js validation failed, fall through to standard unoptimized compile.
+                }
+
                 var job = new InterpreterCompilationJob(parseInfo, literal, functionsToCompile);
                 if (job.ExecuteJob() != InterpreterCompilationJob.Status.SUCCEEDED) return false;
                 if (job.FinalizeJob(heap) != InterpreterCompilationJob.Status.SUCCEEDED) return false;
@@ -353,17 +376,65 @@ namespace V8Sharp.Codegen
             return true;
         }
 
-        /// <summary>InstallUnoptimizedCode + UpdateSharedFunctionFlagsAfterCompilation.</summary>
-        static void InstallUnoptimizedCode(Isolate isolate, UnoptimizedCompilationInfo info, SharedFunctionInfo shared,
-            FunctionLiteral literal)
+        /// <summary>
+        /// FinalizeUnoptimizedCompilation: PendingCompilationErrorHandler::ReportWarnings
+        /// (the asm.js validation failures) as warning messages.
+        /// </summary>
+        static void ReportWarnings(Isolate isolate, ParseInfo parseInfo, Script script)
         {
-            shared.FeedbackMetadata = FeedbackMetadata.New(info.feedback_vector_spec());
+            PendingCompilationErrorHandler handler = parseInfo.pending_error_handler();
+            if (!handler.has_pending_warnings()) return;
+            foreach (PendingCompilationErrorHandler.MessageDetails warning in handler.warning_messages())
+            {
+                var location = new MessageLocation(script, warning.start_pos(), warning.end_pos());
+                string? arg = warning.ArgCount() > 0 ? warning.ArgString(0) : null;
+                JSValue argument = arg is null ? JSValue.Undefined : isolate.Factory.NewStringFromUtf16(arg);
+                JSMessageObject message = MessageHandler.MakeMessageObject(isolate, warning.message(), location, argument);
+                message.ErrorLevel = AsmJs.AsmJs.kMessageWarning;
+                MessageHandler.ReportMessage(isolate, location, message);
+            }
+        }
 
-            // UpdateSharedFunctionFlagsAfterCompilation.
+        /// <summary>
+        /// UseAsmWasm (compiler.cc, V8 14.7): whether to validate the literal as
+        /// an asm.js module.
+        /// </summary>
+        static bool UseAsmWasm(Isolate isolate, FunctionLiteral literal, bool asmWasmBroken)
+        {
+            // Check whether asm.js validation is enabled.
+            if (!isolate.Flags.validate_asm) return false;
+
+            // Modules that have validated successfully, but were subsequently broken by
+            // invalid module instantiation attempts are off limit forever.
+            if (asmWasmBroken) return false;
+
+            // In stress mode we want to run the validator on everything.
+            if (isolate.Flags.stress_validate_asm) return true;
+
+            // In general, we respect the "use asm" directive.
+            return literal.scope().IsAsmModule();
+        }
+
+        /// <summary>UpdateSharedFunctionFlagsAfterCompilation.</summary>
+        static void UpdateSharedFunctionFlagsAfterCompilation(SharedFunctionInfo shared, FunctionLiteral literal)
+        {
             shared.HasDuplicateParameters = literal.has_duplicate_parameters();
             shared.UpdateAndFinalizeExpectedNofPropertiesFromEstimate(literal);
             shared.SetScopeInfo((ScopeInfo)literal.scope().scope_info()!);
             shared.UpdateFunctionMapIndex();
+        }
+
+        /// <summary>InstallUnoptimizedCode + UpdateSharedFunctionFlagsAfterCompilation.</summary>
+        static void InstallUnoptimizedCode(Isolate isolate, UnoptimizedCompilationInfo info, SharedFunctionInfo shared,
+            FunctionLiteral literal)
+        {
+            // If the function failed asm-wasm compilation, mark asm_wasm as broken
+            // to ensure we don't try to compile as asm-wasm (V8 14.7).
+            if (literal.scope().IsAsmModule()) shared.IsAsmWasmBroken = true;
+
+            shared.FeedbackMetadata = FeedbackMetadata.New(info.feedback_vector_spec());
+
+            UpdateSharedFunctionFlagsAfterCompilation(shared, literal);
 
             // InstallBytecodeArray.
             shared.FunctionData = info.bytecode_array();
@@ -432,10 +503,11 @@ namespace V8Sharp.Codegen
             }
 
             var heap = new CompilerHeap(isolate, script);
-            if (!IterativelyExecuteAndFinalizeUnoptimizedCompilationJobs(isolate, parseInfo, heap))
+            if (!IterativelyExecuteAndFinalizeUnoptimizedCompilationJobs(isolate, parseInfo, heap, shared.IsAsmWasmBroken))
             {
                 ReportPendingMessages(isolate, parseInfo, script);
             }
+            ReportWarnings(isolate, parseInfo, script);
             return shared.IsCompiled;
         }
 

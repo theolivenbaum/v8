@@ -73,6 +73,8 @@ sealed class V8SharpJsIsolate : IJsIsolate
         // d8's stdout and its D8Console, routed to the shell's output.
         Isolate.StdOut = new HostWriter(host.WriteStdout);
         Isolate.ConsoleDelegate = new D8Console(host.WriteStdout, host.WriteStderr);
+        // d8's PrintMessageCallback for warnings and info messages (asm.js).
+        Isolate.MessageListener = D8MessageListener.Create(host.WriteStdout);
         Isolate.DefaultMicrotaskQueue.UncaughtException += OnMessage;
         var main = new V8SharpRealm(this, Isolate.InitialNativeContext!);
         _realms.Add(main);

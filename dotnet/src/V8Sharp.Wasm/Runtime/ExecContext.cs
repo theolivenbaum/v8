@@ -446,18 +446,28 @@ namespace Wacs.Core.Runtime
                 var (compiled, index, _) = merged[i];
                 if (compiled)
                 {
+                    // V8Sharp: compiled code records its pc relative to its
+                    // function (one method serves every instance of a module);
+                    // the frame's pc is in the instance's linked instructions.
                     int pc = CompiledFrames.Pc[index];
-                    if (CompiledFrames.InlinedAt(pc) is { } inlined)
+                    int func = CompiledFrames.Func[index];
+                    var physical = Store[new FuncAddr(func)] as FunctionInstance;
+                    if (CompiledFrames.InlinedAt(pc) is { } inlined && physical != null)
                     {
                         // V8Sharp: the frames of functions inlined into this
-                        // one come first (V8 shows inlined frames too).
+                        // one come first (V8 shows inlined frames too). They
+                        // are named by function index in the frame's module
+                        // and by pcs relative to the function.
                         int count = inlined.Funcs.Length;
                         System.Array.Resize(ref frames, frames.Length + count - (inlined.ReplacesFrame ? 1 : 0));
                         for (int k = 0; k < count; k++, idx++)
                         {
+                            FuncAddr addr = physical.Module.FuncAddrs[(Wacs.Core.Types.FuncIdx)(uint)inlined.Funcs[k]];
+                            int inlinedPc = inlined.Pcs[k];
+                            if (Store[addr] is FunctionInstance f) inlinedPc += f.LinkedOffset;
                             // A function inlined for a tail call stands for the frame it replaced.
                             bool own = inlined.ReplacesFrame && k == count - 1;
-                            frames[idx] = new WasmStackFrame((uint)inlined.Funcs[k], null, -1, inlined.Pcs[k], inlined: !own);
+                            frames[idx] = new WasmStackFrame((uint)addr.Value, null, -1, inlinedPc, inlined: !own);
                         }
                         if (inlined.ReplacesFrame)
                         {
@@ -466,7 +476,8 @@ namespace Wacs.Core.Runtime
                         }
                         pc = inlined.FramePc;
                     }
-                    frames[idx] = new WasmStackFrame((uint)CompiledFrames.Func[index], null, -1, pc);
+                    if (pc >= 0 && physical != null) pc += physical.LinkedOffset;
+                    frames[idx] = new WasmStackFrame((uint)func, null, -1, pc);
                     continue;
                 }
                 var frame = wacs[index];

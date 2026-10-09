@@ -528,7 +528,7 @@ public sealed partial class MaglevGraphBuilder
             MaglevCompilationInfo.ActiveLoop loop = loops[i];
             if (!ReferenceEquals(loop.Unit, _unit) || loop.Header != header) continue;
             loops.RemoveAt(i);
-            if (!loop.Observed.IsSubsetOf(loop.Assumed))
+            if (loop.Assumed is not null && !loop.Observed.IsSubsetOf(loop.Assumed))
             {
                 _info.LoopHints[(_unit.SharedFunctionInfo, header)] = loop.Assumed.Union(loop.Observed);
                 throw new MaglevRestartException();
@@ -799,7 +799,10 @@ public sealed partial class MaglevGraphBuilder
             if (assumed.Cleared) assumed = null;
         }
         state.InitializeLoop(this, _frame, entryPredecessor, _loopChangesContext[offset], resumable, assumed);
-        if (assumed is not null) _info.ActiveLoops.Add(new MaglevCompilationInfo.ActiveLoop(_unit, offset, loop.JumpLoopOffset, assumed));
+        // Every loop is active while its body is built (the innermost one
+        // decides which allocations are tracked); only optimistic ones check
+        // their effects at the back edge.
+        _info.ActiveLoops.Add(new MaglevCompilationInfo.ActiveLoop(_unit, offset, loop.JumpLoopOffset, assumed));
         // The frame at the loop entry (deopt frame of hoisted untagging checks).
         var entryValues = new List<(Register, ValueNode)>();
         for (int slot = 0; slot < _frame.Values.Length; slot++)
@@ -808,7 +811,11 @@ public sealed partial class MaglevGraphBuilder
             if (_frame.Values[slot] is not { } v) continue;
             entryValues.Add((InterpreterFrameState.RegisterOf(_unit, slot), v));
         }
-        state.LoopEntryDeoptFrame = new InterpretedDeoptFrame(_unit, offset, offset, entryValues.ToArray(), ClosureNode, _callerDeoptFrame);
+        AppendExtraArguments(entryValues);
+        state.LoopEntryDeoptFrame = new InterpretedDeoptFrame(_unit, offset, offset, entryValues.ToArray(), ClosureNode, _callerDeoptFrame)
+        {
+            VirtualObjects = _frame.Known.VirtualObjects,
+        };
         BasicBlock header = _graph.NewBlock();
         header.IsLoopHeader = true;
         header.Offset = offset;
@@ -996,6 +1003,7 @@ public sealed partial class MaglevGraphBuilder
     T AddNewNode<T>(T node, DeoptimizeReason reason = DeoptimizeReason.kUnknown) where T : Node
     {
         if (_frame.DirtyParameters != 0 && ObservesFrameParameters(node)) FlushDirtyParameters();
+        NoteAllocationUses(node);
         node.Id = _graph.NewNodeId();
         node.Unit = _unit;
         if (!_it.Done()) node.BytecodeOffset = Cursor;
@@ -1016,7 +1024,15 @@ public sealed partial class MaglevGraphBuilder
         {
             catcher.AttachExceptionHandlerInfo(node, _frame.Known);
         }
-        if ((node.Properties & (OpProperties.kCanWrite | OpProperties.kCall)) != 0)
+        if (node.TrackedStore)
+        {
+            // A store into an allocation nothing else refers to: no other
+            // object or map changes (the virtual object has the new value).
+            // Checks after it cannot resume before it, as it would run again.
+            _frame.Known.LoadedProperties[(node.Inputs[0], node.Int0)] = node.Inputs[1];
+            _latestCheckpointedFrame = null;
+        }
+        else if ((node.Properties & (OpProperties.kCanWrite | OpProperties.kCall)) != 0)
         {
             MarkPossibleSideEffect(node);
             // MarkPossibleSideEffect -> ResetBuilderCachedState: later checks
@@ -1059,6 +1075,14 @@ public sealed partial class MaglevGraphBuilder
                         _info.RecordLoopEffect(propertyKey: key);
                     }
                     return;
+                case Opcode.StoreMapTransition:
+                    // A transition of a non-prototype object (the feedback's map is
+                    // not a prototype map): what the default clears, but no
+                    // prototype chain changes (the checked validity cells hold).
+                    known.ClearUnstableMaps(keepUnescapedAllocations: true);
+                    known.ClearLoaded(keepValidityCells: true);
+                    _info.RecordLoopEffect(clearsAll: true);
+                    return;
                 case Opcode.StoreFixedArrayElement:
                 case Opcode.StoreFixedDoubleArrayElement:
                 case Opcode.StoreTypedArrayElement:
@@ -1070,7 +1094,7 @@ public sealed partial class MaglevGraphBuilder
                     return;
             }
         }
-        known.ClearUnstableMaps();
+        known.ClearUnstableMaps(keepUnescapedAllocations: true);
         known.ClearLoaded();
         _info.RecordLoopEffect(clearsAll: true);
     }
@@ -1121,8 +1145,9 @@ public sealed partial class MaglevGraphBuilder
             if (v is null) continue;
             values.Add((InterpreterFrameState.RegisterOf(_unit, slot), v));
         }
+        AppendExtraArguments(values);
         return _latestCheckpointedFrame = new InterpretedDeoptFrame(_unit, offset, _it.NextOffset(), values.ToArray(),
-            ClosureNode, _callerDeoptFrame);
+            ClosureNode, _callerDeoptFrame) { VirtualObjects = _frame.Known.VirtualObjects };
     }
 
     /// <summary>
@@ -1148,7 +1173,11 @@ public sealed partial class MaglevGraphBuilder
             if (v is null) continue;
             values.Add((InterpreterFrameState.RegisterOf(_unit, slot), v));
         }
-        return new InterpretedDeoptFrame(_unit, offset, _it.NextOffset(), values.ToArray(), ClosureNode, _callerDeoptFrame);
+        AppendExtraArguments(values);
+        return new InterpretedDeoptFrame(_unit, offset, _it.NextOffset(), values.ToArray(), ClosureNode, _callerDeoptFrame)
+        {
+            VirtualObjects = _frame.Known.VirtualObjects,
+        };
     }
 
     /// <summary>
@@ -1169,7 +1198,11 @@ public sealed partial class MaglevGraphBuilder
             if (v is null) continue;
             values.Add((InterpreterFrameState.RegisterOf(_unit, slot), v));
         }
-        return new InterpretedDeoptFrame(_unit, offset, _it.NextOffset(), values.ToArray(), ClosureNode, _callerDeoptFrame);
+        AppendExtraArguments(values);
+        return new InterpretedDeoptFrame(_unit, offset, _it.NextOffset(), values.ToArray(), ClosureNode, _callerDeoptFrame)
+        {
+            VirtualObjects = _frame.Known.VirtualObjects,
+        };
     }
 
     /// <summary>EmitUnconditionalDeopt: the rest of the path is dead.</summary>
@@ -1243,7 +1276,8 @@ public sealed partial class MaglevGraphBuilder
     /// JavaScript.
     /// </remarks>
     static bool ObservesFrameParameters(Node node) =>
-        node.Opcode is Opcode.CallBuiltin or Opcode.LoadRegister or Opcode.EnterInlinedFrame or Opcode.GeneratorStore ||
+        node.Opcode == Opcode.CallBuiltin && node.Obj0 is not CallBuiltinInfo { NoFrame: true } ||
+        node.Opcode is Opcode.LoadRegister or Opcode.EnterInlinedFrame or Opcode.GeneratorStore ||
         node.Opcode is not (Opcode.StoreRegister or Opcode.HandleNoHeapWritesInterrupt) &&
         (node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0;
 
@@ -1346,6 +1380,8 @@ public sealed partial class MaglevGraphBuilder
     /// </summary>
     internal ValueNode GetTaggedValueForPhi(ValueNode value, BasicBlock predecessor)
     {
+        // A phi input escapes an allocation (the phi is another name for it).
+        EscapeDuringBuild(value);
         if (value.Representation == ValueRepresentation.kTagged) return value;
         if (value.IsConstant) return GetConstant(value.ConstantValue());
         Opcode op = value.Representation switch
@@ -1457,6 +1493,8 @@ public sealed partial class MaglevGraphBuilder
             Block = merge,
             Unit = _unit,
         };
+        EscapeDuringBuild(trueValue);
+        EscapeDuringBuild(falseValue);
         phi.InputList.Add(trueValue);
         phi.InputList.Add(falseValue);
         merge.Phis.Add(phi);

@@ -159,23 +159,21 @@ public static partial class RuntimeWasm
     /// target as feedback and caches it.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Delegate CallIndirectTarget(long index, Baseline.WasmCallSite site, WasmCode code, int pc)
+    public static Delegate CallIndirectTarget(long index, List<Value> elements, Baseline.WasmCallSite site, WasmCode code, int pc)
     {
-        List<Value> elements = site.Elements!;
         if ((ulong)index < (ulong)elements.Count &&
             CollectionsMarshal.AsSpan(elements)[(int)index].Data.Ptr == site.CachedPtr)
         {
             site.Hits++;
             return site.CachedTarget!.Entry;
         }
-        return CallIndirectMiss(index, site, code, pc);
+        return CallIndirectMiss(index, elements, site, code, pc);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static Delegate CallIndirectMiss(long index, Baseline.WasmCallSite site, WasmCode code, int pc)
+    static Delegate CallIndirectMiss(long index, List<Value> elements, Baseline.WasmCallSite site, WasmCode code, int pc)
     {
         WasmInstanceData data = code.Instance!;
-        List<Value> elements = site.Elements!;
         if ((ulong)index >= (ulong)elements.Count)
         {
             Trap(MessageTemplate.WasmTrapTableOutOfBounds, code, pc);
@@ -186,7 +184,7 @@ public static partial class RuntimeWasm
             Trap(MessageTemplate.WasmTrapNullFunc, code, pc);
         }
         WasmCode target = data.Engine.CodeAt(r.GetFuncAddr(data.Module.Types));
-        var expected = (DefType)code.Constants[site.ExpectedConstant];
+        DefType expected = data.Module.Types[(TypeIdx)(uint)site.TypeIndex];
         if (!ReferenceEquals(target.LastMatchedType, expected))
         {
             bool matches = target.DefType is { } actual
@@ -204,9 +202,8 @@ public static partial class RuntimeWasm
     /// inlining's target check), or -1 if the index is out of bounds.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static long CallIndirectTargetAddress(long index, Baseline.WasmCallSite site)
+    public static long CallIndirectTargetAddress(long index, List<Value> elements)
     {
-        List<Value> elements = site.Elements!;
         return (ulong)index < (ulong)elements.Count ? CollectionsMarshal.AsSpan(elements)[(int)index].Data.Ptr : -1;
     }
 

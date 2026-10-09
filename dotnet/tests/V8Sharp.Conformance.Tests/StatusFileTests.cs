@@ -223,9 +223,9 @@ public class StatusFileTests
         var sf = StatusFile.Load(Path.Combine(TestPaths.V8Root, "test", "mjsunit", "mjsunit.status"), Runner.LoadBuildConfig("oracle"));
         // [ALWAYS, {... 'wasm/wasm-module-builder': [SKIP] ...}]
         Assert.Contains("SKIP", sf.GetOutcomes("wasm/wasm-module-builder"));
-        // Without WebAssembly (v8sharp), every wasm test is skipped.
-        var noWasm = StatusFile.Load(Path.Combine(TestPaths.V8Root, "test", "mjsunit", "mjsunit.status"), Runner.LoadBuildConfig("v8sharp"));
-        Assert.Contains("SKIP", noWasm.GetOutcomes("wasm/anything", "default"));
+        // V8Sharp has WebAssembly now: its build config runs the wasm tests too.
+        var v8sharp = StatusFile.Load(Path.Combine(TestPaths.V8Root, "test", "mjsunit", "mjsunit.status"), Runner.LoadBuildConfig("v8sharp"));
+        Assert.DoesNotContain("SKIP", v8sharp.GetOutcomes("wasm/anything", "default"));
         Assert.DoesNotContain("SKIP", sf.GetOutcomes("wasm/anything", "default"));
     }
 }

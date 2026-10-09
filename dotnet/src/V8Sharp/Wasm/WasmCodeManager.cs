@@ -393,6 +393,12 @@ public sealed class WasmCode : ICompiledFunctionCode
     /// <summary>Why the compiler left the function to the interpreter (V8: the Liftoff bailout reason).</summary>
     public string? BailoutReason;
 
+    /// <summary>Whether <see cref="Method"/> serves every instance of the module (it is in its <see cref="WasmSharedCode"/>).</summary>
+    public bool Shareable;
+
+    /// <summary>The size of the compiled IL (V8SHARP_TRACE_WASM_COMPILE).</summary>
+    public int ILSize;
+
     internal WasmCode(WasmEngine engine, WasmInstanceData? instance, IFunctionInstance function, FuncAddr address,
         int functionIndex)
     {
@@ -486,6 +492,11 @@ public sealed class WasmCode : ICompiledFunctionCode
         {
             if (State != WasmCodeState.Lazy || Compiling) return;
             var function = (FunctionInstance)Function;
+            if (Instance!.SharedCode.TryGet(FunctionIndex) is { } shared)
+            {
+                InstallShared(shared);
+                return;
+            }
             Delegate? compiled;
             string? bailout;
             Compiling = true;
@@ -508,6 +519,22 @@ public sealed class WasmCode : ICompiledFunctionCode
             State = WasmCodeState.Compiled;
             SetEntry(compiled);
             function.Compiled = this;
+            if (Shareable) Instance.SharedCode.Add(FunctionIndex, new WasmSharedCode.Entry(Method!, Constants));
+        }
+    }
+
+    /// <summary>Takes the code another instance of the module compiled for the function.</summary>
+    internal void InstallShared(WasmSharedCode.Entry shared)
+    {
+        lock (this)
+        {
+            if (State != WasmCodeState.Lazy || Compiling) return;
+            Method = shared.Method;
+            Constants = shared.Constants;
+            Shareable = true;
+            State = WasmCodeState.Compiled;
+            SetEntry(shared.Method.CreateDelegate(Signature.DelegateType, this));
+            ((FunctionInstance)Function).Compiled = this;
         }
     }
 
@@ -579,6 +606,10 @@ public sealed class WasmInstanceData : ICompiledModule
     public readonly Frame InterpreterFrame;
     public readonly int ImportedFunctionCount;
     internal readonly WasmModuleCompiler Compiler;
+    /// <summary>The code the instances of the module share.</summary>
+    internal readonly WasmSharedCode SharedCode;
+    /// <summary>The module was translated from asm.js (its memory is the heap buffer, fixed).</summary>
+    internal bool AsmJs;
 
     double _smallFunctionPercentage = -1;
 
@@ -628,12 +659,14 @@ public sealed class WasmInstanceData : ICompiledModule
         }
     }
 
-    internal WasmInstanceData(WasmEngine engine, ModuleInstance module, byte[] wireBytes, WasmModuleCompiler compiler)
+    internal WasmInstanceData(WasmEngine engine, ModuleInstance module, byte[] wireBytes, WasmModuleCompiler compiler,
+        WasmSharedCode sharedCode)
     {
         Engine = engine;
         Module = module;
         WireBytes = wireBytes;
         Compiler = compiler;
+        SharedCode = sharedCode;
         Context = engine.Runtime.GetExecContext();
         Frames = Context.CompiledFrames;
         StackGuard = engine.Isolate.StackGuard;
@@ -678,5 +711,37 @@ public sealed class WasmInstanceData : ICompiledModule
         if (code is null || code.Instance != this) return null;
         if (code.State == WasmCodeState.Lazy) code.Compile();
         return code.State == WasmCodeState.Compiled ? code : null;
+    }
+}
+
+/// <summary>
+/// The compiled code of a module that its instances share (V8: the code table
+/// of the NativeModule, which every instance of a module uses). A function's
+/// method takes its WasmCode, and through it the instance's data, so one
+/// method serves every instance; code that depends on its instance
+/// (LiftoffCompiler._instanceSpecific) stays with it.
+/// </summary>
+public sealed class WasmSharedCode
+{
+    /// <summary>A compiled function: the method and the constants it reads.</summary>
+    public sealed record Entry(DynamicMethod Method, object[] Constants);
+
+    readonly ConcurrentDictionary<int, Entry> _functions = new();
+
+    public int Count => _functions.Count;
+
+    public Entry? TryGet(int functionIndex) => _functions.TryGetValue(functionIndex, out Entry? e) ? e : null;
+
+    public void Add(int functionIndex, Entry entry) => _functions.TryAdd(functionIndex, entry);
+
+    /// <summary>Installs every shared function into a new instance.</summary>
+    internal void InstallInto(WasmInstanceData data)
+    {
+        if (_functions.IsEmpty) return;
+        foreach (var (index, entry) in _functions)
+        {
+            WasmCode code = data.Code[index];
+            if (code.Instance == data) code.InstallShared(entry);
+        }
     }
 }

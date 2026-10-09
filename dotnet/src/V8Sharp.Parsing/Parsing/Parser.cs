@@ -388,6 +388,16 @@ public sealed partial class Parser : ParserBaseOfParser
 
     public override void CountUsage(UseCounterFeature feature) => ++use_counts_[(int)feature];
 
+    /// <summary>Parser::SetAsmModule (V8 14.7, parser.cc).</summary>
+    public override void SetAsmModule()
+    {
+        // Store the usage count; The actual use counter on the isolate is
+        // incremented after parsing is done.
+        ++use_counts_[(int)UseCounterFeature.kUseAsm];
+        scope().AsDeclarationScope().set_is_asm_module(true);
+        info_.set_contains_asm_module(true);
+    }
+
     // Returns true iff we're parsing the first function literal during
     // CreateDynamicFunction().
     public override bool ParsingDynamicFunctionDeclaration() => parameters_end_pos_ != kNoSourcePosition;

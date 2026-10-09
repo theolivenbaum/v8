@@ -173,6 +173,12 @@ public static class MaglevCompiler
         if (isolate.Flags.maglev_truncation) MaglevTruncation.Run(info.Graph);
         ComputeUseCounts(info.Graph);
         ElideArgumentsObjects(info.Graph);
+        if (MaglevEscapeAnalysis.Run(info.Graph, isolate.Flags.maglev_escape_analysis, info.IsTracing || isolate.Flags.trace_maglev_escape_analysis))
+        {
+            // The removed stores' values may be dead now.
+            ComputeUseCounts(info.Graph);
+        }
+        MaglevEscapeAnalysis.MarkOverwrittenMapStores(info.Graph);
         CheckStackSlots(info.Graph);
         if (isolate.Flags.print_maglev_graph) MaglevGraphPrinter.Print(info, Console.Out);
         return info;
@@ -472,12 +478,24 @@ public static class MaglevCompiler
         {
             for (DeoptFrame? f = frame; f is not null; f = f.Parent)
             {
-                // Each deopt exit stores the frame's values: one use per exit is
-                // enough to keep the value alive.
-                if (!visitedFrames.Add(f)) continue;
                 var i = (InterpretedDeoptFrame)f;
-                foreach ((Register _, ValueNode value) in i.Values) value.UseCount++;
-                i.Closure.UseCount++;
+                // Each deopt exit stores the frame's values: one use per exit is
+                // enough to keep the value alive. The fields of an elided
+                // allocation come from the top frame's virtual objects, which
+                // differ between the frames sharing a parent.
+                bool visited = !visitedFrames.Add(f);
+                foreach ((Register _, ValueNode value) in i.Values)
+                {
+                    if (value is InlinedAllocation { IsElided: true } allocation)
+                    {
+                        foreach (ValueNode slot in frame!.VirtualObjects.Find(allocation)!.Slots)
+                        {
+                            MaglevEscapeAnalysis.UseCaptured(slot, frame.VirtualObjects, static v => v.UseCount++);
+                        }
+                    }
+                    if (!visited) value.UseCount++;
+                }
+                if (!visited) i.Closure.UseCount++;
             }
         }
         foreach (BasicBlock block in graph.Blocks)

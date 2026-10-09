@@ -559,9 +559,48 @@ for now, to be revisited when the reason goes away.
 - instanceof of the TestInstanceOf feedback's constructor: CheckValue and
   `ObjectOps.FastInstanceOf` (the prototype chain walk) as one call, where
   V8 builds the walk as nodes.
-- No escape analysis (except the arguments object forwarded to
-  Function.prototype.apply), loop peeling, LICM, CSE, range analysis, or
-  DataView/string builder reductions yet.
+- No LICM, CSE, range analysis, or DataView/string builder reductions yet.
+- Inlined allocations and escape analysis (MaglevVirtualObjects.cs,
+  MaglevGraphBuilder.Allocation.cs, MaglevCodeGenerator.Allocation.cs):
+  (1) `--maglev-object-tracking` is on by default (V8: off): loads of the
+  fields of an allocation that has not escaped are answered from its
+  VirtualObject, so such loads do not make it escape, and Octane's
+  temporaries can be elided at all (with V8's default an allocation whose
+  fields are read escapes). (2) A VirtualObject models the in-object fields
+  and the current map, and a map transition (StoreMapTransition) updates it
+  (V8's StoreMap escapes the allocation): a constructor's this.x = ... keeps
+  the object elidable. (3) Differing versions of a virtual object at a merge
+  are dropped (V8 merges them slot by slot with phis); a deopt frame after
+  the merge that holds the object makes it escape. (4) The allocation is
+  the .NET object of the map's in-object slot class constructed by the IL
+  (V8 bumps the allocation top of a folded AllocationBlock); allocations are
+  not folded, and only stores of a transition whose map the next transition
+  overwrites before anything can observe the object skip the map write
+  (MarkOverwrittenMapStores; .NET write barriers cannot be skipped for
+  reference stores). (5) Initial maps in slack tracking are left to
+  FastNewObject; the instance size read on the worker is checked again at
+  commit (InitialMapInstanceSizePredictionDependency). (6) Calls that pass
+  an allocation which has not escaped are inlined up to
+  `max_maglev_hard_inline_depth` (V8 Maglev stops at
+  `max_maglev_inline_depth` for functions that are not small; Turbofan
+  inlines them) and an apply() of a constant function is inlined
+  (V8SHARP_MAGLEV_NO_INLINE_FOR_EA=1 turns the depth exception off). (7) A
+  named load of a tracked allocation without usable feedback (Class.create
+  constructors share one feedback vector, so their `this.initialize` load
+  is megamorphic) is computed from the virtual object's exact map: an own
+  field from the virtual object, a constant of a stable prototype chain
+  (const field or descriptor constant) with stable map and field
+  constness dependencies. (8) An inlined function's arguments object is
+  built from its (lazily pushed) frame (`CreateInlinedArguments`) or, when
+  only apply(thisArg, arguments) uses it, elided and the applied function
+  gets the call's arguments; the arguments beyond the formal parameters are
+  in the inlined deopt frames, so those frames are pushed lazily (they were
+  pushed on entry). (9) Contexts and closures are allocated by
+  frame-free helper calls (V8: an InlinedAllocation of the context,
+  FastCreateClosure) and are not escape-analysed. (10) Repeated
+  CheckValidityCell of one cell without a call or unknown write in between
+  is elided (field stores and transitions of non-prototype objects cannot
+  invalidate a validity cell).
 - Truncation pass (maglev-truncation.cc): int32 additions, subtractions and
   multiplications whose uses all truncate become wrapping operations when
   the exact result is a safe integer; without range analysis the bound
@@ -1574,3 +1613,65 @@ vendored code carry a `V8Sharp:` comment at the site.
   arithmetic, compact imports, acquire/release atomics, memory control,
   source phase imports of wasm modules, the debugger and profiler hooks
   (`%WasmEnterDebugging` does nothing).
+
+### asm.js (src/V8Sharp/AsmJs, port of V8 14.7's src/asmjs)
+
+- **This tree removed asm.js; V8Sharp keeps V8 14.7's pipeline.** The V8
+  revision in UPSTREAM.md deleted src/asmjs and runs "use asm" modules as
+  ordinary JavaScript. The oracle (V8 14.7.173.23) still validates them and
+  translates them to WebAssembly, and Octane zlib depends on it, so V8Sharp
+  ports 14.7's asm-scanner, asm-types, asm-parser and asm-js, and the parts
+  of wasm-module-builder, the asm.js offset table, module-instantiate and
+  the 0xfa asm opcodes they use. They are hooked in where 14.7 does: "use
+  asm" marks the function scope, the unoptimized compile of a function with
+  an asm module runs AsmJsCompilationJob in place of Ignition, success
+  installs AsmWasmData with the InstantiateAsmJs builtin, and a validation or
+  linking failure falls back to the bytecode, with 14.7's messages and flags
+  (--validate-asm, --suppress-asm-messages, --trace-asm-time/-scanner/-parser,
+  --stress-validate-asm). 14.7's tests run from tests/V8Sharp.AsmJs.Tests/v8-14.7
+  (mjsunit asm/, regress/asm/, wasm/asm-*, asm-directive, message asm-*), and
+  the asm-scanner/asm-types unittests are xUnit facts there.
+- **Ids appended.** The InstantiateAsmJs builtin, the InstantiateAsmJs and
+  IsAsmWasmCode runtime functions and the four asm.js MessageTemplates come
+  after this tree's entries, so this tree's ids (and the bytecode golden
+  files) do not move; 14.7 has them in its alphabetical order.
+- **ScopeInfo bit.** The asm-module flag is a ScopeInfo bit set when the
+  ScopeInfo is created; scope deserialization does not read it back (no lazy
+  inner function of a validated module needs it: the module runs as wasm,
+  and one that failed validation runs as ordinary JS).
+- **Feedback.** A function with AsmWasmData gets no feedback cell array or
+  vector, as in 14.7; EnsureFeedbackVector hands callers that need an object
+  a detached empty vector.
+- **Memory.** V8 makes the module's heap ArrayBuffer the wasm memory's
+  backing store. V8Sharp's linear memory is a managed byte[], so the
+  instance's memory aliases the ArrayBuffer's own byte[]
+  (MemoryInstance.AttachAsmJsBuffer); asm.js memories never grow or detach.
+- **Duplicate exports.** An asm.js module may export one name twice (the
+  later one wins, 14.7's TestBadExportTwice). WACS's validator and
+  instantiation reject duplicate export names; both skip the check for a
+  module translated from asm.js.
+- **Stack positions.** V8 knows a frame is at the number conversion of an
+  import's result from the return address in the wasm-to-JS wrapper;
+  V8Sharp marks the activation while the wrapper converts
+  (WasmEngine.EnterNumberConversion), then maps the body offset through the
+  asm.js offset table to the JavaScript position as 14.7 does.
+- **Decoding per instance.** V8 decodes an asm.js module once and shares
+  the NativeModule. WACS links instruction objects in place, so each
+  instance decodes the wire bytes again; the compiled code is shared
+  (WasmSharedCode, as for every wasm module), and the re-decode skips
+  validating the function bodies, which were validated the first time.
+- **Heap bounds checks.** V8 checks that the last byte of an asm.js access
+  is in the heap. Every asm.js heap index is masked to the element size and
+  every asm.js heap size is a multiple of 4096, so V8Sharp checks the first
+  byte, which is the same test with one instruction less.
+
+### Compiled code shared by instances
+
+- A module's compiled functions serve all its instances (V8: the
+  NativeModule's code table): a function's DynamicMethod reads its instance
+  through its WasmCode, and call_indirect looks up the expected type in the
+  instance. A function whose code depends on its instance (an interpreter
+  instruction object, a ref.func constant, a catch's tags, or a direct call
+  to such code) is compiled per instance. A new instance installs every
+  shared function when it is created, since shared code calls its callees'
+  shared code directly.

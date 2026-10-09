@@ -320,6 +320,8 @@ namespace Wacs.Core.OpCodes
         [OpCode("resume_throw")]  ResumeThrow  = 0xE4,
         [OpCode("switch")]        Switch       = 0xE5,
 
+        // V8Sharp: prefix of V8's asm.js compatibility opcodes (AsmJsCode).
+        FA = 0xFA,
         // Prefix GC
         FB = 0xFB,
         // Prefix Ext

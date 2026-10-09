@@ -32,11 +32,8 @@ public sealed class WasmCallSite
     /// <summary>The site's number among the function's calls (V8: the feedback slot, "call #N").</summary>
     public readonly int CallIndex;
 
-    /// <summary>The table's elements (call_indirect), read by the cache's fast path.</summary>
-    public readonly List<Value>? Elements;
-
-    /// <summary>The constant index of the expected type (call_indirect's signature check).</summary>
-    public int ExpectedConstant = -1;
+    /// <summary>call_indirect's type index (its signature check; the code serves every instance of the module).</summary>
+    public readonly int TypeIndex;
 
     /// <summary>The function address the cache holds (-1: none; a null reference never matches).</summary>
     public long CachedPtr = -1;
@@ -54,10 +51,10 @@ public sealed class WasmCallSite
     /// <summary>A target was seen that cannot be inlined (an import, another instance's function).</summary>
     public bool HasNonInlineableTargets;
 
-    public WasmCallSite(int callIndex, List<Value>? elements)
+    public WasmCallSite(int callIndex, int typeIndex)
     {
         CallIndex = callIndex;
-        Elements = elements;
+        TypeIndex = typeIndex;
     }
 
     /// <summary>Records a call to <paramref name="target"/> and caches it (the cache missed).</summary>

@@ -58,7 +58,6 @@ internal sealed partial class LiftoffCompiler
         _bytes = _data.WireBytes;
         _offsets = _function.Definition.InstructionOffsets;
         _instructions = [.. _function.Body.Instructions.Flatten()];
-        _linkedOffset = _function.LinkedOffset;
         _method = caller._method;
         _il = caller._il;
         _asm = new LiftoffAssembler(_il) { LoadNaN = caller._asm.LoadNaN };
@@ -70,11 +69,16 @@ internal sealed partial class LiftoffCompiler
         _callSites = caller._callSites;
         _memArray = caller._memArray;
         _memSize = caller._memSize;
+        _memBase = caller._memBase;
+        _memoriesFixed = caller._memoriesFixed;
+        _tableElements = caller._tableElements;
         _cacheMemories = caller._cacheMemories;
         _totalLocals = caller._totalLocals;
         _tryDepth = caller._tryDepth;
         _plan = node;
-        int callerPc = caller._linkedOffset + caller._instIndex;
+        // Positions are function-relative and functions are named by index:
+        // the code serves every instance of the module.
+        int callerPc = caller._instIndex;
         // A tail call's callee takes the caller's place in stack traces.
         _inline = caller._inline is not { } outer
             ? new InlineFrame { Join = _il.DefineLabel(), FramePc = callerPc, ReplacesFrame = tail, InTailPosition = tail }
@@ -91,7 +95,7 @@ internal sealed partial class LiftoffCompiler
                 : new InlineFrame
                 {
                     Join = _il.DefineLabel(),
-                    OuterFuncs = [caller._code.Address.Value, .. outer.OuterFuncs],
+                    OuterFuncs = [caller._code.FunctionIndex, .. outer.OuterFuncs],
                     OuterPcs = [callerPc, .. outer.OuterPcs],
                     FramePc = outer.FramePc,
                     ReplacesFrame = outer.ReplacesFrame,
@@ -107,7 +111,7 @@ internal sealed partial class LiftoffCompiler
         {
             InlineFrame frame = _inline!;
             pc = _data.Frames.AddInlinedPosition(new CompiledFrames.InlinedPosition(
-                [_code.Address.Value, .. frame.OuterFuncs], [_linkedOffset + _instIndex, .. frame.OuterPcs], frame.FramePc,
+                [_code.FunctionIndex, .. frame.OuterFuncs], [_instIndex, .. frame.OuterPcs], frame.FramePc,
                 frame.ReplacesFrame));
         }
         return pc;
@@ -142,6 +146,7 @@ internal sealed partial class LiftoffCompiler
         var inlined = new LiftoffCompiler(this, callee, node, tail);
         inlined.CompileInlined(paramLocals);
         _genericCount += inlined._genericCount;
+        _instanceSpecific |= inlined._instanceSpecific;
         _inlinedCalls += inlined._inlinedCalls + 1;
         if (!inlined._inline!.Returned)
         {
