@@ -306,6 +306,19 @@ public sealed class SharedFunctionInfo : HeapObject
     public UncompiledData UncompiledData => (UncompiledData)FunctionData!;
     public bool IsCompiled => !HasUncompiledData && (HasBuiltinId || FunctionData is not null);
     public bool IsApiFunction => FunctionData is FunctionTemplateInfo;
+
+    /// <summary>
+    /// SharedFunctionInfo::HasAsmWasmData (V8 14.7): the function is an asm.js
+    /// module translated to wasm, not yet instantiated or instantiated
+    /// successfully; its code is the InstantiateAsmJs builtin.
+    /// </summary>
+    public bool HasAsmWasmData => FunctionData is AsmJs.AsmWasmData;
+
+    /// <summary>
+    /// SharedFunctionInfo::is_asm_wasm_broken (V8 14.7): asm.js validation or
+    /// instantiation failed; the function runs as JavaScript from now on.
+    /// </summary>
+    public bool IsAsmWasmBroken;
     public FunctionTemplateInfo GetApiFunctionData() => (FunctionTemplateInfo)FunctionData!;
 
     // --- name and scope info ----------------------------------------------
@@ -1294,6 +1307,16 @@ public sealed class JSFunction : JSFunctionOrBoundFunctionOrWrappedFunction
 
         // Check if we have source code for the {function}.
         if (!sharedInfo.HasSourceCode()) return NativeCodeFunctionSourceString(isolate, sharedInfo);
+
+        // If this function was compiled from asm.js, use the recorded offset
+        // information (V8 14.7).
+        if (sharedInfo.FunctionData is Wasm.WasmExportedFunctionData { Instance.ModuleObject: { IsAsmJs: true } asmModule } functionData)
+        {
+            int declared = functionData.FunctionIndex - asmModule.Module.ImportedFunctions.Count;
+            (int start, int end) = asmModule.AsmJsOffsetInformation!.GetFunctionOffsets(declared);
+            var source = sharedInfo.Script!.Source.As<JSString>();
+            return isolate.Factory.NewSubString(source, start, end);
+        }
 
         if (sharedInfo.FunctionTokenPosition() == Globals.kNoSourcePosition)
         {

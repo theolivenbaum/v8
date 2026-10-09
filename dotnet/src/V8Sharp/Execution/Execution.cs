@@ -103,6 +103,11 @@ public static class Execution
             {
                 throw new InvalidOperationException("V8Sharp: no compiler registered (Isolate.CompileLazyHook)");
             }
+            // An asm.js module compiles to the InstantiateAsmJs builtin (V8 14.7).
+            if (shared.HasBuiltinId)
+            {
+                return Interpreter.InterpreterCalls.CallBuiltin(isolate, function, receiver, args, newTarget);
+            }
         }
         InterpreterEntryDelegate? entry = isolate.InterpreterEntry;
         if (entry is null) throw new InvalidOperationException("V8Sharp: no interpreter registered (Isolate.InterpreterEntry)");

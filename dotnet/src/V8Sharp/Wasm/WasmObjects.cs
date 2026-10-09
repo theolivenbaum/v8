@@ -39,6 +39,19 @@ public sealed class WasmModuleObject(Map map) : JSObject(map)
 
     /// <summary>The decoded name section, lazily.</summary>
     internal WasmNames? Names;
+
+    /// <summary>
+    /// V8 14.7's asm.js origin: the offset table of a module translated from
+    /// asm.js (V8: WasmModule::asm_js_offset_information), or null for a
+    /// WebAssembly module.
+    /// </summary>
+    public AsmJsOffsetInformation? AsmJsOffsetInformation;
+
+    /// <summary>kAsmJsSloppyOrigin / kAsmJsStrictOrigin.</summary>
+    public LanguageMode AsmJsLanguageMode;
+
+    /// <summary>is_asmjs_module(module).</summary>
+    public bool IsAsmJs => AsmJsOffsetInformation is not null;
 }
 
 /// <summary>V8's WasmInstanceObject.</summary>
@@ -49,6 +62,12 @@ public sealed class WasmInstanceObject(Map map) : JSObject(map)
 
     /// <summary>The frozen, null-prototype exports object.</summary>
     public JSObject ExportsObject = null!;
+
+    /// <summary>
+    /// The exported function of an asm.js module that returns a single
+    /// function (V8: the property keyed by wasm_asm_single_function_symbol).
+    /// </summary>
+    public JSValue? AsmSingleFunction;
 }
 
 /// <summary>V8's WasmMemoryObject: a memory and the ArrayBuffer that aliases it.</summary>

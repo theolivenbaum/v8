@@ -15,6 +15,10 @@ public static class Program
         suites: mjsunit test262 message webkit mozilla (a path such as mjsunit/es6 filters)
 
           --engine oracle|v8sharp    engine to test (default v8sharp)
+          --v8-root DIR              the tree whose test/ directory to run (default: the V8 root
+                                     above the current directory), e.g. the asm.js tests of
+                                     V8 14.7 in tests/V8Sharp.AsmJs.Tests/v8-14.7
+          --expectations-dir DIR     where expectations/<suite>.<engine>.txt live
           --filter GLOB              only tests whose suite/name or name matches (repeatable;
                                      ** spans directories; no wildcard = path prefix)
           --jobs N                   parallel worker slots (default min(cores-1, 3))
@@ -96,6 +100,8 @@ public static class Program
             switch (a)
             {
                 case "--engine": o.Engine = Next(); break;
+                case "--v8-root": o.V8Root = Path.GetFullPath(Next()); break;
+                case "--expectations-dir": o.ExpectationsDirectory = Path.GetFullPath(Next()); break;
                 case "--filter": o.Filters.Add(Next()); break;
                 case "--jobs" or "-j": o.Jobs = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                 case "--timeout": o.TimeoutSeconds = double.Parse(Next(), CultureInfo.InvariantCulture); break;

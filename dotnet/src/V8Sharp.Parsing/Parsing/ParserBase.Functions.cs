@@ -1210,12 +1210,19 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
         while (peek() == Token.String)
         {
             bool use_strict = false;
+            // V8Sharp: "use asm" as in V8 14.7 (this tree's V8 removed asm.js;
+            // deviations.md "asm.js").
+            bool use_asm = false;
 
             Scanner.Location token_loc = scanner().peek_location();
 
             if (scanner().NextLiteralExactlyEquals("use strict"))
             {
                 use_strict = true;
+            }
+            else if (scanner().NextLiteralExactlyEquals("use asm"))
+            {
+                use_asm = true;
             }
 
             TStatement stat = ParseStatementListItem();
@@ -1238,6 +1245,11 @@ public abstract partial class ParserBase<TImpl, TExpression, TIdentifier, TState
                     impl().ReportMessageAt(token_loc, MessageTemplate.IllegalLanguageModeDirective, "use strict");
                     return;
                 }
+            }
+            else if (use_asm)
+            {
+                // Directive "use asm".
+                impl().SetAsmModule();
             }
             else
             {

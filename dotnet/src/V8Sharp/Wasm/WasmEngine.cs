@@ -241,6 +241,53 @@ namespace V8Sharp.Wasm
             return module;
         }
 
+        /// <summary>
+        /// Decodes and validates a module translated from asm.js (V8:
+        /// SyncCompileTranslatedAsmJs, with the module origin kAsmJs*Origin):
+        /// V8's asm.js opcodes are allowed. Unlike the JS API, this does not
+        /// check whether the embedder allows wasm code generation.
+        /// </summary>
+        public static WasmModule Compile(byte[] bytes, bool asmJs)
+        {
+            bool saved = BinaryModuleParser.AsmJsOpcodesAllowed;
+            BinaryModuleParser.AsmJsOpcodesAllowed = asmJs;
+            try
+            {
+                return Compile(bytes);
+            }
+            finally
+            {
+                BinaryModuleParser.AsmJsOpcodesAllowed = saved;
+            }
+        }
+
+        /// <summary>
+        /// WasmEngine::FinalizeTranslatedAsmJs: the module object of one
+        /// instantiation of a translated asm.js module. Its script is the
+        /// asm.js module's script (V8 shares the NativeModule; V8Sharp decodes
+        /// the wire bytes again for each module object after the first).
+        /// </summary>
+        public static WasmModuleObject FinalizeTranslatedAsmJs(Isolate isolate, AsmJs.AsmWasmData data, Script script)
+        {
+            WasmModule module;
+            if (data.Module is { } decoded)
+            {
+                module = decoded;
+                data.Module = null;
+            }
+            else
+            {
+                module = Compile(data.WireBytes, asmJs: true);
+            }
+            var moduleObj = (WasmModuleObject)JSObject.NewWithMap(isolate, isolate.NativeContext.WasmModuleConstructor.InitialMap);
+            moduleObj.Module = module;
+            moduleObj.WireBytes = data.WireBytes;
+            moduleObj.AsmJsOffsetInformation = data.OffsetInformation;
+            moduleObj.AsmJsLanguageMode = data.LanguageMode;
+            moduleObj.Script = script;
+            return moduleObj;
+        }
+
         /// <summary>WasmEngine::SyncValidate.</summary>
         public static bool Validate(byte[] bytes, CompileTimeImports? imports = null)
         {
@@ -315,6 +362,46 @@ namespace V8Sharp.Wasm
             // instance of {Function}" with the sloppy map without prototype.
             JSFunction function = isolate.Factory.NewFunction(info, isolate.NativeContext,
                 isolate.NativeContext.SloppyFunctionWithoutPrototypeMap);
+            _exportedFunctions[address.Value] = function;
+            return function;
+        }
+
+        /// <summary>
+        /// The JS function of an exported function of a module translated from
+        /// asm.js (V8 14.7 WasmInternalFunction::GetOrCreateExternal for
+        /// origin != kWasmOrigin): its name is the asm.js function's name, its
+        /// map the sloppy or strict function map of the module's language
+        /// mode, and its script the asm.js module's script (for toString).
+        /// </summary>
+        public JSFunction GetOrCreateAsmJsExportedFunction(FuncAddr address, int functionIndex, WasmInstanceObject instance)
+        {
+            if (_exportedFunctions.TryGetValue(address.Value, out JSFunction? existing)) return existing;
+            Isolate isolate = Isolate;
+            IFunctionInstance func = Store[address];
+            FunctionType signature = func.Type;
+            int length = signature.ParameterTypes.Arity;
+            var data = new WasmExportedFunctionData(WasmJs.CallExportedFunction)
+            {
+                Length = length,
+                Engine = this,
+                Address = address,
+                Signature = signature,
+                FunctionIndex = functionIndex,
+                Instance = instance,
+            };
+            WasmModuleObject moduleObject = instance.ModuleObject;
+            string? asmName = WasmStackTraces.GetFunctionName(moduleObject, functionIndex);
+            JSString name = isolate.Factory.InternalizeString(
+                asmName ?? functionIndex.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            SharedFunctionInfo info = isolate.Factory.NewSharedFunctionInfo(name, data, Builtin.HandleApiCallOrConstruct, length, false);
+            info.BuiltinId = Builtin.HandleApiCallOrConstruct;
+            bool sloppy = moduleObject.AsmJsLanguageMode == LanguageMode.Sloppy;
+            info.LanguageMode = sloppy ? LanguageMode.Sloppy : LanguageMode.Strict;
+            info.Native = true;
+            info.Script = moduleObject.Script;
+            info.UpdateFunctionMapIndex();
+            NativeContext nc = isolate.NativeContext;
+            JSFunction function = isolate.Factory.NewFunction(info, nc, sloppy ? nc.SloppyFunctionMap : nc.StrictFunctionMap);
             _exportedFunctions[address.Value] = function;
             return function;
         }

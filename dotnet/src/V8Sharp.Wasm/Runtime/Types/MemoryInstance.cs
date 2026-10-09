@@ -88,6 +88,19 @@ namespace Wacs.Core.Runtime.Types
 
         public MemoryType Type { get; private set; }
 
+        /// <summary>
+        /// V8Sharp: the memory of an instance translated from asm.js is the
+        /// asm.js heap, a JavaScript ArrayBuffer of any valid asm.js size (not
+        /// a multiple of the page size): the memory aliases the buffer's bytes.
+        /// The buffer cannot be detached or resized, and asm.js code never grows
+        /// its memory.
+        /// </summary>
+        public void AttachAsmJsBuffer(byte[] data, long byteLength)
+        {
+            Data = data;
+            Volatile.Write(ref _byteLength, byteLength);
+        }
+
         public long Size => Volatile.Read(ref _byteLength) / Constants.PageSize;
 
         /// <summary>

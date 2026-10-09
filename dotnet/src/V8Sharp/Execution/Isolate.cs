@@ -113,6 +113,14 @@ public sealed partial class Isolate
     /// <summary>Isolate::error_message_param (used by DataView builtins' stack names).</summary>
     public int ErrorMessageParam;
 
+    /// <summary>
+    /// The embedder's message listener for messages of the levels other than
+    /// errors (v8::Isolate::AddMessageListenerWithErrorLevel): d8 prints them
+    /// as "file:line: message". Uncaught exceptions are reported by the
+    /// embedder's own exception handling.
+    /// </summary>
+    public Action<Isolate, JSMessageObject>? MessageListener;
+
     /// <summary>Isolate::console_delegate (v8::debug::SetConsoleDelegate); null: console calls do nothing.</summary>
     public Builtins.ConsoleDelegate? ConsoleDelegate;
 

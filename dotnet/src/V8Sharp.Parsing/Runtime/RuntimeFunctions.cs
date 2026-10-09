@@ -726,6 +726,11 @@ public enum FunctionId
     InlineCreateIterResultObject,
     InlineGeneratorYieldResult,
     InlineDeoptimizeNow,
+    // V8 14.7's runtime functions of asm.js (runtime.h: F(InstantiateAsmJs, 4, 1),
+    // F(IsAsmWasmCode, 1, 1)), removed from this tree; appended so that the
+    // generated ids do not move.
+    InstantiateAsmJs,
+    IsAsmWasmCode,
     NumFunctions,
 }
 
@@ -1460,6 +1465,8 @@ public static class Runtime
         new(FunctionId.InlineCreateIterResultObject, IntrinsicType.INLINE, "_CreateIterResultObject", 2, 1),
         new(FunctionId.InlineGeneratorYieldResult, IntrinsicType.INLINE, "_GeneratorYieldResult", 2, 1),
         new(FunctionId.InlineDeoptimizeNow, IntrinsicType.INLINE, "_DeoptimizeNow", 0, 1),
+        new(FunctionId.InstantiateAsmJs, IntrinsicType.RUNTIME, "InstantiateAsmJs", 4, 1),
+        new(FunctionId.IsAsmWasmCode, IntrinsicType.RUNTIME, "IsAsmWasmCode", 1, 1),
     ];
 
     private static readonly Dictionary<string, RuntimeFunction> s_byName = BuildNameMap();

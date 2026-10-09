@@ -913,6 +913,8 @@ public sealed class PreParser : ParserBaseOfPreParser
     public override void SetFunctionNameFromIdentifierRef(PreParserExpression value,
                                                           PreParserExpression identifier) { }
 
+    public override void SetAsmModule() { }
+
     public override void CountUsage(UseCounterFeature feature)
     {
         if (use_counts_ != null) ++use_counts_[(int)feature];

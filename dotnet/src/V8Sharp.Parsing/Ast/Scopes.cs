@@ -1220,6 +1220,9 @@ public class Scope
     // Specific scope types.
     public bool is_eval_scope() => _scopeType == ScopeType.EVAL_SCOPE;
     public bool is_function_scope() => _scopeType == ScopeType.FUNCTION_SCOPE;
+
+    /// <summary>Scope::IsAsmModule (V8 14.7).</summary>
+    public bool IsAsmModule() => is_function_scope() && AsDeclarationScope().is_asm_module();
     public bool is_module_scope() => _scopeType == ScopeType.MODULE_SCOPE;
     public bool is_script_scope() => _scopeType == ScopeType.SCRIPT_SCOPE || _scopeType == ScopeType.REPL_MODE_SCOPE;
     public bool is_toplevel_scope() => _scopeType <= ScopeType.MODULE_SCOPE;
@@ -2304,7 +2307,10 @@ public class Scope
 
             // If we need a context, ensure num_heap_slots_ includes space for the
             // context header.
-            if (scope.num_heap_slots_ > 0 || scope.HasContextExtensionSlot() || scope.ForceContextForLanguageMode())
+            // V8 14.7: function scopes representing asm.js modules get a context
+            // too (must_have_context).
+            if (scope.num_heap_slots_ > 0 || scope.HasContextExtensionSlot() || scope.ForceContextForLanguageMode() ||
+                scope.IsAsmModule())
             {
                 scope.num_heap_slots_ += scope.ContextHeaderLength();
             }
@@ -2669,6 +2675,12 @@ public class DeclarationScope : Scope
     public void set_force_eager_compilation(bool value) => _forceEagerCompilation = value;
 
     public bool should_eager_compile() => _shouldEagerCompile;
+
+    // V8 14.7 (removed with asm.js from this tree): the function is an asm.js
+    // module ("use asm").
+    private bool _isAsmModule;
+    public bool is_asm_module() => _isAsmModule;
+    public void set_is_asm_module(bool value) => _isAsmModule = value;
     public void set_should_eager_compile(bool value) => _shouldEagerCompile = value;
 
     public bool has_rest() => _hasRest;
