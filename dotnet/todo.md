@@ -1991,6 +1991,78 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     the frame state live through the loop) and the size of the method
     (RyuJIT's allocator spills whole intervals). The scratch local of the
     overflow checks was one such interval (removed).
+    The branch before main's allocation work (octane-steady, parity
+    publishes, 3 runs, against main 53e9d1ba; load 8.8/16.3, idle 0-1%,
+    so noisy): geomean of the 15 +2.8% (621 vs 604), DeltaBlue +13%,
+    PdfJS +13%, zlib +11%, RegExp +10%, Splay +11%; Gameboy -10%,
+    Mandreel -6%, NavierStokes -5% within their run-to-run ranges.
+    Final, merged with main 38355201 (inlined allocation and escape
+    analysis) at ab104c2a; octane-steady (warm, compile time excluded),
+    parity publishes (R2R composite, self-contained), 3 interleaved runs,
+    load 4.4/8.2, steal 0-1%, idle 71%/24%, cpu-cal 2228/2105 ms, mem-bw
+    17.1/14.7 GB/s; V8 crashed (exit 139) on 5 benchmark/engine runs, their
+    means are over the other runs; latency rows out of the geomean:
+
+    | benchmark | main 38355201 | v8sharp (default) | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 1004 | 1285 | 5147 | 6848 |
+    | DeltaBlue | 1328 | 1458 | 7984 | 9669 |
+    | Crypto | 240 | 210 | 627 | 1494 |
+    | RayTrace | 532 | 543 | 2442 | 4118 |
+    | EarleyBoyer | 105 | 115 | 574 | 758 |
+    | RegExp | 174 | 189 | 759 | 705 |
+    | Splay | 2462 | 2364 | 7706 | 8396 |
+    | NavierStokes | 1194 | 1525 | 1374 | 2535 |
+    | PdfJS | 1000 | 1135 | 5280 | 5871 |
+    | Mandreel | 404 | 439 | 2733 | 4663 |
+    | Gameboy | 1301 | 1231 | 3907 | 4361 |
+    | CodeLoad | 2409 | 2585 | 2477 | 2848 |
+    | Box2D | 1970 | 2725 | 10079 | 12379 |
+    | zlib | 135 | 132 | 1360 | 1402 |
+    | Typescript | 314 | 316 | 1355 | 1519 |
+    | geomean | 630 | 679 | 2465 | 3220 |
+
+    Warm geomean +7.9% over main; 27.6% of v8:maglev, 21.1% of v8:jit.
+    Crypto (204-231 vs 207-275) and Splay are within their ranges.
+
+    Cold Octane (start-up, compile time included; wall clock, same
+    publishes, 3 interleaved runs, load 1.9/4.6, steal 0%, cpu-cal
+    2119/2213 ms, mem-bw 17.0/18.2 GB/s; V8 --jit crashed once on Gameboy):
+
+    | benchmark | main 38355201 | v8sharp (default) | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 2385 | 2574 | 14886 | 24926 |
+    | DeltaBlue | 2521 | 3214 | 21449 | 45496 |
+    | Crypto | 3760 | 4224 | 10814 | 25791 |
+    | RayTrace | 2992 | 3429 | 24193 | 36161 |
+    | EarleyBoyer | 3125 | 3222 | 21921 | 30385 |
+    | RegExp | 782 | 751 | 4070 | 4471 |
+    | Splay | 1700 | 1583 | 3234 | 2513 |
+    | SplayLatency | 1752 | 1819 | 2501 | 2021 |
+    | NavierStokes | 7867 | 8640 | 13006 | 24635 |
+    | PdfJS | 787 | 835 | 16595 | 11449 |
+    | Mandreel | 1245 | 1063 | 14292 | 22463 |
+    | MandreelLatency | 2607 | 2530 | 17426 | 22476 |
+    | Gameboy | 2588 | 3095 | 34807 | 34656 |
+    | CodeLoad | 5026 | 4520 | 10702 | 10823 |
+    | Box2D | 1947 | 1848 | 39428 | 37630 |
+    | zlib | 5164 | 5004 | 58785 | 49312 |
+    | Typescript | 4450 | 4624 | 34778 | 32555 |
+    | geomean | 2551 | 2640 | 16721 | 20621 |
+
+    Cold geomean +3.5% over main (15.8% of v8:maglev, 12.8% of v8:jit).
+    Toward 50% of v8:jit warm (a 2.4x geomean gain), the gaps by their
+    share of the log-geomean gap: Mandreel and zlib (x10.6 each, 10%
+    each), RayTrace x7.6, Crypto x7.1, DeltaBlue and EarleyBoyer x6.6 (8%
+    each), Richards x5.3, PdfJS x5.2, Typescript x4.8 (7% each), Box2D
+    x4.5, RegExp x3.7, Splay x3.6, Gameboy x3.5, NavierStokes x1.7,
+    CodeLoad x1.1. By cause: calls and frames (DeltaBlue, Richards,
+    RayTrace's EnterInlinedFrame, EarleyBoyer, Typescript: about a third
+    of the gap); code quality of hot loops on typed and untyped arrays
+    (zlib, Mandreel, Crypto, Gameboy: RyuJIT keeps the loop values in
+    stack slots, every check a deopt exit with its frame state live; about
+    a third); allocation and GC (EarleyBoyer, Splay, Box2D, RayTrace);
+    RegExp (the irregexp port's matcher).
   - Inlined allocation and escape analysis (2026-10-09, 66b7b30b..3b512997;
     V8 files: maglev-ir.h InlinedAllocation/VirtualObject,
     maglev-graph-builder.cc BuildInlinedAllocation, CreateJSConstructor,
