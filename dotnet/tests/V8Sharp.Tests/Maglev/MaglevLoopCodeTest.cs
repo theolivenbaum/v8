@@ -197,6 +197,33 @@ public class MaglevLoopCodeTest
         """,
     };
 
+    public static TheoryData<string> CheckSnippets => new()
+    {
+        // Stores into copy-on-write literal arrays: the elements are checked
+        // once per path (a branch that checks does not cover the other), and
+        // stored values whose range is in the Smi range need no Smi check.
+        """
+        (function() {
+          function lit() { return [1, 2, 3, 4, 5, 6, 7, 8]; }
+          function f(a, k) {
+            if (k & 1) a[0] = k & 0xffff;
+            for (var i = 1; i < a.length; i++) a[i] = (a[i - 1] * 31 + i) >> 3;
+            a[1] = k >>> 2;
+            return a.join(':');
+          }
+          function g(a, k) { if (k > 3) { a[2] = 7; } a[3] = k & 0x3fffffff; return a[2] + a[3]; }
+          var out = [];
+          for (var r = 0; r < 40; r++) out.push(f(lit(), r), g(lit(), r), f([1, 2, 3], -r));
+          out.push(f(lit(), 0x7fffffff), g(lit(), -1), f(lit(), -2147483648));
+          return out.join(',');
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(CheckSnippets))]
+    public void ElidedChecksGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
     [Theory]
     [MemberData(nameof(TruncationSnippets))]
     public void TruncatedFloat64AdditionsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);

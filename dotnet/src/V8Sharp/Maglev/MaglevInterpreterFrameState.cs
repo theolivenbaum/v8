@@ -77,6 +77,11 @@ public sealed class KnownNodeAspects
     /// stores and map transitions of non-prototype objects cannot).
     /// </summary>
     public readonly HashSet<Cell> CheckedValidityCells;
+    /// <summary>
+    /// Elements nodes checked not to be copy-on-write on this path (whether a
+    /// FixedArray is copy-on-write never changes, so no effect forgets it).
+    /// </summary>
+    public readonly HashSet<ValueNode> WritableElements;
     /// <summary>virtual_objects: the current versions of the tracked allocations (immutable, shared by clones).</summary>
     public VirtualObjectList VirtualObjects = VirtualObjectList.Empty;
 
@@ -87,6 +92,7 @@ public sealed class KnownNodeAspects
         LoadedContextSlots = new();
         LoadedContextConstants = new();
         CheckedValidityCells = new(ReferenceEqualityComparer.Instance);
+        WritableElements = new(ReferenceEqualityComparer.Instance);
     }
 
     KnownNodeAspects(Dictionary<ValueNode, NodeInfo> infos, KnownNodeAspects from)
@@ -96,6 +102,7 @@ public sealed class KnownNodeAspects
         LoadedContextSlots = new(from.LoadedContextSlots);
         LoadedContextConstants = new(from.LoadedContextConstants);
         CheckedValidityCells = new(from.CheckedValidityCells, ReferenceEqualityComparer.Instance);
+        WritableElements = new(from.WritableElements, ReferenceEqualityComparer.Instance);
         VirtualObjects = from.VirtualObjects;
     }
 
@@ -264,6 +271,7 @@ public sealed class KnownNodeAspects
         Intersect(LoadedContextConstants, other.LoadedContextConstants);
         VirtualObjects = VirtualObjects.Intersect(other.VirtualObjects);
         CheckedValidityCells.IntersectWith(other.CheckedValidityCells);
+        WritableElements.IntersectWith(other.WritableElements);
     }
 
     /// <summary>Forgets the loaded values that are <paramref name="values"/> or have them as object (a loop's phis).</summary>

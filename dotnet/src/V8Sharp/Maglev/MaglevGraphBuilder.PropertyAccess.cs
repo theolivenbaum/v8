@@ -1772,8 +1772,12 @@ public sealed partial class MaglevGraphBuilder
             BuildBoundsCheck(obj, elements, index, isJSArray);
             if (!ElementsKinds.IsDoubleElementsKind(kind))
             {
-                // Copy-on-write elements need the runtime.
-                AddCheck(Opcode.CheckInstanceType, elements, DeoptimizeReason.kCowArrayElementsChanged, int0: 3);
+                // Copy-on-write elements need the runtime (once per elements
+                // node on a path, as V8's EnsureWritableFastElements result).
+                if (_frame.Known.WritableElements.Add(elements))
+                {
+                    AddCheck(Opcode.CheckInstanceType, elements, DeoptimizeReason.kCowArrayElementsChanged, int0: 3);
+                }
             }
         }
         AddNewNode(new Node(ElementsKinds.IsDoubleElementsKind(kind) ? Opcode.StoreFixedDoubleArrayElement : Opcode.StoreFixedArrayElement)
