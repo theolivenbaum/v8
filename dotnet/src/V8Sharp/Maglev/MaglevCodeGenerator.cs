@@ -923,7 +923,11 @@ internal sealed partial class MaglevCodeGenerator
         {
             if (IsDeadNode(node)) continue;
             if (IsElidedArguments(node)) continue;
-            if (node.Unit is { IsInline: true } unit && NeedsFrame(node)) EmitEnsureInlinedFrames(unit);
+            // (The loop interrupt check pushes the frames on its slow path.)
+            if (node.Unit is { IsInline: true } unit && NeedsFrame(node) && node.Opcode != Opcode.HandleNoHeapWritesInterrupt)
+            {
+                EmitEnsureInlinedFrames(unit);
+            }
             if (_hasCatchBlocks && node.ExceptionHandler is { CatchState.Block: { IsDead: false } })
             {
                 // The node's exceptions continue at its catch block.
@@ -2555,10 +2559,21 @@ internal sealed partial class MaglevCodeGenerator
                 Store(v!);
                 return;
             case Opcode.HandleNoHeapWritesInterrupt:
+            {
+                // V8's deferred code: the frame's bytecode offset is stored,
+                // and lazily pushed inlined frames pushed, on the slow path
+                // only, not on every back edge.
+                Label noInterrupt = _il.DefineLabel();
+                _il.Emit(OpCodes.Ldarg_1);
+                Call(nameof(MaglevBuiltins.HasPendingInterrupts));
+                _il.Emit(OpCodes.Brfalse, noInterrupt);
+                if (node.Unit is { IsInline: true } inlined) EmitEnsureInlinedFrames(inlined);
                 StoreBytecodeOffset(node);
                 _il.Emit(OpCodes.Ldarg_1);
-                Call(nameof(MaglevBuiltins.HandleInterrupts));
+                Call(nameof(MaglevBuiltins.HandleInterruptsSlow));
+                _il.MarkLabel(noInterrupt);
                 return;
+            }
             case Opcode.SetCurrentContext:
                 _il.Emit(OpCodes.Ldarg_1);
                 LoadFrameSlotAddress(node.Unit, InterpreterRuntime.kContextOffset);
