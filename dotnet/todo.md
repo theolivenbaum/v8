@@ -1882,6 +1882,77 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     EarleyBoyer (closures and cons cells: allocation), Splay (tree
     allocation, GC write barriers), and a quarter of the basic blocks are
     map checks of values not known to be receivers (main's measurement).
+  - Types, calls and huge functions (2026-10-09, 29c46401..; V8 files:
+    maglev-graph-builder.cc, maglev-interpreter-frame-state.cc,
+    maglev-ir.cc/h, maglev-code-generator.cc):
+    - Phi types (MergeValue's union of the inputs' types; loop phis get
+      their post-loop type when the back edge is merged; result phis of
+      inlined calls and polymorphic accesses) and CheckType on map loads
+      (CheckMaps, LoadMap, TransitionElementsKind skip the receiver check
+      when the input is known to be a JSReceiver where the node is built).
+      DeltaBlue's IL histogram: map checks of known receivers 135 -> 242
+      of 476.
+    - Prototype chain validity as a compilation dependency on the IC
+      handler's validity cell (V8: DependOnStablePrototypeChains) instead of
+      a CheckValidityCell per access: DeltaBlue had 572 of them (8.6 KB of
+      IL, 572 blocks); Richards -8% basic blocks.
+    - Calls whose feedback is a FeedbackCell (closures of one CreateClosure
+      site; BuildCallWithFeedback): CheckJSFunctionFeedbackCell, then the
+      shared function's Maglev code entered directly or inlined with the
+      closure's context; the inlined frame's closure is spilled for deopts.
+      Closure micro (four closures of one site and a sloppy one): 48 ->
+      33 ns per call pair directly, 25 ns inlined. V8 has no polymorphic
+      call target feedback (its CallIC is monomorphic, a feedback cell, or
+      megamorphic), so this and the polymorphic load continuations are
+      what V8 does for polymorphic calls.
+    - Region splitting (V8Sharp only, deviations.md): code over RyuJIT's
+      optimization limits is emitted again as methods of 40% of the limits,
+      cut at the least loop depth, with the live values passed through a
+      per-activation Transfer struct. zlib's a1 (143 KB of IL, MinOpts) is
+      six FullOpts regions; Typescript had 8 MinOpts compiles
+      (Parser.parseStatement 67-87 KB, TypeFlow.typeCheckFunction), none
+      now. Region tests force splitting of every Maglev test snippet;
+      all of Octane runs correctly with code split at 3000 IL bytes.
+    - Int32 overflow checks keep the 64-bit result on the IL stack (a
+      scratch local shared by every check is one long-lived variable to
+      RyuJIT's register allocator); pure builtin calls (no call, throw or
+      lazy deopt, no frame arguments) no longer push lazily pushed inlined
+      frames and are allowed in frameless entries.
+    Per change, warm octane-quick (3 interleaved runs, bin builds with
+    main 79d66bad's Bench; load 5.8 -> 1.6, steal 0%, cpu-cal 1766/1807 ms,
+    mem-bw 19.5/17.0 GB/s): validity cells DeltaBlue 1177 -> 1678 (+43%),
+    Crypto 525 -> 590 (+12%); the rest within noise. Richards and DeltaBlue
+    are bimodal from run to run (Richards 1400-1600 or 2200-2900 with the
+    same build: concurrent compiles see different feedback and inline
+    differently), so a single row change below about 30% is not a result
+    for them. Regions on vs off (V8SHARP_MAGLEV_NO_REGIONS=1, same build;
+    octane-quick, 3 interleaved runs, load 1.5/2.4, steal 0%, cpu-cal
+    1828/1922 ms, mem-bw 17.6/16.9 GB/s): zlib 418 -> 440 (+5%, 2 functions
+    split into 10 regions), Mandreel 407 -> 421 (+3%, 2 split), Box2D
+    1018 -> 952 (-6%, 2 split), Typescript 25.5 -> 23.4 (-8%, 18 split,
+    among them the recursive Parser.parseStatement: every call goes
+    through the dispatcher and three or four region calls), PdfJS 908 ->
+    624 (no function is split; that row is run-to-run variation, 515-808
+    with regions on). Warm, the split code is no faster than MinOpts code
+    of the same function; what it removes is MinOpts' slow code during
+    start-up (see the cold rows below).
+    Not done: (2) leaner frameful calls. A frameful direct call costs about
+    23 ns more than a frameless one (micro, 34.5 vs 11.5 ns); the cost is
+    spread over the frame's slot stores, the frame record, the
+    InterpreterState and the context switch (a profile of the entry by
+    instruction groups shows no single hot spot; removing the fault block
+    measured nothing). Materializing frames lazily as V8 does needs stack
+    walks (Error.stack, function.arguments) to find frameless activations,
+    which the frame records are; a frame built on demand before the first
+    call would only help paths without calls. (5) Register pressure: in
+    Crypto's am3 loop RyuJIT keeps nearly every value in a stack slot
+    (frames of 600-950 bytes; only two or three registers used in the
+    loop). Removing the loop's only call (the interrupt check) changed the
+    frame by 2%, so the cold calls are not the cause; the remaining
+    suspects are the values the loop's deopt exits read (every check keeps
+    the frame state live through the loop) and the size of the method
+    (RyuJIT's allocator spills whole intervals). The scratch local of the
+    overflow checks was one such interval (removed).
   - Compile pipeline and tier-up (2026-10-04, f93817c5..dbf2af5b):
     concurrent jobs (MaglevConcurrentDispatcher.cs, maglev-concurrent-
     dispatcher.cc) build the graph on two worker threads (the main thread
