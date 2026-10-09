@@ -52,6 +52,7 @@ internal sealed partial class LiftoffCompiler
     void GenericInstruction(WasmKind[] operands, WasmKind[] results)
     {
         if (!_reachable) return;
+        _genericCount++;
         int k = AddConstant(_instructions[_instIndex]);
         int n = operands.Length;
         _asm.Settle(n);

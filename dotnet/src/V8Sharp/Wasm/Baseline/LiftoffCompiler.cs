@@ -84,6 +84,8 @@ internal sealed partial class LiftoffCompiler
 
     WasmKind[] _localKinds = [];
     int _instIndex;
+    /// <summary>Instructions run by the interpreter's instruction objects (coverage statistics).</summary>
+    int _genericCount;
     int _pc;
     bool _reachable = true;
     int _tryDepth;
@@ -136,9 +138,18 @@ internal sealed partial class LiftoffCompiler
     /// Compiles <paramref name="code"/>'s function (V8: ExecuteLiftoffCompilation).
     /// Returns its entry, or null with the reason if the compiler bailed out.
     /// </summary>
-    public static Delegate? Compile(WasmCode code, out string? bailout)
+    public static Delegate? Compile(WasmCode code, out string? bailout) => Compile(code, out bailout, out _, out _);
+
+    /// <summary>
+    /// <see cref="Compile(WasmCode, out string?)"/>, also counting the
+    /// function's instructions and those left to the interpreter's
+    /// instruction objects.
+    /// </summary>
+    public static Delegate? Compile(WasmCode code, out string? bailout, out int instructions, out int generic)
     {
         var compiler = new LiftoffCompiler(code);
+        instructions = compiler._offsets.Length;
+        generic = 0;
         try
         {
             compiler.CompileFunction();
@@ -149,6 +160,7 @@ internal sealed partial class LiftoffCompiler
             return null;
         }
         bailout = null;
+        generic = compiler._genericCount;
         code.Constants = [.. compiler._constants];
         code.Method = compiler._method;
         return compiler._method.CreateDelegate(code.Signature.DelegateType, code);

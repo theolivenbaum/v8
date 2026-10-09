@@ -97,11 +97,12 @@ internal sealed class WasmModuleCompiler
             bailout = "V8SHARP_WASM_INTERPRET_FUNCTIONS";
             return null;
         }
+        int instructions = 0, generic = 0;
         if (t_compileDepth == 0) t_compiledAhead = 0;
         t_compileDepth++;
         try
         {
-            result = LiftoffCompiler.Compile(code, out bailout);
+            result = LiftoffCompiler.Compile(code, out bailout, out instructions, out generic);
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
@@ -118,7 +119,7 @@ internal sealed class WasmModuleCompiler
         {
             lock (s_logLock)
             {
-                File.AppendAllText(s_log, (result is null ? "bailout\t" + bailout : "compiled") + "\n");
+                File.AppendAllText(s_log, (result is null ? "bailout\t" + bailout : "compiled") + "\t" + instructions + "\t" + generic + "\n");
             }
         }
         if (s_trace)
