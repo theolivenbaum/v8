@@ -416,4 +416,6 @@ public sealed class AsmWasmData(byte[] wireBytes, byte[] asmJsOffsets, ulong use
     public Wacs.Core.Module? Module { get; set; } = module;
     /// <summary>The offset table, decoded lazily, shared by the module's instances.</summary>
     public AsmJsOffsetInformation OffsetInformation { get; } = new(asmJsOffsets);
+    /// <summary>The compiled code, shared by the module's instances (V8: the NativeModule's).</summary>
+    internal Wasm.WasmSharedCode SharedCode { get; } = new();
 }

@@ -37,6 +37,9 @@ public sealed class WasmModuleObject(Map map) : JSObject(map)
     /// <summary>Whether <see cref="Module"/> was instantiated (linked) already.</summary>
     internal bool ModuleLinked;
 
+    /// <summary>The compiled code the module's instances share (V8: the NativeModule's code table).</summary>
+    internal WasmSharedCode SharedCode = new();
+
     /// <summary>The decoded name section, lazily.</summary>
     internal WasmNames? Names;
 

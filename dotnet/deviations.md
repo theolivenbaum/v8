@@ -1576,3 +1576,23 @@ vendored code carry a `V8Sharp:` comment at the site.
   V8Sharp marks the activation while the wrapper converts
   (WasmEngine.EnterNumberConversion), then maps the body offset through the
   asm.js offset table to the JavaScript position as 14.7 does.
+- **Decoding per instance.** V8 decodes an asm.js module once and shares
+  the NativeModule. WACS links instruction objects in place, so each
+  instance decodes the wire bytes again; the compiled code is shared
+  (WasmSharedCode, as for every wasm module), and the re-decode skips
+  validating the function bodies, which were validated the first time.
+- **Heap bounds checks.** V8 checks that the last byte of an asm.js access
+  is in the heap. Every asm.js heap index is masked to the element size and
+  every asm.js heap size is a multiple of 4096, so V8Sharp checks the first
+  byte, which is the same test with one instruction less.
+
+### Compiled code shared by instances
+
+- A module's compiled functions serve all its instances (V8: the
+  NativeModule's code table): a function's DynamicMethod reads its instance
+  through its WasmCode, and call_indirect looks up the expected type in the
+  instance. A function whose code depends on its instance (an interpreter
+  instruction object, a ref.func constant, a catch's tags, or a direct call
+  to such code) is compiled per instance. A new instance installs every
+  shared function when it is created, since shared code calls its callees'
+  shared code directly.

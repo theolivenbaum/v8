@@ -100,6 +100,12 @@ internal sealed partial class LiftoffCompiler
     // The cached memories (array and size) of memories that are not shared.
     LocalBuilder?[] _memArray = [];
     LocalBuilder?[] _memSize = [];
+    // A managed pointer to each cached memory's first byte (accesses add the
+    // address to it: no array load or null check per access).
+    LocalBuilder?[] _memBase = [];
+    // An asm.js instance's memory is its heap buffer, which never grows or
+    // changes: the cached memory is read once, at entry.
+    bool _memoriesFixed;
     bool _cacheMemories;
 
     // The return label for returns from inside exception regions.
@@ -163,10 +169,20 @@ internal sealed partial class LiftoffCompiler
         generic = compiler._genericCount;
         code.Constants = [.. compiler._constants];
         code.Method = compiler._method;
+        code.Shareable = !compiler._instanceSpecific;
+        code.ILSize = compiler._il.ILOffset;
         return compiler._method.CreateDelegate(code.Signature.DelegateType, code);
     }
 
     static void Unsupported(string reason) => throw new LiftoffBailout(reason);
+
+    /// <summary>
+    /// Set when the code depends on its instance (a constant that is the
+    /// instance's: an interpreter instruction object, a function reference,
+    /// a catch's tags; or a direct call to code that is not shared), so it
+    /// cannot serve the module's other instances.
+    /// </summary>
+    bool _instanceSpecific;
 
     int AddConstant(object value)
     {
@@ -344,6 +360,8 @@ internal sealed partial class LiftoffCompiler
 
     static readonly FieldInfo s_codeInstance = typeof(WasmCode).GetField(nameof(WasmCode.Instance))!;
     static readonly FieldInfo s_codeConstants = typeof(WasmCode).GetField(nameof(WasmCode.Constants))!;
+    static readonly FieldInfo s_codeAddress = typeof(WasmCode).GetField(nameof(WasmCode.Address))!;
+    static readonly FieldInfo s_funcAddrValue = typeof(FuncAddr).GetField(nameof(FuncAddr.Value))!;
     static readonly FieldInfo s_dataFrames = typeof(WasmInstanceData).GetField(nameof(WasmInstanceData.Frames))!;
     static readonly FieldInfo s_dataStackGuard = typeof(WasmInstanceData).GetField(nameof(WasmInstanceData.StackGuard))!;
     static readonly FieldInfo s_dataMemories = typeof(WasmInstanceData).GetField(nameof(WasmInstanceData.Memories))!;
@@ -409,7 +427,11 @@ internal sealed partial class LiftoffCompiler
         il.Emit(OpCodes.Ldloc, _framesLocal);
         il.Emit(OpCodes.Ldfld, s_framesFunc);
         il.Emit(OpCodes.Ldloc, _spLocal);
-        il.Emit(OpCodes.Ldc_I4, _code.Address.Value);
+        // The function's address is read from its code, so that the method
+        // serves every instance of the module (WasmSharedCode).
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldflda, s_codeAddress);
+        il.Emit(OpCodes.Ldfld, s_funcAddrValue);
         il.Emit(OpCodes.Stelem_I4);
         il.Emit(OpCodes.Ldloc, _framesLocal);
         il.Emit(OpCodes.Ldfld, s_framesPc);
@@ -417,6 +439,8 @@ internal sealed partial class LiftoffCompiler
 
         _memArray = new LocalBuilder?[_data.Memories.Length];
         _memSize = new LocalBuilder?[_data.Memories.Length];
+        _memBase = new LocalBuilder?[_data.Memories.Length];
+        _memoriesFixed = _data.AsmJs;
         if (_cacheMemories)
         {
             for (int m = 0; m < _data.Memories.Length; m++)
@@ -424,8 +448,9 @@ internal sealed partial class LiftoffCompiler
                 if (_data.Memories[m].Type.Limits.Shared) continue;
                 _memArray[m] = il.DeclareLocal(typeof(byte[]));
                 _memSize[m] = il.DeclareLocal(typeof(long));
+                _memBase[m] = il.DeclareLocal(typeof(byte).MakeByRefType());
             }
-            ReloadMemories();
+            ReloadMemories(entry: true);
         }
 
         // Locals of reference and vector types start as their default values
@@ -462,9 +487,9 @@ internal sealed partial class LiftoffCompiler
     }
 
     /// <summary>Re-reads the cached memories (after anything that can grow them).</summary>
-    void ReloadMemories()
+    void ReloadMemories(bool entry = false)
     {
-        if (!_cacheMemories) return;
+        if (!_cacheMemories || (_memoriesFixed && !entry)) return;
         for (int m = 0; m < _memArray.Length; m++)
         {
             if (_memArray[m] is not { } array) continue;
@@ -474,7 +499,10 @@ internal sealed partial class LiftoffCompiler
             _il.Emit(OpCodes.Ldelem_Ref);
             _il.Emit(OpCodes.Dup);
             _il.Emit(OpCodes.Ldfld, s_memoryData);
+            _il.Emit(OpCodes.Dup);
             _il.Emit(OpCodes.Stloc, array);
+            _il.Emit(OpCodes.Call, s_arrayDataReference);
+            _il.Emit(OpCodes.Stloc, _memBase[m]!);
             _il.Emit(OpCodes.Call, s_memoryByteLength);
             _il.Emit(OpCodes.Conv_U8);
             _il.Emit(OpCodes.Stloc, _memSize[m]!);
@@ -1123,6 +1151,7 @@ internal sealed partial class LiftoffCompiler
         Frame saved = ctx.Frame;
         int height = ctx.OpStack.Count;
         ctx.Frame = _data.InterpreterFrame;
+        _instanceSpecific = true;
         Value value;
         try
         {

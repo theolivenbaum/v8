@@ -53,6 +53,7 @@ internal sealed partial class LiftoffCompiler
     {
         if (!_reachable) return;
         _genericCount++;
+        _instanceSpecific = true;
         int k = AddConstant(_instructions[_instIndex]);
         int n = operands.Length;
         _asm.Settle(n);
@@ -217,6 +218,7 @@ internal sealed partial class LiftoffCompiler
             _ => throw new LiftoffBailout("br_on_cast instruction"),
         };
         int k = AddConstant(targetType);
+        _instanceSpecific = true;
         _asm.SpillAll(_asm.Height - 1);
         _asm.LoadSettled(_asm.Height - 1);
         _il.Emit(OpCodes.Ldarg_0);

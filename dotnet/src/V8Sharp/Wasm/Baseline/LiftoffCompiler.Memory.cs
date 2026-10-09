@@ -119,8 +119,15 @@ internal sealed partial class LiftoffCompiler
     /// <summary>Pushes a managed pointer to memory[address].</summary>
     void EmitMemoryPointer(int memory, LocalBuilder address)
     {
-        LoadMemoryArray(memory);
-        _il.Emit(OpCodes.Call, s_arrayDataReference);
+        if (_memBase[memory] is { } memBase)
+        {
+            _il.Emit(OpCodes.Ldloc, memBase);
+        }
+        else
+        {
+            LoadMemoryArray(memory);
+            _il.Emit(OpCodes.Call, s_arrayDataReference);
+        }
         _il.Emit(OpCodes.Ldloc, address);
         _il.Emit(OpCodes.Conv_I);
         _il.Emit(OpCodes.Add);

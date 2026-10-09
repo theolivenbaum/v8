@@ -89,6 +89,7 @@ internal sealed partial class LiftoffCompiler
         }
         if (target.State == WasmCodeState.Compiled && target.Method is { } method && target.Instance == _data)
         {
+            if (!target.Shareable) _instanceSpecific = true;
             _asm.PopToStackWithPrefix(sig.Params.Length, () =>
             {
                 _il.Emit(OpCodes.Ldloc, _dataLocal);
@@ -115,17 +116,17 @@ internal sealed partial class LiftoffCompiler
         if (!_reachable) return;
         DefType expected = _module.Types[(TypeIdx)(uint)typeIndex];
         WasmSignature sig = WasmSignature.Get((FunctionType)expected.Expansion);
-        int k = AddConstant(expected);
         int n = sig.Params.Length;
         bool table64 = TableAddressKind(table) == WasmKind.I64;
         _asm.Settle(n + 1);
         int first = _asm.Height - n - 1;
         EmitStorePc();
-        // RuntimeWasm.ResolveIndirect(index, table, constant, code, pc)
+        // RuntimeWasm.ResolveIndirect(index, table, typeIndex, code, pc): the
+        // expected type is the instance's (the code serves every instance).
         _asm.LoadSettled(first + n);
         if (!table64) _il.Emit(OpCodes.Conv_U8);
         _il.Emit(OpCodes.Ldc_I4, table);
-        _il.Emit(OpCodes.Ldc_I4, k);
+        _il.Emit(OpCodes.Ldc_I4, typeIndex);
         EmitRuntimeCall(nameof(RuntimeWasm.ResolveIndirect));
         _il.Emit(OpCodes.Castclass, sig.DelegateType);
         for (int i = 0; i < n; i++) _asm.LoadSettled(first + i);

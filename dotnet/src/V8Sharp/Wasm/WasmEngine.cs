@@ -229,7 +229,16 @@ namespace V8Sharp.Wasm
 
         static WasmEngine() => BinaryModuleParser.MaximumFunctionLocals = kV8MaxWasmFunctionLocals;
 
-        public static WasmModule Compile(byte[] bytes, CompileTimeImports? imports = null)
+        public static WasmModule Compile(byte[] bytes, CompileTimeImports? imports = null) =>
+            Compile(bytes, imports, validated: false);
+
+        /// <summary>
+        /// Decodes and validates <paramref name="bytes"/>; with
+        /// <paramref name="validated"/>, the bytes are a module's that was
+        /// validated already (decoded again for another instance), and the
+        /// function bodies are not validated again.
+        /// </summary>
+        public static WasmModule Compile(byte[] bytes, CompileTimeImports? imports, bool validated)
         {
             WasmModule module;
             try
@@ -252,6 +261,7 @@ namespace V8Sharp.Wasm
                     // kV8MaxWasmFunctionLocals locals.
                     RelaxAtomicSharedCheck = true,
                     MaxFunctionLocals = kV8MaxWasmFunctionLocals,
+                    SkipFunctionBodies = validated,
                 });
             }
             catch (Exception e) when (e is ValidationException or InvalidDataException or FormatException
@@ -274,13 +284,13 @@ namespace V8Sharp.Wasm
         /// V8's asm.js opcodes are allowed. Unlike the JS API, this does not
         /// check whether the embedder allows wasm code generation.
         /// </summary>
-        public static WasmModule Compile(byte[] bytes, bool asmJs)
+        public static WasmModule Compile(byte[] bytes, bool asmJs, bool validated = false)
         {
             bool saved = BinaryModuleParser.AsmJsOpcodesAllowed;
             BinaryModuleParser.AsmJsOpcodesAllowed = asmJs;
             try
             {
-                return Compile(bytes);
+                return Compile(bytes, null, validated);
             }
             finally
             {
@@ -304,7 +314,7 @@ namespace V8Sharp.Wasm
             }
             else
             {
-                module = Compile(data.WireBytes, asmJs: true);
+                module = Compile(data.WireBytes, asmJs: true, validated: true);
             }
             var moduleObj = (WasmModuleObject)JSObject.NewWithMap(isolate, isolate.NativeContext.WasmModuleConstructor.InitialMap);
             moduleObj.Module = module;
@@ -312,6 +322,9 @@ namespace V8Sharp.Wasm
             moduleObj.AsmJsOffsetInformation = data.OffsetInformation;
             moduleObj.AsmJsLanguageMode = data.LanguageMode;
             moduleObj.Script = script;
+            // V8 shares the NativeModule (and its code) between the instances
+            // of one asm.js module; so do the module objects made from it.
+            moduleObj.SharedCode = data.SharedCode;
             return moduleObj;
         }
 

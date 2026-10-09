@@ -47,8 +47,8 @@ public sealed class InstanceBuilder
         // second instance gets its own decoded copy of the module.
         _module = moduleObject.ModuleLinked
             ? _isAsmJs
-                ? WasmEngine.Compile(moduleObject.WireBytes, asmJs: true)
-                : WasmEngine.Compile(moduleObject.WireBytes, moduleObject.CompileImports)
+                ? WasmEngine.Compile(moduleObject.WireBytes, asmJs: true, validated: true)
+                : WasmEngine.Compile(moduleObject.WireBytes, moduleObject.CompileImports, validated: true)
             : moduleObject.Module;
         moduleObject.ModuleLinked = true;
         _ffi = ffi;

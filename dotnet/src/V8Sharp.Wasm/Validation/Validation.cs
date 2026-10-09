@@ -76,8 +76,11 @@ namespace Wacs.Core.Validation
                 Module.Global.Validator.Validate(global, vctx);
             foreach (var tag in module.Tags)
                 TagType.Validator.Validate(tag, vctx);
-            foreach (var func in module.ValidationFuncs)
-                Module.Function.Validator.Validate(func, vctx);
+            if (_attributes?.SkipFunctionBodies != true)
+            {
+                foreach (var func in module.ValidationFuncs)
+                    Module.Function.Validator.Validate(func, vctx);
+            }
             // V8Sharp: duplicate export names are a validation error (V8's
             // module decoder, "Duplicate export name"); WACS rejected them at
             // instantiation.

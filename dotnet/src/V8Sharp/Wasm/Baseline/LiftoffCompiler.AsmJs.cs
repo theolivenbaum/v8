@@ -100,17 +100,19 @@ internal sealed partial class LiftoffCompiler
     /// <summary>
     /// The index on the IL stack, as an unsigned 64-bit address in
     /// <paramref name="address"/>; branches to <paramref name="outOfBounds"/>
-    /// unless <paramref name="size"/> bytes at it are in memory 0.
+    /// unless the access is in memory 0. The asm.js parser masks every heap
+    /// index to the view's element size (AsmJsParser.ValidateHeapAccess), and
+    /// an asm.js heap's size is a multiple of 4096 (IsValidAsmjsMemorySize),
+    /// so an index below the size has the whole element in memory: V8's
+    /// check of the last byte becomes a check of the first.
     /// </summary>
-    void AsmJsBoundsCheck(int size, LocalBuilder address, Label outOfBounds)
+    void AsmJsBoundsCheck(LocalBuilder address, Label outOfBounds)
     {
         _il.Emit(OpCodes.Conv_U8);
         _il.Emit(OpCodes.Stloc, address);
         _il.Emit(OpCodes.Ldloc, address);
-        _il.Emit(OpCodes.Ldc_I8, (long)size);
-        _il.Emit(OpCodes.Add);
         LoadMemorySize(0);
-        _il.Emit(OpCodes.Bgt_Un, outOfBounds);
+        _il.Emit(OpCodes.Bge_Un, outOfBounds);
     }
 
     void AsmJsLoad(int size, OpCode load, WasmKind kind)
@@ -119,7 +121,7 @@ internal sealed partial class LiftoffCompiler
         LocalBuilder address = _asm.Temp(WasmKind.I64);
         Label outOfBounds = _il.DefineLabel();
         Label done = _il.DefineLabel();
-        AsmJsBoundsCheck(size, address, outOfBounds);
+        AsmJsBoundsCheck(address, outOfBounds);
         EmitMemoryPointer(0, address);
         _il.Emit(OpCodes.Unaligned, (byte)1);
         _il.Emit(load);
@@ -144,7 +146,7 @@ internal sealed partial class LiftoffCompiler
         LocalBuilder address = _asm.Temp(WasmKind.I64);
         Label outOfBounds = _il.DefineLabel();
         _il.Emit(OpCodes.Stloc, value);
-        AsmJsBoundsCheck(size, address, outOfBounds);
+        AsmJsBoundsCheck(address, outOfBounds);
         EmitMemoryPointer(0, address);
         _il.Emit(OpCodes.Ldloc, value);
         _il.Emit(OpCodes.Unaligned, (byte)1);
