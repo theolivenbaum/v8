@@ -175,6 +175,32 @@ public class MaglevLoopCodeTest
         """,
     };
 
+    public static TheoryData<string> TruncationSnippets => new()
+    {
+        // Additions and subtractions of int32 values whose feedback overflowed
+        // to doubles and whose results are only used truncated (ToInt32):
+        // wrapping int32 operations; uses that see the double keep it.
+        """
+        (function() {
+          function f(a, b, c) { var l = a * 3 + b + c; return [(l & 0xfffffff), l >> 28, (a - c) | 0, ((b - a) >>> 1)].join(':'); }
+          function g(a, b) { var s = a + b; return (s | 0) + ':' + s; }
+          var out = [];
+          var big = [2147483647, -2147483648, 1073741823, 0, -1, 123456789, -987654321];
+          for (var r = 0; r < 40; r++) {
+            for (var i = 0; i < big.length; i++) {
+              var a = big[i], b = big[(i + r) % big.length], c = big[(i * 3 + r) % big.length];
+              out.push(f(a, b, c), g(a, b), f(a & 0xffff, b & 0xff, c & 0xf));
+            }
+          }
+          return out.join(',');
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(TruncationSnippets))]
+    public void TruncatedFloat64AdditionsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
     [Theory]
     [MemberData(nameof(GlobalSnippets))]
     public void GlobalLoadsInLoopsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);

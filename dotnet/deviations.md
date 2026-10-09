@@ -668,7 +668,10 @@ for now, to be revisited when the reason goes away.
   multiplications whose uses all truncate become wrapping operations when
   the exact result is a safe integer; without range analysis the bound
   comes from the inputs' static ranges (constants, masks, shifts; int32
-  otherwise), and Float64 operations are not truncated.
+  otherwise). Float64 additions and subtractions of int32 values (int32
+  feedback that once overflowed) whose every use is TruncateFloat64ToInt32
+  become wrapping Int32Add / Int32Subtract at the truncations; other Float64
+  operations are not truncated.
 - Generators: the generator fields (context, input_or_debug_pos,
   continuation) are read and written by dedicated nodes
   (`LoadGeneratorField`, `StoreGeneratorContinuation`) where V8 uses
