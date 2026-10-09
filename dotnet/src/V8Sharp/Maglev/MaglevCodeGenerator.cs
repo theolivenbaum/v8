@@ -228,7 +228,11 @@ internal sealed partial class MaglevCodeGenerator
             {
                 if (!block.IsDead && block.IsExceptionHandler) _catchBlocks.Add(block);
             }
-            if (_catchBlocks.Count == 0) PlanElementsData();
+            if (_catchBlocks.Count == 0)
+            {
+                PlanElementsData();
+                PlanTypedArrayData();
+            }
             _hasCatchBlocks = _catchBlocks.Count > 0;
             if (_hasCatchBlocks) EmitTryRegionStart();
             var blocks = new List<BasicBlock>(_graph.Blocks.Count);
@@ -354,6 +358,53 @@ internal sealed partial class MaglevCodeGenerator
             if (_elementsData.Count >= kMaxElementsDataLocals) break;
             _elementsData[e.Key] = _il.DeclareLocal(e.Value == 1 ? typeof(JSValue[]) : typeof(double[]));
         }
+    }
+
+    // A typed array's array and byte offset in locals, loaded with its length
+    // (LoadTypedArrayLength, which load elimination keeps until a call, and a
+    // buffer is detached or resized only by a call): an element access then
+    // indexes the array, where it followed the typed array, its buffer and
+    // the backing store each time.
+    Dictionary<ValueNode, (LocalBuilder Data, LocalBuilder Offset)>? _typedArrayData;
+
+    void PlanTypedArrayData()
+    {
+        if (s_noElementsData) return;
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Node node in block.Nodes)
+            {
+                if (node.Opcode is not (Opcode.LoadTypedArrayElement or Opcode.StoreTypedArrayElement) ||
+                    node.Obj1 is not ValueNode { Opcode: Opcode.LoadTypedArrayLength, Local: not null } length ||
+                    !ReferenceEquals(length.Inputs[0], node.Inputs[0]))
+                {
+                    continue;
+                }
+                _typedArrayData ??= new(ReferenceEqualityComparer.Instance);
+                if (_typedArrayData.ContainsKey(length) || _typedArrayData.Count >= kMaxElementsDataLocals) continue;
+                _typedArrayData[length] = (_il.DeclareLocal(typeof(byte[])), _il.DeclareLocal(typeof(int)));
+            }
+        }
+    }
+
+    (LocalBuilder Data, LocalBuilder Offset)? TypedData(Node access) =>
+        _typedArrayData is not null && access.Obj1 is ValueNode length &&
+        _typedArrayData.TryGetValue(length, out (LocalBuilder Data, LocalBuilder Offset) data) ? data : null;
+
+    /// <summary>Pushes the array and the byte index of element <paramref name="index"/>.</summary>
+    void EmitTypedDataIndex((LocalBuilder Data, LocalBuilder Offset) data, ValueNode index, ElementsKind kind)
+    {
+        _il.Emit(OpCodes.Ldloc, data.Data);
+        _il.Emit(OpCodes.Ldloc, data.Offset);
+        Load(index, ValueRepresentation.kInt32);
+        int size = ElementsKinds.ElementsKindToByteSize(kind);
+        if (size > 1)
+        {
+            _il.Emit(OpCodes.Ldc_I4, size);
+            _il.Emit(OpCodes.Mul);
+        }
+        _il.Emit(OpCodes.Add);
     }
 
     LocalBuilder? ElementsData(ValueNode elements) =>
@@ -2155,6 +2206,15 @@ internal sealed partial class MaglevCodeGenerator
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Call(node.Int0 == 1 ? nameof(MaglevBuiltins.TypedArrayLengthAsFloat64) : nameof(MaglevBuiltins.TypedArrayLength));
                 Store(v!);
+                if (_typedArrayData is not null && _typedArrayData.TryGetValue(v!, out (LocalBuilder Data, LocalBuilder Offset) typed))
+                {
+                    Load(node.Inputs[0], ValueRepresentation.kTagged);
+                    Call(nameof(MaglevBuiltins.TypedArrayDataOf));
+                    _il.Emit(OpCodes.Stloc, typed.Data);
+                    Load(node.Inputs[0], ValueRepresentation.kTagged);
+                    Call(nameof(MaglevBuiltins.TypedArrayByteOffsetOf));
+                    _il.Emit(OpCodes.Stloc, typed.Offset);
+                }
                 return;
             case Opcode.CheckTypedArrayValid:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
@@ -2163,6 +2223,13 @@ internal sealed partial class MaglevCodeGenerator
                 DeoptIfFalse(node);
                 return;
             case Opcode.LoadTypedArrayElement:
+                if (TypedData(node) is { } typedLoad)
+                {
+                    EmitTypedDataIndex(typedLoad, node.Inputs[1], (ElementsKind)node.Int0);
+                    Call(TypedLoadHelper((ElementsKind)node.Int0).Replace("Element", "Data"));
+                    Store(v!);
+                    return;
+                }
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 Call(TypedLoadHelper((ElementsKind)node.Int0));
@@ -2179,8 +2246,16 @@ internal sealed partial class MaglevCodeGenerator
                     Call(nameof(MaglevBuiltins.TypedArrayIndexInBounds));
                     _il.Emit(OpCodes.Brfalse, skip);
                 }
-                Load(node.Inputs[0], ValueRepresentation.kTagged);
-                Load(node.Inputs[1], ValueRepresentation.kInt32);
+                (LocalBuilder Data, LocalBuilder Offset)? typedStore = TypedData(node);
+                if (typedStore is { } sd)
+                {
+                    EmitTypedDataIndex(sd, node.Inputs[1], kind);
+                }
+                else
+                {
+                    Load(node.Inputs[0], ValueRepresentation.kTagged);
+                    Load(node.Inputs[1], ValueRepresentation.kInt32);
+                }
                 ValueNode stored = node.Inputs[2];
                 bool isFloat = stored.Representation is ValueRepresentation.kFloat64 or ValueRepresentation.kHoleyFloat64 ||
                                stored.IsConstant && !stored.TryGetInt32Constant(out _);
@@ -2193,7 +2268,9 @@ internal sealed partial class MaglevCodeGenerator
                 {
                     Load(stored, ValueRepresentation.kInt32);
                 }
-                Call(TypedStoreHelper(kind, isFloat));
+                string storeHelper = TypedStoreHelper(kind, isFloat);
+                Call(typedStore is null ? storeHelper : storeHelper.EndsWith("Element", StringComparison.Ordinal)
+                    ? storeHelper.Replace("Element", "Data") : storeHelper + "Data");
                 _il.MarkLabel(skip);
                 return;
             }
@@ -3281,6 +3358,7 @@ internal sealed partial class MaglevCodeGenerator
     {
         AllocateLocals();
         PlanElementsData();
+        PlanTypedArrayData();
         EmitPrologue();
         foreach (BasicBlock block in _graph.Blocks)
         {

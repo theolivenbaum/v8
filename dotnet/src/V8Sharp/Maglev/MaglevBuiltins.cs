@@ -472,6 +472,48 @@ public static class MaglevBuiltins
     public static void StoreUint8ClampedFloat64(JSValue obj, int index, double value) =>
         TypedElement(obj, index, 1) = TypedArrayScalars.ClampDouble(value);
 
+    // The same on the array and byte offset of a typed array loaded with its
+    // length (MaglevCodeGenerator's typed array data locals).
+    [MethodImpl(Inline)]
+    public static byte[] TypedArrayDataOf(JSValue obj) => Unsafe.As<JSTypedArray>(obj._obj!).Buffer.BackingStoreBuffer;
+
+    [MethodImpl(Inline)]
+    public static int TypedArrayByteOffsetOf(JSValue obj) => (int)Unsafe.As<JSTypedArray>(obj._obj!).ByteOffset;
+
+    [MethodImpl(Inline)]
+    public static int LoadInt8Data(byte[] data, int byteIndex) => (sbyte)data[byteIndex];
+    [MethodImpl(Inline)]
+    public static int LoadUint8Data(byte[] data, int byteIndex) => data[byteIndex];
+    [MethodImpl(Inline)]
+    public static int LoadInt16Data(byte[] data, int byteIndex) => Unsafe.ReadUnaligned<short>(ref data[byteIndex]);
+    [MethodImpl(Inline)]
+    public static int LoadUint16Data(byte[] data, int byteIndex) => Unsafe.ReadUnaligned<ushort>(ref data[byteIndex]);
+        [MethodImpl(Inline)]
+    public static int LoadInt32Data(byte[] data, int byteIndex) => Unsafe.ReadUnaligned<int>(ref data[byteIndex]);
+    [MethodImpl(Inline)]
+    public static double LoadFloat32Data(byte[] data, int byteIndex) => Unsafe.ReadUnaligned<float>(ref data[byteIndex]);
+    [MethodImpl(Inline)]
+    public static double LoadFloat64Data(byte[] data, int byteIndex) => Unsafe.ReadUnaligned<double>(ref data[byteIndex]);
+
+    [MethodImpl(Inline)]
+    public static void StoreInt8Data(byte[] data, int byteIndex, int value) => data[byteIndex] = (byte)value;
+    [MethodImpl(Inline)]
+    public static void StoreInt16Data(byte[] data, int byteIndex, int value) =>
+        Unsafe.WriteUnaligned(ref data[byteIndex], (short)value);
+    [MethodImpl(Inline)]
+    public static void StoreInt32Data(byte[] data, int byteIndex, int value) => Unsafe.WriteUnaligned(ref data[byteIndex], value);
+    [MethodImpl(Inline)]
+    public static void StoreFloat32Data(byte[] data, int byteIndex, double value) =>
+        Unsafe.WriteUnaligned(ref data[byteIndex], (float)value);
+    [MethodImpl(Inline)]
+    public static void StoreFloat64Data(byte[] data, int byteIndex, double value) => Unsafe.WriteUnaligned(ref data[byteIndex], value);
+    [MethodImpl(Inline)]
+    public static void StoreUint8ClampedInt32Data(byte[] data, int byteIndex, int value) =>
+        data[byteIndex] = (byte)(value < 0 ? 0 : value > 255 ? 255 : value);
+    [MethodImpl(Inline)]
+    public static void StoreUint8ClampedFloat64Data(byte[] data, int byteIndex, double value) =>
+        data[byteIndex] = TypedArrayScalars.ClampDouble(value);
+
     /// <summary>The slow path of CheckMapsWithMigration: migrates a deprecated map, then checks the maps again.</summary>
     public static bool MigrateAndCheckMaps(Isolate isolate, JSValue value, Map[] maps)
     {

@@ -1380,6 +1380,9 @@ public sealed partial class MaglevGraphBuilder
         {
             Inputs = [obj, index],
             Int0 = (int)kind,
+            // (The length loaded with the access: the code generator loads the
+            // array and byte offset with it.)
+            Obj1 = length,
             Type = NodeType.kNumber,
             Properties = OpProperties.kCanRead,
         });
@@ -1425,9 +1428,10 @@ public sealed partial class MaglevGraphBuilder
             ElementsKind.UINT8_CLAMPED_ELEMENTS => value.IsInt32 ? value : GetFloat64(value, NodeType.kNumberOrOddball),
             _ => GetTruncatedInt32ForToNumber(value, NodeType.kNumberOrOddball),
         };
+        ValueNode? length = null;
         if (!ignoreOOB)
         {
-            ValueNode length = BuildLoadTypedArrayLength(obj);
+            length = BuildLoadTypedArrayLength(obj);
             AddNewNode(new Node(Opcode.CheckInt32Condition)
             {
                 Inputs = [index, length],
@@ -1440,6 +1444,7 @@ public sealed partial class MaglevGraphBuilder
         {
             Inputs = [obj, index, stored],
             Int0 = (int)kind,
+            Obj1 = length,
             // Out of bounds (and detached) stores are ignored (kIgnoreTypedArrayOOB).
             Int1 = ignoreOOB ? 1 : 0,
             Properties = OpProperties.kCanWrite | OpProperties.kNotIdempotent,
