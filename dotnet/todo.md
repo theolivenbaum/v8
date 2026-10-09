@@ -437,6 +437,12 @@ Design and every deviation: deviations.md, "WebAssembly".
       regress/asm/, wasm/asm-*, asm-directive: 171/172, the other needs
       d8.profiler and fails on the oracle too; message asm-*: 18/18).
       The instances of a module share its compiled code (WasmSharedCode).
+      Speed (2026-10-09, bench-session.sh, parity publishes, 3 interleaved
+      runs, CPU-time scores; Mandreel is not asm.js and does not change):
+      Octane zlib, before (asm.js run as JS) -> now, vs V8 jit / maglev:
+      octane-quick 434 -> 2246 (V8 4862 / 4322: 46% / 52%), octane-steady
+      793 (V8 1446 / 1378: 55% / 58%), cold octane (wall, compiles
+      included) 4107 -> 25263 (V8 54478 / 57109: 46% / 44%).
       Open: each instance decodes the wire bytes again (WACS links
       instruction objects in place); RyuJIT compiles functions above 60 KB
       of IL with MinOpts (zlib's largest function, 21.7K instructions, is
