@@ -511,22 +511,22 @@ public static class MaglevBuiltins
         return (uint)index < (uint)str.Length ? StringCharCodeAt(s, index) : double.NaN;
     }
 
-    /// <summary>CheckedObjectToIndex: the int32 index of a Smi, an integral HeapNumber or an array index String.</summary>
-    public static bool TryObjectToIndex(JSValue value, out int index)
+    /// <summary>
+    /// CheckedObjectToIndex: the int32 index of a Smi, an integral HeapNumber
+    /// or an array index String, or long.MinValue (a result instead of an out
+    /// parameter: the IL local an out parameter writes would be address
+    /// exposed, which keeps RyuJIT from enregistering it anywhere in the method).
+    /// </summary>
+    public static long ObjectToIndexOrMin(JSValue value)
     {
         if (value.IsNumber)
         {
             double d = value.Number;
-            index = (int)d;
-            return index == d;
+            int index = (int)d;
+            return index == d ? index : long.MinValue;
         }
-        if (value._obj is JSString s && s.AsArrayIndex(out uint u) && u <= int.MaxValue)
-        {
-            index = (int)u;
-            return true;
-        }
-        index = 0;
-        return false;
+        if (value._obj is JSString s && s.AsArrayIndex(out uint u) && u <= int.MaxValue) return (int)u;
+        return long.MinValue;
     }
 
     /// <summary>

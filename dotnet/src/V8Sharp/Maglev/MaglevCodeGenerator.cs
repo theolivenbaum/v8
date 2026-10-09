@@ -2469,9 +2469,14 @@ internal sealed partial class MaglevCodeGenerator
                 _il.Emit(OpCodes.Br, done);
                 _il.MarkLabel(slow);
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Ldloca, _tmpInt);
-                Call(nameof(MaglevBuiltins.TryObjectToIndex));
-                DeoptIfFalse(node);
+                Call(nameof(MaglevBuiltins.ObjectToIndexOrMin));
+                _il.Emit(OpCodes.Dup);
+                _il.Emit(OpCodes.Stloc, _tmpLong);
+                _il.Emit(OpCodes.Ldc_I8, long.MinValue);
+                _il.Emit(OpCodes.Beq, EagerExit(node.EagerDeoptInfo!));
+                _il.Emit(OpCodes.Ldloc, _tmpLong);
+                _il.Emit(OpCodes.Conv_I4);
+                _il.Emit(OpCodes.Stloc, _tmpInt);
                 _il.MarkLabel(done);
                 _il.Emit(OpCodes.Ldloc, _tmpInt);
                 Store(v!);
