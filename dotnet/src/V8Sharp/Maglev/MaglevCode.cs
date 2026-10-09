@@ -70,6 +70,12 @@ public sealed class DeoptFrameData
     public Register[] Registers = [];
     /// <summary>Values the Deoptimizer creates (elided arguments objects), by register position; null if none.</summary>
     public ArgumentsObjectKind[]? Materialize;
+    /// <summary>
+    /// The captured objects (elided allocations) the registers hold, by
+    /// register position: an index into DeoptPoint.CapturedObjects, or -1;
+    /// null if none.
+    /// </summary>
+    public int[]? Captured;
     /// <summary>The translation's literals (constant values), by register position (where IsConstant); null if none.</summary>
     public JSValue[]? Constants;
     public bool[]? IsConstant;
@@ -81,9 +87,30 @@ public sealed class DeoptFrameData
     public int[] ScratchSlots = [];
 }
 
+/// <summary>
+/// A captured object of a translation (BeginCapturedObject): an elided
+/// allocation the Deoptimizer materializes, its in-object fields from the
+/// scratch buffer or literals.
+/// </summary>
+public sealed class CapturedObjectData
+{
+    /// <summary>The map the object was allocated with (its in-object slot class).</summary>
+    public Map AllocatedMap = null!;
+    /// <summary>The object's map at the deopt point.</summary>
+    public Map Map = null!;
+    /// <summary>The scratch index of each field's value, or -1 for a literal.</summary>
+    public int[] FieldSlots = [];
+    /// <summary>The literal of each field whose FieldSlots entry is -1.</summary>
+    public JSValue[] FieldConstants = [];
+    /// <summary>The captured object (index in the point's) each field holds, or -1; null if none.</summary>
+    public int[]? FieldCaptured;
+}
+
 /// <summary>A deopt exit (DeoptimizationData entry: kind, reason, translation).</summary>
 public sealed class DeoptPoint
 {
+    /// <summary>The objects the deopt materializes (elided allocations), or null.</summary>
+    public CapturedObjectData[]? CapturedObjects;
     public DeoptimizeKind Kind;
     public DeoptimizeReason Reason;
     /// <summary>The frames, outermost first; the last is the frame execution continues in.</summary>
@@ -144,6 +171,8 @@ public sealed class MaglevCode
 
     /// <summary>The dependencies registered for the code (CompilationDependencies).</summary>
     public CompilationDependency[] Dependencies { get; internal set; } = [];
+    /// <summary>The instance size predictions of the code's inlined allocations (checked at commit).</summary>
+    public (Map Map, int InObjectProperties)[] InstanceSizePredictions { get; internal set; } = [];
 
     /// <summary>The region methods of code split for RyuJIT's limits (MaglevCodeGenerator.Regions.cs), or null.</summary>
     public System.Reflection.MethodInfo[]? RegionMethods { get; internal set; }

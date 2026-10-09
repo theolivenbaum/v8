@@ -179,6 +179,7 @@ public sealed class MaglevCompilationJob
             code.ILSize = ilSize;
             code.CompiledConcurrently = IsConcurrent;
             code.Dependencies = info.Dependencies.ToArray();
+            code.InstanceSizePredictions = info.InstanceSizePredictions.ToArray();
             Code = code;
             CurrentState = State.kReadyToFinalize;
         }
@@ -252,6 +253,16 @@ public sealed class MaglevCompilationJob
             {
                 Fail("bailed out due to dependency change (" + invalidated + ")", disable: false);
                 return CurrentState;
+            }
+            foreach ((Map map, int inObjectProperties) in code.InstanceSizePredictions)
+            {
+                // InitialMapInstanceSizePredictionDependency::IsValid (the worker
+                // read the map while slack tracking could finish).
+                if (map.IsInobjectSlackTrackingInProgress() || map.GetInObjectProperties() != inObjectProperties)
+                {
+                    Fail("bailed out due to dependency change (instance size)", disable: false);
+                    return CurrentState;
+                }
             }
             if (MaglevCompiler.OptimizationDisabled(Function.Shared) && ByTieringManager)
             {

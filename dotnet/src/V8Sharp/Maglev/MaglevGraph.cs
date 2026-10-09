@@ -258,6 +258,12 @@ public sealed class MaglevCompilationInfo
 
     /// <summary>The dependencies to register with the code (CompilationDependencies::Commit).</summary>
     public readonly List<CompilationDependency> Dependencies = [];
+    /// <summary>
+    /// The initial maps InlinedAllocations allocate and their in-object
+    /// property counts (InitialMapInstanceSizePredictionDependency): checked
+    /// again when the code is committed.
+    /// </summary>
+    public readonly List<(Map Map, int InObjectProperties)> InstanceSizePredictions = [];
 
     /// <summary>The bytecode size inlined so far (max_maglev_inlined_bytecode_size_cumulative).</summary>
     public int InlinedBytecodeSize;
@@ -284,12 +290,13 @@ public sealed class MaglevCompilationInfo
     /// <summary>The loops being built (outermost first), with the effects they assumed and those seen so far.</summary>
     public readonly List<ActiveLoop> ActiveLoops = [];
 
-    public sealed class ActiveLoop(MaglevCompilationUnit unit, int header, int end, LoopEffects assumed)
+    public sealed class ActiveLoop(MaglevCompilationUnit unit, int header, int end, LoopEffects? assumed)
     {
         public readonly MaglevCompilationUnit Unit = unit;
         public readonly int Header = header;
         public readonly int End = end;
-        public readonly LoopEffects Assumed = assumed;
+        /// <summary>The effects the header assumed, or null (it forgot what the body can change).</summary>
+        public readonly LoopEffects? Assumed = assumed;
         public readonly LoopEffects Observed = new();
     }
 

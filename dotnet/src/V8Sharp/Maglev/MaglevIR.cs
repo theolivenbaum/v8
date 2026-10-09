@@ -330,6 +330,12 @@ public enum Opcode : ushort
     CallBuiltin,
     CallKnownJSFunction,
     FastNewObject,
+    /// <summary>
+    /// InlinedAllocation: an object allocated by the code itself (an
+    /// InlinedAllocation node, Maglev's AllocationBlock folded in), elided
+    /// by the escape analysis when it does not escape (MaglevEscapeAnalysis).
+    /// </summary>
+    InlinedAllocation,
     HandleNoHeapWritesInterrupt,
     /// <summary>V8Sharp: pushes the interpreter frame of an inlined function (frame record and register window).</summary>
     EnterInlinedFrame,
@@ -439,6 +445,12 @@ public abstract class NodeBase(Opcode opcode)
 /// <summary>Node: a non-control node.</summary>
 public class Node(Opcode opcode) : NodeBase(opcode)
 {
+    /// <summary>
+    /// A store into an InlinedAllocation (input 0) that its VirtualObject
+    /// records (TryBuildStoreTaggedFieldToAllocation): a non-escaping use,
+    /// removed with the allocation when the allocation is elided.
+    /// </summary>
+    public bool TrackedStore;
 }
 
 /// <summary>ValueNode: a node that produces a value.</summary>
@@ -588,6 +600,12 @@ public class ControlNode(Opcode opcode) : NodeBase(opcode)
 public abstract class DeoptFrame(DeoptFrame? parent)
 {
     public DeoptFrame? Parent = parent;
+    /// <summary>
+    /// The virtual objects when the frame was created
+    /// (InterpretedDeoptFrame::last_virtual_object): the deopt of a top frame
+    /// materializes its elided allocations (and its parents') from them.
+    /// </summary>
+    public VirtualObjectList VirtualObjects = VirtualObjectList.Empty;
 }
 
 /// <summary>
@@ -711,6 +729,20 @@ public sealed class CallBuiltinInfo(MethodInfo method, BuiltinArg[] args, string
     public bool Elided;
     /// <summary>CallForwardArguments: the arguments object input.</summary>
     public bool ForwardsArguments;
+    /// <summary>
+    /// V8Sharp: an allocation helper that neither calls out nor reads the
+    /// frame (V8's inlined allocations and FastCreateClosure): it needs no
+    /// pushed inlined frame and does not stop frameless entries.
+    /// </summary>
+    public bool NoFrame;
+    /// <summary>
+    /// An inlined function's arguments object was used (an input of a node,
+    /// a phi) before an apply(thisArg, arguments) of it: the apply cannot
+    /// pass the call's arguments instead (the object may have changed).
+    /// </summary>
+    public bool ArgumentsUsed;
+    /// <summary>The innermost loop being built when the arguments object was created (a later use in it can precede the apply).</summary>
+    public object? ArgumentsLoop;
 }
 
 /// <summary>

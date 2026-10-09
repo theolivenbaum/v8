@@ -1809,8 +1809,8 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     untagging, keyed load elements kind transitions, nested literal copies,
     instanceof without the IC, apply(arguments) forwarding for megamorphic
     targets, inlining with the --maglev-as-top-tier limits. Open: no
-    escape analysis, CSE or range analysis (see "Code quality on warm code"
-    for what came since).
+    CSE or range analysis (see "Code quality on warm code" and "Inlined
+    allocation and escape analysis" for what came since).
   - Code quality on warm code (2026-10-04, 28765f36..a6367b6c; V8 files:
     maglev-graph-builder.cc, access-info.cc, maglev-ir.cc,
     maglev-code-generator.cc): field representations and field types from
@@ -1991,6 +1991,121 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     the frame state live through the loop) and the size of the method
     (RyuJIT's allocator spills whole intervals). The scratch local of the
     overflow checks was one such interval (removed).
+  - Inlined allocation and escape analysis (2026-10-09, 66b7b30b..3b512997;
+    V8 files: maglev-ir.h InlinedAllocation/VirtualObject,
+    maglev-graph-builder.cc BuildInlinedAllocation, CreateJSConstructor,
+    TryBuildStoreTaggedFieldToAllocation, TryBuildLoadTaggedFieldFromAllocation,
+    BuildVirtualArgumentsObject, TryBuildFastCreateObjectOrArrayLiteral,
+    TryBuildInlinedAllocatedContext, FastCreateClosure,
+    maglev-post-hoc-optimizations-processors.h RunEscapeAnalysis,
+    maglev-code-generator.cc captured objects, translated-state.cc
+    materialization): `new` of known constructors, primitive-field object
+    literals and `{}` are InlinedAllocations constructed in IL; their fields
+    are tracked in VirtualObjects (--maglev-object-tracking, on in V8Sharp)
+    through map transitions, also for allocations stored in each other;
+    non-escaping ones are elided with their stores and materialized at deopts
+    (DeoptPoint.CapturedObjects); inlined functions' arguments objects are
+    virtual for apply(thisArg, arguments), with the extra arguments in the
+    deopt frames (frames pushed lazily); calls passing a non-escaped
+    allocation inline to the hard depth limit; megamorphic named loads of a
+    virtual object use its exact map (Class.create constructors); contexts
+    and closures by frame-free helpers; repeated validity cell checks and
+    overwritten transition map stores dropped (deviations.md, Maglev, items
+    on inlined allocations). Tests: tests/V8Sharp.Tests/Maglev/
+    MaglevEscapeAnalysisTest.cs (differential snippets, deopt materialization,
+    graph facts). --trace-maglev-escape-analysis names the escaping uses.
+    Per change (octane-quick, the warm protocol of 79d66bad, 3 interleaved
+    runs, parity publishes of main 79d66bad and f1310101 with switches;
+    load 10.6/8.5, steal 0-2%, cpu-cal 1771/1655 ms, mem-bw 19.3/18.5 GB/s;
+    "alloc" = inlined allocation, inlined arguments, closures/contexts,
+    validity cells, without escape analysis and deep inlining; "EA" = plus
+    escape analysis; "all" = plus inlining for escape analysis):
+
+    | benchmark | main | alloc | EA | all | v8:maglev |
+    |---|---|---|---|---|---|
+    | RayTrace | 601 | 742 | 789 | 1094 | 5072 |
+    | Box2D | 1105 | 1117 | 1093 | 1200 | 4893 |
+    | EarleyBoyer | 234 | 261 | 250 | 257 | 1270 |
+    | Splay | 3073 | 2152 | 2542 | 2543 | 7660 |
+    | DeltaBlue | 2463 | 2568 | 2475 | 2566 | 13512 |
+    | Richards (control) | 2669 | 2528 | 2724 | 2802 | 12842 |
+
+    Earlier (2026-10-04, compile-time-included warm protocol, octane-quick,
+    3 runs, load 7.9/19.3): constructed objects 66b7b30b vs 30664d6b
+    RayTrace +10%, Box2D +7%, EarleyBoyer +7%, DeltaBlue +7%, Splay +3%,
+    Richards +3%; inlined arguments 6c4dd3ad RayTrace +15% more, DeltaBlue
+    +6%. Splay's quick score is noisy (GC-bound; local alternating runs of
+    main and final are equal within noise). Elided per Octane run: RayTrace
+    17 of 61 allocation sites; Box2D, EarleyBoyer, DeltaBlue and Splay
+    none (their objects are stored into longer-lived ones, returned from
+    functions not inlined, or merged with different field values).
+    octane-steady (warm protocol of 79d66bad; parity publishes main 79d66bad
+    and final 3b512997, 2 interleaved runs, two sessions: load 3.6/1.7 and
+    2.3/2.9, steal 0%, cpu-cal 1794/2153 and 1966/2100 ms, mem-bw 15.5/14.7
+    and 15.9/13.4 GB/s; V8 crashed (exit 139) once on RayTrace (maglev),
+    EarleyBoyer (jit) and zlib (maglev); latency rows omitted):
+
+    | benchmark | main 79d66bad | v8sharp (default) | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 1124 | 1128 | 4954 | 7159 |
+    | DeltaBlue | 1217 | 1131 | 5609 | 11348 |
+    | Crypto | 242 | 261 | 627 | 1444 |
+    | RayTrace | 258 | 521 | 2503 | 3324 |
+    | EarleyBoyer | 101 | 108 | 520 | 764 |
+    | RegExp | 176 | 179 | 720 | 742 |
+    | Splay | 1961 | 3356 | 7334 | 6349 |
+    | NavierStokes | 1213 | 1225 | 1642 | 2508 |
+    | PdfJS | 1067 | 1040 | 5117 | 6584 |
+    | Mandreel | 439 | 451 | 3025 | 4182 |
+    | Gameboy | 1574 | 1332 | 4794 | 5679 |
+    | CodeLoad | 2701 | 2519 | 2995 | 2594 |
+    | Box2D | 2198 | 2888 | 12851 | 12053 |
+    | zlib | 118 | 128 | 1376 | 1384 |
+    | Typescript | 293 | 371 | 1863 | 1883 |
+    | geomean | 606 | 679 | 2574 | 3237 |
+
+    Warm geomean +12% over main: 26.4% of v8:maglev (from 23.5%), 21.0% of
+    v8:jit (from 18.7%). Gameboy -15% and CodeLoad -7% here were not
+    reproduced by an octane-quick A/B (3 runs: Gameboy 484/483, CodeLoad
+    1175/1370 main/final). Cold Octane (start-up, wall
+    clock, same publishes, 2 interleaved runs, load 3.5/5.7, steal 0-1%,
+    cpu-cal 1844/1924 ms, mem-bw 14.6/19.7 GB/s; V8 crashed (exit 139) on
+    RayTrace and EarleyBoyer (maglev, twice each: one run of RayTrace left)
+    and RegExp (jit, once)): main / final / v8:maglev / v8:jit: Richards
+    3066/2692/19164/27585, DeltaBlue 3034/3436/25267/53232, Crypto
+    4115/4463/11504/26840, RayTrace 2393/4019/27325/37130, EarleyBoyer
+    3166/3596/21220/31937, RegExp 1028/960/4745/4778, Splay
+    2225/2373/4150/3608, NavierStokes 10316/11786/15380/25744, PdfJS
+    1294/1747/21798/19457, Mandreel 1719/1989/18990/24528, Gameboy
+    1993/2185/36150/33682, CodeLoad 5463/5252/11703/12508, Box2D
+    3398/1906/39234/39338, zlib 4996/5199/61828/61938, Typescript
+    4393/4816/36716/36334; geomean (with latencies) 2930/3113/17279/20946
+    (+6%). Box2D's runs were 2830/3966 (main) and 2504/1308 (final, a 5.2 s
+    run); cold runs of the bin builds alternating main and final gave
+    Box2D 8274/5678, 7599/5461, 5125/5861 ms and Richards 535/744, 755/572,
+    652/590 ms: within the cold noise.
+    Conformance (3b512997 before merging main 53e9d1ba, flock -s, --jobs 2):
+    test262 default and forced 0 newly failing (95123 run); mjsunit forced
+    1 newly failing, regress-1236560 (TIMEOUT, known); mjsunit default 2
+    newly failing, regress-crbug-808192 and unicode-case-overoptimization0
+    (TIMEOUTs under load: 130 s and 38 s alone with both main and this
+    branch). After merging main 53e9d1ba
+    (de7201d2): V8Sharp.Tests 1119/1119 (bytecode goldens included); mjsunit
+    default 0 newly failing, 0 newly passing (8902 run, 7 flaky on rerun);
+    mjsunit forced 1 newly failing, regress-1236560 (TIMEOUT, known; 8862
+    run). An earlier run found maglev/arguments-forwarding (a store into
+    an inlined arguments object before the apply), fixed in 3b512997.
+    Open, ranked by their share of the geomean gap to v8:jit (log of the
+    ratio / 15): zlib (x10.8; asm.js, one huge function), DeltaBlue (x10.0;
+    calls, frames), Mandreel (x9.3), EarleyBoyer (x7.1; cons cells stored
+    into each other and returned: escape through returns of non-inlined
+    calls), RayTrace (x6.4; frames of lazily pushed inlined functions,
+    EnterInlinedFrame 4.5% of samples), Richards (x6.3), PdfJS (x6.3),
+    Crypto (x5.5), Typescript (x5.1), Gameboy (x4.3), Box2D (x4.2), RegExp
+    (x4.1). For allocation: virtual objects are not merged at control-flow
+    joins (V8 merges them with phis), no allocation folding, contexts and
+    closures are not escape-analysed, and objects returned by calls that are
+    not inlined always escape.
   - Compile pipeline and tier-up (2026-10-04, f93817c5..dbf2af5b):
     concurrent jobs (MaglevConcurrentDispatcher.cs, maglev-concurrent-
     dispatcher.cc) build the graph on two worker threads (the main thread

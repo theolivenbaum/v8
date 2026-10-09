@@ -825,6 +825,45 @@ public static class MaglevBuiltins
     public static JSValue CallKnownJSFunction(Isolate isolate, JSValue target, JSValue receiver, int argsStart, int argc, int mode) =>
         MaglevCalls.Call(isolate, target, receiver, argsStart, argc, (ConvertReceiverMode)mode);
 
+    /// <summary>FastCreateClosure (FastNewClosure): a closure of a map without in-object fields.</summary>
+    [MethodImpl(Inline)]
+    public static JSValue FastNewClosure(Map map, SharedFunctionInfo shared, Context context, FeedbackCell cell) =>
+        new JSFunction(map, shared, context, cell);
+
+    /// <summary>
+    /// The InlinedAllocation of a function or block context (CreateContext):
+    /// <paramref name="length"/> slots, undefined after the header.
+    /// </summary>
+    [MethodImpl(Inline)]
+    public static JSValue NewContext(Context previous, ScopeInfo scopeInfo, int kind, int length) =>
+        new Context((ContextKind)kind, length, previous.NativeContext) { ScopeInfo = scopeInfo, Previous = previous };
+
+    /// <summary>
+    /// An escaping InlinedAllocation of an object literal: an object of the
+    /// boilerplate's map with its in-object fields.
+    /// </summary>
+    public static JSValue AllocateObjectLiteral(Map map, JSValue[] fields)
+    {
+        JSObject obj = JSObject.NewWithInObjectSlots(map);
+        for (int i = 0; i < fields.Length; i++) obj.InObjectSlot(i) = fields[i];
+        return obj;
+    }
+
+    /// <summary>
+    /// CreateMappedArguments / CreateUnmappedArguments in an inlined function:
+    /// the arguments object of its frame (pushed before this call), whose
+    /// receiver slot is the register stack index <paramref name="receiverIndex"/>.
+    /// </summary>
+    public static JSValue CreateInlinedArguments(Isolate isolate, int receiverIndex, JSFunction function, bool mapped)
+    {
+        int fp = receiverIndex - InterpreterRuntime.kReceiverOffset;
+        int argc = InterpreterRuntime.FrameArgc(isolate, fp);
+        return mapped
+            ? InterpreterArguments.NewSloppyArguments(isolate, function,
+                isolate.RegisterStack[fp + InterpreterRuntime.kContextOffset].As<Context>(), fp, argc)
+            : InterpreterArguments.NewStrictArguments(isolate, function, fp, argc);
+    }
+
     /// <summary>
     /// CallForwardVarargs: f.apply(thisArg, arguments) with the frame's
     /// arguments object. An elided object (undefined here) means the frame's
