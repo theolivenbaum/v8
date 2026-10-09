@@ -124,10 +124,11 @@ internal sealed partial class LiftoffCompiler
     LocalBuilder?[] _memSize = [];
     bool _cacheMemories;
 
-    // The cached constants (EmitLoadConstant), shared with inlined frames.
-    Dictionary<int, LocalBuilder> _constantLocals = [];
-    Label _constantLoads;
-    Label _bodyStart;
+    // The call_indirect/call_ref sites of the method (its own and its
+    // inlined callees', by function and instruction index), each held in an
+    // IL local loaded on entry: RyuJIT cannot know the constants do not
+    // change, so it would load and cast them at every use in a loop.
+    Dictionary<(int Function, int Inst), (LocalBuilder Local, WasmCallSite Site)> _callSites = [];
 
     // The return label for returns from inside exception regions.
     Label _returnLabel;
@@ -379,10 +380,7 @@ internal sealed partial class LiftoffCompiler
             _il.Emit(OpCodes.Stfld, s_feedbackInvocations);
         }
 
-        _constantLoads = _il.DefineLabel();
-        _bodyStart = _il.DefineLabel();
-        _il.Emit(OpCodes.Br, _constantLoads);
-        _il.MarkLabel(_bodyStart);
+        PrepareCallSites();
 
         DecodeBody(WasmKinds.Of(type.ResultType.Types));
         // The end of the body is not reached by falling through (every path
@@ -395,7 +393,6 @@ internal sealed partial class LiftoffCompiler
             EmitLeaveFrame();
             _il.Emit(OpCodes.Ret);
         }
-        EmitConstantLoads();
     }
 
     /// <summary>
@@ -591,39 +588,75 @@ internal sealed partial class LiftoffCompiler
     }
 
     /// <summary>
-    /// Loads constants[k] as an object of <paramref name="type"/>, from an IL
-    /// local the method loads once on entry (RyuJIT cannot know the constants
-    /// do not change, so it would load and cast them on every use in a loop).
+    /// Creates the call sites of the method's call_indirect and call_ref
+    /// instructions (in the function and in the callees inlined into it) and
+    /// loads them into IL locals (part of the prologue).
     /// </summary>
-    void EmitLoadConstant(int k, Type type)
+    void PrepareCallSites()
     {
-        if (!_constantLocals.TryGetValue(k, out LocalBuilder? local))
+        var functions = new List<FunctionInstance> { _function };
+        if (_plan is not null)
         {
-            local = _il.DeclareLocal(type);
-            _constantLocals[k] = local;
+            foreach (WasmInliningTree node in _plan.InlinedNodes())
+            {
+                if (node != _plan) functions.Add((FunctionInstance)_data.Code[node.FunctionIndex].Function);
+            }
         }
-        _il.Emit(OpCodes.Ldloc, local);
+        foreach (FunctionInstance f in functions)
+        {
+            int functionIndex = (int)f.Index.Value;
+            uint[] offsets = f.Definition.InstructionOffsets;
+            int callIndex = 0;
+            for (int i = 0; i < offsets.Length; i++)
+            {
+                int pos = (int)offsets[i];
+                byte op = _bytes[pos];
+                if (op is < 0x10 or > 0x15) continue;
+                int slot = callIndex++;
+                if (op is 0x10 or 0x12 || _callSites.ContainsKey((functionIndex, i))) continue;
+                List<Value>? elements = null;
+                if (op is 0x11 or 0x13)
+                {
+                    int p = pos + 1;
+                    SkipLeb(ref p);
+                    elements = _data.Tables[(int)ReadLeb(ref p)].Elements;
+                }
+                var site = new WasmCallSite(slot, elements);
+                if (f == _function && _collectFeedback) _code.Feedback!.Sites[i] = site;
+                LocalBuilder local = _il.DeclareLocal(typeof(WasmCallSite));
+                _il.Emit(OpCodes.Ldarg_0);
+                _il.Emit(OpCodes.Ldfld, s_codeConstants);
+                _il.Emit(OpCodes.Ldc_I4, AddConstant(site));
+                _il.Emit(OpCodes.Ldelem_Ref);
+                _il.Emit(OpCodes.Castclass, typeof(WasmCallSite));
+                _il.Emit(OpCodes.Stloc, local);
+                _callSites[(functionIndex, i)] = (local, site);
+            }
+        }
     }
 
-    /// <summary>
-    /// The loads of the cached constants (<see cref="EmitLoadConstant"/>):
-    /// emitted after the body, reached from the end of the prologue, which
-    /// it returns to.
-    /// </summary>
-    void EmitConstantLoads()
+    void SkipLeb(ref int p)
     {
-        _il.MarkLabel(_constantLoads);
-        foreach (var (k, local) in _constantLocals)
+        while ((_bytes[p++] & 0x80) != 0)
         {
-            _il.Emit(OpCodes.Ldarg_0);
-            _il.Emit(OpCodes.Ldfld, s_codeConstants);
-            _il.Emit(OpCodes.Ldc_I4, k);
-            _il.Emit(OpCodes.Ldelem_Ref);
-            _il.Emit(OpCodes.Castclass, local.LocalType);
-            _il.Emit(OpCodes.Stloc, local);
         }
-        _il.Emit(OpCodes.Br, _bodyStart);
     }
+
+    uint ReadLeb(ref int p)
+    {
+        uint result = 0;
+        int shift = 0;
+        while (true)
+        {
+            byte b = _bytes[p++];
+            result |= (uint)(b & 0x7f) << shift;
+            if ((b & 0x80) == 0) return result;
+            shift += 7;
+        }
+    }
+
+    /// <summary>The call site of the current instruction and the IL local holding it.</summary>
+    (LocalBuilder Local, WasmCallSite Site) CallSite() => _callSites[((int)_function.Index.Value, _instIndex)];
 
     /// <summary>Re-reads the cached memories (after anything that can grow them).</summary>
     void ReloadMemories()

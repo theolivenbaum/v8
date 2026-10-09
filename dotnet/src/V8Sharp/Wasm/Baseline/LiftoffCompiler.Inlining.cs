@@ -67,7 +67,7 @@ internal sealed partial class LiftoffCompiler
         _spLocal = caller._spLocal;
         _pcsLocal = caller._pcsLocal;
         _stackGuardLocal = caller._stackGuardLocal;
-        _constantLocals = caller._constantLocals;
+        _callSites = caller._callSites;
         _memArray = caller._memArray;
         _memSize = caller._memSize;
         _cacheMemories = caller._cacheMemories;

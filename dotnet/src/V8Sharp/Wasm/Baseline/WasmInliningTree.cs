@@ -36,7 +36,7 @@ public sealed class WasmCallSite
     public readonly List<Value>? Elements;
 
     /// <summary>The constant index of the expected type (call_indirect's signature check).</summary>
-    public readonly int ExpectedConstant;
+    public int ExpectedConstant = -1;
 
     /// <summary>The function address the cache holds (-1: none; a null reference never matches).</summary>
     public long CachedPtr = -1;
@@ -54,11 +54,10 @@ public sealed class WasmCallSite
     /// <summary>A target was seen that cannot be inlined (an import, another instance's function).</summary>
     public bool HasNonInlineableTargets;
 
-    public WasmCallSite(int callIndex, List<Value>? elements, int expectedConstant)
+    public WasmCallSite(int callIndex, List<Value>? elements)
     {
         CallIndex = callIndex;
         Elements = elements;
-        ExpectedConstant = expectedConstant;
     }
 
     /// <summary>Records a call to <paramref name="target"/> and caches it (the cache missed).</summary>

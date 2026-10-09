@@ -138,14 +138,6 @@ internal sealed partial class LiftoffCompiler
         EmitCall(OpCodes.Callvirt, sig.Invoke, sig, tail);
     }
 
-    /// <summary>The call site of the current call_indirect/call_ref: its inline cache and, in code that tiers up, its feedback.</summary>
-    int NewCallSite(int callIndex, List<Value>? elements, int expectedConstant)
-    {
-        var site = new WasmCallSite(callIndex, elements, expectedConstant);
-        if (_collectFeedback && _inline is null) _code.Feedback!.Sites[_instIndex] = site;
-        return AddConstant(site);
-    }
-
     void CallIndirect(int typeIndex, int table, bool tail)
     {
         int callIndex = _callIndex++;
@@ -153,7 +145,10 @@ internal sealed partial class LiftoffCompiler
         DefType expected = _module.Types[(TypeIdx)(uint)typeIndex];
         WasmSignature sig = WasmSignature.Get((FunctionType)expected.Expansion);
         int k = AddConstant(expected);
-        int site = NewCallSite(callIndex, _data.Tables[table].Elements, k);
+        // The site (its inline cache and, in code that tiers up, its
+        // feedback) checks the signature against constants[k] on a miss.
+        var (site, siteObject) = CallSite();
+        siteObject.ExpectedConstant = k;
         int n = sig.Params.Length;
         bool table64 = TableAddressKind(table) == WasmKind.I64;
         _asm.Settle(n + 1);
@@ -168,7 +163,7 @@ internal sealed partial class LiftoffCompiler
             EmitStorePc();
             // RuntimeWasm.CallIndirectTarget(index, site, code, pc)
             LoadIndex();
-            EmitLoadConstant(site, typeof(WasmCallSite));
+            _il.Emit(OpCodes.Ldloc, site);
             EmitRuntimeCall(nameof(RuntimeWasm.CallIndirectTarget));
             _il.Emit(OpCodes.Castclass, sig.DelegateType);
             for (int i = 0; i < n; i++) _asm.LoadSettled(first + i);
@@ -181,7 +176,7 @@ internal sealed partial class LiftoffCompiler
             EmitSpeculativeCall(cases, tail ? "return_call_indirect" : "call_indirect", callIndex, sig, first, tail, () =>
             {
                 LoadIndex();
-                EmitLoadConstant(site, typeof(WasmCallSite));
+                _il.Emit(OpCodes.Ldloc, site);
                 _il.Emit(OpCodes.Call, RuntimeWasm.Method(nameof(RuntimeWasm.CallIndirectTargetAddress)));
             }, EmitGenericCall);
             return;
@@ -195,7 +190,7 @@ internal sealed partial class LiftoffCompiler
         if (!_reachable) return;
         DefType type = _module.Types[(TypeIdx)(uint)typeIndex];
         WasmSignature sig = WasmSignature.Get((FunctionType)type.Expansion);
-        int site = NewCallSite(callIndex, null, -1);
+        LocalBuilder site = CallSite().Local;
         int n = sig.Params.Length;
         _asm.Settle(n + 1);
         int first = _asm.Height - n - 1;
@@ -203,7 +198,7 @@ internal sealed partial class LiftoffCompiler
         {
             EmitStorePc();
             _asm.LoadSettled(first + n);
-            EmitLoadConstant(site, typeof(WasmCallSite));
+            _il.Emit(OpCodes.Ldloc, site);
             EmitRuntimeCall(nameof(RuntimeWasm.CallRefTarget));
             _il.Emit(OpCodes.Castclass, sig.DelegateType);
             for (int i = 0; i < n; i++) _asm.LoadSettled(first + i);
