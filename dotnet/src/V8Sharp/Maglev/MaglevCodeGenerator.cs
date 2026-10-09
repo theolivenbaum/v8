@@ -964,10 +964,31 @@ internal sealed partial class MaglevCodeGenerator
     /// reads or writes the frame's slots.
     /// </summary>
     static bool NeedsFrame(Node node) =>
-        node.Opcode is Opcode.CallBuiltin or Opcode.LoadRegister or Opcode.StoreRegister or Opcode.SetCurrentContext or
-            Opcode.HandleNoHeapWritesInterrupt ||
+        node.Opcode is Opcode.LoadRegister or Opcode.StoreRegister or Opcode.SetCurrentContext or Opcode.HandleNoHeapWritesInterrupt ||
+        node.Opcode == Opcode.CallBuiltin && BuiltinNeedsFrame(node) ||
         node.Opcode != Opcode.EnterInlinedFrame &&
         (node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0;
+
+    /// <summary>
+    /// A builtin call that cannot call out, throw or deoptimize lazily, and
+    /// reads nothing of the frame (a pure helper, V8's inline nodes), runs
+    /// without the inlined frame: V8's inlined frames exist only in the deopt
+    /// translation, and an eager deopt pushes the frames it needs.
+    /// </summary>
+    static bool BuiltinNeedsFrame(Node node)
+    {
+        if ((node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0) return true;
+        var info = (CallBuiltinInfo)node.Obj0!;
+        if (info.RegisterStores.Length != 0) return true;
+        foreach (BuiltinArg arg in info.Args)
+        {
+            if (arg.Kind is BuiltinArgKind.State or BuiltinArgKind.RegisterIndex or BuiltinArgKind.RegisterRef or BuiltinArgKind.Closure)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     static bool IsElidedArguments(NodeBase node) => node.Obj0 is CallBuiltinInfo { Elided: true };
 
@@ -2980,9 +3001,9 @@ internal sealed partial class MaglevCodeGenerator
                 if (node.ExceptionHandler is not null || node.LazyDeoptInfo is not null) return false;
                 switch (node.Opcode)
                 {
+                    case Opcode.CallBuiltin when BuiltinNeedsFrame(node):
                     case Opcode.StoreRegister:
                     case Opcode.LoadRegister:
-                    case Opcode.CallBuiltin:
                     case Opcode.CallKnownJSFunction:
                     case Opcode.HandleNoHeapWritesInterrupt:
                     case Opcode.SetCurrentContext:
