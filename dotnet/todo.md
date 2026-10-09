@@ -401,6 +401,16 @@ Design and every deviation: deviations.md, "WebAssembly".
       call_indirect through a per-call lookup rather than V8's dispatch table,
       JS-to-wasm calls of non-numeric signatures through the generic wrapper,
       GC instructions inline in IL.
+      Speed (2026-10-09, micro:wasm, bench-session.sh, parity publish, 3
+      interleaved runs, warm: compiled, .NET-tiered and settled before
+      measuring): compiled vs the interpreter (v8sharp:jitless) geomean 37x
+      (WasmLoop 669 vs 6.7, WasmMemory 3708 vs 30, WasmFib 605 vs 18,
+      WasmCalls 185 vs 8, WasmFloat 873 vs 8.3, WasmJSCalls 39 vs 16); vs
+      V8 jit 13% geomean (Loop 28%, Memory 61%, Fib 22%, Float 65%, Calls
+      2.3%: TurboFan inlines the small callee, RyuJIT does not inline across
+      DynamicMethods, and call_indirect costs about 3x a direct call; JSCalls
+      1.1%: the JS-side call path of API functions dominates, not the
+      wrapper). V8 --jitless has no WebAssembly (no DrumBrake in the oracle).
 - [ ] Validation message texts: V8 names the operand and the instruction
       that produced it ("expected type i32, found local.get of type i64");
       WACS's validator does not track producers. Some mjsunit
