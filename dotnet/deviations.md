@@ -1507,7 +1507,12 @@ vendored code carry a `V8Sharp:` comment at the site.
   inlined functions, their call sites and the frame's own call), which stack
   traces expand into V8's frames, a tail call's callee replacing its
   caller's frame. The frame-count stack limit therefore counts inlined
-  frames as part of their caller's.
+  frames as part of their caller's. Inlined positions name functions by
+  index and pcs relative to the function, so inlined code is shared by a
+  module's instances like other code; code that collects feedback, and
+  tiered-up code (whose speculative checks name this instance's
+  functions), stays with its instance. Inlining stops once a method has
+  30 KB of IL (RyuJIT compiles methods over about 60 KB with MinOpts).
 - **Compiled code: numbers.** IL arithmetic is IEEE binary32/64 as wasm's;
   shifts mask the count, division and float-to-int conversions trap as
   V8's, min/max/copysign/abs/neg/nearest follow wasm's NaN and signed-zero
