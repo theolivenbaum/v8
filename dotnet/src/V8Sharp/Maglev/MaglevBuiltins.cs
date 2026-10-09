@@ -1043,7 +1043,8 @@ public static class MaglevBuiltins
         return fp;
     }
 
-    /// <summary>LeaveInlinedFrame: pops the frame EnterInlinedFrame pushed.</summary>
+    /// <summary>LeaveInlinedFrame: pops the frame EnterInlinedFrame (or EnterLazyInlinedFrame) pushed.</summary>
+    [MethodImpl(Inline)]
     public static void LeaveInlinedFrame(Isolate isolate, int frameIndex, JSValue callerContext)
     {
         ref InterpreterFrameRecord frame = ref isolate.InterpreterFrames[frameIndex];

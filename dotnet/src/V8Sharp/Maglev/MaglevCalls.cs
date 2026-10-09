@@ -421,6 +421,13 @@ public static class MaglevCalls
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
+    static void CheckLazyFrame(Isolate isolate, int depth, int end)
+    {
+        if ((depth & 7) == 0 && !RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
+        if ((uint)end > (uint)isolate.RegisterStackLimit || (uint)depth >= (uint)isolate.InterpreterFrames.Length) isolate.StackOverflow();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static void CheckNativeStack(Isolate isolate)
     {
         if (!RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
@@ -529,12 +536,12 @@ public static class MaglevCalls
     {
         // (d and s are the frame depth and the register stack top, read by the
         // caller into locals: out parameters would keep them in memory.)
-        if ((d & 7) == 0) CheckNativeStack(isolate);
         int fp = s + paramSlots + InterpreterRuntime.kFixedSlotsAboveParams;
         int end = fp + registerCount;
-        if ((uint)end > (uint)isolate.RegisterStackLimit) isolate.StackOverflow();
         InterpreterFrameRecord[] frames = isolate.InterpreterFrames;
-        if ((uint)d >= (uint)frames.Length) isolate.StackOverflow();
+        // The stack checks, one branch to a cold call: the native stack every
+        // 8 frames, the register stack, the frame records.
+        if (((d & 7) == 0) | (uint)end > (uint)isolate.RegisterStackLimit | (uint)d >= (uint)frames.Length) CheckLazyFrame(isolate, d, end);
         isolate.RegisterStackTop = end;
         InterpreterFrameFlags flags = InterpreterFrameFlags.Maglev | InterpreterFrameFlags.Lazy;
         if (argc < 0)
@@ -543,7 +550,7 @@ public static class MaglevCalls
             flags |= InterpreterFrameFlags.Constructor;
             isolate.MaglevNewTarget = default;
         }
-        ref InterpreterFrameRecord frame = ref frames[d];
+        ref InterpreterFrameRecord frame = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(frames), d);
         frame.Fp = fp;
         frame.Flags = flags;
         frame.ReturnPc = 0;
