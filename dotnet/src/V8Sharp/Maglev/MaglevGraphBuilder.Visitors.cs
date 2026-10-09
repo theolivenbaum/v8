@@ -905,7 +905,7 @@ public sealed partial class MaglevGraphBuilder
     ValueNode BuildInlinedArgumentsObject(bool mapped)
     {
         ValueNode arguments = BuildCallBuiltin(s_maglevBuiltins["CreateInlinedArguments"], "CreateInlinedArguments", [],
-            [BuiltinArg.Isolate, BuiltinArg.RegIndex(Register.FromParameterIndex(0)), BuiltinArg.C(_unit.Function), BuiltinArg.B(mapped)],
+            [BuiltinArg.Isolate, BuiltinArg.RegIndex(Register.FromParameterIndex(0)), BuiltinArg.Closure, BuiltinArg.B(mapped)],
             ParameterStores(withReceiver: false), OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!;
         if (!WritesParameters(_unit.Bytecode) && (!mapped || !HasContextAllocatedParameters(_unit.SharedFunctionInfo.ScopeInfo)))
         {

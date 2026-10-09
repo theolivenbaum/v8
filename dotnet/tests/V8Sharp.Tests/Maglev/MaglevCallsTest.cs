@@ -315,6 +315,24 @@ public class MaglevCallsTest
           return out.join(',');
         })()
         """,
+        """
+        (function() {
+          // An immediately called closure (a new one each call: feedback cell)
+          // whose arguments object is built in its inlined frame.
+          function get(i) {
+            var objects = [{}, function () { return arguments; }(), function () { 'use strict'; return arguments; }(),
+                           function () { return arguments; }(i, 1), new Date(0)];
+            return objects[i % 5];
+          }
+          var out = [];
+          function show(a) { return a.length + ':' + a[0] + ':' + Object.prototype.toString.call(a); }
+          %PrepareFunctionForOptimization(get);
+          for (var r = 0; r < 10; r++) out.push(show(get(r)));
+          %OptimizeFunctionOnNextCall(get);
+          for (var r = 0; r < 10; r++) out.push(show(get(r)));
+          return out.join(',');
+        })()
+        """,
     };
 
     [Theory]
