@@ -128,6 +128,57 @@ public class MaglevLoopCodeTest
         """,
     };
 
+    public static TheoryData<string> GlobalSnippets => new()
+    {
+        // Loads of mutable global cells in loops (load elimination of the
+        // cell's value): stores in the loop, in callees, and of other cells.
+        """
+        (function() {
+          globalThis.gA = new Int32Array(16); globalThis.gB = new Int32Array(16); globalThis.gN = 16;
+          for (var i = 0; i < 16; i++) gA[i] = i;
+          function copy() { for (var i = 0; i < gN; i++) gB[i] = gA[i] * 2; return gB[5] + gB[15]; }
+          function swap() { var t = gA; gA = gB; gB = t; }
+          function grow(k) { for (var i = 0; i < 4; i++) { gN = 8 + i; if (i == k) swap(); } return gN; }
+          function sw() { var s = 0; for (var i = 0; i < 6; i++) { s += gA[1]; gA = (i & 1) ? gB : new Int32Array(16).fill(i); s += gA[1]; } return s; }
+          var out = [];
+          for (var r = 0; r < 40; r++) { out.push(copy(), grow(r & 3), copy()); if (r % 7 == 0) swap(); gN = 16; }
+          out.push(sw(), sw());
+          return out.join();
+        })()
+        """,
+        // Typed array lengths in loops (load elimination of the length): a
+        // call that detaches or resizes the buffer forgets it.
+        """
+        (function() {
+          function sum(a, n) { var s = 0; for (var i = 0; i < n; i++) s += a[i] | 0; return s; }
+          function sumDetach(a, n, k) {
+            var s = 0;
+            for (var i = 0; i < n; i++) { if (i == k) a.buffer.transfer(); s += a[i] | 0; }
+            return s;
+          }
+          function sumResize(a, n, k) {
+            var s = 0;
+            for (var i = 0; i < n; i++) { if (i == k) a.buffer.resize(8); s += a[i] | 0; }
+            return s;
+          }
+          var out = [];
+          for (var r = 0; r < 30; r++) {
+            var a = new Int32Array(32); for (var i = 0; i < 32; i++) a[i] = i + r;
+            out.push(sum(a, 32), sum(a, 40), sumDetach(a, 32, 40));
+            var rab = new ArrayBuffer(128, { maxByteLength: 256 }); var b = new Int32Array(rab);
+            for (var i = 0; i < 32; i++) b[i] = i;
+            out.push(sumResize(b, 32, r < 25 ? 99 : 3));
+          }
+          var d = new Int32Array(16).fill(2); out.push(sumDetach(d, 16, 5));
+          return out.join();
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(GlobalSnippets))]
+    public void GlobalLoadsInLoopsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
     [Theory]
     [MemberData(nameof(TransitionSnippets))]
     public void ElementsKindTransitionsInLoopsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);

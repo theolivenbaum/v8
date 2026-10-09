@@ -1353,13 +1353,19 @@ public sealed partial class MaglevGraphBuilder
             Properties = OpProperties.kCanRead,
         });
 
+    /// <remarks>
+    /// V8 records the length as a known constant property of fixed-length
+    /// typed arrays (RecordKnownProperty with kTypedArrayLength). V8Sharp
+    /// records it as an ordinary loaded property, which calls forget: a
+    /// buffer is detached or resized only by a call.
+    /// </remarks>
     ValueNode BuildLoadTypedArrayLength(ValueNode obj) =>
-        AddNewNode(new ValueNode(Opcode.LoadTypedArrayLength, ValueRepresentation.kInt32)
+        BuildLoadProperty(obj, PropertyKeys.kTypedArrayLength, () => AddNewNode(new ValueNode(Opcode.LoadTypedArrayLength, ValueRepresentation.kInt32)
         {
             Inputs = [obj],
             Type = NodeType.kSmi,
             Properties = OpProperties.kCanRead,
-        });
+        }));
 
     ValueNode BuildTypedArrayElementLoad(ValueNode obj, ValueNode key, List<(Map Map, JSValue Handler)> feedback, ElementsKind kind,
         bool handlesOOB)
