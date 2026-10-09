@@ -923,7 +923,11 @@ internal sealed partial class MaglevCodeGenerator
         {
             if (IsDeadNode(node)) continue;
             if (IsElidedArguments(node)) continue;
-            if (node.Unit is { IsInline: true } unit && NeedsFrame(node)) EmitEnsureInlinedFrames(unit);
+            // (The loop interrupt check pushes the frames on its slow path.)
+            if (node.Unit is { IsInline: true } unit && NeedsFrame(node) && node.Opcode != Opcode.HandleNoHeapWritesInterrupt)
+            {
+                EmitEnsureInlinedFrames(unit);
+            }
             if (_hasCatchBlocks && node.ExceptionHandler is { CatchState.Block: { IsDead: false } })
             {
                 // The node's exceptions continue at its catch block.
@@ -957,6 +961,7 @@ internal sealed partial class MaglevCodeGenerator
     /// </summary>
     internal static bool NeedsFrame(Node node) =>
         node.Opcode is Opcode.LoadRegister or Opcode.StoreRegister or Opcode.SetCurrentContext ||
+        node.Opcode == Opcode.HandleNoHeapWritesInterrupt && node.Int0 == 0 ||
         node.Opcode == Opcode.CallBuiltin && node.Obj0 is not CallBuiltinInfo { NoFrame: true } && BuiltinNeedsFrame(node) ||
         node.Opcode != Opcode.EnterInlinedFrame &&
         (node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0;
@@ -2559,17 +2564,32 @@ internal sealed partial class MaglevCodeGenerator
                 Call(nameof(MaglevBuiltins.FastNewObject));
                 Store(v!);
                 return;
-            case Opcode.HandleNoHeapWritesInterrupt:
-                // V8 calls the runtime in deferred code. A call in a loop makes
-                // RyuJIT spill the loop's values around it (it cannot keep a
-                // cold path's spills out of the loop), so a pending interrupt
-                // exits to the interpreter at the back edge instead, without
-                // invalidating the code (deviations.md); the interpreter
-                // serves the interrupt.
+            case Opcode.HandleNoHeapWritesInterrupt when node.Int0 == 1:
+                // A loop without calls (BuildLoopInterruptCheck): V8 calls the
+                // runtime in deferred code, but a call on the back edge makes
+                // RyuJIT keep the loop's values in stack slots (it has no
+                // deferred spilling); an interrupt it cannot defer exits to the
+                // interpreter without invalidating the code (deviations.md).
                 _il.Emit(OpCodes.Ldarg_1);
-                Call(nameof(MaglevBuiltins.HasPendingInterrupts));
+                Call(nameof(MaglevBuiltins.HasUndeferrableInterrupts));
                 DeoptIfTrue(node);
                 return;
+            case Opcode.HandleNoHeapWritesInterrupt:
+            {
+                // V8's deferred code: the frame's bytecode offset is stored,
+                // and lazily pushed inlined frames pushed, on the slow path
+                // only, not on every back edge.
+                Label noInterrupt = _il.DefineLabel();
+                _il.Emit(OpCodes.Ldarg_1);
+                Call(nameof(MaglevBuiltins.HasPendingInterrupts));
+                _il.Emit(OpCodes.Brfalse, noInterrupt);
+                if (node.Unit is { IsInline: true } inlined) EmitEnsureInlinedFrames(inlined);
+                StoreBytecodeOffset(node);
+                _il.Emit(OpCodes.Ldarg_1);
+                Call(nameof(MaglevBuiltins.HandleInterruptsSlow));
+                _il.MarkLabel(noInterrupt);
+                return;
+            }
             case Opcode.SetCurrentContext:
                 _il.Emit(OpCodes.Ldarg_1);
                 LoadFrameSlotAddress(node.Unit, InterpreterRuntime.kContextOffset);
@@ -3116,6 +3136,7 @@ internal sealed partial class MaglevCodeGenerator
                     case Opcode.StoreRegister:
                     case Opcode.LoadRegister:
                     case Opcode.CallKnownJSFunction:
+                    case Opcode.HandleNoHeapWritesInterrupt when node.Int0 == 0:
                     case Opcode.SetCurrentContext:
                     case Opcode.LoadGeneratorField:
                     case Opcode.StoreGeneratorContinuation:

@@ -344,12 +344,33 @@ public sealed partial class MaglevGraphBuilder
         _currentBlock = null;
     }
 
+    /// <summary>
+    /// HandleNoHeapWritesInterrupt at the back edge of the loop at
+    /// <paramref name="header"/>. A loop with calls serves interrupts through
+    /// a call on the slow path (Int0 0). A loop without calls (Int0 1) defers
+    /// code installation, and exits to the interpreter for any other pending
+    /// interrupt (an eager deopt that keeps the code, kInterrupt): a call on
+    /// the back edge would make RyuJIT keep the loop's values in stack slots.
+    /// </summary>
+    void BuildLoopInterruptCheck(int header)
+    {
+        bool callFree = !PrescanLoopEffects(_analysis.GetLoopInfoFor(header)).Cleared;
+        if (callFree)
+        {
+            AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Int0 = 1, Properties = OpProperties.kEagerDeopt | OpProperties.kNotIdempotent },
+                DeoptimizeReason.kInterrupt);
+        }
+        else
+        {
+            AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kCanThrow | OpProperties.kNotIdempotent });
+        }
+    }
+
     /// <summary>The peeled iteration's back edge: the interrupt check, then the loop's entry edge.</summary>
     void BuildPeeledBackEdge(int header)
     {
         Checkpoint();
-        AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kEagerDeopt | OpProperties.kNotIdempotent },
-            DeoptimizeReason.kInterrupt);
+        BuildLoopInterruptCheck(header);
         // JumpLoop clobbers the accumulator.
         SetAccumulator(GetRootConstant(RootIndex.kUndefinedValue));
         InitializeLoopHeader(header, _currentBlock!);
@@ -1290,7 +1311,8 @@ public sealed partial class MaglevGraphBuilder
     /// </summary>
     /// <remarks>
     /// The loop interrupt check (HandleNoHeapWritesInterrupt) does not count:
-    /// it serves no interrupt itself, a pending one deoptimizes eagerly.
+    /// the interrupts it serves (termination, code installation) run no
+    /// JavaScript, and in loops without calls a pending one deoptimizes.
     /// </remarks>
     static bool ObservesFrameParameters(Node node) =>
         node.Opcode == Opcode.CallBuiltin && node.Obj0 is not CallBuiltinInfo { NoFrame: true } ||

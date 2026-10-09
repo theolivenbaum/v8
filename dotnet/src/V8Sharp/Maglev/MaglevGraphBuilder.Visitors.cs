@@ -1840,8 +1840,7 @@ public sealed partial class MaglevGraphBuilder
         MergePointInterpreterFrameState? state = _mergeStates[header];
         if (state is null || !state.IsLoop) throw new MaglevBailoutException($"loop without header (JumpLoop at {_it.CurrentOffset()} to {header}, state {(state is null ? "none" : "not a loop")})");
         // HandleNoHeapWritesInterrupt (V8's loop interrupt check; there is no Turbofan to count budget for).
-        AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kEagerDeopt | OpProperties.kNotIdempotent },
-            DeoptimizeReason.kInterrupt);
+        BuildLoopInterruptCheck(header);
         CheckLoopEffects(header);
         // JumpLoop clobbers the accumulator.
         SetAccumulator(GetRootConstant(RootIndex.kUndefinedValue));
