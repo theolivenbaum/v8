@@ -2535,6 +2535,10 @@ internal sealed partial class MaglevCodeGenerator
     /// <summary>Int32{Add,Subtract,Multiply}WithOverflow: 64-bit result, deopt unless it is an int32 (and not -0).</summary>
     void EmitInt32Overflowing(Node node)
     {
+        // The 64-bit result stays on the IL stack (no scratch local: a local
+        // shared by every overflow check of a method is one long-lived
+        // variable to RyuJIT's register allocator); the overflow branch goes
+        // through a stub that pops it.
         Load(node.Inputs[0], ValueRepresentation.kInt32);
         _il.Emit(OpCodes.Conv_I8);
         Load(node.Inputs[1], ValueRepresentation.kInt32);
@@ -2545,29 +2549,33 @@ internal sealed partial class MaglevCodeGenerator
             Opcode.Int32SubtractWithOverflow => OpCodes.Sub,
             _ => OpCodes.Mul,
         });
-        _il.Emit(OpCodes.Stloc, _tmpLong);
         Label exit = EagerExit(node.EagerDeoptInfo!);
-        _il.Emit(OpCodes.Ldloc, _tmpLong);
+        Label popAndExit = _il.DefineLabel(), done = _il.DefineLabel();
+        _il.Emit(OpCodes.Dup);
+        _il.Emit(OpCodes.Dup);
         _il.Emit(OpCodes.Conv_I4);
         _il.Emit(OpCodes.Conv_I8);
-        _il.Emit(OpCodes.Ldloc, _tmpLong);
-        _il.Emit(OpCodes.Bne_Un, exit);
+        _il.Emit(OpCodes.Bne_Un, popAndExit);
         if (node.Opcode == Opcode.Int32MultiplyWithOverflow)
         {
             // A zero product with a negative operand is -0.
             Label ok = _il.DefineLabel();
-            _il.Emit(OpCodes.Ldloc, _tmpLong);
+            _il.Emit(OpCodes.Dup);
             _il.Emit(OpCodes.Brtrue, ok);
             Load(node.Inputs[0], ValueRepresentation.kInt32);
             Load(node.Inputs[1], ValueRepresentation.kInt32);
             _il.Emit(OpCodes.Or);
             _il.Emit(OpCodes.Ldc_I4_0);
-            _il.Emit(OpCodes.Blt, exit);
+            _il.Emit(OpCodes.Blt, popAndExit);
             _il.MarkLabel(ok);
         }
-        _il.Emit(OpCodes.Ldloc, _tmpLong);
         _il.Emit(OpCodes.Conv_I4);
         Store((ValueNode)node);
+        _il.Emit(OpCodes.Br, done);
+        _il.MarkLabel(popAndExit);
+        _il.Emit(OpCodes.Pop);
+        _il.Emit(OpCodes.Br, exit);
+        _il.MarkLabel(done);
     }
 
     /// <summary>CheckedSmiUntag: a number that is an int32 and not -0.</summary>
