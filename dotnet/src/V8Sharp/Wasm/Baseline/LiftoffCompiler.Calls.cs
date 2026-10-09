@@ -57,7 +57,16 @@ internal sealed partial class LiftoffCompiler
     /// the function's own try blocks, whose handlers must not see what the
     /// callee throws (the callee replaces the frame that has them).
     /// </summary>
-    bool MayInline(bool tail) => !tail || _inline is not null || _tryDepth == 0;
+    bool MayInline(bool tail) => (!tail || _inline is not null || _tryDepth == 0) && _il.ILOffset < kMaxILForInlining;
+
+    /// <summary>
+    /// No more inlining once the method has this much IL: RyuJIT compiles
+    /// methods over about 60 KB of IL with MinOpts (no register allocation
+    /// or loop optimization), which costs far more than the calls inlining
+    /// saves. V8's budget counts wire bytes; IL is about 8-17 bytes per
+    /// instruction here.
+    /// </summary>
+    const int kMaxILForInlining = 30_000;
 
     /// <summary>Set during a return_call made as a call (inside an exception region).</summary>
     LocalBuilder? _tailCallFlag;

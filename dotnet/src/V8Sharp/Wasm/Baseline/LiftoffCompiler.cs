@@ -116,8 +116,6 @@ internal sealed partial class LiftoffCompiler
     LocalBuilder _spLocal = null!;
     LocalBuilder _pcsLocal = null!;
     LocalBuilder? _stackGuardLocal;
-    /// <summary>Whether the method (with its inlined callees) has loops.</summary>
-    bool _hasLoops;
     // The cached memories (array and size) of memories that are not shared.
     LocalBuilder?[] _memArray = [];
     LocalBuilder?[] _memSize = [];
@@ -469,10 +467,6 @@ internal sealed partial class LiftoffCompiler
             {
                 accessesMemory = true;
             }
-            else if (op == 0x03)
-            {
-                _hasLoops = true;
-            }
         }
         if (_plan is not null)
         {
@@ -485,7 +479,6 @@ internal sealed partial class LiftoffCompiler
                 {
                     byte op = _bytes[offset];
                     if (op is >= 0x28 and <= 0x40 or WasmOpcodes.kAsmJsPrefix) accessesMemory = true;
-                    else if (op == 0x03) _hasLoops = true;
                 }
             }
         }
@@ -575,14 +568,6 @@ internal sealed partial class LiftoffCompiler
         il.Emit(OpCodes.Ldloc, _framesLocal);
         il.Emit(OpCodes.Ldfld, s_framesPc);
         il.Emit(OpCodes.Stloc, _pcsLocal);
-        if (_hasLoops)
-        {
-            // The loops' interrupt checks read the stack guard.
-            _stackGuardLocal = il.DeclareLocal(typeof(StackGuard));
-            il.Emit(OpCodes.Ldloc, _dataLocal);
-            il.Emit(OpCodes.Ldfld, s_dataStackGuard);
-            il.Emit(OpCodes.Stloc, _stackGuardLocal);
-        }
 
         _memArray = new LocalBuilder?[_data.Memories.Length];
         _memSize = new LocalBuilder?[_data.Memories.Length];
@@ -788,15 +773,8 @@ internal sealed partial class LiftoffCompiler
     void EmitInterruptCheck()
     {
         Label skip = _il.DefineLabel();
-        if (_stackGuardLocal is { } guard)
-        {
-            _il.Emit(OpCodes.Ldloc, guard);
-        }
-        else
-        {
-            _il.Emit(OpCodes.Ldloc, _dataLocal);
-            _il.Emit(OpCodes.Ldfld, s_dataStackGuard);
-        }
+        _il.Emit(OpCodes.Ldloc, _dataLocal);
+        _il.Emit(OpCodes.Ldfld, s_dataStackGuard);
         _il.Emit(OpCodes.Call, s_hasPendingInterrupts);
         _il.Emit(OpCodes.Brfalse, skip);
         EmitRuntimeCall(nameof(RuntimeWasm.HandleInterrupts));
