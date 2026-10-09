@@ -152,8 +152,8 @@ namespace V8Sharp.Wasm
         {
             var activation = new Activation
             {
-                BaseHeight = Runtime.CallStackHeight,
-                OuterPc = Runtime.CurrentInstructionPointer,
+                BaseHeight = ExecContext.UnifiedHeight,
+                OuterPc = ExecContext.InstructionPointer,
             };
             _activations.Add(activation);
             return activation;
@@ -175,9 +175,9 @@ namespace V8Sharp.Wasm
             Activation activation = _activations[index];
             if (activation.TrapFrames is { } trapFrames) return trapFrames;
             bool innermost = index == _activations.Count - 1;
-            int topHeight = innermost ? Runtime.CallStackHeight : _activations[index + 1].BaseHeight;
-            int topPc = innermost ? Runtime.CurrentInstructionPointer : _activations[index + 1].OuterPc;
-            return Runtime.SnapshotFrames(activation.BaseHeight, topHeight, topPc);
+            int topHeight = innermost ? ExecContext.UnifiedHeight : _activations[index + 1].BaseHeight;
+            int topPc = innermost ? ExecContext.InstructionPointer : _activations[index + 1].OuterPc;
+            return ExecContext.SnapshotFrames(activation.BaseHeight, topHeight, topPc);
         }
 
         internal void RegisterInstanceObject(WasmInstanceObject instance) =>

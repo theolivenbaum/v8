@@ -1383,15 +1383,80 @@ Everything below the API is not V8's `src/wasm` but WACS, vendored as
 `src/V8Sharp.Wasm` (`src/V8Sharp.Wasm/README.md`). Changes made to the
 vendored code carry a `V8Sharp:` comment at the site.
 
-- **Execution.** V8 compiles wasm (Liftoff, then TurboFan/Turboshaft) or runs
-  it in DrumBrake; V8Sharp runs it in WACS's polymorphic interpreter over
-  linked instruction objects. There is one tier: `%IsLiftoffFunction`,
-  `%IsTurboFanFunction` and the other tier queries are false,
-  `%IsWasmTieringPredictable()` is false (tests skip tier assertions), tier-up,
-  deopt and code-flushing natives are accepted and do nothing, and the
+- **Execution: one compiler, IL instead of machine code.** V8 compiles wasm
+  with Liftoff, tiers hot functions up to TurboFan/Turboshaft, and has the
+  DrumBrake interpreter for jitless mode. V8Sharp has one compiler, a port of
+  Liftoff (`src/V8Sharp/Wasm/Baseline/`, the decoding loop of
+  function-body-decoder-impl.h and liftoff-compiler.cc) that emits each
+  function as a DynamicMethod; RyuJIT compiles it with full optimization on
+  its first call, which is what TurboFan's tier is for (register allocation,
+  inlining of helpers, bounds-check and constant folding), so there is no
+  second V8Sharp tier and no dynamic tiering. Functions compile lazily on
+  their first call (`--wasm-lazy-compilation`, V8's default), or all at
+  instantiation with `--no-wasm-lazy-compilation`; `--liftoff`,
+  `--no-liftoff`, `--liftoff-only` and `--wasm-tier-up` all select the same
+  compiler. A function compiles the functions it calls directly first (up to
+  64 per first call, 4 deep) so that those calls are direct IL calls; V8
+  calls through its jump table. WACS's interpreter is the fallback: it runs
+  every function with `--wasm-jitless` (implied by `--jitless`, as in V8) or
+  `V8SHARP_WASM_INTERPRETER=1`, and the functions the compiler declines
+  (Liftoff's bailout; V8 then uses TurboFan). The tier queries
+  (`%IsLiftoffFunction`, `%IsTurboFanFunction`, ...) stay false and
+  `%IsWasmTieringPredictable()` false (tests skip tier assertions); tier-up,
+  deopt and code-flushing natives are accepted and do nothing; the
   `--trace-wasm*`, `--trace-wasm-inlining`, compilation-hints and
-  `--wasm-*-inlining` outputs are never printed (the message tests that
-  check them fail). The WACS IL transpiler is not used (todo.md).
+  `--wasm-*-inlining` outputs are never printed. The WACS IL transpiler is
+  not used.
+- **Compiled code: calls and values.** A compiled function is
+  `R f(WasmCode code, P0 p0, ...)` with i32/i64/f32/f64 as int/long/float/
+  double, v128 as `Vector128<byte>` and references as the interpreter's
+  `Value` (so GC objects, function references and externrefs are shared with
+  the interpreter without conversion); extra results of a multi-value
+  function go through a per-thread buffer. Calls go through typed delegates
+  (the instance's function slots, which start as the lazy-compile stub and
+  are patched when the callee compiles; V8's jump table) or, for the
+  function itself and callees already compiled, direct IL calls;
+  call_indirect looks the table entry's code up and checks the signature
+  with a one-entry cache per callee. return_call uses IL's `tail.` prefix,
+  except inside an exception region, where it is a call and a return whose
+  exceptions the frame's handlers do not see. Imports of JavaScript and
+  functions the compiler declined are called with Values
+  (`WasmCode.CallWithValues`). Instructions without an IL implementation
+  (the GC instructions, table and bulk-memory operations other than
+  memory.copy/fill, atomics, relaxed SIMD, globals that are shared or
+  thread-local) run the interpreter's instruction object on the
+  interpreter's operand stack (Liftoff calls a builtin or the runtime for
+  most of these). JS-to-wasm calls of compiled functions with numeric
+  signatures use compiled wrappers (V8's specialized wrappers); the others
+  the generic wrapper.
+- **Compiled code: numbers.** IL arithmetic is IEEE binary32/64 as wasm's;
+  shifts mask the count, division and float-to-int conversions trap as
+  V8's, min/max/copysign/abs/neg/nearest follow wasm's NaN and signed-zero
+  rules, unsigned 64-bit to float conversions round once. RyuJIT folds float
+  constants as doubles (which quiets a signaling NaN) and folds `x - 0`,
+  `x * 1` and NaN arithmetic, which wasm and V8 do not; NaN and +-0, +-1
+  float constants are therefore loaded from the function's constants where
+  RyuJIT cannot see them. NaN payloads of arithmetic are those of the x64
+  instructions (as V8's).
+- **Compiled code: traps, frames and stacks.** Each access to a
+  non-shared memory checks its end against the memory's size, which the
+  function keeps (with the array) in IL locals and re-reads after calls and
+  memory.grow; shared memories are re-read at each access (another thread
+  may grow them). V8 uses guard regions and a trap handler instead. Traps
+  are thrown by RuntimeWasm with V8's message templates. Compiled frames
+  record their function and the position of their current call in a
+  per-thread array (`CompiledFrames`), merged with the interpreter's frames
+  for stack traces, as V8's frames hold a pc. The stack check of a function
+  entry compares that array's height with the stack limit and, every 16
+  frames (every frame for functions with 64 locals or more), asks .NET
+  whether the native stack has room; loop headers check for interrupts (V8:
+  the stack checks at function entries and loop back edges).
+- **Compiled code: exceptions.** Wasm exceptions are .NET exceptions
+  (`WasmHostException`, carrying the exnref the interpreter uses). try and
+  try_table become IL exception regions whose filters take the exceptions
+  their catches take; a legacy delegate is a filter that marks the exception
+  for its target try and declines it. Traps are not caught. V8 unwinds with
+  handler tables; the observable behaviour is the same.
 - **Compilation is synchronous.** `WebAssembly.compile`/`instantiate` decode
   and validate at the call and settle the promise from a foreground task (V8
   compiles on background threads); instantiation is synchronous in both.
@@ -1437,9 +1502,9 @@ vendored code carry a `V8Sharp:` comment at the site.
   while decoding; a stack overflow is reported at the entry of the function
   that could not be entered, as V8's stack check does. A start function's
   frames do not appear (it is not called through an exported function).
-- **Interrupts.** Termination and other interrupts are served every 16384
-  interpreted instructions (V8: stack checks at function entries and loop
-  back edges).
+- **Interrupts.** In the interpreter, termination and other interrupts are
+  served every 16384 interpreted instructions (V8: stack checks at function
+  entries and loop back edges); compiled code checks at loop headers.
 - **Exceptions.** The legacy exception-handling instructions (try, catch,
   catch_all, delegate, rethrow), which WACS lacks, are implemented in the
   vendored code (`Instructions/LegacyExceptions.cs`); a module mixing them
