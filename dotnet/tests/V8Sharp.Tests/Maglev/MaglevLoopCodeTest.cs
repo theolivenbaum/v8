@@ -89,6 +89,47 @@ public class MaglevLoopCodeTest
         """,
     };
 
+    public static TheoryData<string> TransitionSnippets => new()
+    {
+        // Keyed loads whose feedback transitions packed Smi arrays to holey or
+        // double ones, in loops: the transition is skipped once the map is
+        // known, other maps stay known, aliases see the new map.
+        """
+        (function() {
+          function sum(a, b, n) { var s = 0; for (var i = 0; i < n; i++) s += a[i] + b[i]; return s; }
+          function mk(k, n) { var a = []; for (var i = 0; i < n; i++) a[i] = i * k; return a; }
+          var out = [];
+          for (var r = 0; r < 40; r++) {
+            var a = mk(1, 10), b = mk(2, 10);
+            if (r & 1) { a[20] = 1; }
+            if (r % 3 == 0) b[3] = 1.5;
+            out.push(sum(a, b, 10), sum(a, a, 10));
+          }
+          var c = mk(3, 10); out.push(sum(c, c, 10)); c[2] = 0.25; out.push(sum(c, c, 10));
+          var d = mk(1, 10); d[30] = 2; out.push(sum(d, mk(1, 10), 10));
+          return out.join();
+        })()
+        """,
+        // Stores that transition (Smi to double, packed to holey) in loops
+        // between loads of the same and of aliased arrays.
+        """
+        (function() {
+          function fill(a, b, n, v) { var s = 0; for (var i = 0; i < n; i++) { s += b[i]; a[i] = v + i; s += a[i] + b[i]; } return s; }
+          var out = [];
+          for (var r = 0; r < 40; r++) {
+            var a = [1, 2, 3, 4, 5], b = [5, 4, 3, 2, 1];
+            out.push(fill(a, b, 5, r & 1 ? 0.5 : 1), fill(a, a, 5, 2), a.join(':'));
+          }
+          var h = [1, 2, 3]; h[10] = 4; out.push(fill(h, h, 3, 1.25), h.join(':'));
+          return out.join();
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(TransitionSnippets))]
+    public void ElementsKindTransitionsInLoopsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
     [Theory]
     [MemberData(nameof(DeoptSnippets))]
     public void DeoptsFromLoopsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);

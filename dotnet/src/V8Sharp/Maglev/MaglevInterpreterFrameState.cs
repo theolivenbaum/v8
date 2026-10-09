@@ -197,6 +197,33 @@ public sealed class KnownNodeAspects
         }
     }
 
+    /// <summary>
+    /// After an elements kind transition from one of <paramref name="sources"/>
+    /// (V8's ClearUnstableMapsIfAny for TransitionElementsKind): only objects
+    /// that may have a source map can have changed their map.
+    /// </summary>
+    public void ClearMapsIntersecting(Map[] sources)
+    {
+        foreach (KeyValuePair<ValueNode, NodeInfo> e in _infos)
+        {
+            NodeInfo info = e.Value;
+            if (info.PossibleMaps is not { } maps) continue;
+            bool hit = false;
+            foreach (Map m in maps)
+            {
+                if (Array.IndexOf(sources, m) >= 0)
+                {
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit) continue;
+            info.PossibleMaps = null;
+            info.AnyMapIsUnstable = false;
+            if (NodeTypes.Is(info.Type, NodeType.kJSReceiver)) info.Type = NodeType.kJSReceiver;
+        }
+    }
+
     /// <summary>KnownNodeAspects::Merge: keep only what both paths know.</summary>
     public void Merge(KnownNodeAspects other)
     {

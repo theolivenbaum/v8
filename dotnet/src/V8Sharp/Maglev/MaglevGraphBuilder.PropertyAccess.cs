@@ -1226,6 +1226,9 @@ public sealed partial class MaglevGraphBuilder
             refined.Add((target, JSValue.FromObject(targetHandler)));
         }
         if (targetHandler.HandlerKind != LoadHandler.Kind.kElement) return null;
+        // Known maps of the object without a source (a transition earlier on
+        // this path, or before the loop): nothing to transition.
+        if (KnownMaps(obj) is { } knownMaps && !Array.Exists(knownMaps, m => sources.Contains(m))) return refined;
         AddNewNode(new Node(Opcode.TransitionElementsKind)
         {
             Inputs = [obj],
@@ -1671,6 +1674,7 @@ public sealed partial class MaglevGraphBuilder
                         {
                             Inputs = [obj],
                             Obj0 = to,
+                            Obj1 = new[] { entry.Map },
                             Properties = OpProperties.kEagerDeopt | OpProperties.kCanAllocate | OpProperties.kCanWrite |
                                          OpProperties.kNotIdempotent,
                         }, DeoptimizeReason.kWrongMap);

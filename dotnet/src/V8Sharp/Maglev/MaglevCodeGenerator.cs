@@ -2142,7 +2142,7 @@ internal sealed partial class MaglevCodeGenerator
                 _il.MarkLabel(skip);
                 return;
             }
-            case Opcode.TransitionElementsKind when node.Obj1 is Map[] sources:
+            case Opcode.TransitionElementsKind when node.EagerDeoptInfo is null && node.Obj1 is Map[] sources:
             {
                 // V8's TransitionElementsKind node: an object with one of the
                 // source maps transitions to the target; others are unchanged.

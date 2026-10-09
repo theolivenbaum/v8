@@ -1081,6 +1081,17 @@ public sealed partial class MaglevGraphBuilder
                         _info.RecordLoopEffect(propertyKey: key);
                     }
                     return;
+                case Opcode.TransitionElementsKind when node.Obj1 is Map[] sources:
+                    // V8: only objects that may have a source map change their
+                    // map, and their elements may be reallocated (Smi to double).
+                    known.ClearMapsIntersecting(sources);
+                    foreach (int key in (ReadOnlySpan<int>)[PropertyKeys.kElements, PropertyKeys.kFixedArrayLength])
+                    {
+                        known.ForgetPropertyKey(key);
+                        _info.RecordLoopEffect(propertyKey: key);
+                    }
+                    _info.RecordLoopEffect(transitionSources: sources);
+                    return;
                 case Opcode.StoreMapTransition:
                     // A transition of a non-prototype object (the feedback's map is
                     // not a prototype map): what the default clears, but no
