@@ -103,6 +103,15 @@ namespace V8Sharp.Wasm
 
         WasmCode?[] _code = new WasmCode?[64];
 
+        /// <summary>The code of every function that has some (for tests).</summary>
+        internal IEnumerable<WasmCode> AllCode()
+        {
+            foreach (WasmCode? code in _code)
+            {
+                if (code is not null) yield return code;
+            }
+        }
+
         internal void RegisterCode(WasmCode code)
         {
             int address = code.Address.Value;

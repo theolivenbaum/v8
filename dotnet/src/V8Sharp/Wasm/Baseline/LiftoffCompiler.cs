@@ -14,7 +14,9 @@
 // The generated method is
 //   R f(WasmCode code, P0 p0, ...)
 // with the wasm parameters as IL arguments, the wasm locals as IL locals and
-// the value stack as described in LiftoffAssembler.cs.
+// the value stack as described in LiftoffAssembler.cs. Callees chosen by
+// WasmInliningTree are decoded into the same method by a LiftoffCompiler of
+// their own that shares the method's IL (LiftoffCompiler.Inlining.cs).
 using System.Reflection;
 using System.Reflection.Emit;
 using Wacs.Core.Instructions;
@@ -62,6 +64,8 @@ internal sealed partial class LiftoffCompiler
         public List<int>? HandlerTags;
         public int HandlerTagsConstant;
         public bool InHandler;
+        /// <summary>A loop's wire-byte offset (the tier-up check's jump distance).</summary>
+        public int StartOffset;
 
         public WasmKind[] BranchKinds => Kind == ControlKind.Loop ? Params : Results;
     }
@@ -79,14 +83,30 @@ internal sealed partial class LiftoffCompiler
     readonly DynamicMethod _method;
     readonly ILGenerator _il;
     readonly LiftoffAssembler _asm;
-    readonly List<object> _constants = [];
+    readonly List<object> _constants;
     readonly List<Control> _control = [];
+
+    /// <summary>The function the method is for (this compiler's function unless it is inlined).</summary>
+    readonly WasmCode _rootCode;
+    /// <summary>Set when this compiler decodes a callee inlined into the method.</summary>
+    readonly InlineFrame? _inline;
+    /// <summary>The inlining decisions of this frame (null: no inlining).</summary>
+    WasmInliningTree? _plan;
+    /// <summary>The tier-up compile: speculative inlining from feedback.</summary>
+    readonly bool _tierUp;
+    /// <summary>The code collects feedback at its call_indirect/call_ref sites and counts down its tiering budget.</summary>
+    bool _collectFeedback;
+    /// <summary>The number of calls decoded so far (V8: the feedback slot of the next call).</summary>
+    int _callIndex;
+    /// <summary>The calls inlined into the method (counted by the method's own compiler).</summary>
+    int _inlinedCalls;
+    /// <summary>The method's wasm locals, inlined frames' included (the stack check's frame size).</summary>
+    int _totalLocals;
 
     WasmKind[] _localKinds = [];
     int _instIndex;
     /// <summary>Instructions run by the interpreter's instruction objects (coverage statistics).</summary>
     int _genericCount;
-    int _pc;
     bool _reachable = true;
     int _tryDepth;
     int _nextTryId;
@@ -97,19 +117,31 @@ internal sealed partial class LiftoffCompiler
     LocalBuilder _spLocal = null!;
     LocalBuilder _pcsLocal = null!;
     LocalBuilder? _stackGuardLocal;
+    /// <summary>Whether the method (with its inlined callees) has loops.</summary>
+    bool _hasLoops;
     // The cached memories (array and size) of memories that are not shared.
     LocalBuilder?[] _memArray = [];
     LocalBuilder?[] _memSize = [];
     bool _cacheMemories;
+
+    // The cached constants (EmitLoadConstant), shared with inlined frames.
+    Dictionary<int, LocalBuilder> _constantLocals = [];
+    Label _constantLoads;
+    Label _bodyStart;
 
     // The return label for returns from inside exception regions.
     Label _returnLabel;
     bool _returnLabelUsed;
     LocalBuilder? _returnValue;
 
-    LiftoffCompiler(WasmCode code)
+    LiftoffCompiler(WasmCode code, bool tierUp)
     {
         _code = code;
+        _rootCode = code;
+        _tierUp = tierUp;
+        // A tier-up keeps the constants of the code it replaces at their
+        // indices: activations of that code still read them.
+        _constants = tierUp ? [.. code.Constants] : [];
         _data = code.Instance!;
         _function = (FunctionInstance)code.Function;
         _module = _function.Module;
@@ -138,33 +170,67 @@ internal sealed partial class LiftoffCompiler
     /// Compiles <paramref name="code"/>'s function (V8: ExecuteLiftoffCompilation).
     /// Returns its entry, or null with the reason if the compiler bailed out.
     /// </summary>
-    public static Delegate? Compile(WasmCode code, out string? bailout) => Compile(code, out bailout, out _, out _);
+    public static Delegate? Compile(WasmCode code, out string? bailout) => Compile(code, false, out bailout, out _, out _);
 
     /// <summary>
     /// <see cref="Compile(WasmCode, out string?)"/>, also counting the
     /// function's instructions and those left to the interpreter's
     /// instruction objects.
     /// </summary>
-    public static Delegate? Compile(WasmCode code, out string? bailout, out int instructions, out int generic)
+    public static Delegate? Compile(WasmCode code, bool tierUp, out string? bailout, out int instructions, out int generic)
     {
-        var compiler = new LiftoffCompiler(code);
+        var compiler = new LiftoffCompiler(code, tierUp);
         instructions = compiler._offsets.Length;
         generic = 0;
+        bool inlining = InliningEnabled(code.Instance!);
         try
         {
-            compiler.CompileFunction();
+            compiler.CompileFunction(inlining);
         }
         catch (LiftoffBailout e)
         {
-            bailout = e.Message;
-            return null;
+            if (!inlining || compiler._plan is null || compiler._plan.InlinedCount == 0)
+            {
+                bailout = e.Message;
+                return null;
+            }
+            // An inlined callee bailed out: compile without inlining (its
+            // calls then run it in the interpreter, as V8 calls code it
+            // could not inline).
+            compiler = new LiftoffCompiler(code, tierUp);
+            try
+            {
+                compiler.CompileFunction(inlining: false);
+            }
+            catch (LiftoffBailout e2)
+            {
+                bailout = e2.Message;
+                return null;
+            }
         }
         bailout = null;
         generic = compiler._genericCount;
         code.Constants = [.. compiler._constants];
         code.Method = compiler._method;
+        code.InlinedCalls = compiler._inlinedCalls;
+        if (compiler._collectFeedback)
+        {
+            code.MayTierUp = true;
+            code.TieringBudget = code.Instance!.Engine.Isolate.Flags.wasm_tiering_budget;
+        }
+        if (compiler._plan is not null && compiler.Trace)
+        {
+            // V8 prints the node count of the TurboFan graph; the IL size stands in.
+            Console.Out.Write($"[function {code.FunctionIndex}: emitted {compiler._il.ILOffset} nodes]\n");
+        }
         return compiler._method.CreateDelegate(code.Signature.DelegateType, code);
     }
+
+    /// <summary>Whether to print V8's --trace-wasm-inlining (for the tier-up compile, V8's TurboFan compile).</summary>
+    bool Trace => _tierUp && _data.Engine.Isolate.Flags.trace_wasm_inlining;
+
+    /// <summary>Whether functions are inlined (--wasm-inlining; V8 also turns it off for --trace-wasm and code coverage).</summary>
+    static bool InliningEnabled(WasmInstanceData data) => data.Engine.Isolate.Flags.wasm_inlining;
 
     static void Unsupported(string reason) => throw new LiftoffBailout(reason);
 
@@ -267,8 +333,19 @@ internal sealed partial class LiftoffCompiler
 
     // ---- The function --------------------------------------------------------------
 
-    void CompileFunction()
+    void CompileFunction(bool inlining)
     {
+        // A function whose call_indirect/call_ref targets can be inlined
+        // once there is feedback collects it and tiers up (V8: Liftoff code
+        // with feedback, then TurboFan).
+        _collectFeedback = !_tierUp && inlining && _data.Engine.Isolate.Flags.wasm_inlining_call_indirect &&
+                           HasIndirectCalls(_function);
+        if (_collectFeedback) _code.Feedback ??= new WasmFunctionFeedback();
+        if (inlining)
+        {
+            // The trace is V8's of the optimizing compile: the tier-up.
+            _plan = WasmInliningTree.CreateRoot(_data, _code.FunctionIndex, Trace);
+        }
         _pos = (int)_function.Definition.BodyOffset;
         // The locals declarations (decoded by WACS: Definition.Locals).
         uint groups = ReadU32();
@@ -290,29 +367,24 @@ internal sealed partial class LiftoffCompiler
 
         ScanFunction();
         EmitPrologue(locals, parameters.Length);
-
-        var function = new Control
+        if (_collectFeedback)
         {
-            Kind = ControlKind.Function,
-            Results = WasmKinds.Of(type.ResultType.Types),
-            Base = 0,
-            Label = _il.DefineLabel(),
-            Reachable = true,
-        };
-        _control.Add(function);
-
-        while (_control.Count > 0)
-        {
-            if (_instIndex >= _offsets.Length || _offsets[_instIndex] != _pos)
-            {
-                Unsupported("instruction offsets do not match the interpreter's");
-            }
-            _pc = _linkedOffset + _instIndex;
-            DecodeInstruction();
-            _instIndex++;
-            _asm.ReleaseTemps();
+            // FunctionTypeFeedback::num_invocations.
+            _il.Emit(OpCodes.Ldarg_0);
+            _il.Emit(OpCodes.Ldfld, s_codeFeedback);
+            _il.Emit(OpCodes.Dup);
+            _il.Emit(OpCodes.Ldfld, s_feedbackInvocations);
+            _il.Emit(OpCodes.Ldc_I4_1);
+            _il.Emit(OpCodes.Add);
+            _il.Emit(OpCodes.Stfld, s_feedbackInvocations);
         }
-        if (_instIndex != _offsets.Length) Unsupported("instruction count does not match the interpreter's");
+
+        _constantLoads = _il.DefineLabel();
+        _bodyStart = _il.DefineLabel();
+        _il.Emit(OpCodes.Br, _constantLoads);
+        _il.MarkLabel(_bodyStart);
+
+        DecodeBody(WasmKinds.Of(type.ResultType.Types));
         // The end of the body is not reached by falling through (every path
         // returned or threw); IL must not fall off the end.
         EmitUnreachableEnd();
@@ -323,19 +395,76 @@ internal sealed partial class LiftoffCompiler
             EmitLeaveFrame();
             _il.Emit(OpCodes.Ret);
         }
+        EmitConstantLoads();
     }
 
-    /// <summary>Looks at the instructions before emitting: which memories the function accesses.</summary>
+    /// <summary>
+    /// The decoding loop (WasmFullDecoder::DecodeFunctionBody) over the
+    /// function's body, from the first instruction to the end of the function.
+    /// </summary>
+    void DecodeBody(WasmKind[] results)
+    {
+        var function = new Control
+        {
+            Kind = ControlKind.Function,
+            Results = results,
+            Base = 0,
+            Label = _il.DefineLabel(),
+            Reachable = true,
+            TryDepth = _tryDepth,
+        };
+        _control.Add(function);
+
+        while (_control.Count > 0)
+        {
+            if (_instIndex >= _offsets.Length || _offsets[_instIndex] != _pos)
+            {
+                Unsupported("instruction offsets do not match the interpreter's");
+            }
+            DecodeInstruction();
+            _instIndex++;
+            _asm.ReleaseTemps();
+        }
+        if (_instIndex != _offsets.Length) Unsupported("instruction count does not match the interpreter's");
+    }
+
+    /// <summary>Whether a function has call_indirect, call_ref or their tail-call forms.</summary>
+    bool HasIndirectCalls(FunctionInstance function)
+    {
+        foreach (uint offset in function.Definition.InstructionOffsets)
+        {
+            if (_bytes[offset] is 0x11 or 0x13 or 0x14 or 0x15) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Looks at the instructions before emitting: which memories the function
+    /// and the functions inlined into it access, and how many locals they have.
+    /// </summary>
     void ScanFunction()
     {
         bool accessesMemory = false;
+        _totalLocals = _localKinds.Length;
         foreach (InstructionBase inst in _instructions)
         {
             byte op = (byte)inst.Op.x00;
-            if (op is >= 0x28 and <= 0x40)
+            if (op is >= 0x28 and <= 0x40) accessesMemory = true;
+            else if (op == 0x03) _hasLoops = true;
+        }
+        if (_plan is not null)
+        {
+            foreach (WasmInliningTree node in _plan.InlinedNodes())
             {
-                accessesMemory = true;
-                break;
+                if (node == _plan) continue;
+                var f = (FunctionInstance)_data.Code[node.FunctionIndex].Function;
+                _totalLocals += f.Type.ParameterTypes.Arity + f.Locals.Length;
+                foreach (uint offset in f.Definition.InstructionOffsets)
+                {
+                    byte op = _bytes[offset];
+                    if (op is >= 0x28 and <= 0x40) accessesMemory = true;
+                    else if (op == 0x03) _hasLoops = true;
+                }
             }
         }
         _cacheMemories = accessesMemory && _data.Memories.Length is > 0 and <= 4;
@@ -343,6 +472,9 @@ internal sealed partial class LiftoffCompiler
 
     static readonly FieldInfo s_codeInstance = typeof(WasmCode).GetField(nameof(WasmCode.Instance))!;
     static readonly FieldInfo s_codeConstants = typeof(WasmCode).GetField(nameof(WasmCode.Constants))!;
+    static readonly FieldInfo s_codeFeedback = typeof(WasmCode).GetField(nameof(WasmCode.Feedback))!;
+    static readonly FieldInfo s_feedbackInvocations = typeof(WasmFunctionFeedback).GetField(nameof(WasmFunctionFeedback.Invocations))!;
+    static readonly FieldInfo s_codeTieringBudget = typeof(WasmCode).GetField(nameof(WasmCode.TieringBudget))!;
     static readonly FieldInfo s_dataFrames = typeof(WasmInstanceData).GetField(nameof(WasmInstanceData.Frames))!;
     static readonly FieldInfo s_dataStackGuard = typeof(WasmInstanceData).GetField(nameof(WasmInstanceData.StackGuard))!;
     static readonly FieldInfo s_dataMemories = typeof(WasmInstanceData).GetField(nameof(WasmInstanceData.Memories))!;
@@ -387,7 +519,7 @@ internal sealed partial class LiftoffCompiler
         il.Emit(OpCodes.Ldloc, _framesLocal);
         il.Emit(OpCodes.Ldfld, s_framesLimit);
         il.Emit(OpCodes.Bge_Un, overflow);
-        if (_localKinds.Length < 64)
+        if (_totalLocals < 64)
         {
             il.Emit(OpCodes.Ldloc, _spLocal);
             il.Emit(OpCodes.Ldc_I4, 15);
@@ -413,6 +545,14 @@ internal sealed partial class LiftoffCompiler
         il.Emit(OpCodes.Ldloc, _framesLocal);
         il.Emit(OpCodes.Ldfld, s_framesPc);
         il.Emit(OpCodes.Stloc, _pcsLocal);
+        if (_hasLoops)
+        {
+            // The loops' interrupt checks read the stack guard.
+            _stackGuardLocal = il.DeclareLocal(typeof(StackGuard));
+            il.Emit(OpCodes.Ldloc, _dataLocal);
+            il.Emit(OpCodes.Ldfld, s_dataStackGuard);
+            il.Emit(OpCodes.Stloc, _stackGuardLocal);
+        }
 
         _memArray = new LocalBuilder?[_data.Memories.Length];
         _memSize = new LocalBuilder?[_data.Memories.Length];
@@ -450,14 +590,39 @@ internal sealed partial class LiftoffCompiler
         _il.Emit(OpCodes.Unbox_Any, typeof(Value));
     }
 
-    /// <summary>Loads constants[k] as an object of <paramref name="type"/>.</summary>
+    /// <summary>
+    /// Loads constants[k] as an object of <paramref name="type"/>, from an IL
+    /// local the method loads once on entry (RyuJIT cannot know the constants
+    /// do not change, so it would load and cast them on every use in a loop).
+    /// </summary>
     void EmitLoadConstant(int k, Type type)
     {
-        _il.Emit(OpCodes.Ldarg_0);
-        _il.Emit(OpCodes.Ldfld, s_codeConstants);
-        _il.Emit(OpCodes.Ldc_I4, k);
-        _il.Emit(OpCodes.Ldelem_Ref);
-        _il.Emit(OpCodes.Castclass, type);
+        if (!_constantLocals.TryGetValue(k, out LocalBuilder? local))
+        {
+            local = _il.DeclareLocal(type);
+            _constantLocals[k] = local;
+        }
+        _il.Emit(OpCodes.Ldloc, local);
+    }
+
+    /// <summary>
+    /// The loads of the cached constants (<see cref="EmitLoadConstant"/>):
+    /// emitted after the body, reached from the end of the prologue, which
+    /// it returns to.
+    /// </summary>
+    void EmitConstantLoads()
+    {
+        _il.MarkLabel(_constantLoads);
+        foreach (var (k, local) in _constantLocals)
+        {
+            _il.Emit(OpCodes.Ldarg_0);
+            _il.Emit(OpCodes.Ldfld, s_codeConstants);
+            _il.Emit(OpCodes.Ldc_I4, k);
+            _il.Emit(OpCodes.Ldelem_Ref);
+            _il.Emit(OpCodes.Castclass, local.LocalType);
+            _il.Emit(OpCodes.Stloc, local);
+        }
+        _il.Emit(OpCodes.Br, _bodyStart);
     }
 
     /// <summary>Re-reads the cached memories (after anything that can grow them).</summary>
@@ -487,6 +652,13 @@ internal sealed partial class LiftoffCompiler
         _il.Emit(OpCodes.Ldloc, _spLocal);
         _il.Emit(OpCodes.Stfld, s_framesSp);
     }
+
+    /// <summary>
+    /// The position of the current instruction as the frame records it: its
+    /// linked instruction index, or in an inlined callee the inlined position
+    /// that names it and the frames it is inlined into.
+    /// </summary>
+    int _pc => _inline is null ? _linkedOffset + _instIndex : InlinedPc();
 
     /// <summary>Records this frame's position (before a call or a runtime call that can throw).</summary>
     void EmitStorePc()
@@ -537,14 +709,16 @@ internal sealed partial class LiftoffCompiler
 
     void EmitInterruptCheck()
     {
-        if (_stackGuardLocal is null)
-        {
-            // Declared lazily; loaded where it is used first, which may be
-            // inside a loop: load it at each check instead.
-        }
         Label skip = _il.DefineLabel();
-        _il.Emit(OpCodes.Ldloc, _dataLocal);
-        _il.Emit(OpCodes.Ldfld, s_dataStackGuard);
+        if (_stackGuardLocal is { } guard)
+        {
+            _il.Emit(OpCodes.Ldloc, guard);
+        }
+        else
+        {
+            _il.Emit(OpCodes.Ldloc, _dataLocal);
+            _il.Emit(OpCodes.Ldfld, s_dataStackGuard);
+        }
         _il.Emit(OpCodes.Call, s_hasPendingInterrupts);
         _il.Emit(OpCodes.Brfalse, skip);
         EmitRuntimeCall(nameof(RuntimeWasm.HandleInterrupts));
@@ -600,6 +774,7 @@ internal sealed partial class LiftoffCompiler
         }
         WasmKind[] kinds = target.BranchKinds;
         _asm.SpillStackEntries(0);
+        if (target.Kind == ControlKind.Loop) EmitBackEdgeTierUpCheck(target);
         _asm.Transfer(kinds.Length, target.Base);
         EmitJump(target);
     }
@@ -613,9 +788,11 @@ internal sealed partial class LiftoffCompiler
 
     void Loop()
     {
+        int start = _pos - 1;
         var (p, r) = ReadBlockType();
         Control c = PushControl(ControlKind.Loop, p, r);
         if (!c.Reachable) return;
+        c.StartOffset = start;
         c.Label = _il.DefineLabel();
         _il.MarkLabel(c.Label);
         // The stack check of loop headers (Liftoff: StackCheck at each loop).
@@ -721,7 +898,8 @@ internal sealed partial class LiftoffCompiler
             return;
         }
         WasmKind[] kinds = target.BranchKinds;
-        if (!_asm.NeedsTransfer(kinds.Length, target.Base) && _tryDepth == target.TryDepth)
+        bool tierUpCheck = _collectFeedback && target.Kind == ControlKind.Loop;
+        if (!tierUpCheck && !_asm.NeedsTransfer(kinds.Length, target.Base) && _tryDepth == target.TryDepth)
         {
             target.BranchedTo = true;
             _il.Emit(OpCodes.Brtrue, target.Label);
@@ -729,6 +907,7 @@ internal sealed partial class LiftoffCompiler
         }
         Label fallThrough = _il.DefineLabel();
         _il.Emit(OpCodes.Brfalse, fallThrough);
+        if (tierUpCheck) EmitBackEdgeTierUpCheck(target);
         _asm.Transfer(kinds.Length, target.Base);
         EmitJump(target);
         _il.MarkLabel(fallThrough);
@@ -797,9 +976,19 @@ internal sealed partial class LiftoffCompiler
     /// <summary>LiftoffCompiler::DoReturn / ReturnImpl.</summary>
     void DoReturn()
     {
+        if (_inline is not null)
+        {
+            InlinedReturn();
+            return;
+        }
         WasmKind[] results = ControlAt(_control.Count - 1).Results;
         int k = results.Length;
         _asm.SpillStackEntries(0);
+        if (_collectFeedback)
+        {
+            const int kTierUpCostForFunctionEntry = 40;
+            EmitTierUpCheck(WasmInliningTree.WireByteSize(_function) + kTierUpCostForFunctionEntry);
+        }
         if (k > 1)
         {
             _asm.Settle(k);

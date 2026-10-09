@@ -8,6 +8,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Wacs.Core.Instructions;
 using Wacs.Core.Runtime;
 using Wacs.Core.Runtime.Exceptions;
@@ -45,7 +46,7 @@ public static partial class RuntimeWasm
         if (instruction != null && snapshot.Length > 0)
         {
             WasmStackFrame top = snapshot[0];
-            snapshot[0] = new WasmStackFrame(top.FuncAddr, instruction, top.ResumeContinuationAddress, top.Pc);
+            snapshot[0] = new WasmStackFrame(top.FuncAddr, instruction, top.ResumeContinuationAddress, top.Pc, top.Inlined);
         }
         return snapshot;
     }
@@ -152,13 +153,29 @@ public static partial class RuntimeWasm
     // ---- Calls ---------------------------------------------------------------------------
 
     /// <summary>
-    /// The call_indirect dispatch (V8: the dispatch table load and the
-    /// signature check of LiftoffCompiler::CallIndirectImpl).
+    /// call_indirect through the site's inline cache: the cached target if
+    /// the table entry is the function the cache holds (its signature was
+    /// checked when it was cached), else the full dispatch, which records the
+    /// target as feedback and caches it.
     /// </summary>
-    public static Delegate ResolveIndirect(long index, int table, int expectedConstant, WasmCode code, int pc)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Delegate CallIndirectTarget(long index, Baseline.WasmCallSite site, WasmCode code, int pc)
+    {
+        List<Value> elements = site.Elements!;
+        if ((ulong)index < (ulong)elements.Count &&
+            CollectionsMarshal.AsSpan(elements)[(int)index].Data.Ptr == site.CachedPtr)
+        {
+            site.Hits++;
+            return site.CachedTarget!.Entry;
+        }
+        return CallIndirectMiss(index, site, code, pc);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Delegate CallIndirectMiss(long index, Baseline.WasmCallSite site, WasmCode code, int pc)
     {
         WasmInstanceData data = code.Instance!;
-        List<Value> elements = data.Tables[table].Elements;
+        List<Value> elements = site.Elements!;
         if ((ulong)index >= (ulong)elements.Count)
         {
             Trap(MessageTemplate.WasmTrapTableOutOfBounds, code, pc);
@@ -169,7 +186,7 @@ public static partial class RuntimeWasm
             Trap(MessageTemplate.WasmTrapNullFunc, code, pc);
         }
         WasmCode target = data.Engine.CodeAt(r.GetFuncAddr(data.Module.Types));
-        var expected = (DefType)code.Constants[expectedConstant];
+        var expected = (DefType)code.Constants[site.ExpectedConstant];
         if (!ReferenceEquals(target.LastMatchedType, expected))
         {
             bool matches = target.DefType is { } actual
@@ -178,18 +195,56 @@ public static partial class RuntimeWasm
             if (!matches) Trap(MessageTemplate.WasmTrapFuncSigMismatch, code, pc);
             target.LastMatchedType = expected;
         }
+        site.Record(r.Data.Ptr, target, data);
         return target.Entry;
     }
 
-    /// <summary>call_ref's target.</summary>
-    public static Delegate ResolveRef(Value function, WasmCode code, int pc)
+    /// <summary>
+    /// The function address of call_indirect's table entry (speculative
+    /// inlining's target check), or -1 if the index is out of bounds.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static long CallIndirectTargetAddress(long index, Baseline.WasmCallSite site)
+    {
+        List<Value> elements = site.Elements!;
+        return (ulong)index < (ulong)elements.Count ? CollectionsMarshal.AsSpan(elements)[(int)index].Data.Ptr : -1;
+    }
+
+    /// <summary>A function reference's address (a null reference's never names a function).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static long FunctionAddressOf(Value function) => function.Data.Ptr;
+
+    /// <summary>call_ref through the site's inline cache (see <see cref="CallIndirectTarget"/>).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Delegate CallRefTarget(Value function, Baseline.WasmCallSite site, WasmCode code, int pc)
+    {
+        if (function.Data.Ptr == site.CachedPtr)
+        {
+            site.Hits++;
+            return site.CachedTarget!.Entry;
+        }
+        return CallRefMiss(function, site, code, pc);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Delegate CallRefMiss(Value function, Baseline.WasmCallSite site, WasmCode code, int pc)
     {
         if (function.IsNullRef)
         {
             Trap(MessageTemplate.WasmTrapNullDereference, code, pc);
         }
         WasmInstanceData data = code.Instance!;
-        return data.Engine.CodeAt(function.GetFuncAddr(data.Module.Types)).Entry;
+        WasmCode target = data.Engine.CodeAt(function.GetFuncAddr(data.Module.Types));
+        site.Record(function.Data.Ptr, target, data);
+        return target.Entry;
+    }
+
+    /// <summary>Runtime_WasmTriggerTierUp: the function's tiering budget ran out.</summary>
+    public static void TriggerTierUp(WasmCode code, int pc)
+    {
+        WasmInstanceData data = code.Instance!;
+        data.Frames.Pc[data.Frames.Sp - 1] = pc;
+        code.TierUp();
     }
 
     /// <summary>
