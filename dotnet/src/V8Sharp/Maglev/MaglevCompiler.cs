@@ -46,6 +46,8 @@ public static class MaglevCompiler
     sealed class SharedState
     {
         public int DeoptCount;
+        /// <summary>Diagnostics (TierProfiler): installed codes and dependency invalidations.</summary>
+        public int Installs, Invalidations;
         public bool CompilationFailed;
         public string? FailureReason;
         /// <summary>V8Sharp: a hoisted untagging check deoptimized (MaglevPhiRepresentationSelector).</summary>
@@ -76,6 +78,10 @@ public static class MaglevCompiler
     /// </summary>
     public static bool CompilationDisabled(SharedFunctionInfo shared) =>
         s_sharedState.TryGetValue(shared, out SharedState? state) && state.CompilationFailed;
+
+    /// <summary>Diagnostics (TierProfiler): eager deopts, installed codes, invalidations by dependencies.</summary>
+    public static (int Deopts, int Installs, int Invalidations) Stats(SharedFunctionInfo shared) =>
+        s_sharedState.TryGetValue(shared, out SharedState? state) ? (state.DeoptCount, state.Installs, state.Invalidations) : (0, 0, 0);
 
     public static string? DisabledReason(SharedFunctionInfo shared) =>
         s_sharedState.TryGetValue(shared, out SharedState? state) ? state.FailureReason : null;
@@ -561,6 +567,7 @@ public static class MaglevCompiler
         }
         code.SharedFunctionInfo.MayHaveMaglevCode = true;
         isolate.MayHaveMaglevCode = true;
+        StateOf(code.SharedFunctionInfo).Installs++;
     }
 
     /// <summary>
@@ -580,6 +587,7 @@ public static class MaglevCompiler
             osr.Remove(code.OsrOffset);
         }
         if (reason == LazyDeoptimizeReason.kEagerDeopt) StateOf(code.SharedFunctionInfo).DeoptCount++;
+        else StateOf(code.SharedFunctionInfo).Invalidations++;
         // The function tiers up again later (TieringManager budget), with new feedback.
         vector.ResetOsrUrgency();
         if (isolate.Flags.trace_deopt && reason != LazyDeoptimizeReason.kEagerDeopt)
