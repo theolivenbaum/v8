@@ -735,7 +735,7 @@ for now, to be revisited when the reason goes away.
   constructor's initial map and prototype and emits a deferred runtime call
   for proxies and access-checked objects on the chain; V8Sharp compares the
   constructor's map and prototype slot at run time and deoptimizes when they
-  changed or a special receiver is on the chain, and the deoptimizer then
+  changed or such an object is on the chain, and the deoptimizer then
   marks the instanceof slot megamorphic so the next code takes the generic
   path (no deopt loop).
 - `function.prototype` of a constant function folds to the prototype only
@@ -745,7 +745,8 @@ for now, to be revisited when the reason goes away.
 - Getter and setter calls (`BuildPropertyGetterCall`,
   `BuildPropertySetterCall`, TryBuildPropertyGetterCall /
   TryBuildPropertySetterCall) are built for JavaScript accessors on the
-  prototype chain of fast-mode JSObject receivers when all maps of the
+  prototype chain of fast-mode JSObject receivers (not special receivers
+  such as the global proxy) when all maps of the
   access reach the same accessor; V8 also builds them in the arms of a
   polymorphic access, for own accessor pairs, API accessors and primitive
   receivers. Setters are never inlined: a deopt that materializes an

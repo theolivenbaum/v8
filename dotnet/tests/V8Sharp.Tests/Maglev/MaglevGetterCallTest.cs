@@ -103,6 +103,20 @@ public class MaglevGetterCallTest
           return out.slice(-6).join(',') + '|' + log.slice(-8).join(',');
         })()
         """,
+        // __proto__ of the global proxy set to a new prototype on every call
+        // (mjsunit/opt-proto-seq/proto-seq-opt-global-proxy), then loaded through.
+        """
+        (function() {
+          function f() {
+            function T() {} T.prototype.f1 = function () { return 'OK'; };
+            globalThis.__proto__ = T.prototype;
+            return globalThis.f1();
+          }
+          var out = [];
+          for (var i = 0; i < 100; i++) out.push(f());
+          return out.join();
+        })()
+        """,
         // A builtin setter (__proto__) and a setter shared by two receiver maps.
         """
         (function() {

@@ -271,8 +271,10 @@ public sealed partial class MaglevGraphBuilder
                 // The validity cell guards the holder's descriptor, as it does
                 // for the IC. Primitive receivers stay generic (the getter's
                 // receiver conversion), as do dictionary-mode receivers
-                // (which can have the property themselves).
-                if (h.Holder is not null && !map.IsDictionaryMap && !ICMaps.IsPrimitiveMap(map) &&
+                // (which can have the property themselves) and special
+                // receivers (the global proxy, whose map changes with its
+                // prototype: __proto__ assignments).
+                if (h.Holder is not null && !map.IsDictionaryMap && !ICMaps.IsPrimitiveMap(map) && !Map.IsSpecialReceiverMap(map) &&
                     h.Data.HeapObjectOrNull is JSFunction { Shared.IsClassConstructor: false } getter && getter.Map.IsCallable)
                 {
                     info.AccessKind = PropertyAccessInfo.Kind.AccessorConstant;
@@ -996,7 +998,8 @@ public sealed partial class MaglevGraphBuilder
             case StoreHandler.Kind.kAccessorFromPrototype:
                 // kFastAccessorConstant: a JavaScript setter on the prototype
                 // chain of a fast-mode receiver (TryBuildPropertySetterCall).
-                if (map.IsDictionaryMap || h.Data.HeapObjectOrNull is not JSFunction { Shared.IsClassConstructor: false } setter ||
+                if (map.IsDictionaryMap || Map.IsSpecialReceiverMap(map) ||
+                    h.Data.HeapObjectOrNull is not JSFunction { Shared.IsClassConstructor: false } setter ||
                     !setter.Map.IsCallable)
                 {
                     return null;
