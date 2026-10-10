@@ -196,10 +196,13 @@ static class GcWindow
     static TimeSpan _pause;
     static bool _marked;
 
+    static GcTrace? _trace;
+
     public static void Mark()
     {
         if (_marked) return;
         _marked = true;
+        if (Environment.GetEnvironmentVariable("V8SHARP_BENCH_GCTRACE") == "1") _trace = new GcTrace();
         _bytes = GC.GetTotalAllocatedBytes(precise: true);
         _g0 = GC.CollectionCount(0);
         _g1 = GC.CollectionCount(1);
@@ -216,5 +219,79 @@ static class GcWindow
         Console.WriteLine(string.Format(ci, "@gc allocMB {0:F1} gen0 {1} gen1 {2} gen2 {3} pauseMs {4:F1} heapMB {5:F1}",
             mb, GC.CollectionCount(0) - _g0, GC.CollectionCount(1) - _g1, GC.CollectionCount(2) - _g2, pause,
             GC.GetGCMemoryInfo().HeapSizeBytes / 1048576.0));
+        _trace?.Print();
+    }
+}
+
+/// <summary>
+/// V8SHARP_BENCH_GCTRACE=1: per collection over the GC window, its
+/// generation, pause (suspension to restart) and the bytes it promoted
+/// (GCHeapStats), summed by generation.
+/// </summary>
+sealed class GcTrace : System.Diagnostics.Tracing.EventListener
+{
+    readonly object _lock = new();
+    readonly long[] _count = new long[3], _promoted0 = new long[3], _promoted1 = new long[3];
+    readonly double[] _pauseMs = new double[3];
+    int _depth;
+    DateTime _suspend;
+    readonly System.Text.StringBuilder _gen2Kinds = new();
+
+    protected override void OnEventSourceCreated(System.Diagnostics.Tracing.EventSource source)
+    {
+        if (source.Name == "Microsoft-Windows-DotNETRuntime")
+            EnableEvents(source, System.Diagnostics.Tracing.EventLevel.Informational, (System.Diagnostics.Tracing.EventKeywords)0x1);
+    }
+
+    protected override void OnEventWritten(System.Diagnostics.Tracing.EventWrittenEventArgs e)
+    {
+        string? name = e.EventName;
+        if (name is null || e.Payload is null) return;
+        lock (_lock)
+        {
+            if (name.StartsWith("GCStart", StringComparison.Ordinal))
+            {
+                int i = e.PayloadNames!.IndexOf("Depth");
+                _depth = i >= 0 ? Math.Min(2, Convert.ToInt32(e.Payload[i], System.Globalization.CultureInfo.InvariantCulture)) : 0;
+                _count[_depth]++;
+                // Type: 0 blocking, 1 background, 2 blocking during a background GC.
+                if (_depth == 2) _gen2Kinds.Append(' ').Append(Get(e, "Type")).Append('/').Append(Get(e, "Reason"));
+            }
+            else if (name.StartsWith("GCSuspendEEBegin", StringComparison.Ordinal))
+            {
+                _suspend = e.TimeStamp;
+            }
+            else if (name.StartsWith("GCRestartEEEnd", StringComparison.Ordinal) && _suspend != default)
+            {
+                _pauseMs[_depth] += (e.TimeStamp - _suspend).TotalMilliseconds;
+                _suspend = default;
+            }
+            else if (name.StartsWith("GCHeapStats", StringComparison.Ordinal))
+            {
+                _promoted0[_depth] += Get(e, "TotalPromotedSize0");
+                _promoted1[_depth] += Get(e, "TotalPromotedSize1");
+            }
+        }
+    }
+
+    static long Get(System.Diagnostics.Tracing.EventWrittenEventArgs e, string field)
+    {
+        int i = e.PayloadNames!.IndexOf(field);
+        return i >= 0 ? Convert.ToInt64(e.Payload![i], System.Globalization.CultureInfo.InvariantCulture) : 0;
+    }
+
+    public void Print()
+    {
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        lock (_lock)
+        {
+            for (int g = 0; g < 3; g++)
+            {
+                if (_count[g] == 0) continue;
+                Console.WriteLine(string.Format(ci, "@gc-trace gen{0}: {1} GCs, pause {2:F1} ms ({3:F2} ms each), promoted from gen0 {4:F1} MB, from gen1 {5:F1} MB",
+                    g, _count[g], _pauseMs[g], _pauseMs[g] / _count[g], _promoted0[g] / 1048576.0, _promoted1[g] / 1048576.0));
+            }
+            if (_gen2Kinds.Length > 0) Console.WriteLine("@gc-trace gen2 type/reason:" + _gen2Kinds);
+        }
     }
 }
