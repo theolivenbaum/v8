@@ -11,6 +11,54 @@ public class MaglevCallsTest
 {
     public static TheoryData<string> Snippets => new()
     {
+        // Function.prototype.call (ReduceFunctionPrototypeCall): super
+        // constructor and super method calls through call, call of call, and
+        // receivers of call that are not functions.
+        """
+        (function() {
+          function Base(a) { this.a = a; }
+          Base.prototype.get = function (k) { return this.a + k; };
+          function Derived(a, b) { Derived.superConstructor.call(this, a); this.b = b; }
+          Derived.superConstructor = Base;
+          Derived.prototype.get = function (k) { return Base.prototype.get.call(this, k) * this.b; };
+          function run(k, f) {
+            var d = new Derived(k, 2);
+            var r = d.get(1);
+            try { r += ':' + f.call({ a: 5 }, k); } catch (e) { r += ':' + e.constructor.name + ':' + e.message; }
+            try { r += ':' + Function.prototype.call.call(f, null, 3); } catch (e) { r += ':' + e.message; }
+            var o = { call: Function.prototype.call };
+            try { r += ':' + (k > 30 ? o.call(1) : 0); } catch (e) { r += ':' + e.message; }
+            return r;
+          }
+          var out = [];
+          var fs = [function (x) { return this.a + x; }, function (x) { 'use strict'; return typeof this + x; }];
+          for (var i = 0; i < 40; i++) out.push(run(i, i < 30 ? fs[i & 1] : i == 35 ? 42 : null));
+          return out.join(',');
+        })()
+        """,
+        // `new Array()` with an AllocationSite (TryReduceConstructArrayConstructor):
+        // the site's elements kind changes (smi, double, object), a subclass
+        // and a replaced Array constructor deopt.
+        """
+        (function() {
+          function Coll() { this.elms = new Array(); }
+          Coll.prototype.add = function (x) { this.elms.push(x); return this; };
+          function make(k) {
+            var c = new Coll().add(k);
+            if (k > 20) c.add(k + 0.5);
+            if (k > 35) c.add('s' + k);
+            return c.elms.join(':') + '/' + c.elms.length + '/' + Array.isArray(c.elms);
+          }
+          var out = [];
+          for (var k = 0; k < 50; k++) out.push(make(k));
+          var saved = Array;
+          Array = function () { return { length: 7, push: function () {}, join: function () { return 'fake'; } }; };
+          out.push(make(3));
+          Array = saved;
+          out.push(make(4));
+          return out.join(',');
+        })()
+        """,
         """
         (function() {
           'use strict';

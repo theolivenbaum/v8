@@ -955,6 +955,101 @@ public static class MaglevBuiltins
         int argc) =>
         MaglevCalls.ConstructWithReceiver(isolate, target, receiver, newTarget, argsStart, argc);
 
+    // ConstructKnownJSFunction and the generic Construct with up to three
+    // arguments as values (no register window in the frame: lazy frames have
+    // none).
+    public static JSValue ConstructKnownJSFunction0(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget) =>
+        MaglevCalls.ConstructWithReceiverValues(isolate, target, receiver, newTarget, 0, default, default, default);
+
+    public static JSValue ConstructKnownJSFunction1(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, JSValue a0) =>
+        MaglevCalls.ConstructWithReceiverValues(isolate, target, receiver, newTarget, 1, a0, default, default);
+
+    public static JSValue ConstructKnownJSFunction2(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, JSValue a0,
+        JSValue a1) =>
+        MaglevCalls.ConstructWithReceiverValues(isolate, target, receiver, newTarget, 2, a0, a1, default);
+
+    public static JSValue ConstructKnownJSFunction3(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2) =>
+        MaglevCalls.ConstructWithReceiverValues(isolate, target, receiver, newTarget, 3, a0, a1, a2);
+
+    public static JSValue ConstructKnownJSFunction4(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3) =>
+        MaglevCalls.ConstructWithReceiverValues(isolate, target, receiver, newTarget, 4, a0, a1, a2, a3, default, default);
+
+    public static JSValue ConstructKnownJSFunction5(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3, JSValue a4) =>
+        MaglevCalls.ConstructWithReceiverValues(isolate, target, receiver, newTarget, 5, a0, a1, a2, a3, a4, default);
+
+    public static JSValue ConstructKnownJSFunction6(Isolate isolate, JSValue target, JSValue receiver, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3, JSValue a4, JSValue a5) =>
+        MaglevCalls.ConstructWithReceiverValues(isolate, target, receiver, newTarget, 6, a0, a1, a2, a3, a4, a5);
+
+    public static JSValue ConstructValues0(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget) =>
+        ConstructValues(isolate, fv, slot, constructor, newTarget, 0, default, default, default);
+
+    public static JSValue ConstructValues1(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, JSValue a0) =>
+        ConstructValues(isolate, fv, slot, constructor, newTarget, 1, a0, default, default);
+
+    public static JSValue ConstructValues2(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, JSValue a0,
+        JSValue a1) =>
+        ConstructValues(isolate, fv, slot, constructor, newTarget, 2, a0, a1, default);
+
+    public static JSValue ConstructValues3(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2) =>
+        ConstructValues(isolate, fv, slot, constructor, newTarget, 3, a0, a1, a2);
+
+    public static JSValue ConstructValues4(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3) =>
+        ConstructValues(isolate, fv, slot, constructor, newTarget, 4, a0, a1, a2, a3);
+
+    public static JSValue ConstructValues5(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3, JSValue a4) =>
+        ConstructValues(isolate, fv, slot, constructor, newTarget, 5, a0, a1, a2, a3, a4);
+
+    public static JSValue ConstructValues6(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, JSValue a0,
+        JSValue a1, JSValue a2, JSValue a3, JSValue a4, JSValue a5) =>
+        ConstructValues(isolate, fv, slot, constructor, newTarget, 6, a0, a1, a2, a3, a4, a5);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static JSValue ConstructValues(Isolate isolate, FeedbackVector? fv, int slot, JSValue constructor, JSValue newTarget, int argc,
+        JSValue a0, JSValue a1, JSValue a2, JSValue a3 = default, JSValue a4 = default, JSValue a5 = default)
+    {
+        int window = isolate.AllocateRegisters(argc);
+        JSValue[] stack = isolate.RegisterStack;
+        if (argc > 0) stack[window] = a0;
+        if (argc > 1) stack[window + 1] = a1;
+        if (argc > 2) stack[window + 2] = a2;
+        if (argc > 3) stack[window + 3] = a3;
+        if (argc > 4) stack[window + 4] = a4;
+        if (argc > 5) stack[window + 5] = a5;
+        try
+        {
+            return Baseline.BaselineCalls.Construct(isolate, fv, slot, constructor, newTarget, window, argc);
+        }
+        finally
+        {
+            isolate.ReleaseRegisters(window);
+        }
+    }
+
+    /// <summary>
+    /// `new Array()` with an AllocationSite (MaglevGraphBuilder.TryReduceConstructArrayConstructor):
+    /// Runtime_NewArray without arguments, frame-free (no JavaScript runs).
+    /// </summary>
+    public static JSValue NewArrayFromSite(Isolate isolate, NativeContext nativeContext, JSFunction arrayFunction, AllocationSite site)
+    {
+        ElementsKind kind = site.GetElementsKind();
+        if (nativeContext.GetInitialJSArrayMap(kind) is not { } map || !ReferenceEquals(arrayFunction.InitialMap, nativeContext.GetInitialJSArrayMap(ElementsKind.PACKED_SMI_ELEMENTS)))
+        {
+            return Builtins.BuiltinsArray.NewArray(isolate, arrayFunction, arrayFunction, [], site);
+        }
+        var array = (JSArray)isolate.Factory.NewJSObjectFromMap(map);
+        if (AllocationSite.ShouldTrack(kind)) array.AllocationMementoSite = site;
+        isolate.Factory.NewJSArrayStorage(array, 0, 0, Factory.ArrayStorageAllocationMode.DONT_INITIALIZE_ARRAY_ELEMENTS);
+        JSArray.Initialize(isolate, array, JSArray.kPreallocatedArrayElements);
+        return array;
+    }
+
     /// <summary>CheckConstructResult: an object result replaces the constructed receiver.</summary>
     [MethodImpl(Inline)]
     public static JSValue ConstructResult(JSValue result, JSValue receiver) => result.IsJSReceiver ? result : receiver;
@@ -1034,7 +1129,8 @@ public static class MaglevBuiltins
         return fp;
     }
 
-    /// <summary>LeaveInlinedFrame: pops the frame EnterInlinedFrame pushed.</summary>
+    /// <summary>LeaveInlinedFrame: pops the frame EnterInlinedFrame (or EnterLazyInlinedFrame) pushed.</summary>
+    [MethodImpl(Inline)]
     public static void LeaveInlinedFrame(Isolate isolate, int frameIndex, JSValue callerContext)
     {
         ref InterpreterFrameRecord frame = ref isolate.InterpreterFrames[frameIndex];

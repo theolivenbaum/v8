@@ -552,6 +552,9 @@ public static class BaselineCalls
 
         /// <summary>The reference halves of <see cref="Store"/>, after <see cref="StorePayloads"/>.</summary>
         void StoreReferences(ref JSValue stack0, ref JSValue firstArgumentSlot);
+
+        /// <summary>Argument <paramref name="i"/>, undefined at or beyond <see cref="Count"/>.</summary>
+        JSValue Get(ref JSValue stack0, int i);
     }
 
     internal readonly struct NoArguments : ICallArguments
@@ -560,6 +563,7 @@ public static class BaselineCalls
         public void Store(ref JSValue stack0, ref JSValue firstArgumentSlot) { }
         public void StorePayloads(ref JSValue stack0, ref JSValue firstArgumentSlot) { }
         public void StoreReferences(ref JSValue stack0, ref JSValue firstArgumentSlot) { }
+        public JSValue Get(ref JSValue stack0, int i) => default;
     }
 
     internal readonly struct OneArgument(JSValue arg0) : ICallArguments
@@ -574,6 +578,9 @@ public static class BaselineCalls
 
         [MethodImpl(Inline)]
         public void StoreReferences(ref JSValue stack0, ref JSValue firstArgumentSlot) => StoreReference(ref firstArgumentSlot, arg0);
+
+        [MethodImpl(Inline)]
+        public JSValue Get(ref JSValue stack0, int i) => i == 0 ? arg0 : default;
     }
 
     internal readonly struct TwoArguments(JSValue arg0, JSValue arg1) : ICallArguments
@@ -600,6 +607,9 @@ public static class BaselineCalls
             StoreReference(ref firstArgumentSlot, arg0);
             StoreReference(ref Unsafe.Subtract(ref firstArgumentSlot, 1), arg1);
         }
+
+        [MethodImpl(Inline)]
+        public JSValue Get(ref JSValue stack0, int i) => i == 0 ? arg0 : i == 1 ? arg1 : default;
     }
 
     /// <summary>The <paramref name="count"/> registers at register stack index <paramref name="start"/>.</summary>
@@ -627,6 +637,9 @@ public static class BaselineCalls
             ref JSValue src = ref Unsafe.Add(ref stack0, start);
             for (int i = 0; i < count; i++) StoreReference(ref Unsafe.Subtract(ref firstArgumentSlot, i), Unsafe.Add(ref src, i));
         }
+
+        [MethodImpl(Inline)]
+        public JSValue Get(ref JSValue stack0, int i) => i < count ? Unsafe.Add(ref stack0, start + i) : default;
     }
 
     /// <summary>
@@ -707,6 +720,14 @@ public static class BaselineCalls
         TArgs args) where TArgs : struct, ICallArguments
     {
         if (isolate.StackGuard.HasPendingInterrupts) isolate.StackGuard.HandleInterrupts();
+        if (args.Count <= code.FastCallArity)
+        {
+            // The code's direct entry (MaglevCalls, "Direct calls"): a lazy or
+            // frameless entry builds no interpreter frame, as V8's Call builtin
+            // jumps to the callee's optimized code.
+            vector.InvocationCount++;
+            return InvokeFastCall(isolate, function, code, receiver, args);
+        }
         int depth = isolate.InterpreterFrameDepth;
         if ((depth & 3) == 0 && !RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
         var bytecode = (BytecodeArray)function.Shared.FunctionData!;
@@ -731,6 +752,29 @@ public static class BaselineCalls
         // (Inlined frames a deopt materialized have returned to this one.)
         LeaveFrame(isolate, depth, start, savedContext);
         return result;
+    }
+
+    /// <summary>Calls the direct entry of <paramref name="code"/> with the arguments as values.</summary>
+    static JSValue InvokeFastCall<TArgs>(Isolate isolate, JSFunction function, MaglevCode code, JSValue receiver, TArgs args)
+        where TArgs : struct, ICallArguments
+    {
+        ref JSValue stack0 = ref MemoryMarshal.GetArrayDataReference(isolate.RegisterStack);
+        Delegate fast = code.FastCall!;
+        int argc = args.Count;
+        return code.FastCallArity switch
+        {
+            0 => Unsafe.As<MaglevFastCall0>(fast)(isolate, function, argc, receiver),
+            1 => Unsafe.As<MaglevFastCall1>(fast)(isolate, function, argc, receiver, args.Get(ref stack0, 0)),
+            2 => Unsafe.As<MaglevFastCall2>(fast)(isolate, function, argc, receiver, args.Get(ref stack0, 0), args.Get(ref stack0, 1)),
+            3 => Unsafe.As<MaglevFastCall3>(fast)(isolate, function, argc, receiver, args.Get(ref stack0, 0), args.Get(ref stack0, 1),
+                args.Get(ref stack0, 2)),
+            4 => Unsafe.As<MaglevFastCall4>(fast)(isolate, function, argc, receiver, args.Get(ref stack0, 0), args.Get(ref stack0, 1),
+                args.Get(ref stack0, 2), args.Get(ref stack0, 3)),
+            5 => Unsafe.As<MaglevFastCall5>(fast)(isolate, function, argc, receiver, args.Get(ref stack0, 0), args.Get(ref stack0, 1),
+                args.Get(ref stack0, 2), args.Get(ref stack0, 3), args.Get(ref stack0, 4)),
+            _ => Unsafe.As<MaglevFastCall6>(fast)(isolate, function, argc, receiver, args.Get(ref stack0, 0), args.Get(ref stack0, 1),
+                args.Get(ref stack0, 2), args.Get(ref stack0, 3), args.Get(ref stack0, 4), args.Get(ref stack0, 5)),
+        };
     }
 
     /// <summary>

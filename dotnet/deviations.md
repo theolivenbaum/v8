@@ -415,11 +415,46 @@ for now, to be revisited when the reason goes away.
   RyuJIT allocates the machine registers. Code with catch blocks keeps one
   local per value. The code is never freed (the assembly
   is not collectible); invalidated code is only unreferenced.
-- Frames: the optimized frame is the interpreter frame the call built, and
-  inlined functions push real interpreter frames (V8 has one optimized frame
-  and materializes the inlined ones at deopt and for stack walks). A deopt
-  writes the translation's values into these frames instead of building new
-  ones. Deopt exits copy the values into a per-isolate scratch buffer.
+- Frames: code entered at its frameful entry (OSR, more than six
+  parameters, class constructors)
+  runs in the interpreter frame the call built, and inlined functions push
+  real interpreter frames (V8 has one optimized frame and materializes the
+  inlined ones at deopt and for stack walks). A deopt writes the
+  translation's values into these frames instead of building new ones.
+  Deopt exits copy the values into a per-isolate scratch buffer.
+- Lazy frames (2026-10-09; V8's MaglevFrame, frames.cc OptimizedJSFrame::Summarize,
+  deoptimizer.cc): calls into Maglev code that calls out enter a lazy direct
+  entry, which keeps the closure, receiver, arguments, argc and current
+  bytecode offset in a `MaglevActivation` local on the .NET stack and
+  pushes a frame record holding the local's address (V8 keeps the same
+  values in its optimized frame on the machine stack and maps the return
+  address to the offset). V8Sharp-specific: (1) the record refers to a
+  stack location by address (`MaglevActivation.At`, `Unsafe` over the
+  address as `ParserBase.GetCurrentStackPosition` does): the local is
+  address-exposed, so RyuJIT keeps it in memory and reports its references
+  to the GC for the whole method, and the record is popped before the
+  method returns (epilogue and fault block); (2) the interpreter frame's
+  register window is reserved on entry, not written, so a deopt builds the
+  interpreter frame in place below the frames of inlined functions
+  (`MaglevCalls.MaterializeLazyFrame`), and stack overflow happens at the
+  same depth as with frameful entries; (3) a call with more arguments
+  than the callee's direct entry takes builds the frameful frame (so
+  function.arguments has every argument); (4) inlined functions get lazy records only when their
+  code reads no frame slot but parameters, with one activation per
+  inlining depth; (5) a block context of a lazy frame is only
+  `isolate.Context` (the deopt translation always holds the context).
+  Baseline code, the interpreter and `Execution.Call` call Maglev code
+  through its direct entry as well. `V8SHARP_MAGLEV_NO_LAZY_FRAMES=1` and
+  `V8SHARP_MAGLEV_NO_LAZY_INLINED_FRAMES=1` turn them off.
+- `new Array()` with an AllocationSite (TryReduceConstructArrayConstructor):
+  a frame-free helper call (`MaglevBuiltins.NewArrayFromSite`) that reads
+  the site's elements kind and gives the array the site's memento, as
+  Runtime_NewArray does; V8 allocates inline and depends on the site's
+  elements kind (V8Sharp's AllocationSite has no dependent code).
+- Function.prototype.call (ReduceFunctionPrototypeCall) is reduced only
+  when its receiver is a constant function or known to be a JSFunction
+  (V8 reduces any receiver; the call builtin's TypeError for a receiver that
+  is not callable has its own message in V8Sharp).
 - Concurrent compilation (`--concurrent-recompilation`, on as in V8) follows
   maglev-concurrent-dispatcher.cc (MaglevConcurrentDispatcher.cs): the job is
   prepared on the main thread, builds the graph and generates the code on one

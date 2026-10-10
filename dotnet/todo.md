@@ -1798,7 +1798,8 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     Richards in BaselineCalls.EnterInline, PushFrame and the write barrier,
     after the 2026-10-04 pass); a leaner frame protocol shared with the
     interpreter would help both tiers. Skipping the register clear for
-    register-cached callees was measured and gave nothing.
+    register-cached callees was measured and gave nothing. Calls between
+    Maglev functions no longer do (lazy frames, see "Calls and frames").
   - SignedSmall feedback needs an explicit Smi check per operand (JSValue has
     no tagged Smis): integral, 31-bit, not -0.
   - zlib: V8 runs it as asm.js through wasm (about 70x the baseline score);
@@ -2259,6 +2260,114 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     joins (V8 merges them with phis), no allocation folding, contexts and
     closures are not escape-analysed, and objects returned by calls that are
     not inlined always escape.
+  - Calls and frames (2026-10-09, 45787b8a..; V8 files: frames.cc
+    MaglevFrame, deoptimizer.cc, builtins-call-gen.cc CallFunction,
+    maglev-graph-builder.cc BuildGenericCall/BuildConstruct/
+    TryReduceConstructArrayConstructor/ReduceFunctionPrototypeCall):
+    - Lazy frames (45787b8a, 06f451fc, a54c8f4d, eb377d28, 491e52b5,
+      59b123ec, cab3ea10): a direct entry that calls out keeps its
+      function, pc, argc, receiver and arguments in a MaglevActivation
+      struct on the .NET stack and pushes a frame record flagged Lazy that
+      points at it (one store of each, no register-window writes, no
+      write barriers). Stack walks, captureStackTrace, f.arguments and
+      f.caller read the activation; deopt materializes the record into a
+      full interpreter frame first (MaglevCalls.MaterializeLazyFrame).
+      Inlined functions of a lazy entry get lazy records too, pushed only
+      at calls that can observe them. Arguments objects, rest parameters
+      and apply(this, arguments) read the activation. fib(n) per call
+      ~30 ns -> ~17 ns. Long-warm local A/B against
+      V8SHARP_MAGLEV_NO_LAZY_FRAMES=1 (best ms, same build): Richards
+      3.7/5.8, DeltaBlue 5.9-6.5/7.2, RayTrace 50/55, EarleyBoyer
+      199-207/247-249. Entries on Octane after the change: RayTrace 23
+      lazy/0 frameful, EarleyBoyer 39/0, DeltaBlue 22/0, Crypto 45/0,
+      NavierStokes 12/0, Typescript 122/15 (V8SHARP_MAGLEV_TRACE_ENTRIES
+      names the reason for each frameful one).
+    - Direct entries from every tier (e9502620, 1f658dc7): baseline,
+      interpreter and runtime calls of Maglev code with argc <= the
+      code's FastCallArity enter its direct entry instead of the
+      frameful one (EarleyBoyer +7%, Typescript +5% octane-quick).
+    - Values instead of register windows (25565961, 0185c2a9): generic
+      calls with up to six and constructs with up to six arguments pass
+      them as values (no AllocateRegisters/window copy in the caller).
+    - Reductions on the call path (06cb1b93, 57cf840a): new Array() with
+      an AllocationSite allocates without a frame (DeltaBlue's
+      OrderedCollection); f.call(r, ...) is a call of f (inlined or
+      direct when f is known).
+    octane-steady (parity publishes main fde9fe66 and final 7d927f7b, 2
+    interleaved runs, two sessions: load 3.0/2.5 and 2.2/2.5, steal 0%,
+    cpu-cal 1916/1805 and 1741/1671 ms, mem-bw 14.8/19.3 and 17.0/19.6
+    GB/s; V8 crashed (exit 139) on RayTrace, Splay and zlib (maglev) and
+    NavierStokes (jit) once each; latency rows omitted):
+
+    | benchmark | main fde9fe66 | final 7d927f7b | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 1199 | 1841 | 5716 | 8669 |
+    | DeltaBlue | 1313 | 1922 | 7424 | 14552 |
+    | Crypto | 283 | 298 | 663 | 1629 |
+    | RayTrace | 627 | 736 | 3117 | 4699 |
+    | EarleyBoyer | 134 | 152 | 627 | 864 |
+    | RegExp | 221 | 222 | 884 | 899 |
+    | Splay | 2833 | 3150 | 8732 | 8768 |
+    | NavierStokes | 1542 | 1538 | 1726 | 2793 |
+    | PdfJS | 1244 | 1291 | 6200 | 7716 |
+    | Mandreel | 532 | 508 | 3392 | 5031 |
+    | Gameboy | 1440 | 1709 | 5240 | 5848 |
+    | CodeLoad | 2895 | 3005 | 3441 | 3472 |
+    | Box2D | 2768 | 2653 | 12422 | 14900 |
+    | zlib | 770 | 885 | 1503 | 1549 |
+    | Typescript | 343 | 446 | 1921 | 2169 |
+    | geomean | 840 | 948 | 2928 | 3897 |
+
+    Warm geomean +13% over main: 32.4% of v8:maglev (from 28.7%), 24.3%
+    of v8:jit (from 21.6%). Richards +54%, DeltaBlue +46%, Typescript
+    +30%, Gameboy +19%, RayTrace +17%, zlib +15%, EarleyBoyer +13%,
+    Splay +11%; Box2D -4% and Mandreel -4% within the session noise.
+    micro:frames and micro:calls (3 runs, same session protocol, load
+    2.7): main / final / v8:maglev / v8:jit: Fib 1677/2571/9139/9687,
+    PolymorphicMethods 879k/983k/2.40M/3.12M, NewArray
+    48.8k/98.0k/622k/950k, CallLoop 3242/3375/5987/11452, MethodCall
+    3295/3485/6204/12227, ClosureCreate 216/217/553/2103.
+    Cold Octane (start-up, wall clock, same publishes, 2 interleaved runs,
+    load 2.6/3.3, steal 0%, cpu-cal 1709/1764 ms, mem-bw 20.0/20.4 GB/s;
+    V8 crashed (exit 139) on 9 of its 60 runs): main / final / v8:maglev /
+    v8:jit: Richards 3227/4879/19031/31670, DeltaBlue
+    4098/5997/25882/57866, Crypto 4540/5176/13799/29594, RayTrace
+    6238/6933/33340/54250, EarleyBoyer 4108/4536/25166/37033, RegExp
+    1144/1132/4904/5330, Splay 3362/3452/6088/4389, NavierStokes
+    15018/14936/16267/28525, PdfJS 2808/2620/22812/26078, Mandreel
+    2810/2662/21222/30751, Gameboy 6856/5588/47174/52804 (runs
+    6448/4728 against 6556/7157), CodeLoad 6894/7062/14686/14016, Box2D
+    4734/3744/52480/67170, zlib 36627/36568/71610/69108,
+    Typescript 7870/7816/46037/46438; geomean 5133/5340/22237/29145
+    (+4%). Box2D cold is lower in both runs (3718/3769 against
+    4783/4686); with the final publish alone, lazy frames on/off gave
+    4043/4574, 4547/5721, 4404/4499 (open: the lazy entries' bigger
+    methods, with a fault block, cost compile time in a 2 s run).
+    Conformance (7d927f7b, flock -s, --jobs 2): V8Sharp.Tests 1208/1208;
+    mjsunit default 1 newly failing, regress-1236560 (TIMEOUT, known);
+    mjsunit forced 4 newly failing: regress-1236560, regress-crbug-808192
+    and unicode-case-overoptimization0 (TIMEOUTs, known under load) and
+    regress-331074427 (worker OOM-killed by the session's memory cgroup
+    while another job held 5 GB; passes alone, as does
+    unicode-case-overoptimization0). An earlier default run at 491e52b5
+    had regress-1189077 (huge strings) OOM-killed the same way; it passes
+    alone. test262 default and forced 0 newly failing (95123 run).
+    Open, ranked:
+    1. RyuJIT's prolog zero-init of big direct entries: every JSValue
+       local and activation is a GC struct and must be zeroed; in
+       Richards' HandlerTask.run 26% of the samples are the 864-byte
+       zeroing of the lazy entry. Fewer, narrower locals (reuse of
+       temporaries across blocks, untagged locals for int/double values)
+       is the lever; SkipLocalsInit does not cover GC refs.
+    2. Allocation and GC (RayTrace, EarleyBoyer, Splay): see "Inlined
+       allocation and escape analysis".
+    3. Hot-loop code quality (spills, deopt exits): the other agent's
+       pass.
+    4. Typescript still spends most of its time below Maglev (interpreter
+       and baseline), so call costs there are the baseline frame's.
+    5. Class constructors and derived constructors have no direct entry
+       (frameful construct path); calls with more than six arguments use a
+       register window; ForInPrepare keeps an entry frameful.
   - Compile pipeline and tier-up (2026-10-04, f93817c5..dbf2af5b):
     concurrent jobs (MaglevConcurrentDispatcher.cs, maglev-concurrent-
     dispatcher.cc) build the graph on two worker threads (the main thread

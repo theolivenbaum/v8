@@ -44,6 +44,19 @@ public sealed class MaglevDeoptUnwind : Exception
 {
 }
 
+/// <summary>The kinds of direct call entries (architecture.md section 9.2).</summary>
+public enum MaglevDirectEntryKind
+{
+    /// <summary>No direct entry (OSR code, too many parameters, resumable functions).</summary>
+    None,
+    /// <summary>Builds the callee's interpreter frame and record.</summary>
+    Frameful,
+    /// <summary>Leaf code: no frame and no record.</summary>
+    Frameless,
+    /// <summary>A lazy frame record pointing at a MaglevActivation; the interpreter frame is built at a deopt.</summary>
+    LazyFrame,
+}
+
 public static class MaglevFastCalls
 {
     /// <summary>The most formal parameters a direct call entry takes.</summary>
@@ -162,6 +175,9 @@ public sealed class MaglevCode
     public Delegate? FastCall;
     /// <summary>The formal parameter count of <see cref="FastCall"/> (-1 without one).</summary>
     public int FastCallArity = -1;
+
+    /// <summary>How <see cref="FastCall"/> builds the callee's frame (MaglevCodeGenerator).</summary>
+    public MaglevDirectEntryKind DirectEntryKind { get; internal set; }
 
     /// <summary>Code::marked_for_deoptimization: activations deoptimize lazily when control returns to them.</summary>
     public bool MarkedForDeoptimization;

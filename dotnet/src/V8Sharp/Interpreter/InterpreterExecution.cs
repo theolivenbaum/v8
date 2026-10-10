@@ -42,6 +42,14 @@ public static partial class InterpreterExecution
     {
         // The native stack check of the trampoline (V8's StackOverflow on entry).
         if (!RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
+        // Maglev code is entered through its direct entry (a lazy or frameless
+        // one builds no interpreter frame), as V8's Call builtin jumps to the
+        // closure's optimized code.
+        if (!isConstruct && function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: { } maglevCode } &&
+            arguments.Length <= maglevCode.FastCallArity)
+        {
+            return Maglev.MaglevCalls.InvokeFastCall(isolate, maglevCode, function, receiver, arguments);
+        }
 
         var bytecode = (BytecodeArray)function.Shared.FunctionData!;
         JSValue[] stack = isolate.RegisterStack;
@@ -72,6 +80,12 @@ public static partial class InterpreterExecution
         JSValue newTargetOrGenerator, bool isConstruct)
     {
         if (!RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
+        // Maglev code: its direct entry (as Invoke).
+        if (!isConstruct && function.RawFeedbackCell.Value is FeedbackVector { MaglevCode: { } maglevCode } &&
+            argc <= maglevCode.FastCallArity)
+        {
+            return Maglev.MaglevCalls.InvokeFastCall(isolate, maglevCode, function, receiver, argsStart, argc, argc);
+        }
 
         var bytecode = (BytecodeArray)function.Shared.FunctionData!;
         JSValue[] stack = isolate.RegisterStack;

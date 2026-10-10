@@ -131,6 +131,13 @@ public sealed partial class MaglevGraphBuilder
                 SetAccumulator(applied2);
                 return;
             }
+            // TryReduceBuiltin's Function.prototype.call (ReduceFunctionPrototypeCall).
+            if (target.Shared.BuiltinId == Builtins.Builtin.FunctionPrototypeCall && mode != ConvertReceiverMode.NullOrUndefined &&
+                TryReduceFunctionPrototypeCall(receiver, args, nexus) is { } called)
+            {
+                SetAccumulator(called);
+                return;
+            }
             // SaveCallSpeculationScope: the reduction's checks disallow speculation here when they fail.
             ValueNode? reduced = null;
             if (speculate)
@@ -256,6 +263,30 @@ public sealed partial class MaglevGraphBuilder
             return result;
         }
         return null;
+    }
+
+    /// <summary>
+    /// ReduceFunctionPrototypeCall: f.call(thisArg, ...args) is a call of f
+    /// (the receiver of call) with thisArg and the rest: a constant f is
+    /// inlined or called directly (ReduceCallForConstant), any other f takes
+    /// the generic call with the arguments as values.
+    /// </summary>
+    ValueNode? TryReduceFunctionPrototypeCall(ValueNode function, ValueNode[] args, FeedbackNexus nexus)
+    {
+        ValueNode receiver = args.Length > 0 ? GetTaggedValue(args[0]) : GetRootConstant(RootIndex.kUndefinedValue);
+        ConvertReceiverMode mode = args.Length > 0 ? ConvertReceiverMode.Any : ConvertReceiverMode.NullOrUndefined;
+        ValueNode[] rest = args.Length > 1 ? args[1..] : [];
+        if (rest.Length >= s_callWithValues.Length) return null;
+        if (function.Opcode == Opcode.Constant && function.Value0.HeapObjectOrNull is JSFunction f && !f.Shared.IsClassConstructor)
+        {
+            if (TryBuildInlinedCall(f, function, receiver, rest, mode, nexus, isConstruct: false, null) is { } inlined) return inlined;
+            if (TryBuildDirectCall(f, receiver, rest, Register.InvalidValue(), mode) is { } direct) return direct;
+            return BuildCallKnownJSFunction(f, receiver, rest, Register.InvalidValue(), mode);
+        }
+        // (Another receiver of call only when it is known to be a function: the
+        // call builtin's TypeError for a receiver that is not callable is its own.)
+        if (function.Representation != ValueRepresentation.kTagged || !NodeTypes.Is(function.Type, NodeType.kJSFunction)) return null;
+        return BuildCall(function, receiver, rest, Register.InvalidValue(), mode);
     }
 
     /// <summary>
@@ -482,6 +513,9 @@ public sealed partial class MaglevGraphBuilder
         typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues1))!,
         typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues2))!,
         typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues3))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues4))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues5))!,
+        typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.CallWithValues6))!,
     ];
 
     /// <summary>
@@ -975,6 +1009,25 @@ public sealed partial class MaglevGraphBuilder
                 return;
             }
             // Not inlined: the construct stub and the call with the allocated receiver.
+            if (args.Length <= MaglevFastCalls.kMaxArity)
+            {
+                // The arguments as values (MaglevCalls.ConstructWithReceiverValues).
+                var valueInputs = new ValueNode[3 + args.Length];
+                var valueArgs = new BuiltinArg[4 + args.Length];
+                valueInputs[0] = GetConstant(target);
+                valueInputs[1] = receiver;
+                valueInputs[2] = newTarget;
+                valueArgs[0] = BuiltinArg.Isolate;
+                for (int i = 0; i < 3 + args.Length; i++)
+                {
+                    if (i >= 3) valueInputs[i] = args[i - 3];
+                    valueArgs[1 + i] = BuiltinArg.In(i);
+                }
+                ValueNode constructedValues = CallMaglev2("ConstructKnownJSFunction" + args.Length, valueInputs, valueArgs, []);
+                constructedValues.Type = NodeType.kJSReceiver;
+                SetAccumulator(constructedValues);
+                return;
+            }
             var stores = new (Register, ValueNode)[args.Length];
             for (int i = 0; i < args.Length; i++) stores[i] = (new Register(first.Index + i), args[i]);
             ValueNode constructed = CallMaglev2("ConstructKnownJSFunction", [GetConstant(target), receiver, newTarget],
@@ -984,14 +1037,67 @@ public sealed partial class MaglevGraphBuilder
             SetAccumulator(constructed);
             return;
         }
+        else if (speculate && count == 0 && feedback.HeapObjectOrNull is AllocationSite site && TryReduceConstructArrayConstructor(
+                     constructor, newTarget, site))
+        {
+            return;
+        }
         else if (speculate && nexus.IcState() == InlineCacheState.UNINITIALIZED && nexus.GetCallCount() == 0)
         {
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForConstruct);
             return;
         }
+        if (count <= MaglevFastCalls.kMaxArity)
+        {
+            // The arguments as values (MaglevBuiltins.ConstructValuesN).
+            var inputs = new ValueNode[2 + count];
+            var builtinArgs = new BuiltinArg[5 + count];
+            inputs[0] = constructor;
+            inputs[1] = newTarget;
+            builtinArgs[0] = BuiltinArg.Isolate;
+            builtinArgs[1] = Fv;
+            builtinArgs[2] = BuiltinArg.I(slot);
+            builtinArgs[3] = BuiltinArg.In(0);
+            builtinArgs[4] = BuiltinArg.In(1);
+            for (int i = 0; i < count; i++)
+            {
+                inputs[2 + i] = _frame.Get(new Register(first.Index + i));
+                builtinArgs[5 + i] = BuiltinArg.In(2 + i);
+            }
+            SetAccumulator(CallMaglev2("ConstructValues" + count, inputs, builtinArgs, []));
+            return;
+        }
         SetAccumulator(CallBaseline("Construct", [constructor, newTarget],
             [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.RegIndex(first), BuiltinArg.I(count),
              BuiltinArg.In(1)], RegisterListStores(first, count))!);
+    }
+
+    /// <summary>
+    /// TryReduceConstructArrayConstructor for `new Array()` with an
+    /// AllocationSite as the construct feedback: the checks that the target
+    /// and new.target are the Array function, and the array of the site's
+    /// elements kind allocated by a frame-free helper (MaglevBuiltins.NewArrayFromSite).
+    /// </summary>
+    /// <remarks>
+    /// V8 builds the allocation inline with the site's elements kind and
+    /// depends on the site (DependOnElementsKind); V8Sharp reads the site's
+    /// kind when the array is created and gives the array the site's memento,
+    /// as Runtime_NewArray does, so no dependency is needed.
+    /// </remarks>
+    bool TryReduceConstructArrayConstructor(ValueNode constructor, ValueNode newTarget, AllocationSite site)
+    {
+        if (site.SpeculationDisabled) return false;
+        NativeContext native = (_unit.Function ?? _info.Function).Context.NativeContext;
+        if (native.ArrayFunction is not JSFunction arrayFunction) return false;
+        BuildCheckValue(constructor, arrayFunction, DeoptimizeReason.kWrongConstructor);
+        BuildCheckValue(newTarget, arrayFunction, DeoptimizeReason.kWrongConstructor);
+        ValueNode array = BuildCallBuiltin(s_maglevBuiltins["NewArrayFromSite"], "NewArrayFromSite", [],
+            [BuiltinArg.Isolate, BuiltinArg.C(native), BuiltinArg.C(arrayFunction), BuiltinArg.C(site)], null,
+            OpProperties.kCanAllocate | OpProperties.kNotIdempotent)!;
+        ((CallBuiltinInfo)array.Obj0!).NoFrame = true;
+        array.Type = NodeType.kJSArray;
+        SetAccumulator(array);
+        return true;
     }
 
     // ---- Runtime calls -----------------------------------------------------------------------------------------

@@ -250,12 +250,17 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   Each frame also has an `InterpreterFrameRecord` in
   `Isolate.InterpreterFrames[0 .. InterpreterFrameDepth)`: `Fp`, one
   `Flags` byte (`Builtin`, `Constructor`, `Baseline`, `Maglev`,
-  `InlineCall`), and for frames entered from a caller's dispatch loop without
+  `InlineCall`, `Lazy`), and for frames entered from a caller's dispatch loop without
   a .NET call `ReturnPc` (on the caller's record) and `RegisterStart`. A
   builtin frame has no register window and keeps `BuiltinFunction` and
-  `BuiltinReceiver` in its record. The stack walker, `Error.stack`,
+  `BuiltinReceiver` in its record. A lazy optimized frame (`Lazy`, section
+  9.2 "Lazy frames") has a reserved but unwritten window and keeps the
+  address of its `MaglevActivation` (closure, receiver, arguments, argc,
+  bytecode offset; a local of the optimized code on the .NET stack) in
+  `Activation`. The stack walker, `Error.stack`,
   `arguments` materialization and the debugger read the record and the
-  frame's slots (`GetFunction`, `GetBytecode`, `GetPc`, `GetArgc`). Missing
+  frame's slots through `GetFunction`, `GetBytecode`, `GetPc`, `GetArgc`
+  and `GetReceiver`, which read a lazy frame's activation. Missing
   arguments are undefined in the parameter slots (V8's argument adaptation).
 
   While a frame runs, the dispatch loop (`InterpreterExecution.Loop<TS>`)
@@ -703,7 +708,9 @@ call `MaglevBuiltins` or the `BaselineBuiltins` the baseline tier uses
 (generic nodes: the same IC entry points and runtime functions). Constants
 are static fields of the method's type.
 
-**Frames.** The optimized frame *is* the interpreter frame
+**Frames.** Code entered at its frameful entry (`MaglevExecution.Run`
+for OSR, functions with more than six parameters, calls with more
+arguments than the direct entry takes, class constructors) runs in the interpreter frame
 `InterpreterExecution.EnterFrame` (or `MaglevCalls.EnterFrame`) built:
 registers are not kept in it while the code runs (values live in IL
 locals), only the fixed slots (receiver, arguments, context, closure,
@@ -732,10 +739,48 @@ Parameters assigned by the code stay in IL locals and reach the frame only
 before nodes that can observe it (`InterpreterFrameState.DirtyParameters`).
 A code body of at most 1200 bytes of IL without exception handlers is
 AggressiveInlining, so RyuJIT compiles it into the direct entry (one .NET
-call per JS call). Generic calls with up to three arguments pass them as
+call per JS call). Generic calls with up to six arguments pass them as
 values (`MaglevCalls.CallWithValuesN`): a callee with Maglev code is
 entered through its direct entry without going through the register stack.
+Baseline code (`BaselineCalls.EnterMaglev`) and the interpreter and runtime
+(`InterpreterExecution.Invoke`, `InvokeFromRegisters`) call Maglev code
+through its direct entry too, as V8's Call builtin jumps to the closure's
+code whatever its tier.
 The concurrent compile job prepares (JITs) the direct entry as well.
+
+**Lazy frames.** Every other call into Maglev code (from Maglev code,
+baseline code, the interpreter and the runtime's `Execution.Call`) enters
+its direct entry, and code that calls out gets a lazy one: the frameless
+pass of the graph (below), extended to code that can call, throw, deopt
+lazily and check interrupts (`MaglevCodeGenerator.GenerateLazy`). As V8's
+optimized frame, it builds no interpreter frame: the closure, the receiver,
+the arguments, argc and the bytecode offset of the current call go to a
+`MaglevActivation` local (its type sized by the arity,
+`MaglevActivation.TypeFor`), the frame record (`InterpreterFrameFlags.Lazy`)
+holds the activation's address, and the interpreter frame's register window
+is reserved (stack checks and the stack overflow depth as before) but not
+written (`MaglevCalls.EnterLazyFrame`; a fault block pops the record,
+the window and the context). Parameter assignments go to the activation
+before nodes that observe them (as `DirtyParameters` to frame slots),
+offsets to its `Pc`, block contexts only to `isolate.Context`. The stack
+walker reads the activation (`InterpreterFrameRecord.GetFunction` and the
+others); a deopt exit calls `MaglevCalls.DeoptimizeLazyFrame`, and the
+Deoptimizer builds the interpreter frame of every lazy record in its
+reserved window (`MaterializeLazyFrame`) before writing the translation,
+so frames of inlined functions pushed meanwhile stay above it. Inlined
+functions whose code does not read their frame get lazy records as well
+(`EmitPushLazyInlinedFrame`: one activation local per inlining depth,
+`EnterLazyInlinedFrame` instead of EnterInlinedFrame). Calls with up to six
+arguments and constructs with up to six pass their arguments as values
+(no register window in the frame); arguments objects, rest parameters
+and apply(this, arguments) of a lazy frame copy its activation's arguments
+into its window first (`MaglevCalls.CreateMappedArgumentsLazy` and the
+others); code that still reads or writes its frame (register-list calls
+with more arguments, other builtins taking the frame state) keeps the
+frameful direct entry
+(`V8SHARP_MAGLEV_TRACE_ENTRIES=1` names the node).
+`V8SHARP_MAGLEV_NO_LAZY_FRAMES=1` and `V8SHARP_MAGLEV_NO_LAZY_INLINED_FRAMES=1`
+turn them off.
 
 **Frameless entries.** As V8's optimized frames are not interpreter
 frames, code that cannot observe its frame (a leaf: no calls, throws, lazy

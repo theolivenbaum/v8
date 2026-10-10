@@ -93,6 +93,9 @@ public static class Deoptimizer
                 MaglevBuiltins.EnterInlinedFrame(isolate, function, f.Bytecode, f.FeedbackVector, f.Argc, f.IsConstruct);
             }
             ref InterpreterFrameRecord record = ref frames[recordIndex];
+            // A lazy frame (MaglevCalls, "Lazy optimized frames"): its
+            // interpreter frame is built from the activation first.
+            if (record.IsLazy) MaglevCalls.MaterializeLazyFrame(isolate, ref record, f.FeedbackVector);
             int fp = record.Fp;
             JSValue accumulator = JSValue.Undefined;
             Context? context = null;

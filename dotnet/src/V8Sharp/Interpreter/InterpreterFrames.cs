@@ -57,6 +57,15 @@ namespace V8Sharp
         /// caller in the same loop.
         /// </summary>
         InlineCall = 16,
+        /// <summary>
+        /// An optimized frame whose interpreter frame is not materialized (V8's
+        /// MaglevFrame: the values live in the optimized code): the record's
+        /// <see cref="InterpreterFrameRecord.Activation"/> holds the closure,
+        /// the bytecode offset, the receiver and the arguments
+        /// (Maglev.MaglevActivation), and its register window at Fp is reserved
+        /// but unwritten until a deopt materializes it (MaglevCalls.MaterializeLazyFrame).
+        /// </summary>
+        Lazy = 32,
     }
 
     /// <summary>
@@ -81,6 +90,14 @@ namespace V8Sharp
         public JSFunction? BuiltinFunction;
         /// <summary>The receiver of a builtin frame (interpreted frames keep it at fp - 9).</summary>
         public JSValue BuiltinReceiver;
+        /// <summary>
+        /// A lazy optimized frame (<see cref="InterpreterFrameFlags.Lazy"/>): the
+        /// address of its Maglev.MaglevActivation on the .NET stack.
+        /// </summary>
+        public nint Activation;
+
+        /// <summary>An optimized frame without its interpreter frame (<see cref="InterpreterFrameFlags.Lazy"/>).</summary>
+        public readonly bool IsLazy => (Flags & InterpreterFrameFlags.Lazy) != 0;
 
         public InterpreterFrameKind Kind
         {
@@ -121,17 +138,31 @@ namespace V8Sharp
 
         /// <summary>The frame's function: the closure slot of an interpreted frame, the record's of a builtin frame.</summary>
         public readonly JSFunction GetFunction(Isolate isolate) =>
-            (Flags & InterpreterFrameFlags.Builtin) != 0 ? BuiltinFunction! : InterpreterRuntime.FrameFunction(isolate, Fp);
+            (Flags & (InterpreterFrameFlags.Builtin | InterpreterFrameFlags.Lazy)) == 0 ? InterpreterRuntime.FrameFunction(isolate, Fp)
+            : (Flags & InterpreterFrameFlags.Builtin) != 0 ? BuiltinFunction!
+            : Maglev.MaglevActivation.At(Activation).Function;
 
         /// <summary>The bytecode of an interpreted frame (its bytecode array slot).</summary>
-        public readonly BytecodeArray GetBytecode(Isolate isolate) => InterpreterRuntime.FrameBytecode(isolate, Fp);
+        public readonly BytecodeArray GetBytecode(Isolate isolate) =>
+            (Flags & InterpreterFrameFlags.Lazy) != 0
+                ? (BytecodeArray)Maglev.MaglevActivation.At(Activation).Function.Shared.FunctionData!
+                : InterpreterRuntime.FrameBytecode(isolate, Fp);
 
         /// <summary>The current bytecode offset of an interpreted frame (its bytecode offset slot); 0 for a builtin frame.</summary>
         public readonly int GetPc(Isolate isolate) =>
-            (Flags & InterpreterFrameFlags.Builtin) != 0 ? 0 : InterpreterRuntime.FramePc(isolate, Fp);
+            (Flags & (InterpreterFrameFlags.Builtin | InterpreterFrameFlags.Lazy)) == 0 ? InterpreterRuntime.FramePc(isolate, Fp)
+            : (Flags & InterpreterFrameFlags.Builtin) != 0 ? 0
+            : Maglev.MaglevActivation.At(Activation).Pc;
 
         /// <summary>The actual argument count of an interpreted frame (its argument count slot).</summary>
-        public readonly int GetArgc(Isolate isolate) => InterpreterRuntime.FrameArgc(isolate, Fp);
+        public readonly int GetArgc(Isolate isolate) =>
+            (Flags & InterpreterFrameFlags.Lazy) != 0 ? Maglev.MaglevActivation.At(Activation).Argc : InterpreterRuntime.FrameArgc(isolate, Fp);
+
+        /// <summary>The receiver of an interpreted frame (its receiver slot, or a lazy frame's activation).</summary>
+        public readonly JSValue GetReceiver(Isolate isolate) =>
+            (Flags & InterpreterFrameFlags.Lazy) != 0
+                ? Maglev.MaglevActivation.At(Activation).Receiver
+                : isolate.RegisterStack[Fp + InterpreterRuntime.kReceiverOffset];
     }
 
     public sealed partial class Isolate
@@ -252,7 +283,9 @@ namespace V8Sharp.Interpreter
                 arguments = [];
                 return false;
             }
-            arguments = InterpreterRuntime.GetFrameArguments(isolate, frame.Fp, frame.GetArgc(isolate));
+            arguments = frame.IsLazy
+                ? Maglev.MaglevActivation.GetArguments(frame.Activation)
+                : InterpreterRuntime.GetFrameArguments(isolate, frame.Fp, frame.GetArgc(isolate));
             return true;
         }
 
@@ -260,7 +293,7 @@ namespace V8Sharp.Interpreter
         {
             if (frame.Kind == InterpreterFrameKind.Interpreted)
             {
-                JSValue receiver = isolate.RegisterStack[frame.Fp + InterpreterRuntime.kReceiverOffset];
+                JSValue receiver = frame.GetReceiver(isolate);
                 BytecodeArray bytecode = frame.GetBytecode(isolate);
                 JSFunction function = frame.GetFunction(isolate);
                 int pc = frame.GetPc(isolate);
