@@ -345,6 +345,21 @@ public static class MaglevBuiltins
     [MethodImpl(Inline)]
     public static JSValue LoadFixedArrayElement(JSValue elements, int index) => Unsafe.As<FixedArray>(elements._obj!)._data[index];
 
+    /// <summary>The array of a FixedArray, or null for other elements (no access follows then).</summary>
+    [MethodImpl(Inline)]
+    public static JSValue[]? FixedArrayDataOf(JSValue elements) => (elements._obj as FixedArray)?._data;
+
+    [MethodImpl(Inline)]
+    public static double[]? FixedDoubleArrayDataOf(JSValue elements) => (elements._obj as FixedDoubleArray)?._data;
+
+    [MethodImpl(Inline)]
+    public static void StoreDoubleData(double[] data, int index, double value)
+    {
+        // Every NaN but the hole is stored canonical (FixedDoubleArray::set).
+        if (double.IsNaN(value)) value = double.NaN;
+        data[index] = value;
+    }
+
     [MethodImpl(Inline)]
     public static double LoadFixedDoubleArrayElement(JSValue elements, int index) =>
         Unsafe.As<FixedDoubleArray>(elements._obj!)._data[index];
@@ -457,6 +472,48 @@ public static class MaglevBuiltins
     public static void StoreUint8ClampedFloat64(JSValue obj, int index, double value) =>
         TypedElement(obj, index, 1) = TypedArrayScalars.ClampDouble(value);
 
+    // The same on the array and byte offset of a typed array loaded with its
+    // length (MaglevCodeGenerator's typed array data locals).
+    [MethodImpl(Inline)]
+    public static byte[] TypedArrayDataOf(JSValue obj) => Unsafe.As<JSTypedArray>(obj._obj!).Buffer.BackingStoreBuffer;
+
+    [MethodImpl(Inline)]
+    public static int TypedArrayByteOffsetOf(JSValue obj) => (int)Unsafe.As<JSTypedArray>(obj._obj!).ByteOffset;
+
+    [MethodImpl(Inline)]
+    public static int LoadInt8Data(byte[] data, int byteIndex) => (sbyte)data[byteIndex];
+    [MethodImpl(Inline)]
+    public static int LoadUint8Data(byte[] data, int byteIndex) => data[byteIndex];
+    [MethodImpl(Inline)]
+    public static int LoadInt16Data(byte[] data, int byteIndex) => Unsafe.ReadUnaligned<short>(ref data[byteIndex]);
+    [MethodImpl(Inline)]
+    public static int LoadUint16Data(byte[] data, int byteIndex) => Unsafe.ReadUnaligned<ushort>(ref data[byteIndex]);
+        [MethodImpl(Inline)]
+    public static int LoadInt32Data(byte[] data, int byteIndex) => Unsafe.ReadUnaligned<int>(ref data[byteIndex]);
+    [MethodImpl(Inline)]
+    public static double LoadFloat32Data(byte[] data, int byteIndex) => Unsafe.ReadUnaligned<float>(ref data[byteIndex]);
+    [MethodImpl(Inline)]
+    public static double LoadFloat64Data(byte[] data, int byteIndex) => Unsafe.ReadUnaligned<double>(ref data[byteIndex]);
+
+    [MethodImpl(Inline)]
+    public static void StoreInt8Data(byte[] data, int byteIndex, int value) => data[byteIndex] = (byte)value;
+    [MethodImpl(Inline)]
+    public static void StoreInt16Data(byte[] data, int byteIndex, int value) =>
+        Unsafe.WriteUnaligned(ref data[byteIndex], (short)value);
+    [MethodImpl(Inline)]
+    public static void StoreInt32Data(byte[] data, int byteIndex, int value) => Unsafe.WriteUnaligned(ref data[byteIndex], value);
+    [MethodImpl(Inline)]
+    public static void StoreFloat32Data(byte[] data, int byteIndex, double value) =>
+        Unsafe.WriteUnaligned(ref data[byteIndex], (float)value);
+    [MethodImpl(Inline)]
+    public static void StoreFloat64Data(byte[] data, int byteIndex, double value) => Unsafe.WriteUnaligned(ref data[byteIndex], value);
+    [MethodImpl(Inline)]
+    public static void StoreUint8ClampedInt32Data(byte[] data, int byteIndex, int value) =>
+        data[byteIndex] = (byte)(value < 0 ? 0 : value > 255 ? 255 : value);
+    [MethodImpl(Inline)]
+    public static void StoreUint8ClampedFloat64Data(byte[] data, int byteIndex, double value) =>
+        data[byteIndex] = TypedArrayScalars.ClampDouble(value);
+
     /// <summary>The slow path of CheckMapsWithMigration: migrates a deprecated map, then checks the maps again.</summary>
     public static bool MigrateAndCheckMaps(Isolate isolate, JSValue value, Map[] maps)
     {
@@ -511,22 +568,22 @@ public static class MaglevBuiltins
         return (uint)index < (uint)str.Length ? StringCharCodeAt(s, index) : double.NaN;
     }
 
-    /// <summary>CheckedObjectToIndex: the int32 index of a Smi, an integral HeapNumber or an array index String.</summary>
-    public static bool TryObjectToIndex(JSValue value, out int index)
+    /// <summary>
+    /// CheckedObjectToIndex: the int32 index of a Smi, an integral HeapNumber
+    /// or an array index String, or long.MinValue (a result instead of an out
+    /// parameter: the IL local an out parameter writes would be address
+    /// exposed, which keeps RyuJIT from enregistering it anywhere in the method).
+    /// </summary>
+    public static long ObjectToIndexOrMin(JSValue value)
     {
         if (value.IsNumber)
         {
             double d = value.Number;
-            index = (int)d;
-            return index == d;
+            int index = (int)d;
+            return index == d ? index : long.MinValue;
         }
-        if (value._obj is JSString s && s.AsArrayIndex(out uint u) && u <= int.MaxValue)
-        {
-            index = (int)u;
-            return true;
-        }
-        index = 0;
-        return false;
+        if (value._obj is JSString s && s.AsArrayIndex(out uint u) && u <= int.MaxValue) return (int)u;
+        return long.MinValue;
     }
 
     /// <summary>
@@ -1014,15 +1071,17 @@ public static class MaglevBuiltins
         throw new JavaScriptException(exception, message);
     }
 
-    /// <summary>HandleNoHeapWritesInterrupt: serves pending interrupts (termination) at a loop back edge.</summary>
+    // HandleNoHeapWritesInterrupt: serves pending interrupts at a loop back
+    // edge (loops with calls), or exits to the interpreter for the ones a
+    // loop without calls cannot defer (kInterrupt).
     [MethodImpl(Inline)]
-    public static void HandleInterrupts(Isolate isolate)
-    {
-        if (isolate.StackGuard.HasPendingInterrupts) HandleInterruptsSlow(isolate);
-    }
+    public static bool HasPendingInterrupts(Isolate isolate) => isolate.StackGuard.HasPendingInterrupts;
+
+    [MethodImpl(Inline)]
+    public static bool HasUndeferrableInterrupts(Isolate isolate) => isolate.StackGuard.HasUndeferrableInterrupts;
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void HandleInterruptsSlow(Isolate isolate) => isolate.StackGuard.HandleInterrupts();
+    public static void HandleInterruptsSlow(Isolate isolate) => isolate.StackGuard.HandleInterrupts();
 
     /// <summary>The global proxy of a function's native context (the receiver a sloppy callee sees for undefined).</summary>
     /// <summary>The context of a function (a closure of a feedback cell inlined: its frame's context).</summary>

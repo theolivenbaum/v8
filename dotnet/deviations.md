@@ -574,6 +574,33 @@ for now, to be revisited when the reason goes away.
   time (V8 only invalidates it for exits inside the loop): a function whose
   own compile failed would otherwise re-enter the OSR code and deoptimize at
   the same exit on every call.
+- Deopt exits are cold for RyuJIT: the exits run in a try region of their
+  own (entered through a switch on the exit), and each spill chain ends in
+  `throw new MaglevDeoptUnwind()`, caught by the region's handler, which
+  returns the deopt's result (V8's exits are deferred code, out of line,
+  and its register allocator knows they are cold). RyuJIT's profile
+  synthesis gives a branch to a path that throws likelihood 0, and a branch
+  out of a loop 10% otherwise (48% for any other branch), so before this a
+  loop with a few checks looked barely hotter than its exits and its values
+  lived in stack slots. A deopt costs one .NET throw within the method.
+  Bodies small enough for their direct entry to inline them (RyuJIT does
+  not inline methods with exception handlers) keep plain exits unless they
+  have a loop.
+  `V8SHARP_MAGLEV_HOT_DEOPT_EXITS=1` emits the exits as plain returns.
+- Loop interrupt checks (HandleNoHeapWritesInterrupt), in loops whose
+  bytecode has no calls: code installation interrupts (INSTALL_*_CODE) are
+  left pending for the next function entry or interpreted back edge (such a
+  loop cannot observe them), and any other pending interrupt (termination,
+  API interrupts) exits to the interpreter at the back edge, an eager deopt
+  with the V8Sharp-only reason `kInterrupt` that does not invalidate the
+  code, whose JumpLoop serves it; V8 calls the runtime in deferred code and
+  continues. A call on the back edge made RyuJIT keep the loop's values in
+  stack slots (it has no deferred spilling), and the check needed the frames
+  of inlined functions; leaf code with loops now gets a frameless entry.
+  Loops with calls serve interrupts through a call as before, with the
+  bytecode offset store and inlined frame pushes on the slow path. (Exiting
+  for code installation too cost Richards' Scheduler.schedule loop, which
+  finished each run in the interpreter after a concurrent compile.)
 - Deopt exits are shared by the checks of one frame state; the failed
   check's reason is passed to the Deoptimizer at run time (V8 has one exit
   per check, with the reason in the deopt data).
@@ -678,7 +705,10 @@ for now, to be revisited when the reason goes away.
   multiplications whose uses all truncate become wrapping operations when
   the exact result is a safe integer; without range analysis the bound
   comes from the inputs' static ranges (constants, masks, shifts; int32
-  otherwise), and Float64 operations are not truncated.
+  otherwise). Float64 additions and subtractions of int32 values (int32
+  feedback that once overflowed) whose every use is TruncateFloat64ToInt32
+  become wrapping Int32Add / Int32Subtract at the truncations; other Float64
+  operations are not truncated.
 - Generators: the generator fields (context, input_or_debug_pos,
   continuation) are read and written by dedicated nodes
   (`LoadGeneratorField`, `StoreGeneratorContinuation`) where V8 uses
@@ -732,6 +762,16 @@ for now, to be revisited when the reason goes away.
   `BaselineBuiltins.StoreSlot` and transitions their helper, because the
   shared address locals make RyuJIT take seconds per compile in such
   methods (mjsunit compiler/constructor-inlining: 15 s for 20 KB of IL).
+- Element and typed array accesses index arrays held in IL locals: the
+  .NET array behind an elements node (FixedArray/FixedDoubleArray._data) is
+  loaded where the elements are loaded, and a typed array's backing array
+  and byte offset where its length is loaded (LoadTypedArrayLength, which
+  load elimination keeps until a call); V8 keeps the elements pointer in a
+  register and loads a typed array's data pointer per access. V8Sharp's
+  elements and buffers are replaced (RightTrim, detaching, resizing) only by
+  calls, after which the graph loads them again. Code with catch blocks and
+  split code keep the per-access loads. `V8SHARP_MAGLEV_NO_ELEMENTS_DATA=1`
+  turns both off.
 
 ## Interpreter execution, ICs, runtime, compiler and modules
 

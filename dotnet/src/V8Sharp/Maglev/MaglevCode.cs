@@ -35,6 +35,15 @@ public delegate JSValue MaglevFastCall5(Isolate isolate, JSFunction function, in
 public delegate JSValue MaglevFastCall6(Isolate isolate, JSFunction function, int argc, JSValue receiver, JSValue a0, JSValue a1,
     JSValue a2, JSValue a3, JSValue a4, JSValue a5);
 
+/// <summary>
+/// Thrown and caught inside one Maglev method by its deopt exits, which
+/// end in a throw so that RyuJIT treats them as cold (MaglevCodeGenerator.
+/// EmitDeoptExits); it never leaves the method.
+/// </summary>
+public sealed class MaglevDeoptUnwind : Exception
+{
+}
+
 /// <summary>The kinds of direct call entries (architecture.md section 9.2).</summary>
 public enum MaglevDirectEntryKind
 {

@@ -787,8 +787,8 @@ turn them off.
 
 **Frameless entries.** As V8's optimized frames are not interpreter
 frames, code that cannot observe its frame (a leaf: no calls, throws, lazy
-deopts, interrupt checks or frame reads and writes; eagerly pushed inlined
-frames excluded) gets a second code generation pass from the same graph
+deopts or frame reads and writes; eagerly pushed inlined frames excluded;
+loops are allowed, their interrupt checks deoptimize) gets a second code generation pass from the same graph
 (`MaglevCodeGenerator.TryGenerateFramelessEntry`): a method with the direct
 entry's signature that builds no frame and no frame record. Its InitialValues
 are the entry's arguments (the closure, its context, the receiver and the
@@ -828,8 +828,10 @@ an inlined function's arguments object is virtual for apply(thisArg,
 arguments). Contexts and closures are allocated by frame-free helpers.
 
 **Load elimination.** KnownNodeAspects keeps loaded fields (by object and
-storage index), elements, array and FixedArray lengths, and context slots;
-stores update their own key and forget aliases of it, and nodes that can
+storage index), elements, array, FixedArray and typed array lengths,
+global property cell values, and context slots; stores update their own key
+and forget aliases of it, an elements kind transition forgets only the maps
+of objects that may have a source map (and elements), and nodes that can
 run arbitrary code clear everything (MarkPossibleSideEffect). V8Sharp
 assumes a loop without calls changes nothing, checks that at the back edge
 (`LoopEffects`) and, when it did change something known at the header,
@@ -931,6 +933,28 @@ for every exit: an exit stores what one of the last 16 exits' spill blocks
 does not and jumps to it, and the chain ends in `MaglevBuiltins.Deopt0`.
 Consecutive exits share most of their live values, so an exit costs a few
 stores (zlib's biggest function: 434 KB of exit IL before, 33 KB after).
+
+**Code that RyuJIT compiles well.** RyuJIT's profile synthesis knows
+nothing of how often a branch is taken: it gives a branch out of a loop 10%
+and any other conditional branch 48%, but a path that ends in a throw 0%.
+With deopt exits that returned, a loop with a few checks looked barely
+hotter than its exits and its values lived in stack slots. So the exits are
+cold for it: they run in a try region of their own, entered through a
+switch on the exit, whose spill chains end in `throw new
+MaglevDeoptUnwind()`; the region's handler returns the deopt's result. A
+small body without loops that its direct entry inlines keeps plain exits
+(RyuJIT does not inline methods with exception handlers). For the same
+reason a loop's back edge has no call: in a loop without calls the
+interrupt check leaves code installation pending and deoptimizes, without
+invalidating the code (`kInterrupt`), for the other interrupts; loops with
+calls serve interrupts through a call whose slow path stores the bytecode
+offset and pushes lazily pushed inlined frames. Locals are never address
+exposed (an `out` parameter made the shared scratch local unenregistrable
+everywhere). The disassembly of the generated methods is the check:
+`DOTNET_JitDisasm='*maglev:name*'` (the methods are `maglev:<function>`,
+`...@osr<offset>`, `...:frameless` and `FastCall` of the code's type) and
+`DOTNET_JitStdOutFile`; `perf` with `DOTNET_PerfMapEnabled=1` and
+`DOTNET_EnableWriteXorExecute=0` names them in profiles.
 The IL goes through `MaglevILEmitter`, which counts what RyuJIT's
 optimization limits count and uses the short constant encodings.
 

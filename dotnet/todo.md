@@ -2060,7 +2060,8 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     suspects are the values the loop's deopt exits read (every check keeps
     the frame state live through the loop) and the size of the method
     (RyuJIT's allocator spills whole intervals). The scratch local of the
-    overflow checks was one such interval (removed).
+    overflow checks was one such interval (removed). The cause was the deopt
+    exits' block weights; see "Hot loop code quality" below.
     The branch before main's allocation work (octane-steady, parity
     publishes, 3 runs, against main 53e9d1ba; load 8.8/16.3, idle 0-1%,
     so noisy): geomean of the 15 +2.8% (621 vs 604), DeltaBlue +13%,
@@ -2367,6 +2368,145 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     5. Class constructors and derived constructors have no direct entry
        (frameful construct path); calls with more than six arguments use a
        register window; ForInPrepare keeps an entry frameful.
+  - Hot loop code quality (2026-10-09, 5aca1629..; V8 files:
+    maglev-code-generator.cc (deferred code), maglev-ir.cc
+    (HandleNoHeapWritesInterrupt, TransitionElementsKind), maglev-graph-builder.cc
+    (MarkPossibleSideEffect, TryBuildPropertyCellLoad, BuildLoadTypedArrayLength,
+    EnsureWritableFastElements), maglev-truncation.cc). Method: RyuJIT's
+    disassembly of the generated methods (DOTNET_JitDisasm='*maglev:am3*',
+    DOTNET_JitStdOutFile) and perf with perf maps (DOTNET_PerfMapEnabled=1,
+    DOTNET_EnableWriteXorExecute=0; the samples' offsets in a method against
+    its disassembly). What forced the spills:
+    - Block weights. RyuJIT knows nothing of how often a branch is taken: its
+      profile synthesis gives a branch out of a loop 10% and others 48%, so a
+      loop with a few checks looked barely hotter than its deopt exits, and
+      LSRA kept the loop's values in stack slots (am3's loop: every value in
+      memory; with the exit's spills removed, all in registers). Deopt exits
+      are now cold: a try region of their own whose spill chains end in a
+      throw (likelihood 0), caught by the region's handler, which returns.
+    - Calls on the back edge: the interrupt check's call (with the bytecode
+      offset store and the push of lazily pushed inlined frames on every
+      iteration) made the loop's values live across a call. Loops without
+      calls now exit to the interpreter for an interrupt they cannot defer
+      (kInterrupt, the code stays valid) and leave code installation pending;
+      loops with calls keep the call, with the offset store and the frame
+      pushes on its slow path. Leaf code with loops gets frameless entries.
+    - Address exposure: CheckedObjectToIndex's slow path took the int scratch
+      local by reference, which kept it in memory in the whole method.
+    - Graph-level: elements kind transitions cleared everything they could
+      not (Crypto's am3 inlined in montReduce transitioned, checked maps and
+      reloaded both arrays per element); mutable globals and typed array
+      lengths were loaded per access; a Float64 add of int32 values whose
+      uses all truncate (am3's `+ c` after its feedback overflowed) was a
+      double add and a ToInt32; the COW check and CheckInt32IsSmi of masked
+      values ran per element store.
+    - Indirections: element accesses loaded FixedArray._data per access
+      (RyuJIT cannot hoist it past byref stores), typed array accesses
+      followed typed array, buffer and backing store per access; both now
+      read locals loaded with the elements / the length.
+    Per change (octane-quick, bin builds, 3 interleaved runs, a = the
+    branch base caed044a; the host was loaded, load 7-17 at the starts):
+    cold exits Crypto/NS/Gameboy/Mandreel within noise (a: 543/1698/462/442,
+    cold exits: 494/1829/479/468); + interrupt slow path, address exposure,
+    transitions (c4): Crypto 603 -> 797 (+32%), NavierStokes 1669 -> 1881
+    (+13%), Mandreel 474 -> 530 (+12%); + interrupt exits, frameless loops,
+    global and typed array length load elimination (c8): Mandreel 514 ->
+    806 (+57%), Crypto 894 -> 783 (within its range, 713-850); + Float64
+    truncation, elements and typed array data locals (c12, against c8):
+    NavierStokes 1880 -> 2389 (+27%), Mandreel 766 -> 1152 (+50%), PdfJS
+    738 -> 911, Gameboy 523 -> 559; Richards and Box2D within noise.
+    Exiting for code installation interrupts too sent Richards'
+    Scheduler.schedule to the interpreter after every concurrent compile
+    (27 exits in 30 runs; fixed before measuring).
+    octane-steady at e0d9478a (warm, compile time excluded), parity
+    publishes (R2R composite, self-contained) of caed044a and e0d9478a, 3
+    interleaved runs, two sessions: load 2.4/2.3 and 2.3/2.9, steal 0%,
+    idle 99%, cpu-cal 1710/1791 and 1711/1834 ms, mem-bw 20.0/20.1 and
+    18.5/19.4 GB/s; V8 crashed (exit 139) on 6 benchmark/engine runs,
+    their means are over the other runs; latency rows out:
+
+    | benchmark | caed044a | e0d9478a | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 1358 | 1250 | 6382 | 8850 |
+    | DeltaBlue | 1543 | 1622 | 7092 | 12161 |
+    | Crypto | 274 | 461 | 741 | 1544 |
+    | RayTrace | 617 | 609 | 3155 | 4429 |
+    | EarleyBoyer | 131 | 133 | 660 | 857 |
+    | RegExp | 221 | 221 | 776 | 862 |
+    | Splay | 2353 | 2595 | 8752 | 7584 |
+    | NavierStokes | 1586 | 1787 | 1698 | 2873 |
+    | PdfJS | 1258 | 1039 | 6302 | 6444 |
+    | Mandreel | 463 | 1093 | 3345 | 4464 |
+    | Gameboy | 1518 | 1680 | 4742 | 5523 |
+    | CodeLoad | 3111 | 2900 | 3163 | 3147 |
+    | Box2D | 2879 | 3062 | 13362 | 15395 |
+    | zlib | 948 | 975 | 1577 | 1659 |
+    | Typescript | 404 | 379 | 2126 | 2190 |
+    | geomean | 867 | 953 | 2954 | 3698 |
+
+    Warm geomean +10%: 25.8% of v8:jit (from 23.4%), 32.3% of v8:maglev.
+    NavierStokes is above v8:maglev. PdfJS -17% here did not reproduce: a
+    second session (4 runs) gave 1272 vs 1225 (-4%, within noise), with
+    the cold exits off 1332 vs 1265, with the data locals off 1296 vs 1285.
+    Final, merged with main 7e2b5fd6 (calls and frames) at 07d0d079;
+    octane-steady, parity publishes of 7e2b5fd6 and 07d0d079, 3 interleaved
+    runs, two sessions: load 1.8/2.0 and 1.6/3.0, steal 0%, idle 97-98%,
+    cpu-cal 1837/1615 and 1676/1757 ms, mem-bw 18.9/18.1 and 19.7/18.7
+    GB/s; V8 crashed (exit 139) on 5 benchmark/engine runs, their means are
+    over the other runs; latency rows out:
+
+    | benchmark | main 7e2b5fd6 | 07d0d079 | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 1745 | 1578 | 6281 | 8789 |
+    | DeltaBlue | 2242 | 2155 | 7841 | 12214 |
+    | Crypto | 295 | 447 | 749 | 1652 |
+    | RayTrace | 716 | 704 | 2946 | 4946 |
+    | EarleyBoyer | 162 | 159 | 667 | 883 |
+    | RegExp | 222 | 219 | 815 | 832 |
+    | Splay | 2776 | 2714 | 8705 | 7430 |
+    | NavierStokes | 1404 | 1681 | 1787 | 2856 |
+    | PdfJS | 1161 | 1206 | 6095 | 6114 |
+    | Mandreel | 499 | 784 | 2768 | 4569 |
+    | Gameboy | 1526 | 1915 | 5183 | 5390 |
+    | CodeLoad | 2927 | 2743 | 3231 | 3291 |
+    | Box2D | 2712 | 2930 | 11237 | 15942 |
+    | zlib | 919 | 907 | 1592 | 1424 |
+    | Typescript | 435 | 460 | 1968 | 2039 |
+    | geomean | 927 | 1002 | 2911 | 3685 |
+
+    Warm geomean +8.0% over main: 27.2% of v8:jit (from 25.2%), 34.4% of
+    v8:maglev. Richards -10% is within its bimodal range (see above).
+    Cold Octane (start-up, wall clock, same publishes, 3 interleaved runs,
+    load 2.0/3.1, steal 0%, cpu-cal 1760/1870 ms, mem-bw 17.6/18.8 GB/s;
+    V8 crashed on 8 benchmark/engine runs): geomean (latencies in) 4038 ->
+    4187 (+3.7%; v8:maglev 18743, v8:jit 24375); Mandreel 2475 -> 3588,
+    Crypto 3087 -> 4115, Box2D 3398 -> 3855, NavierStokes 12181 -> 13207,
+    DeltaBlue 2200 -> 2490; EarleyBoyer 4081 -> 3225 and Splay 2854 -> 2391
+    (cold noise; their warm rows are equal).
+    Toward 50% of v8:jit warm, by share of the log gap: RayTrace x7.0,
+    Mandreel x5.8, DeltaBlue x5.7, Richards x5.6, EarleyBoyer x5.5, Box2D
+    x5.4 (9-10% each), PdfJS x5.1, Typescript x4.4, RegExp x3.8, Crypto
+    x3.7, Gameboy x2.8, Splay x2.7, NavierStokes x1.7, zlib x1.6, CodeLoad
+    x1.2.
+    Conformance (532e3832, after merging main 7e2b5fd6; flock -s, --jobs 2,
+    with other agents' conformance runs on the host, load up to 26):
+    V8Sharp.Tests 1220/1220; test262 default and forced 0 newly failing
+    (95123 run each); mjsunit default 1 newly failing, regress-crbug-808192
+    (TIMEOUT, known load-sensitive); mjsunit forced 3 newly failing,
+    regress-crbug-808192, regress-484904778 and wasm/compare-exchange-stress
+    (TIMEOUTs; the last two pass alone, as do regress-crbug-740398 and
+    regress-crbug-854299, flaky in the run).
+    Open, for hot loops: RyuJIT's prolog zeroing of JSValue locals (every
+    local holding an object reference is zeroed, 864 bytes per call in
+    Richards' HandlerTask.run: fewer and narrower locals, untagged locals
+    where the value is a number, no struct locals); register pressure in
+    big methods with inlined loops (Crypto's montReduce/bnpSquareTo: frames
+    of 900+ bytes, phi moves through memory); two bounds checks per element
+    access (the JS length and the .NET array's, which RyuJIT cannot
+    elide); overflow checks as 64-bit compares (add.ovf would throw);
+    int32 elements are doubles in JSValue (a conversion per load and
+    store); the interrupt check reads StackGuard's flags through the
+    isolate (two loads per back edge).
   - Compile pipeline and tier-up (2026-10-04, f93817c5..dbf2af5b):
     concurrent jobs (MaglevConcurrentDispatcher.cs, maglev-concurrent-
     dispatcher.cc) build the graph on two worker threads (the main thread

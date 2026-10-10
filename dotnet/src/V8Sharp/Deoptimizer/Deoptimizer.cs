@@ -242,7 +242,7 @@ public static class Deoptimizer
     /// assumption of the code failed.
     /// </summary>
     static bool IsDeoptimizationWithoutCodeInvalidation(DeoptimizeReason reason) =>
-        reason is DeoptimizeReason.kPrepareForOnStackReplacement or DeoptimizeReason.kOSREarlyExit;
+        reason is DeoptimizeReason.kPrepareForOnStackReplacement or DeoptimizeReason.kOSREarlyExit or DeoptimizeReason.kInterrupt;
 
     /// <summary>DeoptExitIsInsideOsrLoop: the loop from the OSR entry's header to its JumpLoop.</summary>
     static bool DeoptExitIsInsideOsrLoop(MaglevCode code, int deoptExitOffset) =>

@@ -54,6 +54,8 @@ public static class PropertyKeys
     /// <summary>The length of a FixedArray(Base) (the object is the elements).</summary>
     public const int kFixedArrayLength = -3;
     public const int kTypedArrayLength = -4;
+    /// <summary>A global property cell's value (the object is the cell's constant).</summary>
+    public const int kPropertyCellValue = -5;
 }
 
 /// <summary>
@@ -75,6 +77,11 @@ public sealed class KnownNodeAspects
     /// stores and map transitions of non-prototype objects cannot).
     /// </summary>
     public readonly HashSet<Cell> CheckedValidityCells;
+    /// <summary>
+    /// Elements nodes checked not to be copy-on-write on this path (whether a
+    /// FixedArray is copy-on-write never changes, so no effect forgets it).
+    /// </summary>
+    public readonly HashSet<ValueNode> WritableElements;
     /// <summary>virtual_objects: the current versions of the tracked allocations (immutable, shared by clones).</summary>
     public VirtualObjectList VirtualObjects = VirtualObjectList.Empty;
 
@@ -85,6 +92,7 @@ public sealed class KnownNodeAspects
         LoadedContextSlots = new();
         LoadedContextConstants = new();
         CheckedValidityCells = new(ReferenceEqualityComparer.Instance);
+        WritableElements = new(ReferenceEqualityComparer.Instance);
     }
 
     KnownNodeAspects(Dictionary<ValueNode, NodeInfo> infos, KnownNodeAspects from)
@@ -94,6 +102,7 @@ public sealed class KnownNodeAspects
         LoadedContextSlots = new(from.LoadedContextSlots);
         LoadedContextConstants = new(from.LoadedContextConstants);
         CheckedValidityCells = new(from.CheckedValidityCells, ReferenceEqualityComparer.Instance);
+        WritableElements = new(from.WritableElements, ReferenceEqualityComparer.Instance);
         VirtualObjects = from.VirtualObjects;
     }
 
@@ -198,6 +207,33 @@ public sealed class KnownNodeAspects
     }
 
     /// <summary>
+    /// After an elements kind transition from one of <paramref name="sources"/>
+    /// (V8's ClearUnstableMapsIfAny for TransitionElementsKind): only objects
+    /// that may have a source map can have changed their map.
+    /// </summary>
+    public void ClearMapsIntersecting(Map[] sources)
+    {
+        foreach (KeyValuePair<ValueNode, NodeInfo> e in _infos)
+        {
+            NodeInfo info = e.Value;
+            if (info.PossibleMaps is not { } maps) continue;
+            bool hit = false;
+            foreach (Map m in maps)
+            {
+                if (Array.IndexOf(sources, m) >= 0)
+                {
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit) continue;
+            info.PossibleMaps = null;
+            info.AnyMapIsUnstable = false;
+            if (NodeTypes.Is(info.Type, NodeType.kJSReceiver)) info.Type = NodeType.kJSReceiver;
+        }
+    }
+
+    /// <summary>
     /// KnownNodeAspects::Merge: keep only what both paths know. The virtual
     /// objects are intersected, unless the caller merged them
     /// (<paramref name="mergeVirtualObjects"/> false:
@@ -240,6 +276,7 @@ public sealed class KnownNodeAspects
         Intersect(LoadedContextConstants, other.LoadedContextConstants);
         if (mergeVirtualObjects) VirtualObjects = VirtualObjects.Intersect(other.VirtualObjects);
         CheckedValidityCells.IntersectWith(other.CheckedValidityCells);
+        WritableElements.IntersectWith(other.WritableElements);
     }
 
     /// <summary>Forgets the loaded values that are <paramref name="values"/> or have them as object (a loop's phis).</summary>

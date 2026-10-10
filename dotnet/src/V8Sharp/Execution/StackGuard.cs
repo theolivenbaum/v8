@@ -43,6 +43,18 @@ public sealed class StackGuard(Isolate isolate)
         get => Volatile.Read(ref _interruptFlags) != 0;
     }
 
+    /// <summary>
+    /// V8Sharp: a pending interrupt other than code installation (which a
+    /// loop without calls cannot observe, and which the next function entry
+    /// or interpreted back edge serves).
+    /// </summary>
+    public bool HasUndeferrableInterrupts
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => (Volatile.Read(ref _interruptFlags) &
+                ~(int)(InterruptFlag.INSTALL_CODE | InterruptFlag.INSTALL_BASELINE_CODE | InterruptFlag.INSTALL_MAGLEV_CODE)) != 0;
+    }
+
     public bool CheckInterrupt(InterruptFlag flag) => (Volatile.Read(ref _interruptFlags) & (int)flag) != 0;
 
     public void RequestInterrupt(InterruptFlag flag)

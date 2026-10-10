@@ -16,6 +16,9 @@ public enum DeoptimizeReason : byte
     kHole,
     kHoleOrUndefined,
     kInstanceMigrationFailed,
+    // V8Sharp: a Maglev loop's interrupt check found an interrupt pending
+    // (the interpreter serves it; the code stays valid).
+    kInterrupt,
     kInsufficientTypeFeedbackForArrayLiteral,
     kInsufficientTypeFeedbackForBinaryOperation,
     kInsufficientTypeFeedbackForCall,
@@ -152,6 +155,7 @@ public static class DeoptimizeReasons
         DeoptimizeReason.kOutOfBounds => "out of bounds",
         DeoptimizeReason.kOverflow => "overflow",
         DeoptimizeReason.kPrepareForOnStackReplacement => "prepare for on stack replacement (OSR)",
+        DeoptimizeReason.kInterrupt => "interrupt",
         DeoptimizeReason.kSmi => "Smi",
         DeoptimizeReason.kStoreToConstant => "Storing to a constant field",
         DeoptimizeReason.kValueMismatch => "value mismatch",
