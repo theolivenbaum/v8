@@ -137,11 +137,14 @@ Ported from `src/objects/map.*`, `descriptor-array.*`, `transitions.*`,
   literals) and in-object slack tracking (`Map::InobjectSlackTrackingStep`,
   `MapUpdater::CompleteInobjectSlackTracking`) shrinks them after seven
   constructions. A CLR object has a fixed size, so ordinary objects are
-  allocated from a small chain of classes (`JSObjectInObject1` ...
-  `JSObjectInObject256`) whose `[InlineArray]` segments are the slots, the
-  smallest that holds the map's in-object count; a larger class derives from
-  the smaller ones, so slot i is the same field in every object that has it
-  (`JSObject.InObjectSlot`, span indexing, no `unsafe`). Arguments objects
+  allocated from a small set of classes (`JSObjectInObject1` ...
+  `JSObjectInObject8`, then 12, 16, 32, 64, 128, 256) whose
+  `[InlineArray]` segments are the slots, the smallest that holds the map's
+  in-object count; 1-4 and 8-256 form a chain (a larger class derives from
+  the smaller ones), 5, 6 and 7 are siblings deriving from the 4-slot class
+  (type checks walk the class chain), and in every class slot i is at the
+  same offset from slot 0 (`JSObject.InObjectSlot`, span indexing, no
+  `unsafe`). Arguments objects
   derive from the two-slot class. Other JSObject subclasses (arrays,
   functions, ...) keep their in-object fields at the front of the
   PropertyArray. `FieldIndex` encodes V8's (in-object, index)
@@ -806,7 +809,14 @@ constructs the object of the map's in-object slot class
 calls that are never pushed), KnownNodeAspects keeps its `VirtualObject`
 (map and in-object fields, a new immutable version per store, including map
 transitions); loads of its fields are the stored values and deopt frames
-capture the current `VirtualObjectList`. After the graph is built,
+capture the current `VirtualObjectList`. At a merge, versions of one
+allocation that differ are merged field by field with phis
+(`MergePointInterpreterFrameState.MergeVirtualObjects`, V8's
+MergeVirtualObject): the object stays virtual after an if/else that stores
+different values into it. Versions with different maps (one path added a
+property), or with different nested allocations in a field, and the
+versions at loop headers and catch blocks are not merged (V8 escapes them
+there). After the graph is built,
 `MaglevEscapeAnalysis` elides the allocations nothing lets escape (with
 those stored in their fields) and removes their stores; a deopt exit spills
 the fields of the elided objects its frames hold, and the Deoptimizer

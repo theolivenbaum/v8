@@ -641,8 +641,10 @@ for now, to be revisited when the reason goes away.
   and the current map, and a map transition (StoreMapTransition) updates it
   (V8's StoreMap escapes the allocation): a constructor's this.x = ... keeps
   the object elidable. (3) Differing versions of a virtual object at a merge
-  are dropped (V8 merges them slot by slot with phis); a deopt frame after
-  the merge that holds the object makes it escape. (4) The allocation is
+  are merged slot by slot with phis as in V8, but only when their maps are
+  equal (V8's versions never differ in map: its StoreMap escapes); versions
+  with different maps are dropped, and a deopt frame after the merge that
+  holds the object makes it escape. (4) The allocation is
   the .NET object of the map's in-object slot class constructed by the IL
   (V8 bumps the allocation top of a folded AllocationBlock); allocations are
   not folded, and only stores of a transition whose map the next transition
@@ -965,7 +967,7 @@ Heap and object model
   be sized per allocation, so ordinary objects (the instance types
   `JSObject.UsesInObjectSlots` lists: JS_OBJECT_TYPE, API objects, errors,
   the special prototype types) are allocated from a chain of classes with
-  `[InlineArray]` slot segments (1, 2, 3, 4, 8, 12, 16, 32, 64, 128, 256 slots), the
+  `[InlineArray]` slot segments (1 to 8, 12, 16, 32, 64, 128, 256 slots), the
   smallest covering the map's in-object property count. After in-object slack
   tracking shrinks a map, objects allocated earlier keep their larger class
   (V8 turns the tail into filler). Arguments objects (at most two in-object
@@ -981,7 +983,8 @@ Heap and object model
   is Name's raw hash field for names), not in `properties_or_hash`: a field
   of the root class fills the padding after InstanceType, where a JSReceiver
   field would add 8 bytes to every object. The two spare bytes of that word
-  (`HeapObject._headerFlags`) hold JSString's internalized bit, and a
+  (`HeapObject._headerFlags`) hold JSString's internalized bit and a
+  Context's kind (V8: the context map's instance type), and a
   FixedArray's copy-on-write bit is its unused hash field, for the same reason.
 - `properties_or_hash` is one field, `JSReceiver._fields`, as in V8: the
   PropertyArray in fast mode; in dictionary mode an array whose last element
