@@ -2447,6 +2447,142 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     Octane time).
     GC pauses are 10-17% of Typescript, PdfJS, Gameboy and EarleyBoyer (the
     allocation work).
+  - Allocation and GC (2026-10-10, cd84ea06..; V8 files:
+    maglev-interpreter-frame-state.cc MergeVirtualObjects/MergeVirtualObject/
+    MergeVirtualObjectValue, js-objects.h instance sizes, contexts.h).
+    Measured first (V8SharpBench `@gc` line and V8SHARP_BENCH_GCTRACE=1 over
+    the measured runs of octane-steady, V8SHARP_BENCH_ALLOCPROFILE, perf
+    of the main thread's measured window):
+    - RayTrace: 390 MB per quick window (Vector/Color 96 bytes, 54%;
+      IntersectionInfo 176 bytes, 33%), 24 gen-0 GCs of 2.3 ms; the GC's
+      zeroing of fresh allocation contexts (memset under
+      a_fit_segment_end_p) is ~10% of the main thread, write barriers 5%,
+      the collections 2-3%.
+    - EarleyBoyer: 2 GB per window, 25M objects (cons cells, 80 bytes each:
+      CLR header 16, header word 8, map/properties/elements 24, two 16-byte
+      JSValue slots); GC 27% of the main thread plus 9% kernel page faults
+      under the zeroing. A gen-0 GC walks every object of gen 0, live or dead
+      (plan_phase), so its cost is per allocated object (~20 ns), not per
+      survivor as V8's scavenger: 13 ms per gen-0 GC promoting 2.6 MB.
+      gen0size 2-64 MB moves pauses between GCs, total 570-880 ms either way.
+      The cons cells escape (phi inputs of `x === null ? null : new
+      sc_Pair(..)`, returned): no escape analysis removes them (nor V8's).
+    - Splay: every collection in the measured window is a blocking gen-2 GC
+      (reason alloc_soh, 215-270 ms each; 44-63% of the main thread).
+      Concurrent GC made it worse (44 gen-1 GCs of 90 ms: 4x the pause), as
+      did gen0size 32-64 MB; GCgen0MaxBudget is not honoured with regions.
+    - Gameboy, PdfJS: their gen-2 GCs were all alloc_loh (large element
+      backing stores): Gameboy 11-12 per window (230 ms), PdfJS 4 (200 ms).
+    - Box2D allocates 45 MB per window: not allocation-bound.
+    Changes:
+    - In-object slot classes for 5, 6 and 7 fields (4aa273fa): siblings of
+      the 4-slot class (type checks walk the chain); objects of 5-7 fields
+      were allocated with 8 slots (16-48 bytes more): RayTrace's
+      IntersectionInfo 176 -> 160 bytes, DeltaBlue's variables, Richards'
+      packets and tasks.
+    - Virtual objects merged at joins with phis (1662f147, V8's
+      MergeVirtualObjects): versions that differ in field values are merged
+      field by field; different maps or different nested allocations are
+      not (V8 never has differing maps: its StoreMap escapes), nor loop
+      headers and catch blocks. Deopt frames after the merge capture the
+      merged version; ComputeUseCounts counts the fields of undecided
+      allocations so the phis survive until the escape analysis.
+      V8SHARP_MAGLEV_NO_VO_MERGE=1 for A/B.
+    - Context's kind in the header word's flag byte (0ff2cbac): 48 -> 40
+      bytes per context.
+    - System.GC.LOHThreshold 2 MB in d8sharp's and V8Sharp.Bench's
+      runtimeconfig (4320941c, host configuration, deviations.md General):
+      Gameboy 1 full GC per window instead of 12 (pause 217 -> 54 ms).
+    - V8Sharp.Bench: `@gc` line (allocated MB, collections, pause over the
+      measured runs), V8SHARP_BENCH_GCTRACE=1; the escape analysis trace
+      names the function and the node whose deopt frame lacks a virtual
+      object.
+    Per change (octane-quick, interleaved, idle host): slot classes
+    RayTrace +5%, VO merges RayTrace +10% (4 runs: 920 / 967 / 1066 for
+    before / classes / both; Box2D, DeltaBlue, Richards, EarleyBoyer within
+    noise); LOH threshold (two sessions, 3 and 5 runs) Gameboy +8% / +18%,
+    PdfJS +26% / -1%, Box2D -14% / +10% (noise), Splay +5%, the rest
+    within noise; cold (wall, 4 runs) Gameboy and PdfJS about 10% lower
+    with it than without (cold noise is of that size).
+    Escape analysis counts (Octane under d8sharp, --trace-maglev-escape-
+    analysis): RayTrace 20 -> 22 allocation sites elided; Box2D, EarleyBoyer,
+    DeltaBlue and Splay still none. Why, measured: Box2D's constructors
+    (`this.constructor === r && this.b2Vec2.apply(this, arguments)`, `r` a
+    mutable slot of a module context too big for V8's function context
+    cells) merge an object with and without its fields: versions with
+    different maps; RayTrace's objects flow into non-inlined calls and
+    returns (an experiment that let inlined frames' arguments be elided
+    turned those escapes into call escapes: 20 -> 21).
+    Tried and dropped (measured): server GC with 2 heaps (octane-quick,
+    3 runs: EarleyBoyer +14% and wall -8%, Typescript +22% and wall -10%,
+    PdfJS +9%, Gameboy +7%, but DeltaBlue -19%, RayTrace -11%; it also moves
+    GC work off the scored thread), concurrent GC (Splay 2x slower),
+    gen0size 64 MB (EarleyBoyer +6-9%, Splay -16%, Richards -9%), the
+    segments GC (libclrgc.so; +10% EarleyBoyer, -11% Splay, as measured in
+    phase 1), RetainVM.
+    Final (octane-steady, parity publishes of main 433196ae and 4320941c,
+    3 interleaved runs, two sessions: load 4.7/2.1 and 1.7/2.8, steal 0%,
+    idle 86-99%, cpu-cal 1712/1755 and 1906/1784 ms, mem-bw 15.7/19.4 and
+    17.9/19.3 GB/s; V8 crashed (exit 139) on 9 benchmark/engine runs, their
+    means are over the others; latency rows out):
+
+    | benchmark | main 433196ae | 4320941c | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 1691 | 1511 | 6597 | 8891 |
+    | DeltaBlue | 1797 | 2112 | 6700 | 11505 |
+    | Crypto | 378 | 379 | 775 | 1527 |
+    | RayTrace | 1067 | 1115 | 2964 | 4384 |
+    | EarleyBoyer | 157 | 160 | 629 | 889 |
+    | RegExp | 217 | 218 | 770 | 793 |
+    | Splay | 3492 | 2149 | 8763 | 7236 |
+    | NavierStokes | 1578 | 1559 | 1658 | 2718 |
+    | PdfJS | 1352 | 1566 | 5670 | 6722 |
+    | Mandreel | 864 | 848 | 2955 | 5053 |
+    | Gameboy | 1947 | 2072 | 4930 | 5948 |
+    | CodeLoad | 3079 | 2870 | 3334 | 3351 |
+    | Box2D | 4099 | 4536 | 12681 | 13041 |
+    | zlib | 888 | 907 | 1643 | 1560 |
+    | Typescript | 450 | 418 | 2047 | 1955 |
+    | geomean | 1067 | 1052 | 2895 | 3635 |
+
+    Geomean -1.4%, 28.9% of v8:jit: within noise. Splay's base row is
+    bimodal (2166/3882/4429); a repeat session (3 runs) gave Splay 1924 /
+    2719, Typescript 393 / 409 and Richards 1642 / 1526 (main / final;
+    Richards is bimodal, see "Types, calls and huge functions"). Gains:
+    DeltaBlue +18%, PdfJS +16%, Box2D +11%, Gameboy +6%, RayTrace +5%.
+    Cold Octane (wall, same publishes, 3 runs, load 2.2/3.9, cpu-cal
+    1776/2003 ms, mem-bw 16.3/18.5 GB/s; V8 crashed 4 times): geomean 4939
+    -> 4873 (-1.3%; v8:maglev 18801, v8:jit 23438); RayTrace +14%, Box2D
+    +17%, CodeLoad +6%; Gameboy -16%, PdfJS -12% (a 4-run cold A/B of
+    these two: base / final / final without the LOH threshold Gameboy
+    5946 / 6128 / 6714, PdfJS 2361 / 2328 / 2581).
+    Conformance at 4320941c (after merging main 433196ae; flock -s, --jobs
+    2): V8Sharp.Tests 1254/1254; test262 default and forced 0 newly failing
+    (95123 run each); mjsunit default 0 newly failing, 1 newly passing
+    (wasm/gc-js-interop-objects; 8902 run); mjsunit forced 0 newly failing,
+    1 newly passing (8862 run). Earlier runs on this branch had only the
+    known load-sensitive TIMEOUTs (regress-crbug-808192, regress-1236560,
+    regress-484904778: 55-60 s alone on main's build too).
+    Open, ranked by what the measurements say:
+    1. GC cost per allocated object (EarleyBoyer, RayTrace, Typescript):
+       .NET's gen-0 GC walks dead objects and the allocator zeroes memory;
+       only fewer or smaller objects help. The per-object overhead against
+       V8 is the CLR header (16 bytes) and 16-byte JSValue slots against
+       V8's 4-byte compressed ones: a two-field object is 80 bytes (V8: 20).
+       Dropping the header word for receivers (instance type from the map,
+       identity hash elsewhere: -8 bytes) is the next structural step.
+    2. Splay's blocking full GCs (every collection in the window is gen 2):
+       no GC setting found helps; V8 marks concurrently.
+    3. Escape analysis beyond V8's Maglev: virtual objects with a map phi
+       (Box2D's constructors), objects passed to non-inlined calls (needs
+       inlining, as Turbofan). Contexts and closures are not escape-analysed:
+       contexts are 1.1% and closures 1.4% of EarleyBoyer's bytes, less
+       elsewhere, so not done. Allocation folding (V8's AllocationBlock) has
+       no .NET equivalent (each object is its own allocation; the bump of
+       the allocation context is the same fast path).
+    4. The cold Box2D regression after lazy frames (calls and frames'
+       entry) was not investigated here: cold Box2D is +17% in this
+       session.
   - Hot loop code quality (2026-10-09, 5aca1629..; V8 files:
     maglev-code-generator.cc (deferred code), maglev-ir.cc
     (HandleNoHeapWritesInterrupt, TransitionElementsKind), maglev-graph-builder.cc
