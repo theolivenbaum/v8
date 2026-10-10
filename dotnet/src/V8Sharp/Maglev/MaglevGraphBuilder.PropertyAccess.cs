@@ -199,7 +199,10 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>Diagnostics: labels a generic access with its site and feedback (MaglevGenericCallCounts.BySite).</summary>
     ValueNode? LabelGenericSite(ValueNode? node, int slot, Name? name)
     {
-        if (!MaglevGenericCallCounts.BySite || node?.Obj0 is not CallBuiltinInfo info) return node;
+        if (!MaglevGenericCallCounts.BySite) return node;
+        // (A store's CallBuiltin is no value: the block's last node.)
+        Node? labeled = node ?? (_currentBlock is { Nodes.Count: > 0 } block ? block.Nodes[^1] : null);
+        if (labeled?.Obj0 is not CallBuiltinInfo info) return node;
         var nexus = new FeedbackNexus(Isolate, _unit.Feedback, slot);
         var sb = new System.Text.StringBuilder();
         sb.Append(MaglevCompiler.DebugName(_unit.SharedFunctionInfo)).Append('@').Append(_it.CurrentOffset());
