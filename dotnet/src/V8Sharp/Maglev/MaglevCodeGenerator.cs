@@ -3169,6 +3169,7 @@ internal sealed partial class MaglevCodeGenerator
     LocalBuilder? _lazyStart;
     LocalBuilder? _lazySaved;
 
+    static readonly MethodInfo s_countGenericCall = typeof(MaglevGenericCallCounts).GetMethod(nameof(MaglevGenericCallCounts.Count))!;
     static readonly bool s_traceEntries = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_TRACE_ENTRIES") == "1";
     static readonly bool Flags_NoLazyFrames = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_LAZY_FRAMES") == "1";
     /// <summary>A field of the activation local <paramref name="activation"/> (MaglevActivation.TypeFor).</summary>
@@ -3991,6 +3992,11 @@ internal sealed partial class MaglevCodeGenerator
             lazyTwin = true;
         }
         ParameterInfo[] parameters = method.GetParameters();
+        if (MaglevGenericCallCounts.Enabled)
+        {
+            _il.Emit(OpCodes.Ldc_I4, MaglevGenericCallCounts.Id(info.Site is not null && MaglevGenericCallCounts.BySite ? info.Name + " " + info.Site : info.Name));
+            _il.Emit(OpCodes.Call, s_countGenericCall);
+        }
         int storeInputBase = node.Inputs.Length - info.RegisterStores.Length;
         for (int i = 0; i < info.RegisterStores.Length; i++)
         {

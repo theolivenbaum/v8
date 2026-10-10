@@ -1179,3 +1179,53 @@ public sealed class LiteralShape
         return copy;
     }
 }
+
+/// <summary>
+/// V8Sharp diagnostics (V8SHARP_MAGLEV_COUNT_GENERIC=1): how often Maglev code
+/// calls each builtin and runtime helper (CallBuiltin nodes: generic nodes,
+/// calls, allocations), which TierProfiler reports for the measured part of a
+/// warm run. The code generator emits a counter increment before each call.
+/// </summary>
+public static class MaglevGenericCallCounts
+{
+    public static readonly bool Enabled = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_COUNT_GENERIC") is "1" or "2";
+    /// <summary>V8SHARP_MAGLEV_COUNT_GENERIC=2: generic property accesses are counted per site, with their feedback.</summary>
+    public static readonly bool BySite = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_COUNT_GENERIC") == "2";
+    static readonly Dictionary<string, int> s_ids = new(StringComparer.Ordinal);
+    static string[] s_names = new string[64];
+    public static long[] Counts = new long[64];
+
+    /// <summary>The counter of <paramref name="name"/> (code generation, any thread).</summary>
+    public static int Id(string name)
+    {
+        lock (s_ids)
+        {
+            if (s_ids.TryGetValue(name, out int id)) return id;
+            id = s_ids.Count;
+            if (id >= s_names.Length)
+            {
+                Array.Resize(ref s_names, id * 2);
+                long[] counts = Counts;
+                Array.Resize(ref counts, id * 2);
+                Counts = counts;
+            }
+            s_names[id] = name;
+            s_ids[name] = id;
+            return id;
+        }
+    }
+
+    public static void Count(int id) => Counts[id]++;
+
+    /// <summary>A copy of the counts and their names.</summary>
+    public static (string Name, long Count)[] Snapshot()
+    {
+        lock (s_ids)
+        {
+            var result = new (string, long)[s_ids.Count];
+            long[] counts = Counts;
+            for (int i = 0; i < result.Length; i++) result[i] = (s_names[i], i < counts.Length ? counts[i] : 0);
+            return result;
+        }
+    }
+}

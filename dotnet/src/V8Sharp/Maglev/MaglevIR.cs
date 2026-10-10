@@ -725,6 +725,11 @@ public sealed class CallBuiltinInfo(MethodInfo method, BuiltinArg[] args, string
     public MethodInfo Method = method;
     public BuiltinArg[] Args = args;
     public string Name = name;
+    /// <summary>
+    /// Diagnostics (V8SHARP_MAGLEV_COUNT_GENERIC=2): the site and feedback of a
+    /// generic access, counted by its own name (MaglevGenericCallCounts).
+    /// </summary>
+    public string? Site;
     /// <summary>The method returns bool and the node branches/deopts on it (CallBuiltin as a check).</summary>
     public bool DeoptIfFalse;
     /// <summary>Registers to write before the call: (register, value).</summary>

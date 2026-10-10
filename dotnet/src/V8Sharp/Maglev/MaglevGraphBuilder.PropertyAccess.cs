@@ -157,8 +157,35 @@ public sealed partial class MaglevGraphBuilder
             SetAccumulator(known);
             return;
         }
-        SetAccumulator(CallBaseline("GetNamedProperty", [receiver],
-            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.C(name)])!);
+        SetAccumulator(LabelGenericSite(CallBaseline("GetNamedProperty", [receiver],
+            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.C(name)]), slot, (Name)name.Object)!);
+    }
+
+    /// <summary>Diagnostics: labels a generic access with its site and feedback (MaglevGenericCallCounts.BySite).</summary>
+    ValueNode? LabelGenericSite(ValueNode? node, int slot, Name? name)
+    {
+        if (!MaglevGenericCallCounts.BySite || node?.Obj0 is not CallBuiltinInfo info) return node;
+        var nexus = new FeedbackNexus(Isolate, _unit.Feedback, slot);
+        var sb = new System.Text.StringBuilder();
+        sb.Append(MaglevCompiler.DebugName(_unit.SharedFunctionInfo)).Append('@').Append(_it.CurrentOffset());
+        if (name is not null) sb.Append(" '").Append(name.ToString()).Append('\'');
+        sb.Append(' ').Append(nexus.IcState());
+        if (MapsAndHandlers(slot, name) is { } pairs)
+        {
+            sb.Append(" maps=").Append(pairs.Count).Append(':');
+            foreach ((Map map, JSValue handler) in pairs)
+            {
+                sb.Append(handler.HeapObjectOrNull switch
+                {
+                    LoadHandler h => h.HandlerKind.ToString() + (h.LookupOnLookupStartObject ? "+lookup" : "") + (h.Holder is null ? "" : "+holder"),
+                    StoreHandler h => h.HandlerKind.ToString(),
+                    { } o => o.GetType().Name,
+                    null => "null",
+                }).Append(map.IsDictionaryMap ? "(dict)" : "").Append(',');
+            }
+        }
+        info.Site = sb.ToString();
+        return node;
     }
 
     /// <summary>ComputePropertyAccessInfo for a load handler, or null when Maglev does not handle it.</summary>
@@ -847,8 +874,8 @@ public sealed partial class MaglevGraphBuilder
             return;
         }
         if (MapsAndHandlers(slot) is { } feedback && TryBuildNamedStore(receiver, value, feedback)) return;
-        CallBaseline(defineOwn ? "DefineNamedOwnProperty" : "SetNamedProperty", [receiver, value],
-            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.C(name), BuiltinArg.In(1)]);
+        LabelGenericSite(CallBaseline(defineOwn ? "DefineNamedOwnProperty" : "SetNamedProperty", [receiver, value],
+            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.C(name), BuiltinArg.In(1)]), slot, (Name)name.Object);
     }
 
     static PropertyAccessInfo? StoreAccessInfo(Map map, JSValue handlerValue)
