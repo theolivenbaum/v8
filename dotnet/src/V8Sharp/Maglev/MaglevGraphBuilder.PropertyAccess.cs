@@ -1405,6 +1405,9 @@ public sealed partial class MaglevGraphBuilder
             refined.Add((target, JSValue.FromObject(targetHandler)));
         }
         if (targetHandler.HandlerKind != LoadHandler.Kind.kElement) return null;
+        // Known maps of the object without a source (a transition earlier on
+        // this path, or before the loop): nothing to transition.
+        if (KnownMaps(obj) is { } knownMaps && !Array.Exists(knownMaps, m => sources.Contains(m))) return refined;
         AddNewNode(new Node(Opcode.TransitionElementsKind)
         {
             Inputs = [obj],
@@ -1539,13 +1542,19 @@ public sealed partial class MaglevGraphBuilder
             Properties = OpProperties.kCanRead,
         });
 
+    /// <remarks>
+    /// V8 records the length as a known constant property of fixed-length
+    /// typed arrays (RecordKnownProperty with kTypedArrayLength). V8Sharp
+    /// records it as an ordinary loaded property, which calls forget: a
+    /// buffer is detached or resized only by a call.
+    /// </remarks>
     ValueNode BuildLoadTypedArrayLength(ValueNode obj) =>
-        AddNewNode(new ValueNode(Opcode.LoadTypedArrayLength, ValueRepresentation.kInt32)
+        BuildLoadProperty(obj, PropertyKeys.kTypedArrayLength, () => AddNewNode(new ValueNode(Opcode.LoadTypedArrayLength, ValueRepresentation.kInt32)
         {
             Inputs = [obj],
             Type = NodeType.kSmi,
             Properties = OpProperties.kCanRead,
-        });
+        }));
 
     ValueNode BuildTypedArrayElementLoad(ValueNode obj, ValueNode key, List<(Map Map, JSValue Handler)> feedback, ElementsKind kind,
         bool handlesOOB)
@@ -1560,6 +1569,9 @@ public sealed partial class MaglevGraphBuilder
         {
             Inputs = [obj, index],
             Int0 = (int)kind,
+            // (The length loaded with the access: the code generator loads the
+            // array and byte offset with it.)
+            Obj1 = length,
             Type = NodeType.kNumber,
             Properties = OpProperties.kCanRead,
         });
@@ -1605,9 +1617,10 @@ public sealed partial class MaglevGraphBuilder
             ElementsKind.UINT8_CLAMPED_ELEMENTS => value.IsInt32 ? value : GetFloat64(value, NodeType.kNumberOrOddball),
             _ => GetTruncatedInt32ForToNumber(value, NodeType.kNumberOrOddball),
         };
+        ValueNode? length = null;
         if (!ignoreOOB)
         {
-            ValueNode length = BuildLoadTypedArrayLength(obj);
+            length = BuildLoadTypedArrayLength(obj);
             AddNewNode(new Node(Opcode.CheckInt32Condition)
             {
                 Inputs = [index, length],
@@ -1620,6 +1633,7 @@ public sealed partial class MaglevGraphBuilder
         {
             Inputs = [obj, index, stored],
             Int0 = (int)kind,
+            Obj1 = length,
             // Out of bounds (and detached) stores are ignored (kIgnoreTypedArrayOOB).
             Int1 = ignoreOOB ? 1 : 0,
             Properties = OpProperties.kCanWrite | OpProperties.kNotIdempotent,
@@ -1866,6 +1880,7 @@ public sealed partial class MaglevGraphBuilder
                         {
                             Inputs = [obj],
                             Obj0 = to,
+                            Obj1 = new[] { entry.Map },
                             Properties = OpProperties.kEagerDeopt | OpProperties.kCanAllocate | OpProperties.kCanWrite |
                                          OpProperties.kNotIdempotent,
                         }, DeoptimizeReason.kWrongMap);
@@ -1963,8 +1978,12 @@ public sealed partial class MaglevGraphBuilder
             BuildBoundsCheck(obj, elements, index, isJSArray);
             if (!ElementsKinds.IsDoubleElementsKind(kind))
             {
-                // Copy-on-write elements need the runtime.
-                AddCheck(Opcode.CheckInstanceType, elements, DeoptimizeReason.kCowArrayElementsChanged, int0: 3);
+                // Copy-on-write elements need the runtime (once per elements
+                // node on a path, as V8's EnsureWritableFastElements result).
+                if (_frame.Known.WritableElements.Add(elements))
+                {
+                    AddCheck(Opcode.CheckInstanceType, elements, DeoptimizeReason.kCowArrayElementsChanged, int0: 3);
+                }
             }
         }
         AddNewNode(new Node(ElementsKinds.IsDoubleElementsKind(kind) ? Opcode.StoreFixedDoubleArrayElement : Opcode.StoreFixedArrayElement)

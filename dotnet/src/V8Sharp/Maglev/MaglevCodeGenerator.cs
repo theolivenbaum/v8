@@ -229,6 +229,11 @@ internal sealed partial class MaglevCodeGenerator
             {
                 if (!block.IsDead && block.IsExceptionHandler) _catchBlocks.Add(block);
             }
+            if (_catchBlocks.Count == 0)
+            {
+                PlanElementsData();
+                PlanTypedArrayData();
+            }
             _hasCatchBlocks = _catchBlocks.Count > 0;
             if (_hasCatchBlocks) EmitTryRegionStart();
             var blocks = new List<BasicBlock>(_graph.Blocks.Count);
@@ -312,6 +317,106 @@ internal sealed partial class MaglevCodeGenerator
         CreateTypeMs += System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalMilliseconds;
         return (entry, _il.ILOffset);
     }
+
+    // ---- Elements data ----------------------------------------------------------------------------------
+
+    // The array behind an elements node (FixedArray._data, FixedDoubleArray._data)
+    // in a local of its own, loaded once where the elements are loaded: an
+    // element access is then one array access, where it loaded the FixedArray's
+    // field each time (RyuJIT cannot hoist that load past the byref stores of
+    // a loop). Elements are only replaced in place (RightTrim) by calls, after
+    // which the graph loads them again, as for V8's elements pointer.
+    // V8SHARP_MAGLEV_NO_ELEMENTS_DATA=1 turns it off.
+    static readonly bool s_noElementsData = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_ELEMENTS_DATA") == "1";
+    Dictionary<ValueNode, LocalBuilder>? _elementsData;
+    const int kMaxElementsDataLocals = 64;
+
+    void PlanElementsData()
+    {
+        if (s_noElementsData) return;
+        var kinds = new Dictionary<ValueNode, int>(ReferenceEqualityComparer.Instance);
+        void Mark(ValueNode elements, int kind)
+        {
+            if (elements.Opcode != Opcode.LoadElements) return;
+            kinds[elements] = kinds.GetValueOrDefault(elements) | kind;
+        }
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Node node in block.Nodes)
+            {
+                switch (node.Opcode)
+                {
+                    case Opcode.LoadFixedArrayElement:
+                    case Opcode.StoreFixedArrayElement:
+                        Mark(node.Inputs[0], 1);
+                        break;
+                    case Opcode.LoadFixedDoubleArrayElement:
+                    case Opcode.LoadHoleyFixedDoubleArrayElement:
+                    case Opcode.StoreFixedDoubleArrayElement:
+                        Mark(node.Inputs[0], 2);
+                        break;
+                }
+            }
+        }
+        foreach (KeyValuePair<ValueNode, int> e in kinds)
+        {
+            if (e.Value == 3 || e.Key.Local is null) continue;
+            _elementsData ??= new(ReferenceEqualityComparer.Instance);
+            if (_elementsData.Count >= kMaxElementsDataLocals) break;
+            _elementsData[e.Key] = _il.DeclareLocal(e.Value == 1 ? typeof(JSValue[]) : typeof(double[]));
+        }
+    }
+
+    // A typed array's array and byte offset in locals, loaded with its length
+    // (LoadTypedArrayLength, which load elimination keeps until a call, and a
+    // buffer is detached or resized only by a call): an element access then
+    // indexes the array, where it followed the typed array, its buffer and
+    // the backing store each time.
+    Dictionary<ValueNode, (LocalBuilder Data, LocalBuilder Offset)>? _typedArrayData;
+
+    void PlanTypedArrayData()
+    {
+        if (s_noElementsData) return;
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Node node in block.Nodes)
+            {
+                if (node.Opcode is not (Opcode.LoadTypedArrayElement or Opcode.StoreTypedArrayElement) ||
+                    node.Obj1 is not ValueNode { Opcode: Opcode.LoadTypedArrayLength, Local: not null } length ||
+                    !ReferenceEquals(length.Inputs[0], node.Inputs[0]))
+                {
+                    continue;
+                }
+                _typedArrayData ??= new(ReferenceEqualityComparer.Instance);
+                if (_typedArrayData.ContainsKey(length) || _typedArrayData.Count >= kMaxElementsDataLocals) continue;
+                _typedArrayData[length] = (_il.DeclareLocal(typeof(byte[])), _il.DeclareLocal(typeof(int)));
+            }
+        }
+    }
+
+    (LocalBuilder Data, LocalBuilder Offset)? TypedData(Node access) =>
+        _typedArrayData is not null && access.Obj1 is ValueNode length &&
+        _typedArrayData.TryGetValue(length, out (LocalBuilder Data, LocalBuilder Offset) data) ? data : null;
+
+    /// <summary>Pushes the array and the byte index of element <paramref name="index"/>.</summary>
+    void EmitTypedDataIndex((LocalBuilder Data, LocalBuilder Offset) data, ValueNode index, ElementsKind kind)
+    {
+        _il.Emit(OpCodes.Ldloc, data.Data);
+        _il.Emit(OpCodes.Ldloc, data.Offset);
+        Load(index, ValueRepresentation.kInt32);
+        int size = ElementsKinds.ElementsKindToByteSize(kind);
+        if (size > 1)
+        {
+            _il.Emit(OpCodes.Ldc_I4, size);
+            _il.Emit(OpCodes.Mul);
+        }
+        _il.Emit(OpCodes.Add);
+    }
+
+    LocalBuilder? ElementsData(ValueNode elements) =>
+        _elementsData is not null && _elementsData.TryGetValue(elements, out LocalBuilder? data) ? data : null;
 
     Label BlockLabel(BasicBlock block)
     {
@@ -973,7 +1078,11 @@ internal sealed partial class MaglevCodeGenerator
         {
             if (IsDeadNode(node)) continue;
             if (IsElidedArguments(node)) continue;
-            if (node.Unit is { IsInline: true } unit && NeedsFrame(node)) EmitEnsureInlinedFrames(unit);
+            // (The loop interrupt check pushes the frames on its slow path.)
+            if (node.Unit is { IsInline: true } unit && NeedsFrame(node) && node.Opcode != Opcode.HandleNoHeapWritesInterrupt)
+            {
+                EmitEnsureInlinedFrames(unit);
+            }
             if (_hasCatchBlocks && node.ExceptionHandler is { CatchState.Block: { IsDead: false } })
             {
                 // The node's exceptions continue at its catch block.
@@ -1007,7 +1116,8 @@ internal sealed partial class MaglevCodeGenerator
     /// reads or writes the frame's slots.
     /// </summary>
     internal static bool NeedsFrame(Node node) =>
-        node.Opcode is Opcode.LoadRegister or Opcode.StoreRegister or Opcode.SetCurrentContext or Opcode.HandleNoHeapWritesInterrupt ||
+        node.Opcode is Opcode.LoadRegister or Opcode.StoreRegister or Opcode.SetCurrentContext ||
+        node.Opcode == Opcode.HandleNoHeapWritesInterrupt && node.Int0 == 0 ||
         node.Opcode == Opcode.CallBuiltin && node.Obj0 is not CallBuiltinInfo { NoFrame: true } && BuiltinNeedsFrame(node) ||
         node.Opcode != Opcode.EnterInlinedFrame &&
         (node.Properties & (OpProperties.kCall | OpProperties.kCanThrow | OpProperties.kLazyDeopt)) != 0;
@@ -1361,20 +1471,79 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Brtrue, exit);
     }
 
+    // Deopt exits are cold for RyuJIT (V8Sharp only, deviations.md): RyuJIT
+    // knows nothing of how often a branch is taken, and its profile synthesis
+    // gives a conditional branch out of a loop 10% (and any other 48%), so a
+    // loop with a few checks looked barely hotter than its exits, and its
+    // values went to stack slots. A path that ends in a throw gets 0%: the
+    // exits run in a try region whose spill chains end in a throw, caught by
+    // the region's own handler, which returns the deopt's result. Only the
+    // result is live across the handler.
+    static readonly bool s_coldDeoptExits = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_HOT_DEOPT_EXITS") != "1";
+    static readonly ConstructorInfo s_deoptUnwindCtor = typeof(MaglevDeoptUnwind).GetConstructor(Type.EmptyTypes)!;
+    LocalBuilder? _deoptResult;
+    bool _coldExits;
+
     void EmitDeoptExits()
     {
         _deoptReason ??= _il.DeclareLocal(typeof(int));
         _deoptIndex ??= _il.DeclareLocal(typeof(int));
-        foreach ((Label stub, Label exit, int reason) in _eagerStubs)
+        // RyuJIT does not inline a method with exception handlers, so a small
+        // body without loops, which its direct entry inlines, keeps plain exits.
+        _coldExits = s_coldDeoptExits && _pendingExits.Count > 0 &&
+                     (_frameless || InRegionMode || _il.ILOffset > kInlineIntoFastCallILBytes || HasLoops());
+        Label[]? entries = null;
+        if (_coldExits)
         {
-            _il.MarkLabel(stub);
-            _il.Emit(OpCodes.Ldc_I4, reason);
-            _il.Emit(OpCodes.Stloc, _deoptReason);
-            _il.Emit(OpCodes.Br, exit);
+            // Entries from the body: outside the try region, which can only
+            // be entered at its first instruction (the dispatch).
+            LocalBuilder entry = _il.DeclareLocal(typeof(int));
+            _deoptResult ??= _il.DeclareLocal(typeof(JSValue));
+            Label dispatch = _il.DefineLabel();
+            var exitIds = new Dictionary<Label, int>();
+            entries = new Label[_pendingExits.Count];
+            for (int k = 0; k < _pendingExits.Count; k++)
+            {
+                exitIds[_pendingExits[k].Label] = k;
+                entries[k] = _il.DefineLabel();
+            }
+            foreach ((Label stub, Label exit, int reason) in _eagerStubs)
+            {
+                _il.MarkLabel(stub);
+                _il.Emit(OpCodes.Ldc_I4, reason);
+                _il.Emit(OpCodes.Stloc, _deoptReason);
+                _il.Emit(OpCodes.Ldc_I4, exitIds[exit]);
+                _il.Emit(OpCodes.Stloc, entry);
+                _il.Emit(OpCodes.Br, dispatch);
+            }
+            for (int k = 0; k < _pendingExits.Count; k++)
+            {
+                if (_pendingExits[k].Kind != DeoptimizeKind.kLazy) continue;
+                _il.MarkLabel(_pendingExits[k].Label);
+                _il.Emit(OpCodes.Ldc_I4, k);
+                _il.Emit(OpCodes.Stloc, entry);
+                _il.Emit(OpCodes.Br, dispatch);
+            }
+            _il.BeginExceptionBlock();
+            _il.MarkLabel(dispatch);
+            _il.Emit(OpCodes.Ldloc, entry);
+            _il.Emit(OpCodes.Switch, entries);
+            _il.Emit(OpCodes.Br, entries[0]);
         }
-        foreach ((Label label, DeoptInfo info, DeoptimizeKind kind, DeoptimizeReason reason, ValueNode? result) in _pendingExits)
+        else
         {
-            _il.MarkLabel(label);
+            foreach ((Label stub, Label exit, int reason) in _eagerStubs)
+            {
+                _il.MarkLabel(stub);
+                _il.Emit(OpCodes.Ldc_I4, reason);
+                _il.Emit(OpCodes.Stloc, _deoptReason);
+                _il.Emit(OpCodes.Br, exit);
+            }
+        }
+        for (int e = 0; e < _pendingExits.Count; e++)
+        {
+            (Label label, DeoptInfo info, DeoptimizeKind kind, DeoptimizeReason reason, ValueNode? result) = _pendingExits[e];
+            _il.MarkLabel(entries is null ? label : entries[e]);
             var spill = new List<ValueNode>();
             var point = new DeoptPoint { Kind = kind, Reason = reason };
             List<(InlinedAllocation, CapturedObjectData)>? capturedObjects = null;
@@ -1468,6 +1637,40 @@ internal sealed partial class MaglevCodeGenerator
             EmitSpillChain(spill);
         }
         _maxScratch = SpillSlotBase + _spillSlots.Count;
+        if (_coldExits)
+        {
+            _il.BeginCatchBlock(typeof(MaglevDeoptUnwind));
+            _il.Emit(OpCodes.Pop);
+            _il.EndExceptionBlock();
+            _il.Emit(OpCodes.Ldloc, _deoptResult!);
+            EmitReturn();
+        }
+    }
+
+    bool HasLoops()
+    {
+        foreach (BasicBlock block in _graph.Blocks)
+        {
+            if (!block.IsDead && block.IsLoopHeader) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The end of a deopt exit, with the exit's result on the IL stack: the
+    /// return, or with cold exits the result into its local and the throw
+    /// to the exits' handler (EmitDeoptExits).
+    /// </summary>
+    void EmitDeoptExitReturn()
+    {
+        if (!_coldExits)
+        {
+            EmitReturn();
+            return;
+        }
+        _il.Emit(OpCodes.Stloc, _deoptResult!);
+        _il.Emit(OpCodes.Newobj, s_deoptUnwindCtor);
+        _il.Emit(OpCodes.Throw);
     }
 
     // ---- Spill chains ------------------------------------------------------------------------------------------
@@ -1574,7 +1777,7 @@ internal sealed partial class MaglevCodeGenerator
             _il.Emit(OpCodes.Ldloc, _deoptReason!);
             _il.Emit(OpCodes.Ldloc, _baseFrameIndex);
             _il.Emit(OpCodes.Call, s_deoptimizeLazyFrame);
-            EmitReturn();
+            EmitDeoptExitReturn();
             return;
         }
         if (_frameless)
@@ -1589,7 +1792,7 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldloc, _deoptIndex!);
         _il.Emit(OpCodes.Ldloc, _deoptReason!);
         Call("Deopt0");
-        EmitReturn();
+        EmitDeoptExitReturn();
     }
 
     /// <summary>
@@ -2066,6 +2269,15 @@ internal sealed partial class MaglevCodeGenerator
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Call(node.Int0 == 1 ? nameof(MaglevBuiltins.TypedArrayLengthAsFloat64) : nameof(MaglevBuiltins.TypedArrayLength));
                 Store(v!);
+                if (_typedArrayData is not null && _typedArrayData.TryGetValue(v!, out (LocalBuilder Data, LocalBuilder Offset) typed))
+                {
+                    Load(node.Inputs[0], ValueRepresentation.kTagged);
+                    Call(nameof(MaglevBuiltins.TypedArrayDataOf));
+                    _il.Emit(OpCodes.Stloc, typed.Data);
+                    Load(node.Inputs[0], ValueRepresentation.kTagged);
+                    Call(nameof(MaglevBuiltins.TypedArrayByteOffsetOf));
+                    _il.Emit(OpCodes.Stloc, typed.Offset);
+                }
                 return;
             case Opcode.CheckTypedArrayValid:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
@@ -2074,6 +2286,13 @@ internal sealed partial class MaglevCodeGenerator
                 DeoptIfFalse(node);
                 return;
             case Opcode.LoadTypedArrayElement:
+                if (TypedData(node) is { } typedLoad)
+                {
+                    EmitTypedDataIndex(typedLoad, node.Inputs[1], (ElementsKind)node.Int0);
+                    Call(TypedLoadHelper((ElementsKind)node.Int0).Replace("Element", "Data"));
+                    Store(v!);
+                    return;
+                }
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 Call(TypedLoadHelper((ElementsKind)node.Int0));
@@ -2090,8 +2309,16 @@ internal sealed partial class MaglevCodeGenerator
                     Call(nameof(MaglevBuiltins.TypedArrayIndexInBounds));
                     _il.Emit(OpCodes.Brfalse, skip);
                 }
-                Load(node.Inputs[0], ValueRepresentation.kTagged);
-                Load(node.Inputs[1], ValueRepresentation.kInt32);
+                (LocalBuilder Data, LocalBuilder Offset)? typedStore = TypedData(node);
+                if (typedStore is { } sd)
+                {
+                    EmitTypedDataIndex(sd, node.Inputs[1], kind);
+                }
+                else
+                {
+                    Load(node.Inputs[0], ValueRepresentation.kTagged);
+                    Load(node.Inputs[1], ValueRepresentation.kInt32);
+                }
                 ValueNode stored = node.Inputs[2];
                 bool isFloat = stored.Representation is ValueRepresentation.kFloat64 or ValueRepresentation.kHoleyFloat64 ||
                                stored.IsConstant && !stored.TryGetInt32Constant(out _);
@@ -2104,11 +2331,13 @@ internal sealed partial class MaglevCodeGenerator
                 {
                     Load(stored, ValueRepresentation.kInt32);
                 }
-                Call(TypedStoreHelper(kind, isFloat));
+                string storeHelper = TypedStoreHelper(kind, isFloat);
+                Call(typedStore is null ? storeHelper : storeHelper.EndsWith("Element", StringComparison.Ordinal)
+                    ? storeHelper.Replace("Element", "Data") : storeHelper + "Data");
                 _il.MarkLabel(skip);
                 return;
             }
-            case Opcode.TransitionElementsKind when node.Obj1 is Map[] sources:
+            case Opcode.TransitionElementsKind when node.EagerDeoptInfo is null && node.Obj1 is Map[] sources:
             {
                 // V8's TransitionElementsKind node: an object with one of the
                 // source maps transitions to the target; others are unchanged.
@@ -2394,8 +2623,22 @@ internal sealed partial class MaglevCodeGenerator
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Call(nameof(MaglevBuiltins.LoadElements));
                 Store(v!);
+                if (_elementsData is not null && _elementsData.TryGetValue(v!, out LocalBuilder? elementsData))
+                {
+                    Load(v!);
+                    Call(elementsData.LocalType == typeof(double[]) ? nameof(MaglevBuiltins.FixedDoubleArrayDataOf) : nameof(MaglevBuiltins.FixedArrayDataOf));
+                    _il.Emit(OpCodes.Stloc, elementsData);
+                }
                 return;
             case Opcode.LoadFixedArrayElement:
+                if (ElementsData(node.Inputs[0]) is { } loadData)
+                {
+                    _il.Emit(OpCodes.Ldloc, loadData);
+                    Load(node.Inputs[1], ValueRepresentation.kInt32);
+                    _il.Emit(OpCodes.Ldelem, typeof(JSValue));
+                    Store(v!);
+                    return;
+                }
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 Call(nameof(MaglevBuiltins.LoadFixedArrayElement));
@@ -2408,6 +2651,14 @@ internal sealed partial class MaglevCodeGenerator
                 return;
             case Opcode.LoadFixedDoubleArrayElement:
             case Opcode.LoadHoleyFixedDoubleArrayElement:
+                if (ElementsData(node.Inputs[0]) is { } doubleData)
+                {
+                    _il.Emit(OpCodes.Ldloc, doubleData);
+                    Load(node.Inputs[1], ValueRepresentation.kInt32);
+                    _il.Emit(OpCodes.Ldelem_R8);
+                    Store(v!);
+                    return;
+                }
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 Call(nameof(MaglevBuiltins.LoadFixedDoubleArrayElement));
@@ -2418,14 +2669,29 @@ internal sealed partial class MaglevCodeGenerator
                 // value tagged for the store) writes its payload, and a
                 // reference equal to the slot's leaves it (no write barrier),
                 // as V8's StoreFixedArrayElementNoWriteBarrier for Smis.
-                Load(node.Inputs[0], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Ldfld, s_obj);
-                _il.Emit(OpCodes.Ldfld, s_fixedArrayData);
+                if (ElementsData(node.Inputs[0]) is { } storeData)
+                {
+                    _il.Emit(OpCodes.Ldloc, storeData);
+                }
+                else
+                {
+                    Load(node.Inputs[0], ValueRepresentation.kTagged);
+                    _il.Emit(OpCodes.Ldfld, s_obj);
+                    _il.Emit(OpCodes.Ldfld, s_fixedArrayData);
+                }
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 _il.Emit(OpCodes.Ldelema, typeof(JSValue));
                 EmitStoreTagged(UntaggedNumberSource(node.Inputs[2]));
                 return;
             case Opcode.StoreFixedDoubleArrayElement:
+                if (ElementsData(node.Inputs[0]) is { } storeDoubleData)
+                {
+                    _il.Emit(OpCodes.Ldloc, storeDoubleData);
+                    Load(node.Inputs[1], ValueRepresentation.kInt32);
+                    Load(node.Inputs[2], ValueRepresentation.kFloat64);
+                    Call(nameof(MaglevBuiltins.StoreDoubleData));
+                    return;
+                }
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 Load(node.Inputs[1], ValueRepresentation.kInt32);
                 Load(node.Inputs[2], ValueRepresentation.kFloat64);
@@ -2489,9 +2755,14 @@ internal sealed partial class MaglevCodeGenerator
                 _il.Emit(OpCodes.Br, done);
                 _il.MarkLabel(slow);
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
-                _il.Emit(OpCodes.Ldloca, _tmpInt);
-                Call(nameof(MaglevBuiltins.TryObjectToIndex));
-                DeoptIfFalse(node);
+                Call(nameof(MaglevBuiltins.ObjectToIndexOrMin));
+                _il.Emit(OpCodes.Dup);
+                _il.Emit(OpCodes.Stloc, _tmpLong);
+                _il.Emit(OpCodes.Ldc_I8, long.MinValue);
+                _il.Emit(OpCodes.Beq, EagerExit(node.EagerDeoptInfo!));
+                _il.Emit(OpCodes.Ldloc, _tmpLong);
+                _il.Emit(OpCodes.Conv_I4);
+                _il.Emit(OpCodes.Stloc, _tmpInt);
                 _il.MarkLabel(done);
                 _il.Emit(OpCodes.Ldloc, _tmpInt);
                 Store(v!);
@@ -2578,11 +2849,32 @@ internal sealed partial class MaglevCodeGenerator
                 Call(nameof(MaglevBuiltins.FastNewObject));
                 Store(v!);
                 return;
+            case Opcode.HandleNoHeapWritesInterrupt when node.Int0 == 1:
+                // A loop without calls (BuildLoopInterruptCheck): V8 calls the
+                // runtime in deferred code, but a call on the back edge makes
+                // RyuJIT keep the loop's values in stack slots (it has no
+                // deferred spilling); an interrupt it cannot defer exits to the
+                // interpreter without invalidating the code (deviations.md).
+                _il.Emit(OpCodes.Ldarg_1);
+                Call(nameof(MaglevBuiltins.HasUndeferrableInterrupts));
+                DeoptIfTrue(node);
+                return;
             case Opcode.HandleNoHeapWritesInterrupt:
+            {
+                // V8's deferred code: the frame's bytecode offset is stored,
+                // and lazily pushed inlined frames pushed, on the slow path
+                // only, not on every back edge.
+                Label noInterrupt = _il.DefineLabel();
+                _il.Emit(OpCodes.Ldarg_1);
+                Call(nameof(MaglevBuiltins.HasPendingInterrupts));
+                _il.Emit(OpCodes.Brfalse, noInterrupt);
+                if (node.Unit is { IsInline: true } inlined) EmitEnsureInlinedFrames(inlined);
                 StoreBytecodeOffset(node);
                 _il.Emit(OpCodes.Ldarg_1);
-                Call(nameof(MaglevBuiltins.HandleInterrupts));
+                Call(nameof(MaglevBuiltins.HandleInterruptsSlow));
+                _il.MarkLabel(noInterrupt);
                 return;
+            }
             case Opcode.SetCurrentContext:
                 _il.Emit(OpCodes.Ldarg_1);
                 if (_lazyFrame && (node.Unit is not { IsInline: true } || _lazyUnits.Contains(node.Unit)))
@@ -3145,7 +3437,7 @@ internal sealed partial class MaglevCodeGenerator
                     case Opcode.StoreRegister:
                     case Opcode.LoadRegister:
                     case Opcode.CallKnownJSFunction:
-                    case Opcode.HandleNoHeapWritesInterrupt:
+                    case Opcode.HandleNoHeapWritesInterrupt when node.Int0 == 0:
                     case Opcode.SetCurrentContext:
                     case Opcode.LoadGeneratorField:
                     case Opcode.StoreGeneratorContinuation:
@@ -3156,7 +3448,6 @@ internal sealed partial class MaglevCodeGenerator
                         return false;
                 }
             }
-            if (block.Control is { Opcode: Opcode.JumpLoop }) return false;
         }
         return true;
     }
@@ -3610,6 +3901,8 @@ internal sealed partial class MaglevCodeGenerator
     void GenerateFrameless()
     {
         AllocateLocals();
+        PlanElementsData();
+        PlanTypedArrayData();
         EmitPrologue();
         foreach (BasicBlock block in _graph.Blocks)
         {
@@ -3684,7 +3977,7 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldarg_3);
         _il.Emit(OpCodes.Ldc_I4, argsAt);
         _il.Emit(OpCodes.Call, s_deoptimizeFrameless);
-        _il.Emit(OpCodes.Ret);
+        EmitDeoptExitReturn();
     }
 
     /// <summary>Bytecodes that read the actual arguments beyond the formal parameters.</summary>

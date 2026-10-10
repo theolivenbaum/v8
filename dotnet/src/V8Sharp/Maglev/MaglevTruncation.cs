@@ -10,8 +10,9 @@
 // so also truncates multiplications and Float64 operations whose result is a
 // safe integer); V8Sharp has no range analysis, so it bounds the magnitude by
 // the depth of the truncated chain (each level at most doubles it: 21 levels
-// keep the exact result below 2^53) and handles additions and subtractions
-// only. A value used by a deopt frame, a phi or anything else is not truncated.
+// keep the exact result below 2^53) and handles additions, subtractions and
+// multiplications of int32 values, and Float64 additions and subtractions
+// of int32 values whose uses all truncate. A value used by a deopt frame, a phi or anything else is not truncated.
 namespace V8Sharp.Maglev;
 
 internal static class MaglevTruncation
@@ -21,6 +22,7 @@ internal static class MaglevTruncation
 
     public static void Run(Graph graph)
     {
+        TruncateFloat64OfInt32(graph);
         // Candidates and their uses.
         var candidates = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
         foreach (BasicBlock block in graph.Blocks)
@@ -123,6 +125,83 @@ internal static class MaglevTruncation
                 v.EagerDeoptInfo = null;
             }
         }
+    }
+
+    /// <summary>
+    /// A Float64Add or Float64Subtract of int32 values (ChangeInt32ToFloat64,
+    /// int32 constants) whose every use is TruncateFloat64ToInt32: the exact
+    /// result is below 2^33, so its ToInt32 is the wrapping int32 operation,
+    /// and each truncation becomes an Int32Add / Int32Subtract of the int32
+    /// inputs (V8's truncation pass reaches the same through the ranges of
+    /// its range analysis). Additions whose int32 feedback once overflowed
+    /// (Crypto's am3: <c>xl*l + ... + c</c>, then <c>l&amp;0xfffffff</c> and
+    /// <c>l&gt;&gt;28</c>) stay int32 instead of a double add and a ToInt32.
+    /// </summary>
+    static void TruncateFloat64OfInt32(Graph graph)
+    {
+        var candidates = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
+        foreach (BasicBlock block in graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Node node in block.Nodes)
+            {
+                if (node is ValueNode { Opcode: Opcode.Float64Add or Opcode.Float64Subtract } v &&
+                    Int32Source(v.Inputs[0], graph) is not null && Int32Source(v.Inputs[1], graph) is not null)
+                {
+                    candidates.Add(v);
+                }
+            }
+        }
+        if (candidates.Count == 0) return;
+        var excluded = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
+        void Exclude(ValueNode v)
+        {
+            if (candidates.Contains(v)) excluded.Add(v);
+        }
+        void UseFrame(DeoptFrame? frame)
+        {
+            for (DeoptFrame? f = frame; f is not null; f = f.Parent)
+            {
+                foreach ((Interpreter.Register _, ValueNode value) in ((InterpretedDeoptFrame)f).Values) Exclude(value);
+            }
+        }
+        var truncations = new List<ValueNode>();
+        foreach (BasicBlock block in graph.Blocks)
+        {
+            if (block.IsDead) continue;
+            foreach (Phi phi in block.Phis) foreach (ValueNode input in phi.Inputs) Exclude(input);
+            foreach (Node node in block.Nodes)
+            {
+                if (node is ValueNode { Opcode: Opcode.TruncateFloat64ToInt32 } t && candidates.Contains(t.Inputs[0]))
+                {
+                    truncations.Add(t);
+                }
+                else
+                {
+                    foreach (ValueNode input in node.Inputs) Exclude(input);
+                }
+                UseFrame(node.EagerDeoptInfo?.TopFrame);
+                UseFrame(node.LazyDeoptInfo?.TopFrame);
+            }
+            ControlNode control = block.Control!;
+            foreach (ValueNode input in control.Inputs) Exclude(input);
+            UseFrame(control.EagerDeoptInfo?.TopFrame);
+        }
+        foreach (ValueNode t in truncations)
+        {
+            ValueNode f = t.Inputs[0];
+            if (excluded.Contains(f)) continue;
+            t.Opcode = f.Opcode == Opcode.Float64Add ? Opcode.Int32Add : Opcode.Int32Subtract;
+            t.Inputs = [Int32Source(f.Inputs[0], graph)!, Int32Source(f.Inputs[1], graph)!];
+        }
+    }
+
+    /// <summary>The int32 value a Float64 input is exactly (a ChangeInt32ToFloat64's input, an int32 constant), or null.</summary>
+    static ValueNode? Int32Source(ValueNode v, Graph graph)
+    {
+        if (v.Opcode == Opcode.ChangeInt32ToFloat64 && v.Inputs[0].Representation == ValueRepresentation.kInt32) return v.Inputs[0];
+        if (v.IsConstant && v.TryGetInt32Constant(out int c)) return graph.GetInt32Constant(c);
+        return null;
     }
 
     /// <summary>

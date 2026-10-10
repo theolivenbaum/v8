@@ -301,13 +301,15 @@ public sealed class MaglevCompilationInfo
     }
 
     /// <summary>Records an effect of the code being built in every loop it is in.</summary>
-    public void RecordLoopEffect(bool clearsAll = false, int propertyKey = int.MinValue, int contextSlot = int.MinValue)
+    public void RecordLoopEffect(bool clearsAll = false, int propertyKey = int.MinValue, int contextSlot = int.MinValue,
+        Map[]? transitionSources = null)
     {
         foreach (ActiveLoop loop in ActiveLoops)
         {
             if (clearsAll) loop.Observed.Cleared = true;
             if (propertyKey != int.MinValue) loop.Observed.PropertyKeys.Add(propertyKey);
             if (contextSlot != int.MinValue) loop.Observed.ContextSlots.Add(contextSlot);
+            if (transitionSources is not null) loop.Observed.TransitionSources.UnionWith(transitionSources);
         }
     }
 
@@ -339,9 +341,12 @@ public sealed class LoopEffects
     public bool Cleared;
     public readonly HashSet<int> PropertyKeys = [];
     public readonly HashSet<int> ContextSlots = [];
+    /// <summary>Source maps of elements kind transitions in the body (their objects' maps change).</summary>
+    public readonly HashSet<Map> TransitionSources = new(ReferenceEqualityComparer.Instance);
 
     public bool IsSubsetOf(LoopEffects other) =>
-        other.Cleared || !Cleared && PropertyKeys.IsSubsetOf(other.PropertyKeys) && ContextSlots.IsSubsetOf(other.ContextSlots);
+        other.Cleared || !Cleared && PropertyKeys.IsSubsetOf(other.PropertyKeys) && ContextSlots.IsSubsetOf(other.ContextSlots) &&
+        TransitionSources.IsSubsetOf(other.TransitionSources);
 
     public LoopEffects Union(LoopEffects other)
     {
@@ -350,6 +355,8 @@ public sealed class LoopEffects
         result.PropertyKeys.UnionWith(other.PropertyKeys);
         result.ContextSlots.UnionWith(ContextSlots);
         result.ContextSlots.UnionWith(other.ContextSlots);
+        result.TransitionSources.UnionWith(TransitionSources);
+        result.TransitionSources.UnionWith(other.TransitionSources);
         return result;
     }
 
@@ -364,6 +371,7 @@ public sealed class LoopEffects
         }
         foreach (int key in PropertyKeys) known.ForgetPropertyKey(key);
         foreach (int slot in ContextSlots) known.ForgetContextSlot(slot);
+        if (TransitionSources.Count > 0) known.ClearMapsIntersecting([.. TransitionSources]);
     }
 }
 

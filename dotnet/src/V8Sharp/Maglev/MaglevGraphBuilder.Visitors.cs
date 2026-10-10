@@ -1047,11 +1047,14 @@ public sealed partial class MaglevGraphBuilder
                     SetAccumulator(GetConstant(value));
                     return;
                 }
-                ValueNode load = AddNewNode(new ValueNode(Opcode.LoadPropertyCellValue, ValueRepresentation.kTagged)
-                {
-                    Obj0 = cell,
-                    Properties = OpProperties.kCanRead,
-                });
+                // V8 loads the cell's value field (BuildLoadTaggedField), so
+                // load elimination applies: a loop reads a global once.
+                ValueNode load = BuildLoadProperty(GetConstant(JSValue.FromObject(cell)), PropertyKeys.kPropertyCellValue,
+                    () => AddNewNode(new ValueNode(Opcode.LoadPropertyCellValue, ValueRepresentation.kTagged)
+                    {
+                        Obj0 = cell,
+                        Properties = OpProperties.kCanRead,
+                    }));
                 if (type == PropertyCellType.ConstantType)
                 {
                     if (value.IsSmi) load.Type = NodeType.kSmi;
@@ -1863,7 +1866,7 @@ public sealed partial class MaglevGraphBuilder
         MergePointInterpreterFrameState? state = _mergeStates[header];
         if (state is null || !state.IsLoop) throw new MaglevBailoutException($"loop without header (JumpLoop at {_it.CurrentOffset()} to {header}, state {(state is null ? "none" : "not a loop")})");
         // HandleNoHeapWritesInterrupt (V8's loop interrupt check; there is no Turbofan to count budget for).
-        AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kCanThrow | OpProperties.kNotIdempotent });
+        BuildLoopInterruptCheck(header);
         CheckLoopEffects(header);
         // JumpLoop clobbers the accumulator.
         SetAccumulator(GetRootConstant(RootIndex.kUndefinedValue));

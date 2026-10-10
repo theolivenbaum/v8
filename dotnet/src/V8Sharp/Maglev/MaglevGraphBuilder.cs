@@ -346,11 +346,33 @@ public sealed partial class MaglevGraphBuilder
         _currentBlock = null;
     }
 
+    /// <summary>
+    /// HandleNoHeapWritesInterrupt at the back edge of the loop at
+    /// <paramref name="header"/>. A loop with calls serves interrupts through
+    /// a call on the slow path (Int0 0). A loop without calls (Int0 1) defers
+    /// code installation, and exits to the interpreter for any other pending
+    /// interrupt (an eager deopt that keeps the code, kInterrupt): a call on
+    /// the back edge would make RyuJIT keep the loop's values in stack slots.
+    /// </summary>
+    void BuildLoopInterruptCheck(int header)
+    {
+        bool callFree = !PrescanLoopEffects(_analysis.GetLoopInfoFor(header)).Cleared;
+        if (callFree)
+        {
+            AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Int0 = 1, Properties = OpProperties.kEagerDeopt | OpProperties.kNotIdempotent },
+                DeoptimizeReason.kInterrupt);
+        }
+        else
+        {
+            AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kCanThrow | OpProperties.kNotIdempotent });
+        }
+    }
+
     /// <summary>The peeled iteration's back edge: the interrupt check, then the loop's entry edge.</summary>
     void BuildPeeledBackEdge(int header)
     {
         Checkpoint();
-        AddNewNode(new Node(Opcode.HandleNoHeapWritesInterrupt) { Properties = OpProperties.kCanThrow | OpProperties.kNotIdempotent });
+        BuildLoopInterruptCheck(header);
         // JumpLoop clobbers the accumulator.
         SetAccumulator(GetRootConstant(RootIndex.kUndefinedValue));
         InitializeLoopHeader(header, _currentBlock!);
@@ -1083,6 +1105,17 @@ public sealed partial class MaglevGraphBuilder
                         _info.RecordLoopEffect(propertyKey: key);
                     }
                     return;
+                case Opcode.TransitionElementsKind when node.Obj1 is Map[] sources:
+                    // V8: only objects that may have a source map change their
+                    // map, and their elements may be reallocated (Smi to double).
+                    known.ClearMapsIntersecting(sources);
+                    foreach (int key in (ReadOnlySpan<int>)[PropertyKeys.kElements, PropertyKeys.kFixedArrayLength])
+                    {
+                        known.ForgetPropertyKey(key);
+                        _info.RecordLoopEffect(propertyKey: key);
+                    }
+                    _info.RecordLoopEffect(transitionSources: sources);
+                    return;
                 case Opcode.StoreMapTransition:
                     // A transition of a non-prototype object (the feedback's map is
                     // not a prototype map): what the default clears, but no
@@ -1093,10 +1126,15 @@ public sealed partial class MaglevGraphBuilder
                     known.ClearLoaded(keepValidityCells: true);
                     _info.RecordLoopEffect(clearsAll: true);
                     return;
+                case Opcode.StorePropertyCellValue:
+                    known.ForgetPropertyKey(PropertyKeys.kPropertyCellValue);
+                    _info.RecordLoopEffect(propertyKey: PropertyKeys.kPropertyCellValue);
+                    known.LoadedProperties[(GetConstant(JSValue.FromObject((PropertyCell)node.Obj0!)), PropertyKeys.kPropertyCellValue)] =
+                        node.Inputs[0];
+                    return;
                 case Opcode.StoreFixedArrayElement:
                 case Opcode.StoreFixedDoubleArrayElement:
                 case Opcode.StoreTypedArrayElement:
-                case Opcode.StorePropertyCellValue:
                 case Opcode.StoreRegister:
                 case Opcode.EnterInlinedFrame:
                 case Opcode.StoreGeneratorContinuation:
@@ -1286,7 +1324,7 @@ public sealed partial class MaglevGraphBuilder
     /// <remarks>
     /// The loop interrupt check (HandleNoHeapWritesInterrupt) does not count:
     /// the interrupts it serves (termination, code installation) run no
-    /// JavaScript.
+    /// JavaScript, and in loops without calls a pending one deoptimizes.
     /// </remarks>
     static bool ObservesFrameParameters(Node node) =>
         node.Opcode == Opcode.CallBuiltin && node.Obj0 is not CallBuiltinInfo { NoFrame: true } ||
@@ -1698,12 +1736,41 @@ public sealed partial class MaglevGraphBuilder
         if (CheckType(value, NodeType.kSmi)) return;
         if (value.Representation != ValueRepresentation.kTagged)
         {
-            // An untagged int32 is a Smi only in the Smi range.
-            AddCheck(Opcode.CheckInt32IsSmi, GetInt32(value), DeoptimizeReason.kNotASmi);
+            // An untagged int32 is a Smi only in the Smi range (V8 elides the
+            // check when the value's range is known to be in it).
+            ValueNode int32 = GetInt32(value);
+            if (!IsInSmiRange(int32)) AddCheck(Opcode.CheckInt32IsSmi, int32, DeoptimizeReason.kNotASmi);
             return;
         }
         AddCheck(Opcode.CheckSmi, value, DeoptimizeReason.kNotASmi);
         EnsureType(value, NodeType.kSmi);
+    }
+
+    /// <summary>
+    /// Whether an int32 node is in the Smi range by its static range (the
+    /// ranges of maglev-range.h for constants, masks and shifts): a mask with a
+    /// non-negative constant below 2^30, an arithmetic shift right by at least
+    /// one, a logical shift right by at least two.
+    /// </summary>
+    static bool IsInSmiRange(ValueNode v)
+    {
+        const int kSmiMax = (1 << 30) - 1, kSmiMin = -(1 << 30);
+        if (v.IsConstant) return v.TryGetInt32Constant(out int c) && c >= kSmiMin && c <= kSmiMax;
+        switch (v.Opcode)
+        {
+            case Opcode.Int32BitwiseAnd:
+                foreach (ValueNode input in v.Inputs)
+                {
+                    if (input.IsConstant && input.TryGetInt32Constant(out int mask) && mask >= 0 && mask <= kSmiMax) return true;
+                }
+                return false;
+            case Opcode.Int32ShiftRight:
+                return v.Inputs[1].IsConstant && v.Inputs[1].TryGetInt32Constant(out int sar) && (sar & 31) >= 1;
+            case Opcode.Int32ShiftRightLogical:
+                return v.Inputs[1].IsConstant && v.Inputs[1].TryGetInt32Constant(out int shr) && (shr & 31) >= 2;
+            default:
+                return false;
+        }
     }
 
     /// <summary>BuildCheckNumber.</summary>
