@@ -2370,7 +2370,7 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
        (frameful construct path; no Octane benchmark spends measurable time
        there); calls with more than six arguments and ForInPrepare now keep
        the lazy entry with a written register window.
-  - Maglev coverage of large programs (2026-10-10, c39c1120..9d0e005c).
+  - Maglev coverage of large programs (2026-10-10, c39c1120..3ab91b5d).
     Measured with `V8SHARP_TIER_PROFILE=1` (TierProfiler: 1 ms samples of
     the measured iterations only) and `V8SHARP_MAGLEV_COUNT_GENERIC=2`
     (generic builtin calls of Maglev code by site). Warm tier shares
@@ -2403,8 +2403,21 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
       element loads and stores (PdfJS's decrypt, Gameboy's getTypedArray),
       megamorphic keyed stores into holes and array appends without the
       runtime (Crypto's bnpSquareTo).
-    Per-change octane-quick (bench-session.sh, 3 interleaved runs): see the
-    A/B table below. Remaining generic code in Maglev, ranked by calls per
+    Per-change octane-quick (bench-session.sh, interleaved, load ~2, noise
+    about 15% per run): A = 8203504e (before), D = cc02e3be (+ keyed
+    generic ICs, lazy windows, for-in, instanceof, prototype fold, inliner
+    recursion rule, string characters), F = 9d0e005c (+ accessors, parseInt,
+    fromCharCode, polymorphic typed arrays, keyed store holes); 3 runs,
+    session-20261010-060337: Typescript 32.0 / 35.3 / 35.7 (+12%), PdfJS
+    752 / 811 / 814 (+8%), Crypto 739 / 645 / 760, EarleyBoyer 282 / 282 /
+    266 (one outlier run of F; medians 293 / 282 / 281), RayTrace 1273 /
+    1384 / 1666 (+31%), Box2D 1165 / 1162 / 1211 (+4%), Gameboy 549 / 538
+    / 581 (+6%), geomean +7.7%; V8 --jit is 4.4x (Typescript) to 8.8x
+    (PdfJS) faster. Crypto, RayTrace and Richards from C = d92cdb5e (before
+    instanceof .. string characters), 5 runs: Crypto 676 / 679 / 662,
+    RayTrace 908 / 1543 / 1386 (+53% from the inliner's recursion rule and
+    the prototype fold), Richards 3396 / 3405 / 3372.
+    Remaining generic code in Maglev, ranked by calls per
     measured iteration: Typescript's megamorphic named stores in the AST
     constructors (9.5M SetNamedProperty through the stub cache, as V8) and
     megamorphic calls of its AST walker table (as V8); Gameboy's opcode
