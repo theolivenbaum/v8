@@ -21,7 +21,7 @@ public abstract class HeapObject(InstanceType instanceType)
     private protected uint _hashField;
 
     /// <summary>
-    /// Per-class flag bits (JSString: internalized). They sit in the header
+    /// Per-class flag bits (JSString: internalized; Context: its kind). They sit in the header
     /// word's padding after InstanceType and the hash field, where a bool of a
     /// subclass would add 8 bytes to every instance.
     /// </summary>

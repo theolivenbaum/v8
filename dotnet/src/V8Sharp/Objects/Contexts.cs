@@ -51,14 +51,22 @@ public partial class Context : HeapObject
     /// <summary>The slots (V8's elements), including the header slots.</summary>
     public readonly JSValue[] Slots;
 
-    /// <summary>The kind (V8: the context map's instance type).</summary>
-    public readonly ContextKind Kind;
+    /// <summary>
+    /// The kind (V8: the context map's instance type), in the header word's
+    /// flag byte (HeapObject._headerFlags): a field of its own would add 8
+    /// bytes to every context.
+    /// </summary>
+    public ContextKind Kind
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => (ContextKind)_headerFlags;
+    }
 
     NativeContext? _nativeContext;
 
     public Context(ContextKind kind, int length, NativeContext? nativeContext) : base(InstanceType.ContextType)
     {
-        Kind = kind;
+        _headerFlags = (byte)kind;
         Slots = new JSValue[length];
         _nativeContext = nativeContext;
     }
