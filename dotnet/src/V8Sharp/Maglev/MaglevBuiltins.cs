@@ -714,6 +714,10 @@ public static class MaglevBuiltins
         return str is SeqString seq ? seq.Value[index] : str.Get(index);
     }
 
+    /// <summary>StringAt: the one-character string at an index the code checked (as LoadIndexedString).</summary>
+    public static JSValue StringAt(Isolate isolate, JSValue s, int index) =>
+        isolate.Factory.LookupSingleCharacterStringFromCode(StringCharCodeAt(s, index));
+
     public static JSValue StringAdd(Isolate isolate, JSValue left, JSValue right) =>
         InterpreterOps.StringAdd(isolate, Unsafe.As<JSString>(left._obj!), Unsafe.As<JSString>(right._obj!));
 

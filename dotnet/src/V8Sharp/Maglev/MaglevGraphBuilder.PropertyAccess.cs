@@ -1188,9 +1188,43 @@ public sealed partial class MaglevGraphBuilder
         return !first;
     }
 
+    /// <summary>
+    /// TryBuildElementAccessOnString: a keyed load whose only feedback is a
+    /// string receiver (kIndexedString) loads the character (StringAt), after
+    /// a bounds check that deoptimizes; with out-of-bounds feedback V8 selects
+    /// undefined instead (LoadModeHandlesOOB), which V8Sharp leaves generic.
+    /// </summary>
+    ValueNode? TryBuildElementAccessOnString(ValueNode obj, ValueNode key, List<(Map Map, JSValue Handler)> feedback)
+    {
+        if (feedback.Count != 1 || feedback[0].Handler.HeapObjectOrNull is not LoadHandler { HandlerKind: LoadHandler.Kind.kIndexedString } handler ||
+            handler.AllowOutOfBounds || !ReferenceEquals(feedback[0].Map, Isolate.NativeContext.ICPrimitiveMaps?.StringMap) ||
+            key.Representation == ValueRepresentation.kTagged && !NodeTypes.CanBe(GetType(key), NodeType.kNumber))
+        {
+            return null;
+        }
+        BuildCheckString(obj);
+        ValueNode index = GetInt32ElementIndex(key);
+        ValueNode length = AddNewNode(new ValueNode(Opcode.StringLength, ValueRepresentation.kInt32)
+        {
+            Inputs = [obj],
+            Type = NodeType.kSmi,
+        });
+        AddNewNode(new Node(Opcode.CheckInt32Condition)
+        {
+            Inputs = [index, length],
+            Int0 = (int)CompareOperation.kLessThan,
+            Int1 = 1, // unsigned
+            Properties = OpProperties.kEagerDeopt,
+        }, DeoptimizeReason.kOutOfBounds);
+        // StringAt: the one-character string (from the single character string table).
+        return CallMaglev("StringAt", [obj, index], [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1)], OpProperties.kNone,
+            type: NodeType.kString);
+    }
+
     ValueNode? TryBuildElementLoad(ValueNode obj, ValueNode key, List<(Map Map, JSValue Handler)> feedback)
     {
         if (obj.Representation != ValueRepresentation.kTagged) return null;
+        if (TryBuildElementAccessOnString(obj, key, feedback) is { } character) return character;
         if (TryApplyElementLoadTransitions(obj, feedback) is not { } refined) return null;
         feedback = refined;
         if (CollectTypedArrayAccess(feedback, load: true, out ElementsKind typedKind, out bool typedHandlesOOB))
