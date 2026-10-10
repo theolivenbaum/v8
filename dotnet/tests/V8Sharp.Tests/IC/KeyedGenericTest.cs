@@ -82,6 +82,29 @@ public class KeyedGenericTest : TestWithContext
     }
 
     [Fact]
+    public void ElementStoresIntoHolesAndAppends()
+    {
+        Assert.Equal("setter v|p|0,1,2,3,4,0|40|39|0.5,1.5,x|2|undefined|5|6|9,9,9|0|b|z|3|undefined|2|0,,,own,4|0,1,2,app",
+            RunString(Prelude + """
+            var out = [];
+            var down = []; down[5] = 0; for (var i = 4; i >= 0; i--) st(down, i, i);
+            var app = [1]; for (var i = 1; i < 40; i++) st(app, i, i);
+            var dapp = [0.5]; st(dapp, 1, 1.5); st(dapp, 2, 'x');
+            var ro = [1, 2]; Object.defineProperty(ro, 'length', { writable: false }); st(ro, 2, 3);
+            function C() {} C.prototype = [9, 9, 9]; var c = new C(); c[0] = 1; c.length = 3; st(c, 1, 5); st(c, 2, 6);
+            var withProtoElem = [, , ]; Object.setPrototypeOf(withProtoElem, { set 1(v) { out.push('setter ' + v); } }); st(withProtoElem, 1, 'v'); st(withProtoElem, 0, 'w');
+            var holeyObj = { 0: 'a', 2: 'c' }; st(holeyObj, 1, 'b'); st(holeyObj, 9, 'z');
+            var sealedArr = Object.seal([1, , 3]); st(sealedArr, 1, 2); st(sealedArr, 3, 4);
+            var nonext = Object.preventExtensions([1, 2]); st(nonext, 2, 3);
+            var protoTarget = [1, , 3]; var child = Object.create(protoTarget); st(protoTarget, 1, 'p'); out.push(child[1]);
+            Array.prototype[3] = 'AP'; var apHole = [0, , , , 4]; st(apHole, 3, 'own'); var apApp = [0, 1, 2]; st(apApp, 3, 'app'); delete Array.prototype[3];
+            out.push(down.join(), app.length, app[39], dapp.join(), ro.length, String(ro[2]), c[1], c[2], C.prototype.join(),
+              Object.keys(withProtoElem).join(), holeyObj[1], holeyObj[9], sealedArr.length, String(sealedArr[3]), nonext.length, apHole.join(), apApp.join());
+            out.join('|');
+            """));
+    }
+
+    [Fact]
     public void MegamorphicKeyedAccessesDoNotMiss()
     {
         RunString(Prelude + """

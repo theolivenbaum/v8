@@ -1015,17 +1015,18 @@ public sealed class KeyedStoreIC : IC
     /// or an in-bounds fast element itself and leaves everything else to the
     /// runtime's SetKeyedProperty, not the IC miss (V8 probes the stub cache
     /// only for API objects, which V8Sharp's hosts do not create). V8 also
-    /// adds transitions, dictionary properties and grown elements inline
-    /// (EmitGenericPropertyStore, EmitGenericElementStore); here those are the
-    /// runtime's.
+    /// adds transitions, dictionary properties and transitioned elements
+    /// inline (EmitGenericPropertyStore, EmitGenericElementStore); here those
+    /// are the runtime's.
     /// </summary>
     static void StoreGeneric(Isolate isolate, JSValue obj, JSValue key, JSValue value)
     {
         if (obj._obj is JSObject elementReceiver && key.IsNumber && !Map.IsCustomElementsReceiverMap(elementReceiver.Map))
         {
-            // EmitGenericElementStore: an in-bounds store of a value that fits a
-            // fast elements kind; growth, holes and transitions in the runtime.
-            if (elementReceiver is not JSTypedArray && ElementAccess.TryStoreInBounds(elementReceiver, key._num, value)) return;
+            // EmitGenericElementStore: a store of a value that fits a fast
+            // elements kind, in bounds or appended to an array; other growth
+            // and transitions in the runtime.
+            if (elementReceiver is not JSTypedArray && ElementAccess.TryStoreGeneric(isolate, elementReceiver, key._num, value)) return;
         }
         else if (obj._obj is JSObject receiver && !key.IsNumber && !Map.IsCustomElementsReceiverMap(receiver.Map) &&
                  key.HeapObjectOrNull is Name name)

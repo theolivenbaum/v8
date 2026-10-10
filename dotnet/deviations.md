@@ -765,10 +765,12 @@ for now, to be revisited when the reason goes away.
   copy exists) go to the runtime, where V8's builtin handles more cases
   itself. Not a behaviour difference.
 - Megamorphic keyed stores (`KeyedStoreIC.StoreGeneric`, KeyedStoreGeneric):
-  in-bounds element stores and overwrites of an existing writable data
-  property (a mutable tagged field or a dictionary entry; not on prototype
-  maps or protector names) are inline; everything else, including the
-  property additions V8's builtin performs inline, is
+  element stores of values that fit the fast elements kind (in bounds,
+  holes included, and appends to a JSArray, when no prototype has
+  elements) and overwrites of an existing writable data property (a
+  mutable tagged field or a dictionary entry; not on prototype maps or
+  protector names) are inline; everything else, including the elements
+  kind transitions and property additions V8's builtin performs inline, is
   `Runtime::SetObjectProperty`.
 - Dispatch: one C# loop specialized per operand scale
   (`InterpreterExecution.Loop<TS>`) instead of generated handlers. The loop
