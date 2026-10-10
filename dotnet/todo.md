@@ -2448,6 +2448,46 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     NavierStokes is above v8:maglev. PdfJS -17% here did not reproduce: a
     second session (4 runs) gave 1272 vs 1225 (-4%, within noise), with
     the cold exits off 1332 vs 1265, with the data locals off 1296 vs 1285.
+    Final, merged with main 7e2b5fd6 (calls and frames) at 07d0d079;
+    octane-steady, parity publishes of 7e2b5fd6 and 07d0d079, 3 interleaved
+    runs, two sessions: load 1.8/2.0 and 1.6/3.0, steal 0%, idle 97-98%,
+    cpu-cal 1837/1615 and 1676/1757 ms, mem-bw 18.9/18.1 and 19.7/18.7
+    GB/s; V8 crashed (exit 139) on 5 benchmark/engine runs, their means are
+    over the other runs; latency rows out:
+
+    | benchmark | main 7e2b5fd6 | 07d0d079 | v8:maglev | v8:jit |
+    |---|---|---|---|---|
+    | Richards | 1745 | 1578 | 6281 | 8789 |
+    | DeltaBlue | 2242 | 2155 | 7841 | 12214 |
+    | Crypto | 295 | 447 | 749 | 1652 |
+    | RayTrace | 716 | 704 | 2946 | 4946 |
+    | EarleyBoyer | 162 | 159 | 667 | 883 |
+    | RegExp | 222 | 219 | 815 | 832 |
+    | Splay | 2776 | 2714 | 8705 | 7430 |
+    | NavierStokes | 1404 | 1681 | 1787 | 2856 |
+    | PdfJS | 1161 | 1206 | 6095 | 6114 |
+    | Mandreel | 499 | 784 | 2768 | 4569 |
+    | Gameboy | 1526 | 1915 | 5183 | 5390 |
+    | CodeLoad | 2927 | 2743 | 3231 | 3291 |
+    | Box2D | 2712 | 2930 | 11237 | 15942 |
+    | zlib | 919 | 907 | 1592 | 1424 |
+    | Typescript | 435 | 460 | 1968 | 2039 |
+    | geomean | 927 | 1002 | 2911 | 3685 |
+
+    Warm geomean +8.0% over main: 27.2% of v8:jit (from 25.2%), 34.4% of
+    v8:maglev. Richards -10% is within its bimodal range (see above).
+    Cold Octane (start-up, wall clock, same publishes, 3 interleaved runs,
+    load 2.0/3.1, steal 0%, cpu-cal 1760/1870 ms, mem-bw 17.6/18.8 GB/s;
+    V8 crashed on 8 benchmark/engine runs): geomean (latencies in) 4038 ->
+    4187 (+3.7%; v8:maglev 18743, v8:jit 24375); Mandreel 2475 -> 3588,
+    Crypto 3087 -> 4115, Box2D 3398 -> 3855, NavierStokes 12181 -> 13207,
+    DeltaBlue 2200 -> 2490; EarleyBoyer 4081 -> 3225 and Splay 2854 -> 2391
+    (cold noise; their warm rows are equal).
+    Toward 50% of v8:jit warm, by share of the log gap: RayTrace x7.0,
+    Mandreel x5.8, DeltaBlue x5.7, Richards x5.6, EarleyBoyer x5.5, Box2D
+    x5.4 (9-10% each), PdfJS x5.1, Typescript x4.4, RegExp x3.8, Crypto
+    x3.7, Gameboy x2.8, Splay x2.7, NavierStokes x1.7, zlib x1.6, CodeLoad
+    x1.2.
     Conformance (532e3832, after merging main 7e2b5fd6; flock -s, --jobs 2,
     with other agents' conformance runs on the host, load up to 26):
     V8Sharp.Tests 1220/1220; test262 default and forced 0 newly failing
