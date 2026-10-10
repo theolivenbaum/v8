@@ -256,7 +256,7 @@ public static class MaglevBuiltins
     /// HasInPrototypeChain: 1 when <paramref name="prototype"/> is on the
     /// prototype chain of <paramref name="obj"/>, 0 when not, 2 when the
     /// optimized code must deoptimize (the constructor's map or prototype slot
-    /// changed, or a special receiver such as a proxy is on the chain).
+    /// changed, or a proxy or an access-checked object is on the chain).
     /// </summary>
     [MethodImpl(Inline)]
     public static int HasInPrototypeChain(JSValue obj, JSFunction function, Map functionMap, HeapObject protoOrMap, JSReceiver prototype)
@@ -267,7 +267,10 @@ public static class MaglevBuiltins
         Map map = Unsafe.As<JSReceiver>(o).Map;
         while (true)
         {
-            if (Map.IsSpecialReceiverMap(map)) return 2;
+            // HasInPrototypeChain::GenerateCode: special receivers continue
+            // through their map's prototype, except proxies and objects that
+            // need access checks (V8's deferred runtime call).
+            if (Map.IsSpecialReceiverMap(map) && (map.InstanceType == InstanceType.JSProxyType || map.IsAccessCheckNeeded)) return 2;
             JSReceiver? next = map.Prototype;
             if (next is null) return 0;
             if (ReferenceEquals(next, prototype)) return 1;

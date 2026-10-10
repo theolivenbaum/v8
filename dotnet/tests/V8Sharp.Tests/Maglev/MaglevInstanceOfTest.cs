@@ -61,4 +61,27 @@ public class MaglevInstanceOfTest
             r.join();
             """));
     }
+
+    [Fact]
+    public void GlobalProxyOnTheChain()
+    {
+        // mjsunit/turbolev/has-in-prototype-chain-wasm puts a Wasm struct (a
+        // special receiver that continues the walk) on the chain; the global
+        // proxy needs access checks, so the optimized code deoptimizes there
+        // (V8: a deferred runtime call).
+        Assert.Equal("true,true,false,true,false", MaglevCompilerTest.Run("--maglev --no-concurrent-recompilation", """
+            function A() {}
+            class B extends A {}
+            function isA(o) { return o instanceof A; }
+            %PrepareFunctionForOptimization(isA);
+            isA(new B()); isA(new A()); isA({});
+            %OptimizeFunctionOnNextCall(isA);
+            var r = [isA(new B()), isA(new A()), isA({})];
+            var b = new B();
+            r.push(isA(b));
+            Object.setPrototypeOf(b, globalThis);
+            r.push(isA(b));
+            r.join();
+            """));
+    }
 }
