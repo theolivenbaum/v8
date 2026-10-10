@@ -293,7 +293,10 @@ public static partial class Program
                             // which costs no thread CPU): compile time is not scored.
                             waitForCompilations();
                             settle();
-                            if (!awaited) { print('@compilations-awaited'); awaited = true; }
+                            if (!awaited) {
+                              print('@compilations-awaited'); awaited = true;
+                              if (typeof gcMark === 'function') gcMark();
+                            }
                             last = cpuTimeMs();
                           }
                           var result = run.apply(this, arguments);
@@ -319,6 +322,7 @@ public static partial class Program
                     NotifyError: function (name, error) { print(name + '(Error): ' + error); },
                     NotifyScore: function (score) { }
                   });
+                  if (typeof gcReport === 'function') gcReport();
                 })();
                 """;
             string scale = Environment.GetEnvironmentVariable("V8SHARP_BENCH_SCALE") ?? "50";

@@ -92,6 +92,13 @@ sealed class V8SharpHost : IBenchHost
             // Bytes the CLR allocated on this thread (micro/cpu.js prints bytes per iteration).
             Install(context, global, "allocatedBytes",
                 static (Isolate i, in BuiltinArguments a) => JSValue.FromNumber(GC.GetAllocatedBytesForCurrentThread()));
+            // octane-steady: the CLR heap's work over the measured runs (MB
+            // allocated, collections per generation, pause time), printed as
+            // @gc lines by gcReport; gcMark starts the window.
+            Install(context, global, "gcMark",
+                static (Isolate i, in BuiltinArguments a) => { GcWindow.Mark(); return JSValue.Undefined; });
+            Install(context, global, "gcReport",
+                static (Isolate i, in BuiltinArguments a) => { GcWindow.Report(); return JSValue.Undefined; });
             JSObject d8 = _isolate.Factory.NewJSObject(context.ObjectFunction);
             JSObject file = _isolate.Factory.NewJSObject(context.ObjectFunction);
             Install(context, file, "execute", Load);
@@ -179,4 +186,35 @@ sealed class V8SharpHost : IBenchHost
     public void LoadFile(string path) => RunOnLargeStack(File.ReadAllText(path), Path.GetFileName(path));
     public void Execute(string source, string name) => RunOnLargeStack(source, name);
     public void Dispose() { }
+}
+
+/// <summary>The CLR heap's work over a window of a measurement (octane-steady's measured runs).</summary>
+static class GcWindow
+{
+    static long _bytes;
+    static int _g0, _g1, _g2;
+    static TimeSpan _pause;
+    static bool _marked;
+
+    public static void Mark()
+    {
+        if (_marked) return;
+        _marked = true;
+        _bytes = GC.GetTotalAllocatedBytes(precise: true);
+        _g0 = GC.CollectionCount(0);
+        _g1 = GC.CollectionCount(1);
+        _g2 = GC.CollectionCount(2);
+        _pause = GC.GetTotalPauseDuration();
+    }
+
+    public static void Report()
+    {
+        if (!_marked) return;
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        double mb = (GC.GetTotalAllocatedBytes(precise: true) - _bytes) / 1048576.0;
+        double pause = (GC.GetTotalPauseDuration() - _pause).TotalMilliseconds;
+        Console.WriteLine(string.Format(ci, "@gc allocMB {0:F1} gen0 {1} gen1 {2} gen2 {3} pauseMs {4:F1} heapMB {5:F1}",
+            mb, GC.CollectionCount(0) - _g0, GC.CollectionCount(1) - _g1, GC.CollectionCount(2) - _g2, pause,
+            GC.GetGCMemoryInfo().HeapSizeBytes / 1048576.0));
+    }
 }
