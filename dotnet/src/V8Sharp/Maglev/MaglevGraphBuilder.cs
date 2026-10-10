@@ -1384,6 +1384,11 @@ public sealed partial class MaglevGraphBuilder
     /// <paramref name="predecessor"/>: an untagged value is tagged at the end
     /// of the predecessor block (V8: the merge's EnsureTagged).
     /// </summary>
+    internal bool IsTracing => _info.IsTracing;
+
+    /// <summary>An input for a phi whose value no path uses (a dropped virtual object's field).</summary>
+    internal ValueNode GetUndefinedForPhi() => GetRootConstant(RootIndex.kUndefinedValue);
+
     internal ValueNode GetTaggedValueForPhi(ValueNode value, BasicBlock predecessor)
     {
         // A phi input escapes an allocation (the phi is another name for it).

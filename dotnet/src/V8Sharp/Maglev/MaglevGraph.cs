@@ -70,6 +70,9 @@ public sealed class Graph
     /// <summary>The graph resumes a generator (set_has_resumable_generator).</summary>
     public bool HasResumableGenerator;
 
+    /// <summary>Some merge created phis for the fields of a virtual object (MergeVirtualObjectValue).</summary>
+    public bool HasVirtualObjectPhis;
+
     public int NewNodeId() => _nextNodeId++;
     public BasicBlock NewBlock() => new(_nextBlockId++);
     public int NodeCount => _nextNodeId;

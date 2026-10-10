@@ -197,8 +197,13 @@ public sealed class KnownNodeAspects
         }
     }
 
-    /// <summary>KnownNodeAspects::Merge: keep only what both paths know.</summary>
-    public void Merge(KnownNodeAspects other)
+    /// <summary>
+    /// KnownNodeAspects::Merge: keep only what both paths know. The virtual
+    /// objects are intersected, unless the caller merged them
+    /// (<paramref name="mergeVirtualObjects"/> false:
+    /// MergePointInterpreterFrameState.MergeVirtualObjects).
+    /// </summary>
+    public void Merge(KnownNodeAspects other, bool mergeVirtualObjects = true)
     {
         List<ValueNode>? remove = null;
         foreach (KeyValuePair<ValueNode, NodeInfo> e in _infos)
@@ -233,7 +238,7 @@ public sealed class KnownNodeAspects
         Intersect(LoadedProperties, other.LoadedProperties);
         Intersect(LoadedContextSlots, other.LoadedContextSlots);
         Intersect(LoadedContextConstants, other.LoadedContextConstants);
-        VirtualObjects = VirtualObjects.Intersect(other.VirtualObjects);
+        if (mergeVirtualObjects) VirtualObjects = VirtualObjects.Intersect(other.VirtualObjects);
         CheckedValidityCells.IntersectWith(other.CheckedValidityCells);
     }
 
@@ -476,12 +481,126 @@ public sealed class MergePointInterpreterFrameState
                 Phis.Add(newPhi);
                 Values[slot] = newPhi;
             }
-            Known!.Merge(unmerged.Known);
+            // (The types of the virtual objects' phis are what the paths knew before the merge.)
+            VirtualObjectList objects = MergeVirtualObjects(builder, unmerged, predecessor, index);
+            Known!.Merge(unmerged.Known, mergeVirtualObjects: false);
+            Known.VirtualObjects = objects;
         }
         DirtyParameters |= unmerged.DirtyParameters;
         Predecessors.Add(predecessor);
         PredecessorsSoFar++;
     }
+
+    /// <summary>The phis this merge created for the fields of virtual objects (MergeVirtualObjectValue).</summary>
+    HashSet<Phi>? _virtualObjectPhis;
+
+    /// <summary>
+    /// MergeVirtualObjects: the versions of the tracked allocations after the
+    /// merge. An allocation both paths track keeps a version whose fields are
+    /// phis where the paths' versions differ (MergeVirtualObject); one only
+    /// the merged paths track is dropped (it was allocated on those paths, so
+    /// nothing after the merge refers to it but phis, which escape it).
+    /// Catch blocks and loop headers drop differing versions, where V8 escapes
+    /// the allocation (it has no phis of virtual object fields there).
+    /// </summary>
+    VirtualObjectList MergeVirtualObjects(MaglevGraphBuilder builder, InterpreterFrameState unmerged, BasicBlock predecessor, int index)
+    {
+        VirtualObjectList mine = Known!.VirtualObjects, theirs = unmerged.Known.VirtualObjects;
+        VirtualObjectList result;
+        if (ReferenceEquals(mine, theirs))
+        {
+            result = mine;
+        }
+        else if (IsLoop || IsExceptionHandler)
+        {
+            result = mine.Intersect(theirs);
+        }
+        else
+        {
+            List<VirtualObject>? merged = null;
+            for (int i = 0; i < mine.Count; i++)
+            {
+                VirtualObject vo = mine[i];
+                VirtualObject? other = theirs.Find(vo.Allocation);
+                VirtualObject? version = other is null ? null
+                    : ReferenceEquals(vo, other) ? vo
+                    : MergeVirtualObject(builder, vo, other, unmerged.Known, predecessor, index);
+                if (ReferenceEquals(version, vo) && merged is null) continue;
+                if (merged is null)
+                {
+                    merged = new List<VirtualObject>(mine.Count);
+                    for (int j = 0; j < i; j++) merged.Add(mine[j]);
+                }
+                if (version is not null) merged.Add(version);
+                else if (builder.IsTracing) Console.WriteLine($"[maglev] not merging virtual object n{vo.Allocation.Id} at @{MergeOffset}");
+            }
+            result = merged is null ? mine : VirtualObjectList.From(merged);
+        }
+        // A phi of a version the merge dropped (no path after the merge uses
+        // it) still needs an input per predecessor.
+        if (_virtualObjectPhis is not null)
+        {
+            foreach (Phi phi in _virtualObjectPhis)
+            {
+                while (phi.InputList.Count <= index) phi.InputList.Add(builder.GetUndefinedForPhi());
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// MergeVirtualObject: the version of <paramref name="merged"/>'s
+    /// allocation after merging <paramref name="unmerged"/> (the incoming
+    /// path's version): each field that differs becomes a phi
+    /// (MergeVirtualObjectValue), or null when the versions cannot be merged
+    /// (different maps, or different nested allocations in a field).
+    /// </summary>
+    /// <remarks>
+    /// Deviation: V8's virtual objects never change their map (StoreMap
+    /// escapes the allocation); V8Sharp's record map transitions, and versions
+    /// with different maps are not merged.
+    /// </remarks>
+    VirtualObject? MergeVirtualObject(MaglevGraphBuilder builder, VirtualObject merged, VirtualObject unmerged,
+        KnownNodeAspects unmergedKnown, BasicBlock predecessor, int index)
+    {
+        if (!ReferenceEquals(merged.Map, unmerged.Map) || merged.Slots.Length != unmerged.Slots.Length) return null;
+        // Decide first, so that a version that cannot be merged leaves no phis behind.
+        for (int i = 0; i < merged.Slots.Length; i++)
+        {
+            ValueNode a = merged.Slots[i], b = unmerged.Slots[i];
+            if (IsVirtualObjectPhi(a) || ReferenceEquals(a, b)) continue;
+            // A nested allocation that differs between the paths: V8 gives up too.
+            if (a is InlinedAllocation && b is InlinedAllocation) return null;
+        }
+        ValueNode[]? slots = null;
+        for (int i = 0; i < merged.Slots.Length; i++)
+        {
+            ValueNode a = merged.Slots[i], b = unmerged.Slots[i];
+            if (IsVirtualObjectPhi(a))
+            {
+                var existing = (Phi)a;
+                existing.Type |= unmergedKnown.GetType(b);
+                existing.InputList.Add(builder.GetTaggedValueForPhi(b, predecessor));
+                continue;
+            }
+            if (ReferenceEquals(a, b)) continue;
+            var phi = new Phi(Interpreter.Register.InvalidValue(), MergeOffset)
+            {
+                Id = builder.Graph.NewNodeId(),
+                Type = Known!.GetType(a) | unmergedKnown.GetType(b),
+            };
+            for (int j = 0; j < index; j++) phi.InputList.Add(builder.GetTaggedValueForPhi(a, Predecessors[j]));
+            phi.InputList.Add(builder.GetTaggedValueForPhi(b, predecessor));
+            Phis.Add(phi);
+            (_virtualObjectPhis ??= new HashSet<Phi>(ReferenceEqualityComparer.Instance)).Add(phi);
+            builder.Graph.HasVirtualObjectPhis = true;
+            (slots ??= (ValueNode[])merged.Slots.Clone())[i] = phi;
+            if (builder.IsTracing) Console.WriteLine($"[maglev] merging field {i} of virtual object n{merged.Allocation.Id} at @{MergeOffset}: phi n{phi.Id}");
+        }
+        return slots is null ? merged : new VirtualObject(merged.Allocation, merged.Map, slots);
+    }
+
+    bool IsVirtualObjectPhi(ValueNode value) => value is Phi phi && _virtualObjectPhis is not null && _virtualObjectPhis.Contains(phi);
 
     /// <summary>
     /// NewForCatchBlock: the state of the catch block at

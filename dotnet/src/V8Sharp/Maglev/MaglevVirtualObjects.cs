@@ -129,6 +129,8 @@ public sealed class VirtualObjectList
 
     public int Count => _objects.Length;
 
+    internal static VirtualObjectList From(List<VirtualObject> objects) => objects.Count == 0 ? Empty : new(objects.ToArray());
+
     public VirtualObject this[int index] => _objects[index];
 
     /// <summary>FindAllocatedWith.</summary>
@@ -158,9 +160,11 @@ public sealed class VirtualObjectList
     }
 
     /// <summary>
-    /// The versions both paths have (KnownNodeAspects::Merge). V8 merges
-    /// differing versions slot by slot with phis; V8Sharp drops them, and a
-    /// deopt frame after the merge that needs the object then makes it escape.
+    /// The versions both paths have: the merge of a catch block, a loop
+    /// header or a diamond the builder joins itself (V8 escapes differing
+    /// versions there). Other merges merge the versions field by field
+    /// (MergePointInterpreterFrameState.MergeVirtualObjects). A deopt frame
+    /// after the merge that needs a dropped object makes it escape.
     /// </summary>
     public VirtualObjectList Intersect(VirtualObjectList other)
     {
@@ -260,12 +264,12 @@ internal static class MaglevEscapeAnalysis
                     if (node.Opcode == Opcode.EnterInlinedFrame && !pushed.Contains((MaglevCompilationUnit)node.Obj0!)) continue;
                     Escape(node.Inputs[i], node, trace);
                 }
-                CheckDeoptFrame(node.EagerDeoptInfo);
-                CheckDeoptFrame(node.LazyDeoptInfo);
+                CheckDeoptFrame(node.EagerDeoptInfo, node);
+                CheckDeoptFrame(node.LazyDeoptInfo, node);
             }
             ControlNode control = block.Control!;
             foreach (ValueNode input in control.Inputs) Escape(input, control, trace);
-            CheckDeoptFrame(control.EagerDeoptInfo);
+            CheckDeoptFrame(control.EagerDeoptInfo, control);
         }
 
         // EscapeAllocation: what an escaping allocation holds escapes.
@@ -358,7 +362,7 @@ internal static class MaglevEscapeAnalysis
     /// A deopt frame can materialize an allocation only from the virtual
     /// objects of its point; one it does not have there escapes.
     /// </summary>
-    static void CheckDeoptFrame(DeoptInfo? info)
+    static void CheckDeoptFrame(DeoptInfo? info, NodeBase user)
     {
         if (info is null) return;
         VirtualObjectList objects = info.TopFrame.VirtualObjects;
@@ -368,24 +372,24 @@ internal static class MaglevEscapeAnalysis
             foreach ((Register _, ValueNode value) in frame.Values)
             {
                 if (value is not InlinedAllocation a || a.Result == EscapeAnalysisResult.kEscaped) continue;
-                CheckCaptured(a, objects);
+                CheckCaptured(a, objects, user);
             }
         }
     }
 
     /// <summary>The virtual objects of an allocation a deopt captures and of the allocations in its fields.</summary>
-    static void CheckCaptured(InlinedAllocation a, VirtualObjectList objects)
+    static void CheckCaptured(InlinedAllocation a, VirtualObjectList objects, NodeBase user)
     {
         VirtualObject? vo = objects.Find(a);
         if (vo is null)
         {
-            if (Trace) Console.WriteLine($"[maglev] escape analysis: allocation n{a.Id} escapes: a deopt frame without its virtual object");
+            if (Trace) Console.WriteLine($"[maglev] escape analysis: allocation n{a.Id} escapes: the deopt frame of n{user.Id} {user.Opcode} ({user.Unit}) without its virtual object");
             a.Result = EscapeAnalysisResult.kEscaped;
             return;
         }
         foreach (ValueNode slot in vo.Slots)
         {
-            if (slot is InlinedAllocation nested && nested.Result != EscapeAnalysisResult.kEscaped) CheckCaptured(nested, objects);
+            if (slot is InlinedAllocation nested && nested.Result != EscapeAnalysisResult.kEscaped) CheckCaptured(nested, objects, user);
         }
     }
 

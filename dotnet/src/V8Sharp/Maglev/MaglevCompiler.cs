@@ -173,9 +173,12 @@ public static class MaglevCompiler
         if (isolate.Flags.maglev_truncation) MaglevTruncation.Run(info.Graph);
         ComputeUseCounts(info.Graph);
         ElideArgumentsObjects(info.Graph);
-        if (MaglevEscapeAnalysis.Run(info.Graph, isolate.Flags.maglev_escape_analysis, info.IsTracing || isolate.Flags.trace_maglev_escape_analysis))
+        bool traceEscapes = info.IsTracing || isolate.Flags.trace_maglev_escape_analysis;
+        if (traceEscapes) Console.WriteLine($"[maglev] escape analysis of {DebugName(shared)}{(osrOffset >= 0 ? " (OSR)" : "")}");
+        if (MaglevEscapeAnalysis.Run(info.Graph, isolate.Flags.maglev_escape_analysis, traceEscapes) || info.Graph.HasVirtualObjectPhis)
         {
-            // The removed stores' values may be dead now.
+            // The removed stores' values may be dead now, and so may the
+            // phis of the virtual objects of allocations that escaped.
             ComputeUseCounts(info.Graph);
         }
         MaglevEscapeAnalysis.MarkOverwrittenMapStores(info.Graph);
@@ -492,6 +495,14 @@ public static class MaglevCompiler
                         {
                             MaglevEscapeAnalysis.UseCaptured(slot, frame.VirtualObjects, static v => v.UseCount++);
                         }
+                    }
+                    else if (value is InlinedAllocation { Result: EscapeAnalysisResult.kUnknown } undecided &&
+                             frame!.VirtualObjects.Find(undecided) is { } vo)
+                    {
+                        // Before the escape analysis: the fields the deopt would
+                        // materialize if the allocation is elided (its virtual
+                        // object's phis have no other uses).
+                        foreach (ValueNode slot in vo.Slots) slot.UseCount++;
                     }
                     if (!visited) value.UseCount++;
                 }

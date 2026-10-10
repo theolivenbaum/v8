@@ -258,6 +258,39 @@ public class MaglevEscapeAnalysisTest
           return out.join();
         })()
         """,
+        // Versions that differ at merges (MergeVirtualObjects): fields stored
+        // on one path or both, three-way merges, a nested object in a field,
+        // maps that differ (not merged), and deopts after the merges.
+        """
+        (function() {
+          function P(x, y) { this.x = x; this.y = y; }
+          function f(a, c) {
+            var p = new P(a, 1);
+            if (c & 1) { p.x = a * 2; p.y = 3; } else { p.y = c; }
+            var t = p.x - (c & 2 ? 0.5 : 0);
+            return t + ':' + p.x + ':' + p.y;
+          }
+          function g(a, c) {
+            var p = new P(a, 1);
+            switch (c & 3) { case 0: p.x = 1; break; case 1: p.x = 'one'; break; case 2: p.y = 5; break; }
+            return p.x + ',' + p.y + ',' + (p.x - a);
+          }
+          function h(a, c) {
+            var p = new P(new P(a, 0), 1);
+            if (c & 1) p.x.y = 7; else p.y = 8;
+            return p.x.x + p.x.y + p.y;
+          }
+          function m(a, c) {
+            var p = new P(a, 1);
+            if (c & 1) p.z = 3;
+            return p.x + p.y + (p.z === undefined ? 0 : p.z);
+          }
+          var out = [];
+          for (var k = 0; k < 40; k++) out.push(f(k, k), g(k, k), h(k, k), m(k, k));
+          out.push(f('s', 1), f(0.5, 2), g({}, 1), g('q', 2), h('h', 1), h(1.5, 0), m('m', 1), m(2, 0));
+          return out.join();
+        })()
+        """,
     };
 
     [Theory]
@@ -408,6 +441,64 @@ public class MaglevEscapeAnalysisTest
             f(1, 2); f(3, 4);
             %OptimizeFunctionOnNextCall(f);
             [f(5, 6), f(1, 's'), f(7, 8)].join('/');
+            """);
+    }
+
+    [Fact]
+    public void VersionsMergedAtAJoinStayElided()
+    {
+        // The paths store different values: the fields after the merge are
+        // phis of the virtual object (V8's MergeVirtualObjects), so the
+        // object needs no allocation.
+        (int remaining, int elided) = Allocations("", """
+            function P(x, y) { this.x = x; this.y = y; }
+            function f(a, c, b) {
+              var p = new P(a, 1);
+              if (c) { p.x = a * 2; } else { p.y = 3; }
+              return p.x + p.y - b;
+            }
+            %PrepareFunctionForOptimization(f);
+            for (var i = 0; i < 100; i++) f(i, i & 1, 0.5);
+            f;
+            """);
+        Assert.Equal(0, remaining);
+        Assert.True(elided >= 1);
+    }
+
+    [Fact]
+    public void VersionsWithDifferentMapsAreNotMerged()
+    {
+        // One path adds a property: the maps differ, and the deopt frame of the
+        // check after the merge needs the object.
+        (int remaining, int _) = Allocations("", """
+            function P(x, y) { this.x = x; this.y = y; }
+            function f(a, c, b) {
+              var p = new P(a, 1);
+              if (c) p.z = 2;
+              return p.x - b + p.y;
+            }
+            %PrepareFunctionForOptimization(f);
+            for (var i = 0; i < 100; i++) f(i, i & 1, 0.5);
+            f;
+            """);
+        Assert.Equal(1, remaining);
+    }
+
+    [Fact]
+    public void DeoptAfterAMergeMaterializesTheMergedFields()
+    {
+        AssertSameAsInterpreter("""
+            function P(x, y) { this.x = x; this.y = y; }
+            function f(a, c, b) {
+              var p = new P(a, 1);
+              if (c) { p.x = a * 2; } else { p.y = 3; }
+              var t = p.x - b;
+              return [t, p.x, p.y, Object.keys(p).join()].join('|');
+            }
+            %PrepareFunctionForOptimization(f);
+            f(1, 1, 0.5); f(2, 0, 0.5);
+            %OptimizeFunctionOnNextCall(f);
+            [f(1, 1, 0.5), f(2, 0, 0.5), f(3, 1, {}), f(4, 0, 's'), f(5, 0, 0.5)].join('/');
             """);
     }
 }
