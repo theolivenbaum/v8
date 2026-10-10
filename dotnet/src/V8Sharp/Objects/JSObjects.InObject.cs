@@ -10,11 +10,16 @@
 // fields are [InlineArray] segments: JSObjectInObject1 holds slot 0,
 // JSObjectInObject2 derives from it and adds slot 1, and so on up to 4 (small
 // objects, V8's usual instance sizes after slack tracking, are common: pairs,
-// vectors), then JSObjectInObject8 adds 4..7, and so on. An object gets
-// the smallest class covering its map's in-object property count; a class of
-// the chain is also every larger class, so in-object slot i of any object whose
-// map has more than i in-object properties is the same field of the class that
-// introduces slot i. In-object slack tracking shrinks the map's instance size
+// vectors). JSObjectInObject5, 6, 7 and 8 each derive from JSObjectInObject4
+// and add 1, 2, 3 or 4 slots (objects of five to seven fields are common too:
+// Richards' packets and tasks, DeltaBlue's variables, RayTrace's
+// intersections; siblings rather than a chain keep the class depth, which
+// type checks walk, at most five below JSObject), then JSObjectInObject12
+// derives from JSObjectInObject8 and adds 8..11, and so on. An object gets
+// the smallest class covering its map's in-object property count. Every
+// class's slots are one run from slot 0 (InObjectLayout), so in-object slot i
+// of any object whose map has more than i in-object properties is at the
+// same offset. In-object slack tracking shrinks the map's instance size
 // after kGenerousAllocationCount constructions; objects allocated before keep
 // their (larger) class, which is what V8's left-trimmed filler amounts to.
 using System.Runtime.CompilerServices;
@@ -23,6 +28,12 @@ namespace V8Sharp.Objects;
 
 [InlineArray(1)]
 internal struct InObjectSlots1 { JSValue _e0; }
+
+[InlineArray(2)]
+internal struct InObjectSlots2 { JSValue _e0; }
+
+[InlineArray(3)]
+internal struct InObjectSlots3 { JSValue _e0; }
 
 [InlineArray(4)]
 internal struct InObjectSlots4 { JSValue _e0; }
@@ -83,7 +94,10 @@ public partial class JSObject
             2 => new JSObjectInObject2(map),
             3 => new JSObjectInObject3(map),
             4 => new JSObjectInObject4(map),
-            <= 8 => new JSObjectInObject8(map),
+            5 => new JSObjectInObject5(map),
+            6 => new JSObjectInObject6(map),
+            7 => new JSObjectInObject7(map),
+            8 => new JSObjectInObject8(map),
             <= 12 => new JSObjectInObject12(map),
             <= 16 => new JSObjectInObject16(map),
             <= 32 => new JSObjectInObject32(map),
@@ -109,7 +123,10 @@ public partial class JSObject
             2 => new JSObjectInObject2(map, empty),
             3 => new JSObjectInObject3(map, empty),
             4 => new JSObjectInObject4(map, empty),
-            <= 8 => new JSObjectInObject8(map, empty),
+            5 => new JSObjectInObject5(map, empty),
+            6 => new JSObjectInObject6(map, empty),
+            7 => new JSObjectInObject7(map, empty),
+            8 => new JSObjectInObject8(map, empty),
             <= 12 => new JSObjectInObject12(map, empty),
             <= 16 => new JSObjectInObject16(map, empty),
             <= 32 => new JSObjectInObject32(map, empty),
@@ -156,7 +173,13 @@ public partial class JSObject
         if (index == 1) return ref Unsafe.As<JSObjectInObject2>(this)._slot1[0];
         if (index == 2) return ref Unsafe.As<JSObjectInObject3>(this)._slot2[0];
         if (index == 3) return ref Unsafe.As<JSObjectInObject4>(this)._slot3[0];
-        if (index < 8) return ref Unsafe.As<JSObjectInObject8>(this)._slots1[index - 4];
+        if (index < 8)
+        {
+            if (this is JSObjectInObject5 o5) return ref o5._slot4[0];
+            if (this is JSObjectInObject6 o6) return ref o6._tail6[index - 4];
+            if (this is JSObjectInObject7 o7) return ref o7._tail7[index - 4];
+            return ref Unsafe.As<JSObjectInObject8>(this)._slots1[index - 4];
+        }
         if (index < 12) return ref Unsafe.As<JSObjectInObject12>(this)._slots2[index - 8];
         if (index < 16) return ref Unsafe.As<JSObjectInObject16>(this)._slots3[index - 12];
         if (index < 32) return ref Unsafe.As<JSObjectInObject32>(this)._slots4[index - 16];
@@ -237,12 +260,23 @@ internal static class InObjectLayout
                Offset(ref first, ref probe._slot2[0]) == 2 &&
                Offset(ref first, ref probe._slot3[0]) == 3 &&
                Offset(ref first, ref probe._slots1[0]) == 4 &&
+               SiblingOffset<JSObjectInObject5>(static o => ref o._slot4[0]) == 4 &&
+               SiblingOffset<JSObjectInObject6>(static o => ref o._tail6[0]) == 4 &&
+               SiblingOffset<JSObjectInObject7>(static o => ref o._tail7[0]) == 4 &&
                Offset(ref first, ref probe._slots2[0]) == 8 &&
                Offset(ref first, ref probe._slots3[0]) == 12 &&
                Offset(ref first, ref probe._slots4[0]) == 16 &&
                Offset(ref first, ref probe._slots5[0]) == 32 &&
                Offset(ref first, ref probe._slots6[0]) == 64 &&
                Offset(ref first, ref probe._slots7[0]) == 128;
+    }
+
+    delegate ref JSValue SlotOf<T>(T obj);
+
+    static long SiblingOffset<T>(SlotOf<T> slot) where T : JSObjectInObject1
+    {
+        var probe = (T)RuntimeHelpers.GetUninitializedObject(typeof(T));
+        return Offset(ref probe._slots0[0], ref slot(probe));
     }
 
     static long Offset(ref JSValue first, ref JSValue other) =>
@@ -292,6 +326,39 @@ internal class JSObjectInObject4 : JSObjectInObject3
     protected JSObjectInObject4(JSObjectInObject4 source) : base(source) => _slot3 = source._slot3;
     internal override int InObjectSlotCapacity => 4;
     internal override JSObject CloneShallowCore() => new JSObjectInObject4(this);
+}
+
+/// <summary>An ordinary object with in-object slots 0..4.</summary>
+internal sealed class JSObjectInObject5 : JSObjectInObject4
+{
+    internal InObjectSlots1 _slot4;
+    public JSObjectInObject5(Map map) : base(map) { }
+    internal JSObjectInObject5(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
+    JSObjectInObject5(JSObjectInObject5 source) : base(source) => _slot4 = source._slot4;
+    internal override int InObjectSlotCapacity => 5;
+    internal override JSObject CloneShallowCore() => new JSObjectInObject5(this);
+}
+
+/// <summary>An ordinary object with in-object slots 0..5.</summary>
+internal sealed class JSObjectInObject6 : JSObjectInObject4
+{
+    internal InObjectSlots2 _tail6;
+    public JSObjectInObject6(Map map) : base(map) { }
+    internal JSObjectInObject6(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
+    JSObjectInObject6(JSObjectInObject6 source) : base(source) => _tail6 = source._tail6;
+    internal override int InObjectSlotCapacity => 6;
+    internal override JSObject CloneShallowCore() => new JSObjectInObject6(this);
+}
+
+/// <summary>An ordinary object with in-object slots 0..6.</summary>
+internal sealed class JSObjectInObject7 : JSObjectInObject4
+{
+    internal InObjectSlots3 _tail7;
+    public JSObjectInObject7(Map map) : base(map) { }
+    internal JSObjectInObject7(Map map, FixedArray emptyElements) : base(map, emptyElements) { }
+    JSObjectInObject7(JSObjectInObject7 source) : base(source) => _tail7 = source._tail7;
+    internal override int InObjectSlotCapacity => 7;
+    internal override JSObject CloneShallowCore() => new JSObjectInObject7(this);
 }
 
 /// <summary>An ordinary object with in-object slots 0..7.</summary>
