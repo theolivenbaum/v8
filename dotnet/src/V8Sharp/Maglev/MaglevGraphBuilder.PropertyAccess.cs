@@ -1426,13 +1426,23 @@ public sealed partial class MaglevGraphBuilder
         for (int i = 0; i < feedback.Count; i++)
         {
             entries[i] = [feedback[i]];
-            if (!CollectElementAccess(entries[i], load: true, out _, out _, out _)) return null;
+            if (!CollectElementAccess(entries[i], load: true, out _, out _, out _) &&
+                !(CollectTypedArrayAccess(entries[i], load: true, out _, out bool oob) && !oob))
+            {
+                return null;
+            }
         }
         ValueNode index = GetInt32ElementIndex(key);
         for (int i = 0; i < feedback.Count; i++)
         {
             List<(Map Map, JSValue Handler)> entry = entries[i];
             Map[] maps = [entry[0].Map];
+            // A typed array arm (V8's polymorphic access builds each map's element access).
+            if (CollectTypedArrayAccess(entry, load: true, out ElementsKind typedKind, out _))
+            {
+                cases.Add((maps, () => BuildTypedArrayElementLoad(obj, key, entry, typedKind, handlesOOB: false)));
+                continue;
+            }
             CollectElementAccess(entry, load: true, out ElementsKind kind, out bool isJSArray, out bool anyHoley);
             cases.Add((maps, () =>
             {
