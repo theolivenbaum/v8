@@ -1518,8 +1518,13 @@ public sealed partial class MaglevGraphBuilder
                 properties: OpProperties.kNotIdempotent)!, NodeType.kBoolean));
             return;
         }
-        SetAccumulator(WithType(CallBaseline(generic, [left, right],
-            [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.FeedbackRef(EmbeddedFeedbackOffset(1))])!, NodeType.kBoolean));
+        ValueNode genericCompare = WithType(CallBaseline(generic, [left, right],
+            [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.FeedbackRef(EmbeddedFeedbackOffset(1))])!, NodeType.kBoolean);
+        if (MaglevGenericCallCounts.BySite && genericCompare.Obj0 is CallBuiltinInfo compareInfo)
+        {
+            compareInfo.Site = $"{MaglevCompiler.DebugName(_unit.SharedFunctionInfo)}@{_it.CurrentOffset()} {hint} {GetType(left)} {GetType(right)}";
+        }
+        SetAccumulator(genericCompare);
     }
 
     bool MaybeOddball(ValueNode value) => value.Representation == ValueRepresentation.kTagged && !CheckType(value, NodeType.kNumber);

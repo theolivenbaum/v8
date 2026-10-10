@@ -205,7 +205,19 @@ public sealed partial class MaglevGraphBuilder
         if (argsFirst.IsValid || args.Length < s_callWithValues.Length)
         {
             // V8's generic Call node: the Call builtin, without feedback collection.
-            SetAccumulator(BuildCall(callee, receiver, args, argsFirst, mode));
+            ValueNode genericCall = BuildCall(callee, receiver, args, argsFirst, mode);
+            if (MaglevGenericCallCounts.BySite)
+            {
+                LabelSite(genericCall, $"{MaglevCompiler.DebugName(_unit.SharedFunctionInfo)}@{_it.CurrentOffset()} {nexus.IcState()} " +
+                    (feedback.HeapObjectOrNull switch
+                    {
+                        JSFunction f => "target " + MaglevCompiler.DebugName(f.Shared) + (_lastNotInlined is { } why ? " (" + why + ")" : ""),
+                        FeedbackCell => "feedback cell",
+                        { } o => o.GetType().Name,
+                        null => "none",
+                    }) + (speculate ? "" : " no-speculation"));
+            }
+            SetAccumulator(genericCall);
             return;
         }
         SetAccumulator(BuildGenericCall(bytecode, callee, receiver, args, slot));
