@@ -876,16 +876,24 @@ public sealed class KeyedLoadIC : IC
     /// megamorphic keyed load looks the key up itself and goes to the runtime's
     /// GetProperty, not the IC miss, for what it does not handle; only a unique
     /// name absent from a fast-mode receiver and from the stub cache misses
-    /// (GenericPropertyLoad's stub cache miss). Element keys go to the runtime
-    /// (V8 loads fast and dictionary elements inline first, GenericElementLoad).
+    /// (GenericPropertyLoad's stub cache miss). Element keys load fast
+    /// elements in bounds; V8 also loads dictionary elements, holes and
+    /// out-of-bounds keys inline (GenericElementLoad), here the runtime does.
     /// </summary>
     static JSValue LoadGeneric(Isolate isolate, FeedbackVector vector, int slot, JSValue obj, JSValue key)
     {
         // Smis, null and undefined, and receivers requiring non-standard element
         // accesses (strings and string wrappers, proxies, interceptors, access
         // checks) are the runtime's.
-        if (obj._obj is not JSObject receiver || key.IsNumber || Map.IsCustomElementsReceiverMap(receiver.Map))
+        if (obj._obj is not JSObject receiver || Map.IsCustomElementsReceiverMap(receiver.Map))
         {
+            return RuntimeLoad(isolate, obj, key);
+        }
+        if (key.IsNumber)
+        {
+            // GenericElementLoad: fast elements in bounds here; holes, typed
+            // arrays and other kinds in the runtime.
+            if (receiver is not JSTypedArray && ElementAccess.TryLoadInBounds(receiver, key._num, out JSValue element)) return element;
             return RuntimeLoad(isolate, obj, key);
         }
         if (key.HeapObjectOrNull is not Name name) return RuntimeLoad(isolate, obj, key);

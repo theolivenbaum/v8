@@ -220,6 +220,42 @@ public static class ElementAccess
     }
 
     /// <summary>
+    /// GenericElementLoad (KeyedLoadIC_Megamorphic) for an element of a fast
+    /// kind that is in bounds and not a hole, without a handler. False when
+    /// the runtime must decide (holes and out-of-bounds keys look at the
+    /// prototype chain, which V8 checks inline with BranchIfPrototypesHaveNoElements).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryLoadInBounds(JSObject obj, double key, out JSValue result)
+    {
+        result = default;
+        if (!JSValue.TryGetIndex(key, out int index)) return false;
+        if (obj.InstanceType == InstanceType.JSArrayType && index >= Unsafe.As<JSArray>(obj).Length._num) return false;
+        ElementsKind kind = obj.Map.ElementsKind;
+        FixedArrayBase elements = obj.Elements;
+        if (elements is FixedArray fixedArray)
+        {
+            JSValue[] data = fixedArray._data;
+            if ((uint)index >= (uint)data.Length || !ElementsKinds.IsSmiOrObjectElementsKind(kind)) return false;
+            JSValue value = data[index];
+            if (ReferenceEquals(value._obj, Oddball.TheHole)) return false;
+            result = value;
+            return true;
+        }
+        if (elements is FixedDoubleArray doubleArray)
+        {
+            double[] data = doubleArray._data;
+            if ((uint)index >= (uint)data.Length || !ElementsKinds.IsDoubleElementsKind(kind) || FixedDoubleArray.IsHoleBits(data[index]))
+            {
+                return false;
+            }
+            result = JSValue.FromNumber(data[index]);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
     /// The in-bounds case of TryStoreFastElement that needs no transition, no
     /// growth and no prototype chain check: an element of a fast kind that the
     /// value fits, stored over a non-hole value (so holey kinds need no

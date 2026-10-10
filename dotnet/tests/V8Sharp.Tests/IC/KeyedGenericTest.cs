@@ -64,6 +64,24 @@ public class KeyedGenericTest : TestWithContext
     }
 
     [Fact]
+    public void ElementLoadsAndStores()
+    {
+        Assert.Equal("2|1.5|a|fromProto||9|0|5|fromProto|||10,2.5,3,4|str,2.5|1,2,3|70,8,9|1,2|0,0,44,0|1|1|0,own,2|7,8,9",
+            RunString(Prelude + """
+            var smi = [1, 2, 3], dbl = [1.5, 2.5], obj = ['a', {}], holey = [1, , 3], cow = [7, 8, 9];
+            var frozen = Object.freeze([1, 2]); var ta = new Int8Array(4); var sparse = []; sparse[1000] = 5;
+            var protoArr = [0, , 2]; Array.prototype[1] = 'fromProto';
+            var out = [];
+            out.push(ld(smi, 1), ld(dbl, 0), ld(obj, 0), ld(holey, 1), ld(holey, 5), ld(cow, 2), ld(ta, 1), ld(sparse, 1000), ld(protoArr, 1), ld(smi, -1), ld(smi, 1.5));
+            st(smi, 0, 10); st(smi, 1, 2.5); st(smi, 3, 4); st(dbl, 0, 'str'); st(holey, 1, 2); st(cow, 0, 70); st(frozen, 0, 9); st(ta, 2, 300);
+            st(sparse, 5, 1); st(obj, 1, 1); st(protoArr, 1, 'own');
+            out.push(smi.join(), dbl.join(), holey.join(), cow.join(), frozen.join(), ta.join(), sparse[5], obj[1], protoArr.join(), [7, 8, 9].join());
+            delete Array.prototype[1];
+            out.join('|');
+            """));
+    }
+
+    [Fact]
     public void MegamorphicKeyedAccessesDoNotMiss()
     {
         RunString(Prelude + """
