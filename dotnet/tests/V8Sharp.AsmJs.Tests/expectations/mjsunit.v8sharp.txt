@@ -1,0 +1,3 @@
+# The 14.7 asm.js mjsunit tests whose outcome on the v8sharp engine differs
+# from v8-14.7/test/mjsunit/mjsunit.status.
+asm/log-lazy-code  # FAIL needs d8.profiler (the oracle fails it as well)

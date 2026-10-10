@@ -1,0 +1,298 @@
+// Copyright 2024 Kelvin Nishikawa
+// 
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+// 
+//     http://www.apache.org/licenses/LICENSE-2.0
+// 
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System;
+using System.IO;
+using System.Linq;
+using Wacs.Core.Validation;
+using Wacs.Core.Attributes;
+using Wacs.Core.Instructions;
+using Wacs.Core.Instructions.Reference;
+using Wacs.Core.OpCodes;
+using Wacs.Core.Types;
+using Wacs.Core.Types.Defs;
+using Wacs.Core.Utilities;
+
+namespace Wacs.Core
+{
+    public partial class Module
+    {
+        /// <summary>
+        /// @Spec 2.5.7. Element Segments
+        /// </summary>
+        public ElementSegment[] Elements { get; internal set; } = Array.Empty<ElementSegment>();
+
+        /// <summary>
+        /// @Spec 2.5.7. Element Segments
+        /// </summary>
+        public class ElementSegment : IRenderable
+        {
+            private ElementSegment(ValType type, InstructionBase[] funcIndices, ElementMode mode)
+            {
+                Type = type;
+                Initializers = funcIndices.Select(inst => new Expression(1, inst)).ToArray();
+                Mode = mode;
+                Mode.SegmentType = Type;
+            }
+
+            private ElementSegment(ValType type, Expression[] expressions, ElementMode mode)
+            {
+                Type = type;
+                Initializers = expressions;
+                Mode = mode;
+                Mode.SegmentType = Type;
+            }
+
+            /// <summary>
+            /// Internal factory for the text parser. Takes parsed
+            /// initializer expressions and an already-constructed mode.
+            /// </summary>
+            internal static ElementSegment Create(ValType type, Expression[] expressions, ElementMode mode) =>
+                new ElementSegment(type, expressions, mode);
+
+            private ElementSegment(TableIdx tableIndex, Expression e, ValType type, InstructionBase[] funcIndices)
+            {
+                Type = type;
+                Initializers = funcIndices.Select(inst => new Expression(1, inst)).ToArray();
+                Mode = new ElementMode.ActiveMode(tableIndex, e);
+                Mode.SegmentType = Type;
+            }
+
+            private ElementSegment(TableIdx tableIndex, Expression e, ValType type, Expression[] expressions)
+            {
+                Type = type;
+                Initializers = expressions;
+                Mode = new ElementMode.ActiveMode(tableIndex, e);
+                Mode.SegmentType = Type;
+            }
+
+            public ValType Type { get; }
+
+            //A vector of (ref.func x) instructions
+            public Expression[] Initializers { get; }
+
+            public ElementMode Mode { get; }
+
+            public string Id { get; set; } = "";
+
+            public void RenderText(StreamWriter writer, Module module, string indent)
+            {
+                var id = string.IsNullOrWhiteSpace(Id) ? "" : $" (;{Id};)";
+                var modeText = Mode switch
+                {
+                    ElementMode.PassiveMode => "",
+                    ElementMode.ActiveMode am when am.TableIndex is { Value: 0 } && am.Offset.Instructions.IsConstant(null) =>
+                        $"{ am.Offset.ToWat() }",
+                    ElementMode.ActiveMode am => $" (table {am.TableIndex.Value}) (offset{am.Offset.ToWat()})",
+                    ElementMode.DeclarativeMode => $" declare",
+                    _ => throw new InvalidDataException($"Unknown Element Mode: {Mode}")
+                };
+                string elemListText = "";
+                
+                if (Type == ValType.FuncRef && IsAllRefFunc())
+                {
+                    var listElems = Initializers
+                        .Select(expr => expr.Instructions[0])
+                        .OfType<InstRefFunc>()
+                        .Select(rf => rf.FunctionIndex.Value);
+                    var listText = string.Join(" ", listElems);
+                    elemListText = $" func {listText}";
+                }
+                else
+                {
+                    var listElems = Initializers
+                        .Select(expr => expr.ToWat())
+                        .Select(item => $" (item {item})");
+                    var listText = string.Join("", listElems);
+                    elemListText = $" {Type.ToWat()}{listText}";
+                }
+                
+                var elemText = $"{indent}(elem{id}{modeText}{elemListText})";
+            
+                writer.WriteLine(elemText);
+            }
+
+            /// <summary>
+            /// Generate a InstRefFunc for a funcidx
+            /// </summary>
+            private static InstructionBase ParseFuncIdxInstructions(BinaryReader reader) =>
+                BinaryModuleParser.InstructionFactory.CreateInstruction(OpCode.RefFunc).Parse(reader);
+
+            private static ValType ParseElementKind(BinaryReader reader) =>
+                reader.ReadByte() switch {
+                    // elemkind 0x00 — spec says "funcref" (nullable),
+                    // but the existing validator's element-vs-table
+                    // matching logic assumes Func (non-nullable) here
+                    // because the legacy wast2json encoding for
+                    // `(elem (table $t) func $f)` against a `(ref func)`
+                    // table was always non-nullable in WACS. Switching
+                    // this to FuncRef breaks elem.wast against
+                    // non-nullable ref tables. Aligning the WAT parser
+                    // to emit Func instead is the more conservative fix.
+                    0x00 => ValType.Func,
+                    var b =>
+                        throw new FormatException($"Invalid ElementKind {b} at {reader.BaseStream.Position - 1:x}")
+                };
+
+            private static TableIdx ParseTableIndex(BinaryReader reader) =>
+                (TableIdx)reader.ReadLeb128_u32();
+
+            /// <summary>
+            /// https://webassembly.github.io/gc/core/bikeshed/index.html#element-section①
+            /// </summary>
+            /// <param name="reader"></param>
+            /// <returns></returns>
+            /// <exception cref="FormatException"></exception>
+            public static ElementSegment Parse(BinaryReader reader) =>
+                (ElementType)reader.ReadLeb128_u32() switch {
+                    ElementType.ActiveNoIndexWithElemKind =>
+                        new ElementSegment(
+                            (TableIdx)0,
+                            Expression.ParseInitializer(reader),
+                            // Type stays at ValType.Func to match the
+                            // existing JSON-pipeline expectations; see
+                            // ParseElementKind comment above.
+                            ValType.Func,
+                            reader.ParseVector(ParseFuncIdxInstructions)),
+                    ElementType.PassiveWithElemKind =>
+                        new ElementSegment(
+                            ParseElementKind(reader),
+                            reader.ParseVector(ParseFuncIdxInstructions),
+                            new ElementMode.PassiveMode()),
+                    ElementType.ActiveWithIndexAndElemKind =>
+                        new ElementSegment(
+                            ParseTableIndex(reader),
+                            Expression.ParseInitializer(reader),
+                            ParseElementKind(reader),
+                            reader.ParseVector(ParseFuncIdxInstructions)),
+                    ElementType.DeclarativeWithElemKind =>
+                        new ElementSegment(
+                            ParseElementKind(reader),
+                            reader.ParseVector(ParseFuncIdxInstructions),
+                            new ElementMode.DeclarativeMode()),
+                    ElementType.ActiveNoIndexWithElemType =>
+                        new ElementSegment(
+                            (TableIdx)0,
+                            Expression.ParseInitializer(reader),
+                            ValType.FuncRef, //<-- The Spec makes no mention as to why this is a funcref and not a func!
+                            reader.ParseVector(Expression.ParseInitializer)),
+                    ElementType.PassiveWithElemType =>
+                        new ElementSegment(
+                            ValTypeParser.ParseRefType(reader),
+                            reader.ParseVector(Expression.ParseInitializer),
+                            new ElementMode.PassiveMode()),
+                    ElementType.ActiveWithIndexAndElemType =>
+                        new ElementSegment(
+                            ParseTableIndex(reader),
+                            Expression.ParseInitializer(reader),
+                            ValTypeParser.ParseRefType(reader),
+                            reader.ParseVector(Expression.ParseInitializer)),
+                    ElementType.DeclarativeWithElemType =>
+                        new ElementSegment(
+                            ValTypeParser.ParseRefType(reader),
+                            reader.ParseVector(Expression.ParseInitializer),
+                            new ElementMode.DeclarativeMode()),
+                    _ => throw new FormatException($"Invalid Element at {reader.BaseStream.Position}")
+                };
+
+            private bool IsAllRefFunc()
+            {
+                return Initializers
+                    .Select(expr => expr.Instructions[0] as InstRefFunc)
+                    .All(inst => inst != null);
+            }
+
+            /// <summary>
+            /// 3.4.5. Element Segments
+            /// </summary>
+            // V8Sharp: plain code instead of FluentValidation validators.
+            public static class Validator
+            {
+                public static void Validate(ElementSegment es, WasmValidationContext validationContext)
+                {
+                    foreach (var expr in es.Initializers)
+                    {
+                        if (!es.Type.IsRefType())
+                            throw new InvalidDataException($"Element Segment has invalid reference type:{es.Type}");
+
+                        var resultType = new ResultType(es.Type);
+
+                        // @Spec 3.4.5.1. base
+                        validationContext.FunctionIndex = FuncIdx.Default;
+                        Expression.Validator.Validate(expr, resultType, validationContext, isConstant: true);
+                    }
+
+                    switch (es.Mode)
+                    {
+                        case ElementMode.PassiveMode passive:
+                            // @Spec 3.4.5.2. passive: valid for all reference types
+                            if (!passive.SegmentType.Validate(validationContext.Types))
+                                throw new ValidationException($"Passive Element Type was invalid {passive.SegmentType}");
+                            break;
+                        case ElementMode.ActiveMode mode:
+                        {
+                            // @Spec 3.4.5.3 active
+                            if (!validationContext.Tables.Contains(mode.TableIndex))
+                                throw new ValidationException(
+                                    $"Table index {mode.TableIndex.Value} exceeds table size {validationContext.Tables.Count}");
+
+                            var tableType = validationContext.Tables[mode.TableIndex];
+                            var at = tableType.Limits.AddressType.ToValType();
+                            Expression.Validator.Validate(mode.Offset, new ResultType(at), validationContext, isConstant: true);
+
+                            if (!mode.SegmentType.Matches(tableType.ElementType, validationContext.Types))
+                                throw new ValidationException($"Active ElementMode {(Wat)mode.SegmentType} is not valid for table type {(Wat)tableType.ElementType}");
+                            break;
+                        }
+                        case ElementMode.DeclarativeMode declarative:
+                            // @Spec 3.4.5.4. declarative: valid for all reference types
+                            if (!declarative.SegmentType.Validate(validationContext.Types))
+                                throw new ValidationException($"Declarative Element Type was invalid {declarative.SegmentType}");
+                            break;
+                    }
+                }
+            }
+        }
+
+        public abstract class ElementMode
+        {
+            public ValType SegmentType;
+
+            public class PassiveMode : ElementMode
+            {
+            }
+
+            public class ActiveMode : ElementMode
+            {
+                public ActiveMode(TableIdx idx, Expression offset) => (TableIndex, Offset) = (idx, offset);
+                public TableIdx TableIndex { get; }
+                public Expression Offset { get; }
+
+            }
+
+            public class DeclarativeMode : ElementMode
+            {
+            }
+        }
+    }
+    
+    public static partial class BinaryModuleParser
+    {
+        /// <summary>
+        /// @Spec 5.5.12 Element Section
+        /// </summary>
+        private static Module.ElementSegment[] ParseElementSection(BinaryReader reader) =>
+            reader.ParseVector(Module.ElementSegment.Parse);
+    }
+}

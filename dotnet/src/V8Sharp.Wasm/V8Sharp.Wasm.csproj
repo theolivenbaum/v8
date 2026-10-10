@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The WebAssembly engine, vendored from WACS (README.md, NOTICE). No
+       package references: like the rest of the engine it is plain managed IL.
+       The vendored code keeps WACS's namespaces (Wacs.Core.*) and its own
+       style, so the engine's analyzers and implicit usings are off here. -->
+  <PropertyGroup>
+    <RootNamespace>Wacs.Core</RootNamespace>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <!-- CS1591: WACS documents its public surface selectively. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="LICENSE;NOTICE;README.md;Compilation/*.md" />
+  </ItemGroup>
+
+  <!-- V8Sharp: V8's asm.js opcodes (Instructions/AsmJs.cs) use V8's Math
+       functions and number conversions (V8Sharp.Base has no dependencies). -->
+  <ItemGroup>
+    <ProjectReference Include="../V8Sharp.Base/V8Sharp.Base.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="V8Sharp" />
+    <InternalsVisibleTo Include="V8Sharp.Wasm.Tests" />
+  </ItemGroup>
+
+</Project>

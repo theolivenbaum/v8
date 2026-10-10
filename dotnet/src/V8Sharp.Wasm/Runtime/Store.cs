@@ -1,0 +1,326 @@
+// Copyright 2024 Kelvin Nishikawa
+// 
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+// 
+//     http://www.apache.org/licenses/LICENSE-2.0
+// 
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Wacs.Core.Runtime.Types;
+using Wacs.Core.Types;
+
+namespace Wacs.Core.Runtime
+{
+    /// <summary>
+    /// @Spec 4.2.3. Store
+    /// </summary>
+    public class Store
+    {
+        /// <summary>
+        /// V8Sharp: the store whose code runs on this thread, so that a cast
+        /// of a function reference can look up the function's type.
+        /// </summary>
+        [ThreadStatic] public static Store? Current;
+
+        /// <summary>V8Sharp: the defined type of the function at <paramref name="addr"/>, if known.</summary>
+        public Wacs.Core.Types.DefType? FunctionDefType(FuncAddr addr)
+        {
+            if (addr.Value < 0 || !Contains(addr)) return null;
+            return this[addr] switch
+            {
+                FunctionInstance f => f.DefType,
+                HostFunction h => h.DefType,
+                _ => null,
+            };
+        }
+
+        private readonly List<DataInstance> Datas = new();
+        private readonly List<ElementInstance> Elems = new();
+        private readonly List<ExnInstance> Exns = new();
+        private readonly List<Concurrency.ContInstance> Continuations = new();
+
+        private readonly List<IFunctionInstance> Funcs = new();
+        private readonly List<GlobalInstance> Globals = new();
+
+        private readonly List<TableInstance> Tables = new();
+        private readonly List<TagInstance> Tags = new();
+        private long Arrays = 0;
+        private StoreTransaction? CurrentTransaction = null;
+
+        private MemoryInstance?[] Mems = new MemoryInstance[32];
+        private int MemsCount = 0;
+
+        private long Structs = 0;
+
+        public IFunctionInstance this[FuncAddr addr] => 
+            CurrentTransaction?.Funcs.GetValueOrDefault(addr)??Funcs[addr.Value];
+
+        public TableInstance this[TableAddr addr] => 
+            CurrentTransaction?.Tables.GetValueOrDefault(addr)??Tables[addr.Value];
+
+        public MemoryInstance this[MemAddr addr] =>
+            (CurrentTransaction?.Mems.GetValueOrDefault(addr)??Mems[addr.Value])!;
+
+        public GlobalInstance this[GlobalAddr addr] =>
+            CurrentTransaction?.Globals.GetValueOrDefault(addr)??Globals[addr.Value];
+
+        public TagInstance this[TagAddr addr] =>
+            CurrentTransaction?.Tags.GetValueOrDefault(addr)??Tags[addr.Value];
+
+        public ExnInstance this[ExnAddr addr] =>
+            Exns[addr.Value];
+
+        public ElementInstance this[ElemAddr addr] =>
+            CurrentTransaction?.Elems.GetValueOrDefault(addr)??Elems[addr.Value];
+
+        public DataInstance this[DataAddr addr] =>
+            CurrentTransaction?.Datas.GetValueOrDefault(addr)??Datas[addr.Value];
+
+        /// <summary>
+        /// Replace the function instance at the given address.
+        /// Used by the AOT transpiler to swap interpreter-backed functions
+        /// with transpiled implementations.
+        ///
+        /// <para>Not thread-safe against concurrent execution. The sole caller
+        /// is <c>Wacs.Transpiler.AOT</c> during module-load, before any host
+        /// thread has had a chance to invoke the module — no reader-writer
+        /// race is possible in the supported call pattern. A runtime that
+        /// wants to swap function instances while concurrent host threads are
+        /// already executing would need to extend this to take the same
+        /// per-instance lock pattern <see cref="Runtime.Types.MemoryInstance"/>,
+        /// <see cref="Runtime.Types.GlobalInstance"/>, and
+        /// <see cref="Runtime.Types.TableInstance"/> use for their shared paths
+        /// (Layers 2c/2d).</para>
+        /// </summary>
+        public void ReplaceFunction(FuncAddr addr, IFunctionInstance replacement) =>
+            Funcs[addr.Value] = replacement;
+
+        public bool Contains(FuncAddr addr) => addr.Value < Funcs.Count || (CurrentTransaction?.Funcs.ContainsKey(addr) ?? false);
+        public bool Contains(TableAddr addr) => addr.Value < Tables.Count || (CurrentTransaction?.Tables.ContainsKey(addr) ?? false);
+        public bool Contains(MemAddr addr) => addr.Value < MemsCount || (CurrentTransaction?.Mems.ContainsKey(addr) ?? false);
+        public bool Contains(GlobalAddr addr) => addr.Value < Globals.Count || (CurrentTransaction?.Globals.ContainsKey(addr) ?? false);
+        public bool Contains(TagAddr addr) => addr.Value < Tags.Count || (CurrentTransaction?.Tags.ContainsKey(addr) ?? false);
+        public bool Contains(ExnAddr addr) => addr.Value < Exns.Count;
+        public bool Contains(ElemAddr addr) => addr.Value < Elems.Count || (CurrentTransaction?.Elems.ContainsKey(addr) ?? false);
+        public bool Contains(DataAddr addr) => addr.Value < Datas.Count || (CurrentTransaction?.Datas.ContainsKey(addr) ?? false);
+
+        public bool Contains(StructIdx heapIdx) => Structs > heapIdx.Value && heapIdx.Value >= 0;
+        public bool Contains(ArrayIdx heapIdx) => Arrays > heapIdx.Value && heapIdx.Value >= 0;
+
+
+        public void OpenTransaction()
+        {
+            if (CurrentTransaction != null)
+                throw new InvalidOperationException("Only one StoreTransaction at a time!");
+            
+            CurrentTransaction = new StoreTransaction();
+        }
+
+        public void CommitTransaction()
+        {
+            if (CurrentTransaction == null)
+                throw new InvalidOperationException("No open transaction to commit");
+
+            foreach (var (addr, inst) in CurrentTransaction.Funcs) Funcs[addr.Value] = inst;
+            foreach (var (addr, inst) in CurrentTransaction.Tables) Tables[addr.Value] = inst;
+            foreach (var (addr, inst) in CurrentTransaction.Mems) Mems[addr.Value] = inst;
+            foreach (var (addr, inst) in CurrentTransaction.Globals) Globals[addr.Value] = inst;
+            foreach (var (addr, inst) in CurrentTransaction.Tags) Tags[addr.Value] = inst;
+            foreach (var (addr, inst) in CurrentTransaction.Elems) Elems[addr.Value] = inst;
+            foreach (var (addr, inst) in CurrentTransaction.Datas) Datas[addr.Value] = inst;
+            CurrentTransaction = null;
+        }
+
+        public void DiscardTransaction()
+        {
+            if (CurrentTransaction == null)
+                throw new InvalidOperationException("No open transaction to discard");
+            
+            while (Funcs.Count > 0 && Funcs[^1] == null) Funcs.RemoveAt(Funcs.Count - 1);
+            while (Tables.Count > 0 && Tables[^1] == null) Tables.RemoveAt(Tables.Count - 1);
+            while (Globals.Count > 0 && Globals[^1] == null) Globals.RemoveAt(Globals.Count - 1);
+            while (Tags.Count > 0 && Tags[^1] == null) Tags.RemoveAt(Tags.Count - 1);
+            while (Elems.Count > 0 && Elems[^1] == null) Elems.RemoveAt(Elems.Count - 1);
+            while (Datas.Count > 0 && Datas[^1] == null) Datas.RemoveAt(Datas.Count - 1);
+            
+            while (MemsCount > 0 && Mems[MemsCount-1] == null) MemsCount -= 1;
+            
+            CurrentTransaction = null;
+        }
+
+        public FuncAddr AllocateWasmFunction(Module.Function func, ModuleInstance moduleInst)
+        {
+            var funcInst = new FunctionInstance(moduleInst, func);
+            var funcAddr = AddFunction(funcInst);
+            funcInst.Address = funcAddr;
+            return funcAddr;
+        }
+
+        public FuncAddr AllocateHostFunction((string module, string entity) id, FunctionType funcType, Type delType, Delegate hostFunc, bool isAsync)
+        {
+            var funcInst = new HostFunction(id, funcType, delType, hostFunc, isAsync);
+            var funcAddr = AddFunction(funcInst);
+            return funcAddr;
+        }
+
+        public FuncAddr AddFunction(IFunctionInstance func)
+        {
+            var addr = new FuncAddr(Funcs.Count);
+            if (CurrentTransaction == null)
+                throw new InvalidOperationException("Cannot add to Store without a transaction.");
+            Funcs.Add(null!);
+            CurrentTransaction.Funcs.Add(addr, func);
+            
+            return addr;
+        }
+
+        public TableAddr AddTable(TableInstance table)
+        {
+            var addr = new TableAddr(Tables.Count);
+            if (CurrentTransaction == null)
+                throw new InvalidOperationException("Cannot add to Store without a transaction.");
+            Tables.Add(null!);
+            CurrentTransaction.Tables.Add(addr, table);
+
+            return addr;
+        }
+
+        public StructIdx AddStruct()
+        {
+            return (StructIdx)Structs++;
+        }
+
+        public ArrayIdx AddArray()
+        {
+            return (ArrayIdx)Arrays++;
+        }
+
+        public TableInstance GetMutableTable(TableAddr addr)
+        {
+            if (!Contains(addr))
+                throw new InvalidOperationException("Table does not exist in Store.");
+            
+            // V8Sharp: a table that exists outside the transaction is written in
+            // place. WACS wrote a copy and swapped it in on commit, which left
+            // holders of the table (WebAssembly.Table objects, other
+            // instances' frames) with a stale instance; V8 does not roll back
+            // element writes of a failed instantiation either.
+            if (CurrentTransaction == null || !CurrentTransaction.Tables.ContainsKey(addr))
+                return this[addr];
+
+            return CurrentTransaction.Tables[addr];
+        }
+
+
+        public MemAddr AddMemory(MemoryInstance mem)
+        {
+            var addr = new MemAddr(MemsCount);
+            if (CurrentTransaction == null)
+                throw new InvalidOperationException("Cannot add to Store without a transaction.");
+            MemsCount += 1;
+            if (Mems.Length < MemsCount)
+            {
+                Array.Resize(ref Mems, Mems.Length + 32);
+            }
+            CurrentTransaction.Mems.Add(addr, mem);
+            return addr;
+        }
+
+        public GlobalAddr AddGlobal(GlobalInstance global)
+        {
+            var addr = new GlobalAddr(Globals.Count);
+            if (CurrentTransaction == null)
+                throw new InvalidOperationException("Cannot add to Store without a transaction.");
+            Globals.Add(null!);
+            CurrentTransaction.Globals.Add(addr, global);
+            
+            return addr;
+        }
+
+        public TagAddr AddTag(TagInstance tag)
+        {
+            var addr = new TagAddr(Tags.Count);
+            if (CurrentTransaction == null)
+                throw new InvalidOperationException("Cannot add to Store without a transaction.");
+            Tags.Add(null!);
+            CurrentTransaction.Tags.Add(addr, tag);
+            return addr;
+        }
+
+        public ExnAddr AllocateExn(TagAddr ta, Stack<Value> fields)
+        {
+            var exnAddr = new ExnAddr(Exns.Count);
+            var exnInst = new ExnInstance((uint)exnAddr.Value, ta, fields);
+            Exns.Add(exnInst);
+            return exnAddr;
+        }
+
+        public Concurrency.ContInstance AllocateContinuation(TypeIdx contTypeIdx, FuncAddr func)
+        {
+            var inst = new Concurrency.ContInstance(Continuations.Count, contTypeIdx, func);
+            Continuations.Add(inst);
+            return inst;
+        }
+
+        public Concurrency.ContInstance? GetContinuation(long idx) =>
+            idx >= 0 && idx < Continuations.Count ? Continuations[(int)idx] : null;
+
+        public ElemAddr AddElement(ElementInstance elem)
+        {
+            var addr = new ElemAddr(Elems.Count);
+            if (CurrentTransaction == null)
+                throw new InvalidOperationException("Cannot add to Store without a transaction.");
+            Elems.Add(null!);
+            CurrentTransaction.Elems.Add(addr, elem);
+            return addr;
+        }
+
+        public DataAddr AddData(DataInstance data)
+        {
+            var addr = new DataAddr(Datas.Count);
+            if (CurrentTransaction == null)
+                throw new InvalidOperationException("Cannot add to Store without a transaction.");
+            Datas.Add(null!);
+            CurrentTransaction.Datas.Add(addr, data);
+            return addr;
+        }
+
+        public void DropData(DataAddr addr)
+        {
+            // if (CurrentTransaction == null)
+            //     throw new InvalidOperationException("Cannot remove from Store without a transaction.");
+
+            if (CurrentTransaction != null)
+            {
+                CurrentTransaction.Datas[addr] = DataInstance.Empty;    
+            }
+            else
+            {
+                Datas[addr.Value] = DataInstance.Empty;
+            }
+        }
+
+        public void DropElement(ElemAddr addr)
+        {
+            if (CurrentTransaction != null)
+            {
+                CurrentTransaction.Elems[addr] = ElementInstance.Empty;    
+            }
+            else
+            {
+                Elems[addr.Value] = ElementInstance.Empty;
+            }
+        }
+
+        public int FunctionCount() => Funcs.Count;
+    }
+}

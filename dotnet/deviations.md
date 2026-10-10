@@ -1,0 +1,1846 @@
+# Deviations from V8
+
+Every place where V8Sharp knowingly differs from V8 (this tree, see
+`UPSTREAM.md`): what V8 does, what V8Sharp does instead, and why. The code
+at each deviation carries a short comment pointing here. An entry is either
+an observable difference, or a structural one (a different algorithm or data
+source producing the same results) that a reader diffing C# against C++
+would otherwise mistake for an unfinished or wrong port.
+
+Replacing V8's heap/GC, handles, snapshot, machine-code backends and ICU is
+by design (`docs/architecture.md` section 2) and is not repeated per site.
+
+Status: some items below are provisional (marked "provisional"): accepted
+for now, to be revisited when the reason goes away.
+
+## General
+
+- Oracle version: V8 14.7 with ICU vs. this tree 15.6 without ICU. Tests whose
+  outcome on the oracle differs from the `.status` files (version skew, ICU,
+  d8 features the ClearScript host lacks) are listed in
+  `tools/V8Sharp.TestRunner/expectations/<suite>.oracle.txt`; the README there
+  classifies them.
+- No Smi/HeapNumber distinction in `JSValue`; `IsSmi` is computed from the
+  value (architecture.md section 3). So `%IsSmi(%AllocateHeapNumberWithValue(1))`
+  is true (mjsunit call-intrinsic-fuzzing fails on it).
+- Host configuration, not engine behaviour: V8Sharp.Bench runs V8Sharp with
+  the .NET GC's non-region write barrier (`DOTNET_GCWriteBarrier=3`), as V8's
+  stack stores need no barrier at all and the register stack is an old,
+  pinned array (tools/V8Sharp.Bench/README.md). Other hosts may set it too.
+- Host configuration: d8sharp and V8Sharp.Bench set `System.GC.LOHThreshold`
+  to 2 MB in their runtimeconfig, so element backing stores up to 2 MB are
+  young objects, as V8's young large object space keeps them; with the
+  default 85 KB, every few MB of large stores trigger a blocking full GC
+  (Gameboy 11-12 per measured window, PdfJS 4; 1 and 0 with the setting).
+  Workstation GC, non-concurrent, stays the default: concurrent GC made
+  Splay's collections blocking gen-1 GCs (4x the pause), and server GC
+  (2 heaps) moved GC work to its threads but measured -19% DeltaBlue and
+  -11% RayTrace against +14-22% EarleyBoyer and Typescript (todo.md,
+  "Allocation and GC").
+
+## V8Sharp.Base (numbers, math, unicode, hashing)
+
+- Provisional. Third-party sources: dragonbox, fast_float and llvm-libc are not in this
+  checkout (third_party/ holds only their BUILD.gn/README.v8), and fetching
+  them was not permitted in the porting session. The three items below are
+  therefore implementations of the same published algorithms rather than
+  transcriptions; each is held bit for bit to an exact reference in the
+  tests. Revisit them once the sources can be read.
+- Number to string: V8 finds the shortest digits with dragonbox's
+  `to_decimal`; `ShortestDecimal` implements Schubfach, the algorithm
+  dragonbox derives from, which returns the same digits (shortest, closest,
+  ties to even, trailing zeros removed). Subnormals with a significand below
+  1000 take `DoubleToAscii(SHORTEST)`. `SignificandToChars` and the rest of
+  `DoubleToStringView` are ported from conversions.cc. Checked against
+  `DoubleToAscii` on 1.4 million doubles and against the oracle.
+- String to number: V8 parses decimal literals with fast_float; `FastFloat`
+  implements its Clinger fast path and the Eisel-Lemire algorithm (up to 19
+  digits, and more when the truncation cannot matter), and falls back to
+  the port of `base::Strtod` where fast_float uses its big-integer
+  comparison and in the rare cases the implementation cannot bound (within
+  two units of a rounding boundary, subnormal or near-overflow results).
+  All paths are correctly rounded; checked against `Strtod` on 420000
+  strings including exact midpoints, and against the oracle.
+- `ConversionFlag` is a `[Flags]` enum with separate hex, octal, binary,
+  implicit-octal and trailing-junk bits (the API V8Sharp's callers asked
+  for); V8's has three values, `NO_CONVERSION_FLAG`,
+  `ALLOW_NON_DECIMAL_PREFIX` (= `AllowHex | AllowOctal | AllowBinary` here)
+  and `ALLOW_TRAILING_JUNK`. `AllowImplicitOctal` keeps the legacy "0777"
+  handling that V8 now only offers through `ImplicitOctalStringToDouble`.
+- Math functions: `base::ieee754` takes acos, asin, atan, atan2, cos, sin,
+  tan, exp, expm1, log, log1p, log2, log10, cbrt and `legacy::pow` from
+  llvm-libc. llvm-libc's double functions are correctly rounded, so V8Sharp
+  computes the correctly rounded result with its own table-driven kernels in
+  llvm-libc's style (`Ieee754.Kernels.cs`: table reduction, short
+  polynomial, Ziv's rounding test), falling back to a double-double and then
+  a BigInteger evaluation (`Ieee754.FastPath.cs`,
+  `Ieee754.CorrectlyRounded.cs`) when the rounding is undecided. The results
+  match: the kernels agree with the BigInteger reference on 12 million
+  arguments, which agrees with 130-digit references. The oracle (14.7)
+  still used fdlibm and differs by up to one ulp.
+- `tanh` and `math::pow` (with `--use-std-math-pow`, the default) are the
+  platform's `tanh`/`pow` in V8 too; V8Sharp calls `Math.Tanh`/`Math.Pow`,
+  which are the same C library functions.
+- `acosh`/`atanh` return a signaling NaN in V8 for out-of-range arguments;
+  V8Sharp returns the ordinary NaN (JavaScript cannot tell them apart).
+- V8's fatal `CHECK`s in Base (e.g. `RandomNumberGenerator::NextSample`,
+  BigInt size limits) throw exceptions instead of aborting the process.
+- `RandomNumberGenerator()` without an entropy source seeds from
+  `System.Security.Cryptography.RandomNumberGenerator` rather than reading
+  /dev/urandom directly (the same OS source).
+- String hashing: `V8_ENABLE_SEEDED_ARRAY_INDEX_HASH` (off by default in
+  V8) is not ported.
+- `CharPredicates`: V8 answers non-Latin-1 identifier and white-space
+  questions from ICU; V8Sharp uses .NET's Unicode data plus the
+  Other_ID_Start/Other_ID_Continue and Pattern_* lists. Checked over every
+  code point against the oracle.
+
+## V8Sharp.Parsing
+
+- Parsing: regexp literal syntax is validated only when the engine injects
+  an `IRegExpSyntaxValidator` (`ParseInfo.set_regexp_syntax_validator`);
+  the engine must wire V8Sharp.RegExp in (390 test262 early-error tests).
+- Parsing: `VariableMap` iterates in insertion order (V8: hash order); only
+  visible in which duplicate name some messages mention, and debug printing.
+- Parsing: no UTF-8 / Windows-1252 / streaming character streams; one managed
+  `PreparseData` class for V8's zone and heap forms (release byte format);
+  flags passed per parse (`ParsingFlags`) instead of global.
+- Parsing: AstPrinter/ScopePrinter are always compiled (DEBUG-only in V8).
+- Parsing: ParserBase<Impl> (a C++ template) is a generic C# class used as a
+  template: ParserBase.Specialize.targets generates ParserBaseOfParser and
+  ParserBaseOfPreParser from it at build time, the non-generic equivalents
+  of V8's two instantiations (#line maps them back to the template).
+- Parsing: the expression scopes, AccumulationScope, Target, FunctionState
+  and PreParserExpressionList (C++ stack objects in V8) are objects recycled
+  through per-parser (per-thread for the expression lists) free lists.
+- Parsing: AstValueFactory probes the isolate's constants table and then its
+  own (V8 copies the constants' table into each factory). Strings hash with
+  V8's StringHasher (rapidhash, V8Sharp.Base) with the default hash seed
+  (V8: the isolate's seed), and the engine's StringTable is keyed by the same
+  hash field, so internalizing an AstRawString does not hash it again.
+- Parsing: a multi-segment inferred function name (`a.b.c`) is one flat
+  string, not internalized (V8: a chain of ConsStrings, AstConsString::
+  Allocate, also not internalized).
+- Parsing: the scanner's token LiteralBuffer storage goes back to a small
+  per-thread pool when Parser::ParseProgram / ParseFunction finish (V8:
+  new[] / delete[] with the scanner).
+- Compiler: the compilation cache (CompilationCacheScript, CompilationCacheEval)
+  is a per-isolate .NET dictionary aged at full .NET collections instead of a
+  CompilationCacheTable aged by bytecode flushing (V8 drops an entry when its
+  bytecode is flushed, after --bytecode-old-time seconds unused); both are
+  cleared past 4096 entries (after dropping dead ones). Script cache: an entry
+  not looked up between two full collections releases its toplevel
+  SharedFunctionInfo and keeps its Script weakly, as V8's key does; a later
+  lookup whose Script is alive is a full hit (V8: a partial hit, the Script
+  only, since its bytecode was flushed; V8Sharp does not flush bytecode).
+  Modules and classic scripts never share an entry (V8 does not compare the
+  origin options of unnamed scripts). Eval cache: keeps only the
+  SharedFunctionInfo (no FeedbackCell per native context); an entry unused
+  between two full collections is demoted to a weak reference (hits while
+  the eval's closures are alive) rather than dropped; a source over 16K
+  characters is only marked as seen when first compiled and cached when
+  compiled again, so a repeated large eval hits from its third evaluation
+  (V8 caches every source on the first compile; holding large distinct
+  sources alive across gen-2 collections cost 25-30% on large distinct
+  evals, and holding them weakly 7% on micro:compile CompilePdfJS). The eval
+  key is computed once per eval (V8: EvalCacheKey with the source's cached
+  string hash); a source over String::kMaxHashCalcLength characters hashes
+  its first and last 2048 characters with its length (V8: the length alone),
+  so the seen markers of distinct large sources of one length (CodeLoad's
+  salted evals) do not match each other.
+- Parsing: VariableMap keeps up to 8 entries in an insertion-ordered array
+  searched by identity, allocated on first use, plus a hash index beyond 8
+  (V8: a ZoneHashMap of 8 entries).
+- Parsing: stack_limit_ is a budget of 4 x --stack-size bytes of .NET stack
+  from where each parser starts (V8: the isolate's C stack limit). The .NET
+  parser frames are about four times V8's, so the RangeError comes at about
+  V8's nesting depth (2997 nested parentheses vs V8's 2296 at the default
+  984 KB, 2208 array literals vs 3100). The stack position is the address
+  of a local (`Unsafe.ByteOffset` from the null ref, no unsafe context).
+- Parsing: decorators (`@`) not scanned; V8's status lists those tests as FAIL.
+
+## V8Sharp.RegExp
+
+- RegExp: V8 uses ICU for case closure (/ui, /vi), Unicode property escapes
+  and \p{...} of strings. V8Sharp.RegExp emulates the needed ICU calls
+  (UnicodeSet closeOver with simple case folding, property lookups by exact
+  alias, empty sets rejected like ICU) over tables generated from UCD 17.0
+  and emoji 17.0 (`Unicode/UnicodeTables.g.cs`), instead of "no ICU".
+- RegExp: a subject counts as one-byte when all its code units are <= 0xFF
+  (V8 decides by string representation); callers that know the
+  representation pass it to `CompiledRegExp.Exec`. Results are identical;
+  only which bytecode runs differs.
+- RegExp: no interrupt/stack-guard polling in the bytecode interpreter or the
+  NFA interpreter (no isolate), so they never return RETRY; the backtrack
+  stack is limited to V8's 64 MB (EXCEPTION on overflow).
+- RegExp bytecode interpreter (structure only): `RawMatch` keeps the
+  backtrack stack in locals (an int array cached per thread, as V8 keeps its
+  RegExpStack on the isolate) instead of a stack object, has no try/finally,
+  and runs SkipUntilOneOfMasked(3) and the case-insensitive back references
+  in separate methods, so that RyuJIT keeps the dispatch state in registers
+  and inlines the operand reads (in one large method its inlining budget ran
+  out and every operand read was a call).
+- RegExp native tier: RegExpMacroAssemblerIL has no CheckPreemption at
+  backtracks and no JS stack guard check in the prologue (no isolate), like
+  the interpreter above. Positions are absolute char indices where x64 keeps
+  negative byte offsets from the subject end; backtrack targets are label ids
+  dispatched by an IL `switch` where x64 pushes code offsets and jumps
+  indirectly; registers past 1024 live in a per-execution int[] instead of
+  the frame.
+- RegExp native tier: the SIMD scans (SkipUntilChar/CharOrChar/CharAnd/
+  BitInTable, under x64's *UseSimd predicates) call a helper over
+  `IndexOfAny(SearchValues<char>)` instead of emitting SSE code; it stops
+  exactly where the scalar loop would, so V8's scalar tail never runs.
+  SkipUntilOneOfMasked(3) use the portable lowering. Back references
+  (including the LATIN1 case-insensitive one x64 inlines) and range arrays
+  call C# helpers.
+- RegExp native tier: code whose IL exceeds 256 KB
+  (`RegExpMacroAssemblerIL.kMaxILSize`) is not handed to the JIT; the regexp
+  is compiled to bytecode instead and never tiers up. V8 compiles every
+  irregexp to native code (no size limit short of kMaxRegisterCount), but
+  RyuJIT's compile time grows superlinearly with method size: 200 KB of IL
+  take 90 ms, the 2048 named groups of an alternation (655 KB) 1.8 s, and
+  the 8192 of mjsunit regress-980891 36 s (2.5 s now, parsing and bytecode
+  included).
+- RegExp tiering: the V8 flags --regexp-interpret-all, --regexp-tier-up and
+  --regexp-tier-up-ticks are static fields (RegExpEngine.s_regexp*) that
+  RegExpEngine.Compile snapshots into the regexp (RegExpTierPolicy, also a
+  Compile parameter), where V8 reads the global flags at each exec. This lets
+  tests run tiers side by side; with unchanged flags the behaviour is V8's.
+  `CompiledRegExp.Exec` fills a multi-match register span only for global
+  regexps (V8 never passes one otherwise; native code would stop after one
+  match where the interpreter keeps going).
+- RegExp: `AddNonBmpSurrogatePairs` emits its grouped alternatives in
+  insertion order where V8 iterates a ZoneUnorderedMap; the alternatives match
+  disjoint code points, so only code order differs.
+- RegExp differential tests: the oracle (V8 14.7) predates the lookbehind
+  alternative-sorting fix (regress-regexp-lookbehind-sort-alternatives.js)
+  and Unicode/Emoji 17 (new scripts Beria_Erfe, Sidetic, Tai_Yo, Tolong_Siki,
+  U+0295 now Ll, Extended_Pictographic changes); those mismatches are
+  classified as known in the test.
+
+## Interpreter (Ignition)
+
+- `Register` default value is r0, not V8's invalid register; use
+  `Register.InvalidValue()`.
+- Bytecode verifier (sandbox) not ported; `Disassemble` prints offsets, not
+  addresses.
+- Bytecode generator: RAII helper scopes (`ControlScope` and subclasses,
+  `RegisterAllocationScope`, `ContextScope`, `HoleCheckElisionScope`, ...)
+  are `IDisposable` classes or ref structs used with `using`; the
+  `ExpressionResultScope` kinds (effect, value, test) are one pooled class
+  recycled through a per-generator free list instead of stack objects. The
+  `BuildTryCatch`/`BuildTryFinally` lambdas are C# delegates. Same bytecode.
+- Bytecode generator: heap objects are data descriptions behind
+  `IBytecodeGeneratorHeap` (`SharedFunctionInfoDescription`,
+  `ObjectBoilerplateDescriptionData`, `ArrayBoilerplateDescriptionData`,
+  `TemplateObjectDescriptionData`, `ClassBoilerplateDescription`,
+  `FixedArrayDescription`, `CoverageInfoDescription`); V8 allocates them in
+  `AllocateDeferredConstants`/`FinalizeBytecode`. Provisional until the object
+  model implements the interface. `ClassBoilerplate::New` is not ported: the
+  class boilerplate is the class literal itself.
+- Bytecode generator: `AddToEagerLiteralsIfEager` ignores
+  `should_parallel_compile()`: V8 posts those literals to the lazy compile
+  dispatcher, which V8Sharp does not have. The parser only marks literals for
+  parallel compile under flags V8Sharp leaves off.
+- Golden bytecode tests (`GoldenBytecodeCompiler`, `GoldenFunctionResolver`):
+  generate-bytecode-expectations runs the script and fetches the global test
+  function (or the callee); the port has no interpreter yet, so the harness
+  compiles the whole script eagerly and finds the function with a small
+  static evaluator (declarations, assignments, `new C().m`, `C.prototype.m`,
+  `C.m`, calls returning functions, `arguments.callee`, the `.result`
+  completion). A direct eval of a string literal is compiled in the harness
+  against a managed ScopeInfo, eagerly, where V8 uses `--lazy-eval`; the
+  bytecode is the same for the golden snippets.
+- Constant briefs in `Disassemble` (`<ScopeInfo>`, `<ClassBoilerplate>`, long
+  `<BigInt ...>`) do not print what V8's heap printer prints (scope type,
+  truncated digits), because there is no heap object behind them.
+- Oracle comparison (`OracleBytecodeGeneratorTest`): V8 14.7 differs from this
+  tree in feedback slots (14.7 has slots where this tree embeds feedback),
+  the TDZ hole bytecodes (renamed `*TdzHole` here), `typeof x == "literal"`
+  (TypeOf + compare in 14.7, TestTypeOf here), the `yield` result intrinsic
+  (`_GeneratorYieldResult` here), cross-closure TDZ check elision (here only),
+  an unused `.result` register 14.7 reserves in scripts with lexical
+  declarations, and the Smi range of the ClearScript build (32-bit Smis). The
+  test normalizes the first two and lists the rest per function.
+
+## Baseline compiler (Sparkplug) and tiering
+
+- `--sparkplug` is on by default, as in V8 on x64. Compiling costs far more
+  than V8's Sparkplug (RyuJIT: about 11 ms of CPU per function in PdfJS,
+  on the concurrent Sparkplug thread), so a short program on a machine
+  without idle cores can run slower than in the interpreter.
+- Tier-up: V8 queues a function for Sparkplug at its first budget interrupt,
+  when the feedback vector is allocated (8 invocations' worth of budget).
+  V8Sharp allocates the feedback vector there but queues the function only
+  after 64 invocations' worth (`--invocation-count-for-sparkplug`, a V8Sharp
+  flag; 8 restores V8's behaviour): a RyuJIT compile costs about a thousand
+  times a Sparkplug compile, and code that runs only a few times then stays
+  in the interpreter (Octane CodeLoad, steady: +21%; the other benchmarks
+  within noise).
+- Code generation: IL in a static method of a dynamic assembly per function
+  instead of machine code (architecture.md section 9.1). The assembly is not
+  collectible (RyuJIT does not tier collectible code), so baseline code is
+  never freed, where V8 collects Code objects; no bytecode offset table: the current
+  bytecode offset is stored in the frame's bytecode offset slot (fp - 2)
+  before each builtin call that can throw or call out (`BaselineCompiler.CallBuiltin`,
+  where V8 would derive it from the call's return address), as IL rather
+  than a call (`BaselineAssembler.StoreBytecodeOffset`), so the frame walker
+  and handler lookup work as for interpreted frames and a fast path that
+  does not call out stores nothing.
+- Each thread that emits code (the main thread, the Sparkplug and the
+  Maglev compile threads) has its own dynamic assemblies: IL emission
+  resolves member tokens in the module's tables, which are not thread-safe.
+- Exception handlers and OSR entries: the code is entered at a bytecode offset
+  through a dispatch at the method start (handlers, loop headers, 0), not at a
+  machine pc. `BaselineExecution.Run` re-enters it after the handler lookup.
+- Baseline code lives on `SharedFunctionInfo.BaselineCode` beside the
+  BytecodeArray (V8 replaces function_data with the Code object). A JSFunction
+  has no code field: every closure of a SharedFunctionInfo with baseline code
+  runs it (V8 updates each closure's code at its next call through
+  CompileLazy/InstallBaselineCode, with the same effect).
+- OSR from Ignition: V8 checks for baseline code on every JumpLoop and
+  tail-calls InterpreterOnStackReplacement_ToBaseline, entering at the
+  JumpLoop's pc; V8Sharp does the check after the back edge and enters at the
+  loop header (the same bytecode runs next). The max_arguments stack check
+  before OSR is not needed (arguments are not pushed on a machine stack).
+- `--concurrent-sparkplug` (on, as in V8 on x64): one process-wide
+  background thread (`BaselineCompileThread`) compiles every isolate's
+  batches, where V8 posts jobs to the platform's worker pool. The task
+  generates the IL and has RyuJIT compile it fully optimized
+  (`AggressiveOptimization`, `RuntimeHelpers.PrepareMethod`) off the main
+  thread; the main thread only materializes the constant pool and the name
+  before, and installs the code at the next INSTALL_BASELINE_CODE interrupt.
+  The batch queue holds the closures (weakly), not their SharedFunctionInfos.
+  Without concurrency (`--no-concurrent-sparkplug`, `--always-sparkplug`,
+  `%CompileBaseline`) the IL is generated on the main thread and RyuJIT
+  compiles the method at its first call, at tier 0 first. The builtins and
+  call paths baseline code calls are `AggressiveOptimization` in both modes:
+  at tier 0 they ran slower than the interpreter's own (optimized) loop.
+- Calls between tiers: a call (also `new`, `f.call`, `f.apply`) from
+  baseline code to a closure with Maglev code enters the Maglev code
+  directly (`BaselineCalls.EnterMaglev`, `MaglevCalls.ConstructWithReceiver`),
+  and a call from Maglev code to a function with baseline code or bytecode
+  enters it directly (`BaselineCalls.CallFromOptimizedCode`); V8's Call
+  builtin jumps to the closure's code whatever its tier.
+- Calls: a call from baseline code to a function with baseline code (and no
+  exception handlers) enters it directly, C# call to C# call, through
+  `BaselineCalls.Enter` with the arguments in registers or locals
+  (`ICallArguments`), pushing the frame record and the register window
+  itself. V8 calls through the Call builtins and the callee's prologue
+  builtin. The baseline frame's teardown is not in a `finally`: a throw
+  unwinds C# frames to the catching frame, which restores the frame stack
+  (as the interpreter's handler lookup does). `Function.prototype.call` and
+  `apply` with a JSFunction target enter the target without a builtin
+  frame (V8 has a builtin frame for them; it is not observable in stack
+  traces, which skip it). The frame setup is inlined into the call
+  bytecodes' stubs (`BaselineCalls.EnterInline`), and one compare against
+  `Isolate.RegisterStackInterruptLimit` covers register stack overflow and
+  pending interrupts, as the interpreter's fast entry does. The .NET stack
+  is checked every eighth call depth (every call for functions with more
+  than 1024 bytes of bytecode), not at every entry; the .NET stack is large
+  enough for the slack.
+- Registers: in functions without exception handlers or generator
+  resumption, up to 64 interpreter registers live in IL locals; the frame
+  copy is written only where something reads it (register lists passed to
+  calls and runtime functions, the interrupt budget's runtime call on a back
+  edge) and reloaded where a builtin writes it (header of
+  BaselineCompiler.Registers.cs). V8's Sparkplug keeps every register in the
+  frame.
+- Inline fast paths: V8's Sparkplug code calls the same builtins as Ignition
+  for every bytecode; V8Sharp emits the hot paths (Smi and number
+  arithmetic, comparisons fused with the following conditional jump,
+  ToBoolean, monomorphic named and keyed loads and stores, global loads from
+  a PropertyCell, context slots) directly as IL, with the out-of-line
+  builtin as the slow path, and chooses per bytecode from the feedback at
+  compile time which paths to emit (header of BaselineCompiler.Feedback.cs).
+  The emitted code records the same feedback as the interpreter.
+- Size: RyuJIT compiles a method beyond its limits (IL size, instructions,
+  blocks, local references; `BaselineILEmitter` counts them, calibrated
+  against RyuJIT's own decisions) with MinOpts, slower than the
+  interpreter. A function whose full code would exceed them is emitted
+  again with the number paths' feedback checks as calls to helpers
+  (`BaselineBuiltins.BinaryFeedbackUnchanged` ..., inlined where RyuJIT
+  still inlines; RyuJIT does not count inlinee IL against the limits) and
+  with no inline paths for IC slots whose feedback is still empty; if that
+  still exceeds them, the function is compiled as several methods, one per
+  range of its bytecode (chunks, `BaselineCode.GenerateChunks`), cut at the
+  least loop depth. A jump out of a chunk spills the cached registers and
+  returns to `BaselineCode.RunChunks`, which enters the target's chunk
+  through its dispatch. V8 compiles a function of any size into one code
+  object; V8Sharp used to keep functions over 5000 bytes of bytecode in the
+  interpreter. Compact code (builtin calls only) remains for a range that
+  exceeds the limits below 256 bytes.
+- Feedback-specialized fast paths: a monomorphic named load or store whose
+  handler was an own field when the function was compiled compares the
+  handler slot's payload (the encoded field index) and accesses the field
+  at its known offset; a keyed access whose feedback map was a typed array
+  calls the element load or store of that kind; a named access whose
+  feedback was polymorphic calls a helper that does the own-field hit of
+  any of its maps. Any other feedback at run
+  time takes the general path (the IC), so the behaviour and the feedback
+  are the same; only the speed of a site whose feedback changes differs.
+- Code cache (`BaselineCodeCache`): V8 compiles each SharedFunctionInfo's
+  baseline code itself; V8Sharp shares the compiled methods between
+  functions with the same bytecode (embedded feedback masked), handler
+  table, register file shape, resumable kind and number constants, because
+  RyuJIT costs milliseconds per function and programs that evaluate the same
+  source again would compile the same IL again. The code reads everything
+  else at run time and checks every compile-time assumption, so only speed
+  differs. `V8SHARP_BASELINE_NO_CODE_CACHE=1` turns it off.
+- Tier-up size limit: functions over 100000 bytes of bytecode do not tier up
+  by themselves (V8 has no such limit for Sparkplug); `%CompileBaseline`
+  still compiles them, in chunks.
+- With `--no-maglev` (or `--jitless`) `Isolate.UseOptimizer` is false, so
+  `TieringManager` behaves as in a V8 built without Turbofan and Maglev
+  (`%GetOptimizationStatus` reports lite mode and never-optimize, plus the
+  baseline bits). The interrupt budget after tier-up is
+  `invocation_count_for_turbofan` x bytecode length, as V8 computes it; the
+  ticks only raise it.
+- `BaselineBuiltins`: V8's baseline code calls the same builtins as Ignition's
+  handlers; V8Sharp's builtins are C# methods in Baseline/ that repeat the
+  glue of the interpreter's dispatch-loop cases (register windows, feedback
+  collection) around the shared helpers, so the interpreter needs no
+  refactoring. The slow paths of the inline code
+  (BaselineBuiltins.SlowPaths.cs) are `NoInlining`, so RyuJIT keeps them out
+  of the baseline methods. The out-of-line paths of the IC bytecodes handle
+  the hits of V8's *IC_Baseline builtins first (monomorphic and polymorphic
+  own fields from the handler payload, polymorphic fast elements, typed
+  arrays) before entering the IC.
+- `%CompileBaseline` on a non-user function, or when Sparkplug is disabled,
+  throws an InvalidOperationException (V8: CHECK failure).
+
+## Optimizing compiler (Maglev) and deoptimizer
+
+- `--maglev` is on by default, as V8's x64 default (since 2026-10-04);
+  `Isolate.UseOptimizer` is `--maglev && !--jitless`. There is no
+  Turbofan: Maglev is the top tier.
+- Code generation: IL in the baseline code space instead of machine code
+  (architecture.md section 9.2); values live in IL locals rather than
+  registers and stack slots, and no safepoint table. In place of the register
+  allocator, values whose live ranges (LiveRangeAndNextUseProcessor's) do not
+  overlap share an IL local of their CLR type, so a method has about as many
+  locals as values live at once (RyuJIT does not inline into methods with
+  more than 512 locals and compiles those with more than 2000 with MinOpts);
+  RyuJIT allocates the machine registers. Code with catch blocks keeps one
+  local per value. The code is never freed (the assembly
+  is not collectible); invalidated code is only unreferenced.
+- Frames: code entered at its frameful entry (OSR, more than six
+  parameters, class constructors)
+  runs in the interpreter frame the call built, and inlined functions push
+  real interpreter frames (V8 has one optimized frame and materializes the
+  inlined ones at deopt and for stack walks). A deopt writes the
+  translation's values into these frames instead of building new ones.
+  Deopt exits copy the values into a per-isolate scratch buffer.
+- Lazy frames (2026-10-09; V8's MaglevFrame, frames.cc OptimizedJSFrame::Summarize,
+  deoptimizer.cc): calls into Maglev code that calls out enter a lazy direct
+  entry, which keeps the closure, receiver, arguments, argc and current
+  bytecode offset in a `MaglevActivation` local on the .NET stack and
+  pushes a frame record holding the local's address (V8 keeps the same
+  values in its optimized frame on the machine stack and maps the return
+  address to the offset). V8Sharp-specific: (1) the record refers to a
+  stack location by address (`MaglevActivation.At`, `Unsafe` over the
+  address as `ParserBase.GetCurrentStackPosition` does): the local is
+  address-exposed, so RyuJIT keeps it in memory and reports its references
+  to the GC for the whole method, and the record is popped before the
+  method returns (epilogue and fault block); (2) the interpreter frame's
+  register window is reserved on entry, not written, so a deopt builds the
+  interpreter frame in place below the frames of inlined functions
+  (`MaglevCalls.MaterializeLazyFrame`), and stack overflow happens at the
+  same depth as with frameful entries; (3) a call with more arguments
+  than the callee's direct entry takes builds the frameful frame (so
+  function.arguments has every argument); (4) inlined functions get lazy records only when their
+  code reads no frame slot but parameters, with one activation per
+  inlining depth; (5) a block context of a lazy frame is only
+  `isolate.Context` (the deopt translation always holds the context).
+  Baseline code, the interpreter and `Execution.Call` call Maglev code
+  through its direct entry as well. `V8SHARP_MAGLEV_NO_LAZY_FRAMES=1` and
+  `V8SHARP_MAGLEV_NO_LAZY_INLINED_FRAMES=1` turn them off.
+- `new Array()` with an AllocationSite (TryReduceConstructArrayConstructor):
+  a frame-free helper call (`MaglevBuiltins.NewArrayFromSite`) that reads
+  the site's elements kind and gives the array the site's memento, as
+  Runtime_NewArray does; V8 allocates inline and depends on the site's
+  elements kind (V8Sharp's AllocationSite has no dependent code).
+- Function.prototype.call (ReduceFunctionPrototypeCall) is reduced only
+  when its receiver is a constant function or known to be a JSFunction
+  (V8 reduces any receiver; the call builtin's TypeError for a receiver that
+  is not callable has its own message in V8Sharp).
+- Concurrent compilation (`--concurrent-recompilation`, on as in V8) follows
+  maglev-concurrent-dispatcher.cc (MaglevConcurrentDispatcher.cs): the job is
+  prepared on the main thread, builds the graph and generates the code on one
+  of `--concurrent-maglev-max-threads` (2) process-wide worker threads, which
+  also has RyuJIT compile the IL fully optimized (`AggressiveOptimization`,
+  `RuntimeHelpers.PrepareMethod`), and is finalized at the next
+  INSTALL_MAGLEV_CODE interrupt. Differences: (1) V8's graph builder reads the
+  heap through the JSHeapBroker (persistent handles, the heap's
+  concurrent-access rules, locks around feedback and map updates); V8Sharp's
+  reads the .NET objects directly, reads a property IC's (map, handler) pairs
+  under a per-vector write sequence (a seqlock the main thread bumps around
+  pair writes, `FeedbackVector.PairWriteSequence`), and does not write the
+  heap from the worker (`Map.TryUpdateNoWrite`, no migration target is
+  recorded; functions whose constant pool is not materialized are not
+  inlined). (2) The commit (V8: CompilationDependencies::Commit re-checks
+  each dependency) discards the code when an object it depends on was
+  invalidated (`DependentCode.DeoptimizeDependencyGroups`) after the job was
+  prepared: the dispatcher logs invalidations while jobs are open. (3) An
+  exception on the worker (a read racing with the main thread) fails the job
+  without disabling optimization. (4) The job starts at the tick that
+  decides to optimize, not at the function's next call (V8's tiering
+  builtins on the dispatch handle; V8Sharp's call paths have no such hook):
+  the job's `TieringInProgress` plays the part of V8's request in
+  `TieringManager.InterruptBudgetFor` and `MaybeOptimizeFrame` (OSR budget
+  and urgency). OSR requests are concurrent too (`--concurrent-osr`): the
+  frame keeps running and a later back edge enters the code installed in the
+  OSR cache (the install zeroes the function's budget so that the next back
+  edge looks). `%OptimizeFunctionOnNextCall`, `%OptimizeMaglevOnNextCall`,
+  `%OptimizeOsr` and the compiles of functions a natives test optimizes by
+  hand (`--allow-natives-syntax`) are synchronous (RyuJIT tier 0 first); a
+  loop's tiering OSR stays concurrent. `V8SHARP_MAGLEV_GRAPH_ON_MAIN_THREAD=1`
+  builds a concurrent job's graph on the main thread (for comparison),
+  `V8SHARP_MAGLEV_STRESS_CONCURRENT=1` runs synchronous compiles' ExecuteJob
+  on another thread (a test mode for the worker's graph builder), and
+  `V8SHARP_MAGLEV_REPORT_BACKGROUND_EXCEPTIONS` (1, or a file) reports the
+  worker's exceptions.
+- OSR: the check for OSR code runs at the JumpLoop budget interrupt (V8
+  checks the OSR urgency on every back edge), in interpreted and baseline
+  frames (`BaselineExecution.BudgetInterruptOnJumpLoopOsr`); OSR code takes
+  the frame's registers as its initial values at the loop header, and runs
+  in the same frame. OSR offsets of prefixed JumpLoops are the offset after
+  the prefix (BytecodeAnalysis's osr_entry_point).
+- Bytecode liveness is computed by an iterative fixed point over all
+  bytecodes (V8 does one backward pass plus a loop fix-up pass); the result
+  is the same.
+- Prototype chain checks of property accesses: the code depends on the IC
+  handler's validity cell (a compilation dependency in the PrototypeCheck
+  group; `JSObject.InvalidateOnePrototypeValidityCellInternal` deoptimizes
+  the dependent code, through `Isolate.Current`) where V8 depends on the
+  stable maps of the prototype chain (DependOnStablePrototypeChains); the
+  cell is invalidated whenever a map on the chain changes, so the two
+  invalidate in the same places. No check runs in the optimized code
+  (`V8SHARP_MAGLEV_VALIDITY_CELL_CHECKS=1` restores the run-time
+  CheckValidityCell of V8Sharp before 2026-10-09).
+- CheckType: V8's kCheckHeapObject is a Smi check before a map load. Only
+  JSReceivers have a map in V8Sharp (undefined and numbers are not heap
+  objects in JSValue, strings and oddballs have no map field), so the check
+  CheckMaps, LoadMap and TransitionElementsKind make is a receiver check
+  (object half non-null, instance type at least FIRST_JS_RECEIVER_TYPE),
+  omitted (kOmitHeapObjectCheck) when the input's known type where the node
+  is built is a JSReceiver.
+- Calls whose feedback is a FeedbackCell (closures of one CreateClosure
+  site; BuildCallWithFeedback): V8's CheckJSFunction, the load of the
+  closure's feedback cell and CheckValue are one node
+  (CheckJSFunctionFeedbackCell); the closure's context and its native
+  context's global proxy (for a sloppy callee's undefined receiver) are
+  loaded by Maglev builtin calls (`ContextOfFunction`,
+  `GlobalProxyOfFunction`) where V8 loads fields. An inlined closure's deopt
+  frames spill the closure (DeoptFrameData.ClosureScratchSlot) as V8's
+  translation stores the function. `V8SHARP_MAGLEV_NO_FEEDBACK_CELL_CALLS=1`
+  and `V8SHARP_MAGLEV_NO_FEEDBACK_CELL_INLINING=1` turn them off.
+- Region splitting (V8Sharp only, MaglevCodeGenerator.Regions.cs): code
+  over RyuJIT's optimization limits (60000 IL bytes, 20000 instructions,
+  2000 blocks, 2000 locals, 8000 local references, which make RyuJIT compile
+  a method with MinOpts) is emitted again as several IL methods, one per
+  region of consecutive blocks cut at the least loop depth and outside
+  inlined function bodies, each planned for 40% of the limits (RyuJIT counts more than the emitter does: at 60% two of zlib's regions still got MinOpts)
+  (`V8SHARP_MAGLEV_REGION_BUDGET`) from the first emission's per-block costs.
+  The code's method dispatches over the regions; an edge into another
+  region stores the values live into its target (SSA liveness) and the
+  target's phis in a per-activation Transfer struct and returns the
+  target's entry id. Code with catch blocks is not split.
+  `V8SHARP_MAGLEV_NO_REGIONS=1` turns it off; `V8SHARP_MAGLEV_SPLIT_IL=n`
+  (FlagList.MaglevSplitILBytes) splits any code over n bytes for tests.
+- Generic nodes call the baseline tier's builtins (`BaselineBuiltins`), which
+  collect feedback like the interpreter does; V8's generic Maglev nodes call
+  builtins that mostly do not. Calls with consecutive argument registers call
+  `MaglevCalls.Call` and do not collect feedback, as V8's.
+- Protectors are bools (Protectors.cs), not PropertyCells: code depending on
+  one registers on a stand-in Cell per protector, invalidated through
+  `Protectors.OnInvalidate`.
+- `MaglevCompiler.kMaxDeoptCount`: no limit by default, as in V8, which
+  lets Maglev re-optimize after any number of deopts (its `--max-deopt-count`
+  is Turbofan's); `V8SHARP_MAGLEV_MAX_DEOPTS` sets one (V8Sharp stopped at 8
+  until 2026-10-04: Gameboy's executeIteration reached it in every cold run).
+- Size limits are V8's (max_maglev_optimized_bytecode_size, 512 KB, in
+  PrepareJob; max_optimized_bytecode_size, 60 KB, stops the ticks). A
+  method beyond RyuJIT's optimization limits (60000 IL bytes, 20000
+  instructions, 2000 blocks, 8000 local references) is compiled by RyuJIT
+  with MinOpts; such code is still well ahead of the baseline tier and the
+  interpreter (zlib). `V8SHARP_MAGLEV_MAX_NODES` and `V8SHARP_MAGLEV_MAX_IL`
+  set limits for experiments. Methods over 20000 IL bytes are
+  `AggressiveOptimization` (RyuJIT's tier 0 of big methods is MinOpts).
+- Deopt exits: constant values of a frame state are literals of the deopt
+  point's translation (V8's StoreLiteral), written by the Deoptimizer. V8's
+  exits are a call each and the deoptimizer reads the values from the
+  optimized frame; V8Sharp's values are in IL locals, so an exit spills them
+  to the isolate's scratch buffer, one slot per value, through chains of
+  spill blocks that exits share (an exit stores what a recent exit's block
+  does not and continues there).
+- Typed array stores: V8Sharp's keyed store IC gives typed arrays a slow
+  handler (and goes megamorphic), so the element store is built from the
+  feedback maps alone, and megamorphic keyed stores call
+  `KeyedStoreICMegamorphic`, which has the typed array fast path of V8's
+  KeyedStoreIC_Megamorphic builtin.
+- OSR code is invalidated when an exit outside its loop is taken a second
+  time (V8 only invalidates it for exits inside the loop): a function whose
+  own compile failed would otherwise re-enter the OSR code and deoptimize at
+  the same exit on every call.
+- Deopt exits are cold for RyuJIT: the exits run in a try region of their
+  own (entered through a switch on the exit), and each spill chain ends in
+  `throw new MaglevDeoptUnwind()`, caught by the region's handler, which
+  returns the deopt's result (V8's exits are deferred code, out of line,
+  and its register allocator knows they are cold). RyuJIT's profile
+  synthesis gives a branch to a path that throws likelihood 0, and a branch
+  out of a loop 10% otherwise (48% for any other branch), so before this a
+  loop with a few checks looked barely hotter than its exits and its values
+  lived in stack slots. A deopt costs one .NET throw within the method.
+  Bodies small enough for their direct entry to inline them (RyuJIT does
+  not inline methods with exception handlers) keep plain exits unless they
+  have a loop.
+  `V8SHARP_MAGLEV_HOT_DEOPT_EXITS=1` emits the exits as plain returns.
+- Loop interrupt checks (HandleNoHeapWritesInterrupt), in loops whose
+  bytecode has no calls: code installation interrupts (INSTALL_*_CODE) are
+  left pending for the next function entry or interpreted back edge (such a
+  loop cannot observe them), and any other pending interrupt (termination,
+  API interrupts) exits to the interpreter at the back edge, an eager deopt
+  with the V8Sharp-only reason `kInterrupt` that does not invalidate the
+  code, whose JumpLoop serves it; V8 calls the runtime in deferred code and
+  continues. A call on the back edge made RyuJIT keep the loop's values in
+  stack slots (it has no deferred spilling), and the check needed the frames
+  of inlined functions; leaf code with loops now gets a frameless entry.
+  Loops with calls serve interrupts through a call as before, with the
+  bytecode offset store and inlined frame pushes on the slow path. (Exiting
+  for code installation too cost Richards' Scheduler.schedule loop, which
+  finished each run in the interpreter after a concurrent compile.)
+- Deopt exits are shared by the checks of one frame state; the failed
+  check's reason is passed to the Deoptimizer at run time (V8 has one exit
+  per check, with the reason in the deopt data).
+- Exception handlers: the code body is one .NET try region; a throwing
+  node inside a JS try block stores its index in a local, and the region's
+  filtered catch clause runs that node's trampoline (the catch block's
+  exception phis from the node's frame) and re-enters the region, whose
+  first instruction dispatches to the catch block. V8 returns to a handler
+  address. Catch blocks are always built: V8 lazy-deopts instead when the
+  handler was never used, but the interpreter does not record handler use.
+  Functions with handlers are not inlined (V8 inlines them). Calls inside
+  try blocks are inlined: a throw in the inlined code drops its frames
+  (EnterCatchBlock pops to the optimized frame) and continues at the
+  caller's catch block, as in V8.
+- Select diamonds of one node: charCodeAt's out-of-bounds NaN
+  (`BuiltinStringPrototypeCharCodeAtOrNaN`) and the keyed name check against
+  the name's primitive (`CheckValueEqualsString` with the primitive) are one
+  node each where V8 builds a branch and a phi.
+- Inlining limits: Maglev is V8Sharp's top tier (no Turbofan), so the
+  inlining heuristics use the values V8's `--maglev-as-top-tier` implies
+  (max_maglev_inlined_bytecode_size 460, min_maglev_inlining_frequency
+  0.10) unless those flags are set explicitly; V8's x64 default
+  configuration uses 100 and 0.95 and leaves the rest to Turbofan.
+  Measured (octane-steady, 2026-10-03): +3% geomean on Richards, DeltaBlue,
+  RayTrace, EarleyBoyer, Crypto.
+- Parameter assignments (of the function and of inlined functions) stay in
+  IL locals and are written to the frame only before nodes that can observe
+  the frame's parameters (calls, allocation of arguments objects):
+  V8's optimized frame has no interpreter parameter slots to keep current,
+  and materializes them at deopt.
+- Hoisted untagging of loop entry values (the phi representation
+  selector's speculative untagging): an untagging check before the loop of
+  a parameter or OSR value whose feedback was a number. A failed check
+  deoptimizes with `Deoptimizer.kHoistedUntaggingFeedback`, after which the
+  function's compiles keep such phis tagged (V8 uses the deopt's feedback
+  the same way through the loop entry's frame state).
+- Direct calls: a call of a known JSFunction with Maglev code enters its
+  direct entry (`MaglevCode.FastCall`, a second IL method taking the
+  receiver and up to six arguments as values) instead of V8's
+  CallKnownJSFunction into the code entry with arguments on the stack. The
+  callee's frame builder skips clearing the register file (the optimized
+  code writes every register before reading it, and the frame state names
+  only live ones). A construct's new.target is passed in
+  `Isolate.MaglevNewTarget` and argc's sign bit marks the construct.
+- Loop effects: V8 learns what a loop body changes by peeling the first
+  iteration; V8Sharp assumes a loop without calls changes nothing it loaded
+  before, checks that at the back edge, and builds the graph again with the
+  effects seen (`MaglevRestartException`, at most four attempts).
+- Object literals: copies of boilerplates whose fields hold primitives,
+  nested such boilerplates or arrays of primitives (`LiteralShape`); the
+  copies of nested arrays carry no allocation mementos (the runtime's
+  StructureWalk gives them their sites'), so elements kind changes of
+  arrays made by optimized code do not reach the site.
+- instanceof of the TestInstanceOf feedback's constructor: CheckValue and
+  `ObjectOps.FastInstanceOf` (the prototype chain walk) as one call, where
+  V8 builds the walk as nodes.
+- No LICM, CSE, range analysis, or DataView/string builder reductions yet.
+- Inlined allocations and escape analysis (MaglevVirtualObjects.cs,
+  MaglevGraphBuilder.Allocation.cs, MaglevCodeGenerator.Allocation.cs):
+  (1) `--maglev-object-tracking` is on by default (V8: off): loads of the
+  fields of an allocation that has not escaped are answered from its
+  VirtualObject, so such loads do not make it escape, and Octane's
+  temporaries can be elided at all (with V8's default an allocation whose
+  fields are read escapes). (2) A VirtualObject models the in-object fields
+  and the current map, and a map transition (StoreMapTransition) updates it
+  (V8's StoreMap escapes the allocation): a constructor's this.x = ... keeps
+  the object elidable. (3) Differing versions of a virtual object at a merge
+  are merged slot by slot with phis as in V8, but only when their maps are
+  equal (V8's versions never differ in map: its StoreMap escapes); versions
+  with different maps are dropped, and a deopt frame after the merge that
+  holds the object makes it escape. (4) The allocation is
+  the .NET object of the map's in-object slot class constructed by the IL
+  (V8 bumps the allocation top of a folded AllocationBlock); allocations are
+  not folded, and only stores of a transition whose map the next transition
+  overwrites before anything can observe the object skip the map write
+  (MarkOverwrittenMapStores; .NET write barriers cannot be skipped for
+  reference stores). (5) Initial maps in slack tracking are left to
+  FastNewObject; the instance size read on the worker is checked again at
+  commit (InitialMapInstanceSizePredictionDependency). (6) Calls that pass
+  an allocation which has not escaped are inlined up to
+  `max_maglev_hard_inline_depth` (V8 Maglev stops at
+  `max_maglev_inline_depth` for functions that are not small; Turbofan
+  inlines them) and an apply() of a constant function is inlined
+  (V8SHARP_MAGLEV_NO_INLINE_FOR_EA=1 turns the depth exception off). (7) A
+  named load of a tracked allocation without usable feedback (Class.create
+  constructors share one feedback vector, so their `this.initialize` load
+  is megamorphic) is computed from the virtual object's exact map: an own
+  field from the virtual object, a constant of a stable prototype chain
+  (const field or descriptor constant) with stable map and field
+  constness dependencies. (8) An inlined function's arguments object is
+  built from its (lazily pushed) frame (`CreateInlinedArguments`) or, when
+  only apply(thisArg, arguments) uses it, elided and the applied function
+  gets the call's arguments; the arguments beyond the formal parameters are
+  in the inlined deopt frames, so those frames are pushed lazily (they were
+  pushed on entry). (9) Contexts and closures are allocated by
+  frame-free helper calls (V8: an InlinedAllocation of the context,
+  FastCreateClosure) and are not escape-analysed. (10) Repeated
+  CheckValidityCell of one cell without a call or unknown write in between
+  is elided (field stores and transitions of non-prototype objects cannot
+  invalidate a validity cell).
+- Truncation pass (maglev-truncation.cc): int32 additions, subtractions and
+  multiplications whose uses all truncate become wrapping operations when
+  the exact result is a safe integer; without range analysis the bound
+  comes from the inputs' static ranges (constants, masks, shifts; int32
+  otherwise). Float64 additions and subtractions of int32 values (int32
+  feedback that once overflowed) whose every use is TruncateFloat64ToInt32
+  become wrapping Int32Add / Int32Subtract at the truncations; other Float64
+  operations are not truncated.
+- Generators: the generator fields (context, input_or_debug_pos,
+  continuation) are read and written by dedicated nodes
+  (`LoadGeneratorField`, `StoreGeneratorContinuation`) where V8 uses
+  LoadTaggedField/StoreTaggedFieldNoWriteBarrier by offset.
+- Deprecated feedback maps: V8 replaces them by their updated map and
+  computes the access from it; V8Sharp's accesses come from the IC handlers,
+  so the updated map keeps the deprecated map's handler only for named loads
+  where it applies unchanged (an own field at the same storage index, or a
+  prototype-chain lookup with the same prototype); otherwise the map is
+  dropped. `MigrateMapIfNeeded` returns the deprecated map when the
+  migration fails (the dispatch's last map check then deopts) instead of
+  deopting itself.
+- Typed array length (the `length` property): a Float64 value where V8's
+  LoadTypedArrayLength is an IntPtr (no IntPtr representation); it holds any
+  length exactly and converts as V8's does (checked to Int32, truncated,
+  tagged).
+- Array.prototype.pop is one Maglev builtin call after the map inference
+  and the NoElements dependency (V8 builds the length test, the COW check,
+  the load and the hole store as nodes per elements kind).
+- `CheckHeapObject` (field stores of HeapObject representation) passes
+  undefined and rejects every number: numbers are unboxed and undefined is
+  not a HeapObject in V8Sharp's representation (Object::FitsRepresentation's
+  deviation).
+- kMaxStackSlots: without a register allocator, the stack slots of a graph
+  are estimated as the most values live at once (MaglevStackSlots; frame
+  slots of InitialValues are not counted). Without CSE, fewer values live
+  long than in V8 (mjsunit/maglev/regress-536945254 still compiles).
+- Loop peeling: one iteration is peeled (V8's non-optimistic mode; loops
+  that call are not peeled (their header forgets what calls change; the
+  copy costs main-thread graph building and JIT);
+  V8 by default peels optimistically and merges the loop without a second
+  copy when the peeled iteration changed nothing). Loops overlapping a try
+  range (start, end or handler inside the loop) and the loops of an OSR
+  compilation up to the OSR loop are not peeled (V8 recreates the catch
+  merge states for the second copy).
+- Polymorphic load continuations are built only for arms that load
+  different constants (methods), the case they exist for; V8 also builds
+  them for field-load arms.
+- Field representation on loads: the access info comes from the IC handler
+  and the field's descriptor in the receiver's (or holder's) map; arms of a
+  merged polymorphic group whose descriptors differ load the field tagged.
+  A Double field's slot always holds a number (JSValue's payload, the hole
+  NaN when uninitialized), so LoadDoubleField reads the payload where V8
+  loads the HeapNumber's value, and StoreDoubleField writes the payload.
+- Code bodies of at most 1200 bytes of IL without exception handlers are
+  AggressiveInlining, so RyuJIT compiles them into their direct entry (one
+  .NET call per direct call); V8's call is one jump to the code.
+- Element, context slot and in-object transition stores are written inline
+  through the slot's address (V8's StoreTaggedField nodes), except in code
+  with exception handlers: there they call the inlined
+  `BaselineBuiltins.StoreSlot` and transitions their helper, because the
+  shared address locals make RyuJIT take seconds per compile in such
+  methods (mjsunit compiler/constructor-inlining: 15 s for 20 KB of IL).
+- instanceof of a constant function with an intact Symbol.hasInstance
+  (`HasInPrototypeChain` node): V8 depends at compile time on the
+  constructor's initial map and prototype and emits a deferred runtime call
+  for proxies and access-checked objects on the chain; V8Sharp compares the
+  constructor's map and prototype slot at run time and deoptimizes when they
+  changed or such an object is on the chain, and the deoptimizer then
+  marks the instanceof slot megamorphic so the next code takes the generic
+  path (no deopt loop).
+- `function.prototype` of a constant function folds to the prototype only
+  when the function has its initial map (dependency kInitialMapChanged);
+  V8 also folds a non-map prototype slot with a prototype-property
+  dependency.
+- Getter and setter calls (`BuildPropertyGetterCall`,
+  `BuildPropertySetterCall`, TryBuildPropertyGetterCall /
+  TryBuildPropertySetterCall) are built for JavaScript accessors on the
+  prototype chain of fast-mode JSObject receivers (not special receivers
+  such as the global proxy) when all maps of the
+  access reach the same accessor; V8 also builds them in the arms of a
+  polymorphic access, for own accessor pairs, API accessors and primitive
+  receivers. Setters are never inlined: a deopt that materializes an
+  inlined setter frame would return its result into the caller's
+  accumulator, which must keep the assigned value.
+- Keyed loads of string characters (`TryBuildElementAccessOnString`) are
+  built only for in-bounds feedback; with out-of-bounds feedback V8 selects
+  undefined after the bounds check, V8Sharp leaves the load generic.
+- Element and typed array accesses index arrays held in IL locals: the
+  .NET array behind an elements node (FixedArray/FixedDoubleArray._data) is
+  loaded where the elements are loaded, and a typed array's backing array
+  and byte offset where its length is loaded (LoadTypedArrayLength, which
+  load elimination keeps until a call); V8 keeps the elements pointer in a
+  register and loads a typed array's data pointer per access. V8Sharp's
+  elements and buffers are replaced (RightTrim, detaching, resizing) only by
+  calls, after which the graph loads them again. Code with catch blocks and
+  split code keep the per-access loads. `V8SHARP_MAGLEV_NO_ELEMENTS_DATA=1`
+  turns both off.
+
+## Interpreter execution, ICs, runtime, compiler and modules
+
+- Megamorphic keyed loads (`KeyedLoadIC.LoadGeneric`, port of
+  KeyedLoadICGeneric): numbers in bounds of fast elements and internalized
+  names (own fast or dictionary properties, the stub cache, the prototype
+  chain) are handled inline; receivers that are not plain JSObjects, array
+  index strings and names that are not internalized (unless an internalized
+  copy exists) go to the runtime, where V8's builtin handles more cases
+  itself. Not a behaviour difference.
+- Megamorphic keyed stores (`KeyedStoreIC.StoreGeneric`, KeyedStoreGeneric):
+  element stores of values that fit the fast elements kind (in bounds,
+  holes included, and appends to a JSArray, when no prototype has
+  elements) and overwrites of an existing writable data property (a
+  mutable tagged field or a dictionary entry; not on prototype maps or
+  protector names) are inline; everything else, including the elements
+  kind transitions and property additions V8's builtin performs inline, is
+  `Runtime::SetObjectProperty`.
+- Dispatch: one C# loop specialized per operand scale
+  (`InterpreterExecution.Loop<TS>`) instead of generated handlers. The loop
+  keeps only the handlers whose fast path is a few instructions (and the
+  monomorphic IC hits: own field and prototype constant loads, field stores
+  and field-adding transitions, fast element loads and stores, global
+  PropertyCell loads); the others are NoInlining methods in
+  InterpreterHandlers.cs, and the rare bytecodes sit in `LoopCold<TS>`, so
+  that RyuJIT keeps the accumulator, the current bytecode and the frame
+  pointer in registers (it stops promoting structs and inlining in a method
+  with too many locals). The current bytecode is a `ref byte` into the
+  bytecode array rather than V8's (array, offset) pair, so the loop needs
+  one register for it, and the accumulator's number payload is a long
+  (JSValue._bits), so the accumulator lives in two callee-saved general
+  registers: on System V x64 a double local would sit in a stack slot. The
+  offset is computed from the reference where a handler needs it (SavePc,
+  the return offset of a call). The loop is AggressiveOptimization (it
+  would otherwise run as OSR code). Wide/ExtraWide run one bytecode in the
+  scaled loop, except the frequent forms of huge functions, which the
+  single-scale loop decodes itself: LdaSmi, Ldar, Star, Mov, the current
+  context slot loads and the Smi bitwise operators (both prefixes), and with
+  Wide GetNamedProperty, SetNamedProperty, GetKeyedProperty,
+  SetKeyedProperty, the Smi arithmetic operators and JumpLoop without an
+  interrupt or OSR (V8 has a handler per operand scale instead).
+  JumpConstant, JumpIf{True,False}Constant and
+  JumpIfToBoolean{True,False}Constant are in the loop, the other
+  constant-pool jumps in `LoopCold`.
+- Star lookahead: V8's (StarDispatchLookahead) for the short Stars after the
+  bytecodes of `Bytecodes::IsStarLookahead`, the calls included: a call
+  entered in the loop does it at the inline return (in V8 the call
+  handler does it when the callee returns to it). In addition the long `Star`
+  runs a following `Ldar` without its dispatch, which V8 does not do: in
+  functions with more than 16 registers (Emscripten's) the pair is 11% of
+  zlib's bytecodes.
+- JavaScript getters and setters found through the load/store feedback
+  (own accessor pairs, prototype-chain accessors, and accessors of
+  dictionary-mode holders through LoadNormal) are entered by the
+  GetNamedProperty/SetNamedProperty handlers like a CallProperty0/1, in the
+  same dispatch loop (V8 calls them with the CallFunction builtin). The IC
+  returns the accessor to the handler instead of calling it
+  (`LoadIC.LoadNamedOrGetter`, `StoreIC.StoreNamedOrSetter`); other callers
+  of the ICs (baseline, Maglev, runtime) still call through Execution.Call.
+- JumpLoop's OSR-to-baseline check (InterpreterAssembler::OnStackReplacement,
+  case 3) runs only once the isolate has installed baseline code
+  (`Isolate.MayHaveBaselineCode`); V8 compiles the check into every JumpLoop
+  of a non-jitless build and out of a jitless one.
+- The bytecode offset is stored in the frame's bytecode offset slot only by
+  the handlers that call out (`SavePc`, V8's SaveBytecodeOffset), not before
+  every bytecode. The offset (fp - 2) and the argument count (fp - 4) are
+  raw ints in their slots (no object half, the int in the payload), where
+  V8 stores Smis: a JSValue number would cost an int-to-double conversion
+  per store and read.
+- Frames: the register file, receiver, arguments and fixed slots live on the
+  isolate's `RegisterStack` (a `JSValue[]`) in V8's layout, not on the machine
+  stack; each frame also has a small `InterpreterFrameRecord` (frame
+  pointer, a flags byte, the inline call's return offset and register
+  start; V8 chains frames through the caller fp and return address slots,
+  fp - 8 and fp - 7, which V8Sharp leaves unused) that the stack walker
+  indexes. The function, context, bytecode array, offset, argument count
+  and feedback vector are held once, in the fixed slots, as in V8. The
+  register stack is sized to `--stack-size` and it and the frame records
+  are allocated on the pinned object heap: on the large object heap every
+  gen-0 collection took time proportional to their size. A popped inline
+  frame's slots stay above the stack top (see the next item), so a call of
+  the same function at the same position skips the reference stores of its
+  fixed slots; they stay reachable until reused or an explicit collection
+  (`gc()`, `Isolate.CollectGarbage`) clears the stack above its top.
+  Popping an inline frame writes nothing to its record (every push sets
+  the fields it reads).
+- The register stack above its top is undefined except below
+  `Isolate.RegisterStackDirtyEnd`: a returning inline frame leaves its
+  parameters, fixed slots and registers there, and the next inline call at
+  that depth compares before each reference store (same closure, context,
+  feedback vector, often the same receiver and argument tags), skipping the
+  GC write barriers. Its register file is cleared on entry (V8's trampoline
+  fills it with undefined). The stale values stay reachable until they are
+  overwritten, the frame entered from C# below them returns
+  (`ReleaseRegistersAndDirty`), or an explicit collection clears them.
+- `InterpreterState` is a `ref struct`: RyuJIT emits no GC write barrier for
+  stores through a byref to a byref-like type (it cannot be on the heap).
+- Calls: a call or `new` from bytecode to an ordinary compiled bytecode
+  function runs in the caller's dispatch loop (`InterpreterInlineCalls`)
+  without a .NET frame; generators, async functions, class and derived
+  constructors, builtins and wide-operand calls take the ordinary path through
+  `Execution`/`InterpreterExecution.Invoke`. Whether a callee runs in the loop
+  is cached on its SharedFunctionInfo (`InterpreterCallMode`: not inline,
+  inline, inline with sloppy receiver conversion, or check the closure's
+  Maglev code), reset by the setters of the fields it is computed from
+  (function data, builtin id, baseline code, MayHaveMaglevCode, kind,
+  language mode, native); V8 decides by the JSFunction's code field, which
+  the tiers update. The call handlers push the callee's frame straight-line
+  per argument form (`EnterInline`, with BaselineCalls' `ICallArguments`),
+  first through `InterpreterInlineCalls.TryEnterFast`, which covers the
+  common case without calling out (V8's trampoline also has one such path
+  with the rest in runtime calls) and stores every scalar before any
+  reference, so RyuJIT keeps its values in registers across the write
+  barrier helpers; anything else (an interrupt pending, no feedback vector
+  yet, feedback to update, a primitive receiver to convert) takes the
+  general entry. After a call or a return the loop continues from refs the
+  entry leaves in `InterpreterState` (`ResumeFp`/`ResumeIp`) rather than
+  recomputing the frame and bytecode from indices.
+- The number fast paths of the loop (Add, Sub, Mul, Inc, Dec, AddSmi,
+  SubSmi, the comparisons) run inline only when the embedded feedback
+  already covers the operation (number-saturated, or Smi feedback with Smi
+  operands and result); otherwise the handler computes the result and
+  updates the feedback. V8's handlers update the feedback inline; here a
+  call on the fast path would make RyuJIT spill the operands on every
+  execution.
+- Builtin calls: a builtin runs under a frame record of kind Builtin (V8's
+  builtin frame, so it shows in stack traces), in its function's context,
+  with register-stack slots reserved for recursion. A [[Call]] of a leaf
+  builtin (Math.*, the String.prototype searching and slicing methods,
+  Array.prototype.indexOf/includes/lastIndexOf/at on packed arrays,
+  Number.prototype.toString, String(), Number(), parseInt ...) whose receiver
+  and arguments are primitives that convert without side effects cannot call
+  JavaScript, throw or depend on the realm, so it skips all three
+  (Builtins/BuiltinFramelessCalls.cs). The call handlers first try the
+  Torque/CSA fast paths of the hottest builtins directly
+  (Builtins/BuiltinFastPaths.cs: Math.floor/ceil/round/trunc/abs/sqrt/max/min/
+  pow/atan2 on numbers, charCodeAt/charAt on a String and a Smi index,
+  toString() of a number, push/pop/shift), without BuiltinArguments.
+  Also there (2026-10-02 runtime pass): String.fromCharCode of one Number,
+  Math.imul, indexOf/substring/slice/substr on a String with String/Number
+  arguments; and, invoked without the frame record when called from their
+  own realm, RegExp.prototype.exec/test with an unmodified JSRegExp and a
+  String, and String.prototype.match/replace/split with a String or
+  unmodified JSRegExp pattern (TFJ builtins in V8: no frame, never in stack
+  traces; they keep their own prototype checks and slow paths). `new
+  Array()` / `new Array(n)` (small Smi n, Array as new.target, same realm)
+  is ArrayConstructorImpl's CSA dispatch and also runs without the frame
+  record (`BuiltinRegistry.CanConstructWithoutFrame`).
+- Stack limit: V8's limit is on the machine stack; V8Sharp limits the
+  register stack to `--stack-size` KB / 8 slots and reserves 16 slots for the
+  construct stub, which puts the RangeError at about the recursion depth V8
+  reaches (12593 vs 12456 plain calls, 4844 vs 4790 constructs). The .NET
+  stack is checked with `TryEnsureSufficientExecutionStack` on ordinary entries.
+  Builtins and the JSON serializer run on the .NET stack, which V8Sharp's
+  register-stack limit does not see, so a call to a builtin reserves 12
+  register slots (`kBuiltinFrameSlots`, about a builtin exit frame) and each
+  level of JSON.stringify's recursion 20 (`kSerializeFrameSlots`): recursion
+  through them (toString -> join -> toString, a toJSON that stringifies)
+  then overflows with a RangeError at about V8's depth instead of the .NET
+  stack guard's.
+- Exceptions are .NET exceptions (`JavaScriptException`); a frame's handler is
+  found in an exception filter, so frames without a handler do not catch and
+  rethrow. `Throw`/`ReThrow` dispatch to a handler in the same frame without a
+  .NET exception. Termination is `TerminationException`, never catchable.
+- Feedback: the embedded binary/compare feedback bytes of this tree's
+  bytecode are updated in place in the bytecode array; call counts are bumped
+  in place. No ContextCells (the cell and no-cell context slot bytecodes are
+  the same load/store; --jitless V8 does not use them either).
+- ICs: handlers are C# objects (`LoadHandler`/`StoreHandler`) instead of Smi
+  handlers and code; the megamorphic stub cache holds them. `LoadSuperIC` is
+  the generic path. No allocation-site pretenuring feedback. A field handler
+  stored in a feedback slot or polymorphic array beside its map carries its
+  field index (and, for a store, the field's representation) in the payload
+  of the JSValue that holds it (`FeedbackNexus.EncodeHandler`,
+  `StoreIC.EncodeFieldStore`): V8's field handlers are Smis read from the
+  slot, and the interpreter's field loads and stores read the payload the
+  same way instead of loading the handler object. A handler stored by any
+  other path has a zero payload and is read through the object. The stub
+  cache hashes a map by a precomputed `Map.StubCacheHash` and the secondary
+  table a name by its hash field, where V8 hashes their addresses (a managed
+  object has no stable address; its identity hash is a runtime call). The
+  interpreter's GetNamedProperty/SetNamedProperty handlers probe it for
+  megamorphic feedback themselves, as V8's LoadIC_Megamorphic does.
+- CloneObjectIC: FastCloneJSObject copies the source's field array and
+  elements into an object of the cached result map (V8 copies the in-object
+  words and the PropertyArray; V8Sharp has one field array). null and
+  undefined have no map in V8Sharp to key feedback on, so cloning them builds
+  the empty object without recording feedback (V8 records the Smi 0 handler
+  for their maps).
+- Runtime: `%` functions are delegates in `RuntimeTable`; functions only an
+  optimizing tier or the debugger uses are not registered (their calls throw
+  "runtime function %X is not implemented"). Tier queries (%IsTurbofanEnabled,
+  %GetOptimizationStatus ...) and %GetFeedback answer as --jitless V8 does.
+- The TestRunner's v8sharp engine runs the microtask checkpoint when the
+  outermost script execution returns (d8's kAuto policy); a nested
+  `Realm.eval` leaves its microtasks queued.
+- Compiler: source positions are collected eagerly (no lazy source
+  positions). `DefineClass` builds the class sequentially from the class
+  boilerplate stand-in: the constructor's map gets the length, name and
+  prototype AccessorConstant descriptors appended (as the descriptor template
+  of AddDescriptorsByTemplate has them, so the map stays fast and
+  UseFastFunctionNameLookup holds), and the members are then added through
+  ordinary property definitions (fields rather than V8's constant
+  descriptors). The template object cache is per SharedFunctionInfo.
+- A JSMessageObject whose location is a (SharedFunctionInfo, bytecode offset)
+  pair (a stalled top-level await) gets its source position when it is made,
+  where V8 computes it on first use (InitializeSourcePositions).
+- Async functions and generators follow builtins-async-*-gen.cc; the debugger
+  parts (Runtime_DebugAsyncFunctionSuspended's debug events, async stack
+  trace annotations for the inspector) are not ported.
+- Modules: the SourceTextModuleInfo parts, regular exports/imports and
+  requested modules are typed arrays instead of FixedArrays; the embedder API
+  (ResolveModuleCallback, SyntheticModuleEvaluationSteps, the dynamic import
+  and import.meta callbacks, the source phase ResolveSourceCallback) are
+  delegates; the host's dynamic import callback is the phase-taking
+  HostImportModuleWithPhaseDynamicallyCallback only. Module source objects
+  exist only for WebAssembly, whose source phase imports are not
+  implemented (see WebAssembly), so every source phase import fails with
+  d8's SyntaxError. The STACK_CHECK of linking and
+  evaluation also requires 32 register-stack slots (the C++ frames of
+  Module::Evaluate in V8), so that a deferred module evaluated at the
+  recursion limit fails with the RangeError as in V8
+  (modules-import-defer-stack-overflow-on-sync-eval). Not ported: the
+  code cache in the d8 loader.
+- Parser flags: the fuzzing flags reach the parser, and
+  `RuntimeFuzzing.IsEnabledForFuzzing` is runtime.cc's allowlist; the
+  FOR_EACH_INTRINSIC_TEST list it needs is copied into the parsing assembly
+  (the engine's `FunctionId` table lives in V8Sharp, which the parser cannot
+  reference).
+- Stack traces: async frames are captured as CallSiteInfos with the source
+  position already resolved from the generator's suspend offset (V8 stores the
+  bytecode offset and resolves lazily).
+- `FastAssign` (Objects/JSReceiver.cs) checks the excluded keys of
+  CopyDataProperties before reading a value rather than after, so an excluded
+  getter is not called; this matches what V8 does (regress-41488094).
+- Test natives: `%ConstructThinString` returns a cons string with the same
+  contents (V8Sharp has no thin strings), `%DetachGlobal`-like realm operations are no-ops in the
+  TestRunner engine, and `RunModule` checks a rejected top-level promise once
+  after a microtask checkpoint, like the oracle engine.
+
+## V8Sharp engine: objects and execution
+
+Heap and object model
+- Read-only roots are process-wide static objects (`ReadOnlyRoots`), shared by
+  every isolate, instead of a per-isolate read-only space. Accessor infos
+  (`Accessors`) are shared the same way.
+- In-object properties (Objects/JSObjects.InObject.cs): a CLR object cannot
+  be sized per allocation, so ordinary objects (the instance types
+  `JSObject.UsesInObjectSlots` lists: JS_OBJECT_TYPE, API objects, errors,
+  the special prototype types) are allocated from a chain of classes with
+  `[InlineArray]` slot segments (1 to 8, 12, 16, 32, 64, 128, 256 slots), the
+  smallest covering the map's in-object property count. After in-object slack
+  tracking shrinks a map, objects allocated earlier keep their larger class
+  (V8 turns the tail into filler). Arguments objects (at most two in-object
+  properties, no subclasses) derive from the two-slot class. The other
+  JSObject subclasses (arrays, functions, regexps, collections ...) keep the map's
+  in-object fields at the start of the PropertyArray `JSValue[]`; the map's
+  counts, `FieldIndex` and slack tracking are V8's for every object.
+  `FieldIndex.StorageIndex` is the physical location the IC handlers cache.
+  Header and instance sizes are approximated from `JSObject.GetHeaderSize`,
+  and builtin function instance sizes are recomputed from the header size
+  plus in-object count (`Bootstrapper.CreateFunctionForBuiltinWithPrototype`).
+- The identity hash lives in the header word (`HeapObject._hashField`, which
+  is Name's raw hash field for names), not in `properties_or_hash`: a field
+  of the root class fills the padding after InstanceType, where a JSReceiver
+  field would add 8 bytes to every object. The two spare bytes of that word
+  (`HeapObject._headerFlags`) hold JSString's internalized bit and a
+  Context's kind (V8: the context map's instance type), and a
+  FixedArray's copy-on-write bit is its unused hash field, for the same reason.
+- `properties_or_hash` is one field, `JSReceiver._fields`, as in V8: the
+  PropertyArray in fast mode; in dictionary mode an array whose last element
+  is the property dictionary (after the in-object area of the classes without
+  slots). A dictionary-mode object therefore has one array more than in V8,
+  and every receiver one field less than with a separate dictionary field.
+- `JSArray.Length` is a property over a `double` field (`_length`): the
+  length is always a Number, and the double is 8 bytes smaller than a
+  JSValue and written without a GC write barrier.
+- Stores into fields, elements and context slots of a value whose reference
+  part is unchanged (a number over a number, the same object) write only the
+  payload (`JSValue.StoreSlot`): a CLR reference store pays a GC write barrier,
+  V8's a Smi store does not.
+- No Smi/HeapNumber distinction: numbers are unboxed. A non-Smi number does not
+  fit `Representation.HeapObject` (`ObjectOps.FitsRepresentation`), where V8's
+  HeapNumber does; storing one generalizes the field to Tagged instead.
+- Strings are always UTF-16 (`SeqString`); there is no one-byte storage, no
+  external strings and no ThinString (a string remembers its internalized copy
+  in `InternalizedForward`). `StringCharacterStream` walks .NET strings.
+- The special prototype instance types (`JS_OBJECT_PROTOTYPE_TYPE`,
+  `JS_PROMISE_PROTOTYPE_TYPE`, ...) are set on the map only;
+  `HeapObject.InstanceType` stays the generic type.
+- The string table is V8's open-addressed table probed by the raw hash field
+  (each slot keeps the hash beside the string), without forwarding indices,
+  and it never drops dead strings (the .NET GC does not tell it which died).
+- Allocation mementos: an array created from an AllocationSite (literal copies,
+  empty array literals, `new Array` with construct feedback) keeps the site in
+  `JSArray.AllocationMementoSite` for its whole life; V8's memento sits behind
+  a young object and is gone once the object is promoted, so V8Sharp feeds
+  later elements-kind transitions of old arrays back into the site as well.
+
+Weakness (no GC hooks)
+- Transition targets, `FieldType.Class` maps, prototype-user registries, the
+  map cache and the normalized map cache hold their entries strongly. Nothing
+  is cleared, so maps that V8 would collect stay reachable.
+- The number-string caches (`SmiStringCache`, `DoubleStringCache`,
+  Objects/NumberStringCache.cs) are not flushed by a full GC
+  (Heap::FlushNumberStringCache); their strings stay until overwritten.
+- WeakMap/WeakSet use `ConditionalWeakTable`; WeakRef uses a CLR `WeakReference`.
+  FinalizationRegistry cleanup scheduling is not ported.
+
+Execution
+- JavaScript exceptions are .NET exceptions (`JavaScriptException`); `Isolate.Throw*`
+  never return. There is no pending-exception slot to check.
+- Flags live in a per-isolate `FlagList`, not a process-global `v8_flags`, so
+  tests can run isolates with different flags in one process.
+- Protectors are plain booleans on the isolate, not PropertyCells.
+- CallSiteInfo is captured eagerly as objects rather than a raw frame array
+  (`Isolate.CaptureSimpleStackTrace`).
+- The `Builtin` enum includes the Torque builtins; implementations are
+  registered by id in `BuiltinRegistry`. Calling an unregistered builtin throws
+  `NotImplementedException`.
+- Interceptors and API templates beyond `FunctionTemplateInfo` and
+  signatures are not ported (no embedder API).
+- Access checks (`Isolate::MayAccess`, `ReportFailedAccessCheck`,
+  `DetachGlobal`) are ported for global proxies only: with no embedder API
+  there is no `AccessCheckInfo`, so an access is allowed exactly when the
+  security tokens match and a failed check always throws TypeError kNoAccess
+  (V8's behaviour without a FailedAccessCheckCallback). `DetachGlobal` does
+  not create V8's `global_proxy_for_api` copy.
+- `ElementsAccessor` uses virtual dispatch instead of CRTP; shared-array and
+  Atomics entry points are not ported.
+- `KeyAccumulator` does not use the prototype-info enum cache.
+- Hash tables use local copies of V8's hashers (`Hashing.ComputeSeededHash`
+  and friends) until V8Sharp.Base lands. String hash fields come from
+  V8Sharp.Base's StringHasher (rapidhash) with the default hash seed.
+
+Bootstrapper
+- No snapshot: `Bootstrapper.CreateEnvironment` builds every native context
+  from scratch with Genesis, in V8's order.
+- Not installed: Intl, Temporal, shared structs and the extensions
+  other than gc and externalize-string. The extras binding object has only
+  what InstallExtrasBindings puts there (isTraceCategoryEnabled, trace). The RegExpMatchInfo of a native context is created on first use
+  (`RegExpMatchInfo.Get`), not by InitializeGlobal.
+- The error stack getter and setter are JSFunctions created eagerly per native
+  context (`NativeContext.ErrorStackGetterFun`/`ErrorStackSetterFun`), not
+  FunctionTemplateInfo roots instantiated lazily. They run in their own realm
+  (V8's run in the caller's), so the CallSite objects Error.prepareStackTrace
+  receives are made in the error's creation context rather than the current
+  one (`Messages.GetStackFrames`).
+- The empty function uses the bootstrapping ScopeInfo.
+- `V8_FUNCTION_ARGUMENTS_CALLER_ARE_OWN_PROPS` is off, as in V8's default build.
+
+Console (Builtins.Console.cs)
+- `console` is installed in Genesis like V8's. The debug::ConsoleDelegate is
+  an abstract C# class on `Isolate.ConsoleDelegate`; without one the methods
+  do nothing, as in V8. `console.profile`/`profileEnd` reach the delegate but
+  there is no CPU profiler behind them. Trace events: `isTraceCategoryEnabled`
+  always answers false and `trace` records nothing (no tracing controller).
+
+ValueSerializer (Objects/ValueSerializer.cs)
+- The buffer is a managed byte array; the delegate's
+  ReallocateBufferMemory/FreeBufferMemory hooks are not ported.
+- Strings are written one-byte (Latin-1) when every code unit is at most 0xFF,
+  which is where V8 writes a one-byte string's own representation; V8Sharp
+  strings are UTF-16 only.
+- ReadJSObjectProperties defines the properties one by one (V8 first tries
+  to follow the expected map transitions); the resulting maps are the same.
+- WebAssembly.Module and WebAssembly.Memory are written and read as V8 does
+  (transfer ids through the delegate; see WebAssembly for recompilation).
+- Not ported: shared structs/arrays and the
+  shared-object conveyor, host objects of the API (the delegate hooks exist).
+- ArrayBuffers of 2^31 bytes or more cannot be allocated (byte[] backing).
+
+d8 host in the TestRunner (tools/V8Sharp.TestRunner/Shell)
+- Worker, `d8.serializer` and the worker globals are implemented by the
+  TestRunner's D8Shell over `ValueSerializer` (Serialization.cs in
+  V8Sharp.D8 ports d8's SerializationData and delegates). Each worker is an
+  isolate on its own 256 MB .NET thread; messages go through a
+  SerializationDataQueue and the parent is notified through its task queue,
+  as in d8. The Worker constructor and methods are JavaScript in d8-shim.js
+  (V8: FunctionTemplates), holding the worker id in a WeakMap instead of an
+  internal field.
+- `print`, `printErr` and `write` are API functions (`CreateStringArgumentsFunction`),
+  so they do not appear in stack traces; API functions are sloppy, as V8's
+  FunctionTemplate functions are for CallSite purposes.
+- d8's console is `V8Sharp.D8.D8Console` (d8-console.cc) behind the engine's
+  own console builtins, in d8sharp and in the TestRunner's v8sharp engine
+  (the oracle engine keeps the JavaScript replacement in d8-shim.js). Not
+  ported: `console.profile`/`profileEnd` (no CPU profiler) and
+  `console.trace` (V8 prints the stack to stderr).
+- The runtime's own stdout output (`%DebugPrint`, `%DebugTraceMinimal`,
+  `--disable-abortjs`) goes to `Isolate.StdOut`, a TextWriter defaulting to
+  `Console.Out`, where V8 writes to the C stdout: the in-process shell
+  redirects it into the test's output so it interleaves with `print`.
+- `--enable-tracing --trace-config=FILE`: the file is read and parsed as
+  JSON, with d8's error reports, but there is no tracing controller, so the
+  categories are not used. d8sharp parses it in the main context (d8: a
+  fresh context); the TestRunner uses a fresh realm.
+- The message listener d8 installs (PrintMessageCallback) is the
+  `MicrotaskQueue.UncaughtException` event, which V8Sharp raises for the
+  exceptions V8 reports through verbose TryCatches (microtask callbacks,
+  FinalizationRegistry cleanup callbacks).
+
+## String and RegExp builtins
+
+- Strings are UTF-16 only, so the one-byte fast paths of the builtins (and
+  String::IsOneByteRepresentationUnderneath for choosing irregexp's LATIN1
+  code) decide by content: `JSRegExp.IsOneByteSubject` scans the subject
+  (vectorized) and remembers the answer for the last two subjects per thread.
+- Results are built flat where V8 builds cons strings (StringRepeat, padStart/
+  padEnd, replaceAll, the global replace paths append into an
+  IncrementalStringBuilder instead of a ReplacementStringBuilder parts array);
+  the strings are equal, only the representation differs.
+- `StringSearch` (string-search.h) uses the vectorized
+  `MemoryExtensions.IndexOf`/`LastIndexOf` instead of V8's linear/BMH/BM
+  strategies; the positions found are the same.
+- The regexp compilation cache is a per-isolate dictionary by (source, flags),
+  cleared at 4096 entries, instead of V8's generational CompilationCache table.
+- The results caches (regexp::ResultsCache, ResultsCache_MatchGlobalAtom) and
+  the case-mapping caches are per isolate / per thread and are never cleared
+  by GC. Cached arrays are shared copy-on-write, as in V8.
+- RegExpMatchInfo::ReserveCaptures grows the match info in place instead of
+  allocating a larger one and storing it on the native context.
+- PrototypeCheckAssembler: the constness check (map identity plus const
+  descriptors) additionally compares the property values with the native
+  context's originals, so a store that bypassed constness tracking cannot
+  keep a modified prototype on the fast path. The identity fallback reads
+  the value through the descriptor's field index.
+- The experimental-engine flags of V8Sharp.RegExp are process-wide statics;
+  JSRegExp.Compile copies the isolate's flags into them before compiling. The
+  tiering flags (--regexp-tier-up, --regexp-interpret-all, --jitless) are
+  snapshotted per compiled regexp.
+- The global exec loop (GlobalExecRunner, RegExpExecInternal_Batched) asks the
+  engine for a batch of matches in every tier; V8's interpreter does one match
+  per call. V8Sharp.RegExp fills the batch in all tiers, so results are the
+  same.
+- localeCompare, normalize, toLocaleUpperCase/LowerCase follow V8's
+  !V8_INTL_SUPPORT paths (code-unit order, form validation only, unibrow
+  case mapping of code units). The oracle has ICU; its results differ there.
+
+## Builtins: Object, Function, Reflect, Proxy, global, Error, Boolean, Symbol
+
+- `instanceof` with an ordinary JSFunction (original @@hasInstance, the
+  prototype accessor) and a prototype chain without proxies or access checks
+  is decided without the builtin frame of Function.prototype[@@hasInstance]
+  (`ObjectOps.TryFastInstanceOf`, CodeStubAssembler::InstanceOf's walk);
+  nothing on that path can throw.
+
+- Object.assign: the CSA fast path that clones the source's layout into a
+  fresh empty target through the object_assign side-step transition is not
+  ported; JSReceiver::SetOrCopyDataProperties with its FastAssign descriptor
+  walk (V8's runtime fast path) handles every source.
+- Object.values/entries: V8's CSA FastGetOwnValuesOrEntries and the runtime
+  fast path are one path here (JSReceiver::GetOwnValuesOrEntries with
+  try_fast_path for fast-mode JSObjects).
+- Object.fromEntries: the fast path checks every [key, value] pair of the
+  fast array before creating properties; V8 creates them as it goes and on a
+  bail-out restarts on the slow path with a fresh object. The result is the
+  same (the pairs are read without side effects).
+- Object.groupBy: the groups are a Dictionary keyed by the internalized
+  property key plus an insertion-ordered list (V8: an OrderedHashMap of
+  ArrayLists); the fast array path reads elements with GetElement instead of
+  the FastJSArrayForRead witness.
+- The iteration helpers these builtins need (GetIterator, IteratorStep,
+  IteratorCloseOnException, IterableToListWithSymbolLookup) are a local
+  `IteratorHelpers` class until the iterator builtins are ported.
+- CreateDynamicFunction and GlobalEval: no embedder callbacks
+  (ModifyCodeGenerationFromStrings, IsCodeLike), and Builtins::
+  AllowDynamicFunction is always true (one embedder, no differing security
+  tokens). Compilation goes through `Isolate.DynamicFunctionCompiler`
+  (Compiler::GetFunctionFromString / GetFunctionFromValidatedString).
+  Map::AsLanguageMode builds the strict derived function map each time
+  instead of caching it as a strict_function_transition_symbol transition.
+- Function.prototype.apply / Reflect.apply / Reflect.construct: the fast
+  elements of an arguments object or fast JSArray are copied into a pooled
+  buffer (V8 pushes them on the machine stack).
+- The proxy trap builtins (ProxyGetProperty, ProxySetProperty, ...,
+  CallProxy, ConstructProxy) are not registered: every caller reaches the
+  trap logic through JSProxy. The proxy_revoke_shared_fun root is created on
+  first use per isolate.
+- Uri (src/strings/uri.cc): one UTF-16 buffer instead of V8's one-byte and
+  two-byte buffers; the strings produced are the same.
+- CallSite methods: the ShadowRealm boundary check reads
+  `NativeContext.IsShadowRealm` (V8: the context's shadow_realm_scope_info).
+  getScriptHash computes the SHA-256 on each call (V8 caches it on
+  the script) and never returns "" for opaque origins (not modelled).
+  getThis returns undefined for a receiver that is still the hole.
+- Error.isError has no API-wrapper (DOMException) case.
+- %GetUndetectable builds the instance of an ObjectTemplate with a call
+  handler as V8 does (callable map, API function constructor, called through
+  CALL_AS_FUNCTION_DELEGATE), but its prototype is Object.prototype instead of
+  the template function's own prototype object.
+- ShadowRealm: a ShadowRealm's native context is marked with
+  `NativeContext.IsShadowRealm` instead of V8's shadow_realm_scope_info.
+- The global parseInt/parseFloat are Number.parseInt/parseFloat (one
+  function, as in V8); their builtins (NumberParseInt, NumberParseFloat) are
+  registered by the global functions' area.
+- `Isolate.CountUsage` is a no-op (no use counters).
+
+## Array, ArrayBuffer, SharedArrayBuffer, TypedArray, DataView, Atomics
+
+- `--mock-arraybuffer-allocator` (d8's MockArrayBufferAllocator) is applied
+  in BackingStore allocation from the isolate's flag (V8Sharp has no
+  ArrayBuffer::Allocator API): allocations above 10 MB get one 4 KB page,
+  so a mocked buffer must not be accessed beyond it (as in d8). The
+  `--mock-arraybuffer-allocator-limit` accounting is not implemented.
+
+- `a.push(x)`, `a.pop()` and `a.shift()` on a fast JSArray run the builtins'
+  fast paths from the interpreter's call handlers (`BuiltinsArray.TryFastPush`
+  / `TryFastPop` / `TryFastShift`) without CallBuiltin's frame record, as the
+  CSA/Torque builtins do their fast paths without calling out. Nothing on
+  those paths throws or runs JavaScript, so the missing frame is not
+  observable.
+
+- Backing stores are managed `byte[]` arrays (`BackingStore`). A growable
+  SharedArrayBuffer allocates its maximum length up front (the array cannot
+  move while other threads read it); a resizable ArrayBuffer allocates its
+  current length and reallocates when resized past it. Allocations above
+  `Array.MaxLength` fail with "Array buffer allocation failed", although
+  `kMaxByteLength` is V8's 32GB - 1 (the sandbox build's limit).
+- Typed arrays are always off-heap (no on-heap JSTypedArray elements below
+  `typed_array_max_size_in_heap`). V8 keeps the data pointer in the typed
+  array (external_pointer + base_pointer); V8Sharp caches the backing store's
+  array, the byte offset and the length in the view (`JSTypedArray.FastData`)
+  for fixed-length views of non-resizable buffers, filled by the element IC
+  slow paths, and recomputes them from the buffer everywhere else. Array
+  buffers do not keep a list of their views: a view checks
+  `buffer.WasDetached` instead of being marked (the element fast paths skip
+  the check while the ArrayBufferDetaching protector is intact).
+- The typed array constructors keep JS_FUNCTION_TYPE maps (V8 gives them
+  JS_*_TYPED_ARRAY_CONSTRUCTOR_TYPE); nothing observable depends on it.
+- `v8_enable_undefined_double` is not modelled: double elements never hold
+  undefined, so holey double arrays read holes as undefined as without the
+  flag. Only elements kinds (%DebugPrint) can tell.
+- V8's CSA/Torque fast loops over fast JSArrays (forEach/map/filter/every/
+  some/reduce/find*, splice/slice/copyWithin/reverse/lastIndexOf/flat/
+  toSpliced/with/toReversed) are not ported one to one; their results are
+  unobservable, so the generic continuations run with a fast element probe
+  (`TryGetFastElement`), and slice/splice/copyWithin/reverse/includes/indexOf
+  keep a direct fast path over the backing store.
+- The join Buffer is one growable array of entries instead of a linked list of
+  FixedArray chunks; the result string is built flat.
+- Array.prototype.toLocaleString and %TypedArray%.prototype.toLocaleString
+  follow the !V8_INTL_SUPPORT build: element toLocaleString methods are called
+  without the locales and options arguments. The oracle is an ICU build.
+- Array.prototype.sort is the PowerSort of this tree (third_party/v8/builtins/
+  array-sort.tq). The oracle's V8 14.7 still runs TimSort (no
+  kMaxInlineSortLength shortcut, different run merging), so user comparefn
+  call orders differ from the oracle's; they match the tree's algorithm.
+- Float16 conversions use a port of V8's DoubleToFloat16 bit manipulation
+  (`TypedArrayScalars.DoubleToFloat16`), not `System.Half`, so double rounding
+  through float cannot occur; Float16 to double uses `System.Half`, which is
+  exact.
+- NaN: `JSValue.NaN` (the value of the NaN globals) has the sign bit set
+  (C#'s `double.NaN`), while V8's NaN constant is 0x7FF8000000000000; storing
+  the constant into a Float64Array or with DataView.setFloat64 writes
+  different bytes. Computed NaNs (0/0) have the same bits in both.
+- `%TypedArray%.prototype.map`/`set`/Atomics report write failures with
+  kTypedArrayValidateErrorOperation unless --js-immutable-arraybuffer is on
+  (`JSTypedArray.ValidateErrorMessage`): the generated message table has the
+  flag-dependent text of kTypedArrayValidateWriteErrorOperation only for the
+  flag-on case.
+- Uint8Array base64: fromBase64 follows the proposal's FromBase64 (V8's
+  simdutf fast path agrees for complete input). setFromBase64 into a buffer
+  that fills up models simdutf::base64_to_binary_safe: it keeps parsing chunk
+  by chunk past the point where the proposal stops (`TailDecode`), so later
+  bad characters and invalid final chunks are still reported. simdutf's
+  trailing-garbage lookahead (test262 trailing-garbage, skipped in
+  test262.status) is not modelled. simdutf is not in the checkout; the model
+  is fitted to the oracle.
+- Atomics: element operations use `Interlocked`/`Volatile` on the managed
+  array (8- and 16-bit read-modify-write as compare-exchange loops).
+  `Isolate.AllowAtomicsWait` (d8's --no-can-block, %SetAllowAtomicsWait) is
+  V8's allow_atomics_wait. FutexEmulation keeps one managed wait list for sync
+  and async waiters; a woken async waiter's promise is resolved by a task per
+  waiter (V8 batches the waiters of an isolate into one
+  ResolveAsyncWaiterPromisesTask; the order is the same), and timeouts are
+  delayed tasks on the isolate's foreground runner
+  (`Isolate.PostNonNestableDelayedTask`, which `RunPendingTasks` waits for
+  when nothing else is pending, as d8's message loop does;
+  `RunPendingTasks(maxWaitMs)` bounds that wait for an embedder whose message
+  loop must also poll other queues, like the TestRunner's Worker host). Due
+  times use the Stopwatch clock, so a timeout never fires before an
+  embedder's high-resolution monotonic clock has seen it elapse. V8Sharp has
+  no Isolate::Deinit; the embedder calls `Isolate.Deinit()` when it is done
+  with an isolate, which runs FutexEmulation::IsolateDeinit and drops the
+  isolate's pending tasks (CancelableTaskManager::CancelAndWait).
+- Array.fromAsync keeps its resume state in a synthetic function context
+  like array-from-async.tq, but the state machine loop is a C# switch over
+  the labels; each await point is PromiseResolve + PerformPromiseThenImpl
+  with the root-function closures, as in V8.
+
+## Builtins: Number, Math, BigInt, JSON, Date
+
+Number and Math
+- Math.random: V8's Genesis calls MathRandom::InitializeContext; here the
+  state object of the native context (MATH_RANDOM_STATE_INDEX) is created on
+  first use. The isolate's random number generator (seeded from
+  --random-seed or the OS) lives in a table keyed by the isolate.
+- Math.sumPrecise: IterableForEach (builtins-iterator-inl.h) is ported
+  without the typed-array fast path (no typed arrays in the object model)
+  and the JSSetIterator medium fast path; both only skip the iteration
+  protocol when its lookup chain is intact, so the generic path gives the
+  same result. Visitors are a struct interface instead of lambdas.
+- The Float64* machine operations are V8Sharp.Base's Ieee754 kernels
+  (correctly rounded, like the llvm-libc functions this tree uses); the
+  oracle (14.7, fdlibm) can differ by one ulp (see V8Sharp.Base).
+
+BigInt
+- MutableBigInt is the BigInt under construction (digits array plus a
+  length that Canonicalize trims) instead of a separate heap type; a
+  canonical 0n instance is shared (V8 allocates one per result; BigInt
+  identity is not observable).
+- MutableBigInt_AbsoluteModAndCanonicalize's cached-divisor fast path
+  (heap->cached_bigint_divisor) is not used: the modulus always takes
+  ModuloSmall/ModuloLarge (same result).
+- The isolate's bigint::Processor is kept in a table keyed by the isolate;
+  it polls TerminateExecution like V8's.
+
+JSON
+- Strings are UTF-16: the parser is V8's two-byte instantiation, and the
+  string scan uses SearchValues (V8: Highway on one-byte strings).
+- JSON.parse builds objects from the object literal map for their named
+  property count (as JSDataObjectBuilder does) with CreateDataProperty in
+  source order (elements first), instead of JSDataObjectBuilder's direct
+  field writes with the previous array element's map as feedback, and
+  without the recursive ParseJsonValueRecursive
+  / numeric-array fast path (one iterative parser for all inputs). Keys,
+  order, values, duplicate handling and elements kinds of arrays are the
+  same; only backing-store choices (e.g. dictionary elements) can differ.
+- JSON.parse numbers with at most 15 significant digits and a decimal
+  exponent within [-22, 22] take Clinger's fast path in the parser before
+  StringToDouble (fast_float's first step, same results; checked against
+  StringToDouble on 20000 random numbers). Parse stacks are pooled.
+- JSON.parse internalizes only property keys; V8 also internalizes short
+  one-byte values within a heuristic budget. Not observable.
+- JSON.parse always passes the context argument to the reviver; V8 skips
+  collecting source text when the reviver can only access fewer than three
+  formal parameters (unobservable by such a reviver).
+- JSON.stringify: FastJsonStringifier (a side-effect-free serializer that
+  restarts in JsonStringifier when it gives up) is not ported; the output is
+  the same. JsonStringifier always keeps the cycle-detection stack (V8
+  starts without it and restarts with one when needed) and has no
+  SimplePropertyKeyCache. Output goes into one pooled UTF-16 buffer.
+- A proxy in the prototype chain counts as "may have interesting
+  properties" (the toJSON lookup is always done for it).
+
+Date
+- The time zone without ICU: V8 asks localtime_r (tm_gmtoff, tm_isdst,
+  tm_zone); V8Sharp asks TimeZoneInfo.Local, which honours TZ and reads the
+  same tz database on Linux. DaylightSavingsOffset is one hour when the
+  instant is in DST and the local offset is the current standard offset, as
+  in V8's non-ICU build (so historical offset changes, 30-minute DST and LMT
+  are not reproduced, exactly like non-ICU V8). The zone name printed by
+  toString is TimeZoneInfo's StandardName/DaylightName, which are the tz
+  abbreviations tm_zone reports ("EST", "BST", "IST"), except that UTC zones
+  print "UTC"/"GMT" (.NET says "Coordinated Universal Time") and historical
+  abbreviations (LMT, EWT) are not available.
+- The oracle has ICU: its toString prints long names ("Coordinated Universal
+  Time", "Eastern Standard Time") and it applies historical offsets, so the
+  differential tests strip the name and compare local-time results only for
+  1971..2037 outside UTC. Europe/Moscow 2011-2014 (+4) is a known difference
+  (non-ICU V8 uses the current +3, as V8's own comment in
+  DateCache::GetLocalOffsetFromOS says).
+- DateParser is the two-byte instantiation; the kLegacyDateParser use count
+  is also reported through an out parameter of DateParser.Parse (for the
+  port of DateParseLegacyUseCounter; Isolate.CountUsage is a no-op).
+- The isolate's DateCache, date cache stamp and DateTimeConfigurationChange-
+  Notification are a partial Isolate in Date/TimezoneCache.cs.
+
+## Collections, weak references, Promise, Iterator, DisposableStack
+
+- **Weak references.** V8's GC clears dead WeakRef and WeakCell targets in
+  its atomic pause (MarkCompactCollector::ClearJSWeakRefs). V8Sharp holds the
+  targets through CLR `WeakReference<HeapObject>`s and notices the clearing
+  afterwards: at the end of each microtask checkpoint
+  (`Isolate.ClearKeptObjects`), if `GC.CollectionCount(0)` changed since the
+  last check, the active cells of every tracked FinalizationRegistry are
+  walked, cells whose target died move to the cleared list, and the dirty
+  registries are queued. `Isolate.CollectGarbage()` (d8's `gc()`,
+  `RequestGarbageCollectionForTesting`) runs a blocking
+  `GC.Collect`/`WaitForPendingFinalizers`/`GC.Collect` and then the same
+  processing, so tests observe clearing deterministically. The cleanup task
+  (FinalizationRegistryCleanupTask) is posted to a per-isolate foreground
+  task queue (`Isolate.PostNonNestableTask`, `ForegroundTaskPosted`); the
+  embedder runs it with `Isolate.RunPendingTasks()`, which performs a
+  microtask checkpoint after each task as d8's message loop does. Registries
+  are tracked weakly once they get their first cell; a registry that dies
+  never runs its cleanup (as in V8). The unregister-token map is a
+  `Dictionary<int, WeakCell>` keyed by the token's identity hash, chained
+  through KeyListPrev/Next like V8's SimpleNumberDictionary.
+- **WeakMap / WeakSet** use a `ConditionalWeakTable` keyed by the key object
+  instead of an EphemeronHashTable; the CLR table has ephemeron semantics.
+  Nothing observable differs (weak collections are not enumerable).
+- **PromiseReaction** is one class that also plays PromiseReactionJobTask:
+  V8 morphs the reaction's map in place (MorphAndEnqueuePromiseReaction),
+  V8Sharp changes its `State` field; no allocation either way.
+- **Promise rejection** always goes through JSPromise::Reject (the runtime
+  path V8 takes for unhandled rejections and hooks); the CSA fast path only
+  skips steps that have no effect in that case. There is no pending message
+  to move to the promise (MoveMessageToPromise): the message travels with the
+  JavaScriptException. Debug events and async stack tagging are not ported.
+- **Promise constructor**: V8 checks Builtins::AllowDynamicFunction for the
+  executor's context through the embedder's code-generation callback;
+  V8Sharp has no such callback, so the check is omitted.
+- **Collection constructors**: V8's GotoIfInitialAddFunctionModified checks
+  the prototype map and the constness of the add function's descriptor;
+  V8Sharp checks the prototype map and the current property value, which is
+  the same condition without field constness tracking.
+- **Generators and async functions**: the promise jobs resume generators
+  through static hooks (`PromiseBuiltins.ResumeGeneratorTrampoline`,
+  `AsyncGeneratorResumeNext`, `AsyncGeneratorResolve`) that the interpreter
+  sets, instead of calling the ResumeGeneratorTrampoline builtin by id.
+- **AsyncFromSyncIterator**: V8 CSA_CHECKs the receiver type (a crash on
+  failure); V8Sharp throws InvalidOperationException, which is equally
+  unreachable from script.
+- **IteratorHelpers**: the pre-port iteration helpers in
+  Builtins.Object.cs moved to `IteratorBuiltins` (Builtins.Iterator.cs); a
+  forwarding `IteratorHelpers` class remains until every caller is switched
+  (TODO(merge)).
+
+## Temporal
+
+- **The engine behind the binding.** V8 implements Temporal as a binding
+  layer (`js-temporal-objects.cc`, `builtins-temporal.cc`) over the Rust
+  crate temporal_rs (`third_party/rust/temporal_capi`), which is not in this
+  checkout. The binding is ported; everything V8 hands to temporal_rs
+  ("Rest of the steps handled in Rust") is implemented in C# from the
+  Temporal specification's abstract operations in `src/V8Sharp/Temporal/`
+  (`temporal_rs::Foo` becomes `V8Sharp.Temporal.Foo`). A JSTemporal* object
+  holds the engine value directly instead of a CppGCManaged pointer, and an
+  engine error is a `TemporalError` exception that the builtins' wrapper
+  turns into the JS error ExtractRustResult would create. Where test262 and
+  an older spec text disagree, test262 wins (PlainYearMonth.prototype.add
+  rejects units below months, the rounding window of
+  proposal-temporal#3168, month-day strings ignore the year).
+- **Engine error messages.** The kTemporal messages of the binding are V8's
+  text; the messages of errors raised inside the engine are V8Sharp's own
+  (temporal_rs's texts are not available). The error types match.
+- **Calendars.** Only `iso8601` is available. V8 builds temporal_rs with
+  ICU4X's calendar data even without `V8_INTL_SUPPORT`, so it also accepts
+  `gregory`, `japanese`, `hebrew` ...; V8Sharp has no calendar data (no ICU,
+  architecture.md section 2) and throws RangeError for them. test262's
+  built-ins/Temporal uses only iso8601; the other calendars are tested in
+  intl402, which does not run without i18n.
+- **Time zone data.** V8 reads the IANA database from ICU's zoneinfo64.res
+  (compiled into the binary for no-ICU builds, js-temporal-zoneinfo64.cc)
+  through temporal_rs's provider. V8Sharp uses .NET's `TimeZoneInfo` (the
+  host's /usr/share/zoneinfo on Linux); the available identifiers are
+  TimeZoneInfo's plus the zoneinfo directory's names. Consequences: the
+  data version is the host's; offsets are TimeZoneInfo's (local mean time
+  offsets such as New York's -4:56:02 come out rounded to whole minutes, and
+  so do the transitions out of them); instants after
+  9999 reuse the rules of the same point in the 400-year Gregorian cycle and
+  instants before year 1 the offset of year 1; transitions
+  (getTimeZoneTransition, GetStartOfDay in a gap) are found by scanning the
+  offsets day by day from 1800 to 450 years ahead and bisecting, so
+  transitions less than a day apart can be merged; link names are not
+  resolved to their primary identifier for TimeZoneEquals, except the
+  aliases of UTC. UTC and offset time zones do not use the provider and are
+  exact.
+- **System time zone and clock.** As in V8 without `V8_INTL_SUPPORT`,
+  `Temporal.Now.timeZoneId()` is "UTC". The embedder's
+  `temporal_get_epoch_nanoseconds_callback` (v8::Isolate API) is not ported;
+  SystemUTCEpochNanoseconds reads `DateTime.UtcNow` (100 ns resolution).
+- **toLocaleString** is toString with default options, as in V8 without
+  `V8_INTL_SUPPORT`.
+- **Builtin registration.** The Temporal builtins are registered by
+  reflection over `TemporalBuiltins` (method name = Builtin id) instead of
+  233 explicit Register lines.
+
+
+## WebAssembly
+
+The JS API (`src/V8Sharp/Wasm/`) ports V8's `wasm-js.cc`, the JS-API parts of
+`wasm-objects.cc`, `module-instantiate.cc` (InstanceBuilder) and the wrappers.
+Everything below the API is not V8's `src/wasm` but WACS, vendored as
+`src/V8Sharp.Wasm` (`src/V8Sharp.Wasm/README.md`). Changes made to the
+vendored code carry a `V8Sharp:` comment at the site.
+
+- **Execution: one compiler, IL instead of machine code.** V8 compiles wasm
+  with Liftoff, tiers hot functions up to TurboFan/Turboshaft, and has the
+  DrumBrake interpreter for jitless mode. V8Sharp has one compiler, a port of
+  Liftoff (`src/V8Sharp/Wasm/Baseline/`, the decoding loop of
+  function-body-decoder-impl.h and liftoff-compiler.cc) that emits each
+  function as a DynamicMethod; RyuJIT compiles it with full optimization on
+  its first call, which is what TurboFan's tier is for (register allocation,
+  inlining of helpers, bounds-check and constant folding), so there is no
+  separate optimizing compiler. The compiler inlines wasm callees itself
+  (below, "Inlining"); the only tier-up is the recompile of a function with
+  call_indirect/call_ref sites once it has call-target feedback. Functions compile lazily on
+  their first call (`--wasm-lazy-compilation`, V8's default), or all at
+  instantiation with `--no-wasm-lazy-compilation`; `--liftoff`,
+  `--no-liftoff`, `--liftoff-only` and `--wasm-tier-up` all select the same
+  compiler. A function compiles the functions it calls directly first (up to
+  64 per first call, 4 deep) so that those calls are direct IL calls; V8
+  calls through its jump table. WACS's interpreter is the fallback: it runs
+  every function with `--wasm-jitless` (implied by `--jitless`, as in V8) or
+  `V8SHARP_WASM_INTERPRETER=1`, and the functions the compiler declines
+  (Liftoff's bailout; V8 then uses TurboFan). The tier queries
+  (`%IsLiftoffFunction`, `%IsTurboFanFunction`, ...) stay false and
+  `%IsWasmTieringPredictable()` false (tests skip tier assertions);
+  `%WasmTierUpFunction` and `%WasmTriggerTierUpForTesting` recompile with
+  feedback, the deopt and code-flushing natives are accepted and do nothing;
+  `--trace-wasm-inlining` is printed by the tier-up compile only (V8's
+  TurboFan compile), the other `--trace-wasm*` and compilation-hints outputs
+  are never printed. The WACS IL transpiler is
+  not used.
+- **Compiled code: calls and values.** A compiled function is
+  `R f(WasmCode code, P0 p0, ...)` with i32/i64/f32/f64 as int/long/float/
+  double, v128 as `Vector128<byte>` and references as the interpreter's
+  `Value` (so GC objects, function references and externrefs are shared with
+  the interpreter without conversion); extra results of a multi-value
+  function go through a per-thread buffer. Calls go through typed delegates
+  (the instance's function slots, which start as the lazy-compile stub and
+  are patched when the callee compiles; V8's jump table) or, for the
+  function itself and callees already compiled, direct IL calls;
+  call_indirect and call_ref go through an inline cache per call site (the
+  function address of the last target and its code; a hit needs no
+  signature check, which was done when the entry was cached), which also
+  records V8's call-target feedback (up to four targets with counts, else
+  megamorphic). V8 calls through its dispatch table and checks the
+  signature on every call. return_call uses IL's `tail.` prefix,
+  except inside an exception region, where it is a call and a return whose
+  exceptions the frame's handlers do not see. Imports of JavaScript and
+  functions the compiler declined are called with Values
+  (`WasmCode.CallWithValues`). Instructions without an IL implementation
+  (the GC instructions, table and bulk-memory operations other than
+  memory.copy/fill, atomics, relaxed SIMD, globals that are shared or
+  thread-local) run the interpreter's instruction object on the
+  interpreter's operand stack (Liftoff calls a builtin or the runtime for
+  most of these). JS-to-wasm calls of compiled functions with numeric
+  signatures use compiled wrappers (V8's specialized wrappers); the others
+  the generic wrapper.
+- **Inlining** (`Baseline/WasmInliningTree.cs`, `LiftoffCompiler.Inlining.cs`;
+  V8: inlining-tree.h and the inlining of turboshaft-graph-interface.cc).
+  RyuJIT never inlines one DynamicMethod into another, so a call between
+  compiled functions always costs a call (about 5 ns, 9 ns for
+  call_indirect). The compiler inlines wasm callees into the caller's IL
+  with V8's InliningTree: candidates by score (call count / size), V8's
+  budget (`--wasm-inlining-budget`, `--wasm-inlining-max-size`,
+  `--wasm-inlining-factor`, `--wasm-inlining-min-budget`, the small-function
+  scaling, 60 callees, depth 7), `--no-wasm-inlining` turning it off. V8
+  inlines only in TurboFan, from Liftoff's call counts; V8Sharp's one compile
+  inlines direct calls at once, counting each direct call as made once per
+  call of its caller (so the budget decides; V8 inlines tiny callees
+  regardless of counts too). A function with call_indirect/call_ref sites
+  collects feedback in its inline caches and counts down a tiering budget
+  (`--wasm-tiering-budget`, wire bytes of loop back edges and returns
+  standing for Liftoff's code bytes); when it runs out the function is
+  compiled again and the targets the feedback names are inlined
+  speculatively behind a check of the target's function address
+  (`--wasm-inlining-call-indirect`); any other target takes the inline cache.
+  V8 deoptimizes on a failed check (`--wasm-deopt`); V8Sharp's fallback is
+  the ordinary call. Activations of the replaced code finish in it, and code
+  that may tier up is called through its slot. Not inlined (V8 inlines
+  them): callees with exception handlers (try, try_table, catch, delegate,
+  rethrow), and return_calls inside a try of the calling function (whose
+  handlers must not see the callee's exceptions). An inlined callee's
+  locals are IL locals of the caller, zeroed at each entry; its returns
+  branch to the end of its body. Inlined frames are not pushed on
+  `CompiledFrames`: positions inside them name an inlined position (the
+  inlined functions, their call sites and the frame's own call), which stack
+  traces expand into V8's frames, a tail call's callee replacing its
+  caller's frame. The frame-count stack limit therefore counts inlined
+  frames as part of their caller's. Inlined positions name functions by
+  index and pcs relative to the function, so inlined code is shared by a
+  module's instances like other code; code that collects feedback, and
+  tiered-up code (whose speculative checks name this instance's
+  functions), stays with its instance. Inlining stops once a method has
+  30 KB of IL (RyuJIT compiles methods over about 60 KB with MinOpts).
+- **Compiled code: numbers.** IL arithmetic is IEEE binary32/64 as wasm's;
+  shifts mask the count, division and float-to-int conversions trap as
+  V8's, min/max/copysign/abs/neg/nearest follow wasm's NaN and signed-zero
+  rules, unsigned 64-bit to float conversions round once. RyuJIT folds float
+  constants as doubles (which quiets a signaling NaN) and folds `x - 0`,
+  `x * 1` and NaN arithmetic, which wasm and V8 do not; NaN and +-0, +-1
+  float constants are therefore loaded from the function's constants where
+  RyuJIT cannot see them. NaN payloads of arithmetic are those of the x64
+  instructions (as V8's).
+- **Compiled code: traps, frames and stacks.** Each access to a
+  non-shared memory checks its end against the memory's size, which the
+  function keeps (with the array) in IL locals and re-reads after calls and
+  memory.grow; shared memories are re-read at each access (another thread
+  may grow them). V8 uses guard regions and a trap handler instead. Traps
+  are thrown by RuntimeWasm with V8's message templates. Compiled frames
+  record their function and the position of their current call in a
+  per-thread array (`CompiledFrames`), merged with the interpreter's frames
+  for stack traces, as V8's frames hold a pc. The stack check of a function
+  entry compares that array's height with the stack limit and, every 16
+  frames (every frame for functions with 64 locals or more), asks .NET
+  whether the native stack has room; loop headers check for interrupts (V8:
+  the stack checks at function entries and loop back edges).
+- **Compiled code: exceptions.** Wasm exceptions are .NET exceptions
+  (`WasmHostException`, carrying the exnref the interpreter uses). try and
+  try_table become IL exception regions whose filters take the exceptions
+  their catches take; a legacy delegate is a filter that marks the exception
+  for its target try and declines it. Traps are not caught. V8 unwinds with
+  handler tables; the observable behaviour is the same.
+- **Compilation is synchronous.** `WebAssembly.compile`/`instantiate` decode
+  and validate at the call and settle the promise from a foreground task (V8
+  compiles on background threads); instantiation is synchronous in both.
+  `compileStreaming`/`instantiateStreaming` exist only with
+  `--wasm-test-streaming` (V8's testing callback) and compile the whole
+  buffer at once. Lazy validation flags are ignored (validation is eager).
+- **Decoding and validation messages.** CompileError messages use V8's frame
+  ("Compiling function #N:\"name\" failed: ... @+offset", the
+  `WebAssembly.X(): ` prefix) and V8's texts for the fallthru arity check,
+  atomic alignment, invalid prefixed opcodes, duplicate exports and the
+  module header; the other texts are WACS's validator's (V8 names the
+  operand and the instruction that produced it, which WACS does not track).
+  Implementation limits follow V8 where WACS checks them (50000 locals);
+  V8's decoder limits on parameter, table and type counts are not checked
+  with V8's messages.
+- **Traps.** WACS raises traps with its own texts; `WasmErrorMessages.TrapTemplate`
+  maps them to V8's `kWasmTrap*` templates (one per trap reason). Where WACS
+  checked in a different order than V8 (array.copy destination bounds before
+  the source reference, atomic alignment before bounds, table.init table
+  range before segment range, array length limit before segment bounds) the
+  vendored code follows V8.
+- **Linear memory is a managed `byte[]`.** V8 reserves address space and
+  commits pages; V8Sharp allocates the memory's bytes, so a memory is bounded
+  by `Array.MaxLength` (about 2 GiB): larger initial sizes (memory64 tests,
+  huge memories) fail with V8's out-of-memory RangeError, and growth beyond
+  it fails. A shared memory reserves its maximum (up to 64 MiB) up front so
+  that the array never moves and SharedArrayBuffers alias it across growth,
+  in this and other isolates; growing past the reservation moves the array
+  (old SharedArrayBuffers then stop aliasing). Resizable buffers
+  (`toResizableBuffer`) follow the memory through its BackingStore.
+- **Modules.** A module is instantiated from its decoded form once; every
+  further instantiation decodes the wire bytes again, because WACS links the
+  instruction objects of a module in place (V8 shares compiled code). A
+  module posted to a Worker is recompiled from its wire bytes in the
+  receiving isolate (d8 shares the CompiledWasmModule).
+  `d8.wasm.serializeModule`/`%SerializeWasmModule` are not provided (there is
+  no machine code to cache).
+- **Wasm frames in stack traces.** V8 walks wasm frames on the machine
+  stack. V8Sharp records each JS-to-wasm call (an activation: the height of
+  the interpreter's call stack) and, where the JS frames show an exported
+  function's wrapper, puts that activation's frames (V8 does not show the
+  wrapper either). Positions are module offsets recorded per instruction
+  while decoding; a stack overflow is reported at the entry of the function
+  that could not be entered, as V8's stack check does. A start function's
+  frames do not appear (it is not called through an exported function).
+- **Interrupts.** In the interpreter, termination and other interrupts are
+  served every 16384 interpreted instructions (V8: stack checks at function
+  entries and loop back edges); compiled code checks at loop headers.
+- **Exceptions.** The legacy exception-handling instructions (try, catch,
+  catch_all, delegate, rethrow), which WACS lacks, are implemented in the
+  vendored code (`Instructions/LegacyExceptions.cs`); a module mixing them
+  with try_table/throw_ref is rejected as in V8 (exnref value types in
+  signatures are not detected, only the instructions).
+- **References.** Casts and JS conversions compare a GC object's or a
+  function's own defined type (canonical, across modules); WACS compared the
+  static type the value carried. A JS Number in i31 range or a wasm GC
+  object passed as externref keeps that identity (V8 keeps the JS value; the
+  difference is not observable). Wasm GC objects reach JavaScript as opaque
+  objects with a null prototype whose maps are wasm maps: defining
+  properties, extensions, prototypes and integrity levels throw V8's
+  WasmObjectsAreOpaque TypeError. A store keyed by a private symbol is
+  accepted (as in the oracle).
+- **JSPI.** `WebAssembly.Suspending` and `WebAssembly.promising` exist, but
+  the interpreter cannot suspend a wasm stack: a suspending import that
+  returns a promise throws SuspendError.
+- **JS String Builtins.** V8 implements the `wasm:js-string` imports as JS
+  builtins that its compilers call or inline; V8Sharp binds each to a host
+  function of the import's signature (`WasmStringBuiltins.cs`, after
+  `wasm-strings.tq`). JS strings cross into wasm as .NET strings the
+  builtins read directly and come back as new JS strings (a string's
+  identity is its value). The `wasm:text-encoder`/`text-decoder` builtins
+  (--wasm-imported-strings-utf8) are not implemented.
+- **Not implemented** (CompileError on use): stringref, custom descriptors,
+  shared-everything, stack switching (WasmFX), exact types, fp16, wide
+  arithmetic, compact imports, acquire/release atomics, memory control,
+  source phase imports of wasm modules, the debugger and profiler hooks
+  (`%WasmEnterDebugging` does nothing).
+
+### asm.js (src/V8Sharp/AsmJs, port of V8 14.7's src/asmjs)
+
+- **This tree removed asm.js; V8Sharp keeps V8 14.7's pipeline.** The V8
+  revision in UPSTREAM.md deleted src/asmjs and runs "use asm" modules as
+  ordinary JavaScript. The oracle (V8 14.7.173.23) still validates them and
+  translates them to WebAssembly, and Octane zlib depends on it, so V8Sharp
+  ports 14.7's asm-scanner, asm-types, asm-parser and asm-js, and the parts
+  of wasm-module-builder, the asm.js offset table, module-instantiate and
+  the 0xfa asm opcodes they use. They are hooked in where 14.7 does: "use
+  asm" marks the function scope, the unoptimized compile of a function with
+  an asm module runs AsmJsCompilationJob in place of Ignition, success
+  installs AsmWasmData with the InstantiateAsmJs builtin, and a validation or
+  linking failure falls back to the bytecode, with 14.7's messages and flags
+  (--validate-asm, --suppress-asm-messages, --trace-asm-time/-scanner/-parser,
+  --stress-validate-asm). 14.7's tests run from tests/V8Sharp.AsmJs.Tests/v8-14.7
+  (mjsunit asm/, regress/asm/, wasm/asm-*, asm-directive, message asm-*), and
+  the asm-scanner/asm-types unittests are xUnit facts there.
+- **Ids appended.** The InstantiateAsmJs builtin, the InstantiateAsmJs and
+  IsAsmWasmCode runtime functions and the four asm.js MessageTemplates come
+  after this tree's entries, so this tree's ids (and the bytecode golden
+  files) do not move; 14.7 has them in its alphabetical order.
+- **ScopeInfo bit.** The asm-module flag is a ScopeInfo bit set when the
+  ScopeInfo is created; scope deserialization does not read it back (no lazy
+  inner function of a validated module needs it: the module runs as wasm,
+  and one that failed validation runs as ordinary JS).
+- **Feedback.** A function with AsmWasmData gets no feedback cell array or
+  vector, as in 14.7; EnsureFeedbackVector hands callers that need an object
+  a detached empty vector.
+- **Memory.** V8 makes the module's heap ArrayBuffer the wasm memory's
+  backing store. V8Sharp's linear memory is a managed byte[], so the
+  instance's memory aliases the ArrayBuffer's own byte[]
+  (MemoryInstance.AttachAsmJsBuffer); asm.js memories never grow or detach.
+- **Duplicate exports.** An asm.js module may export one name twice (the
+  later one wins, 14.7's TestBadExportTwice). WACS's validator and
+  instantiation reject duplicate export names; both skip the check for a
+  module translated from asm.js.
+- **Stack positions.** V8 knows a frame is at the number conversion of an
+  import's result from the return address in the wasm-to-JS wrapper;
+  V8Sharp marks the activation while the wrapper converts
+  (WasmEngine.EnterNumberConversion), then maps the body offset through the
+  asm.js offset table to the JavaScript position as 14.7 does.
+- **Decoding per instance.** V8 decodes an asm.js module once and shares
+  the NativeModule. WACS links instruction objects in place, so each
+  instance decodes the wire bytes again; the compiled code is shared
+  (WasmSharedCode, as for every wasm module), and the re-decode skips
+  validating the function bodies, which were validated the first time.
+- **Heap bounds checks.** V8 checks that the last byte of an asm.js access
+  is in the heap. Every asm.js heap index is masked to the element size and
+  every asm.js heap size is a multiple of 4096, so V8Sharp checks the first
+  byte, which is the same test with one instruction less.
+
+### Compiled code shared by instances
+
+- A module's compiled functions serve all its instances (V8: the
+  NativeModule's code table): a function's DynamicMethod reads its instance
+  through its WasmCode, and call_indirect looks up the expected type in the
+  instance. A function whose code depends on its instance (an interpreter
+  instruction object, a ref.func constant, a catch's tags, or a direct call
+  to such code) is compiled per instance. A new instance installs every
+  shared function when it is created, since shared code calls its callees'
+  shared code directly.

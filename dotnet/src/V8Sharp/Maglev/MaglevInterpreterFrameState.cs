@@ -1,0 +1,835 @@
+// Port of src/maglev/maglev-interpreter-frame-state.{h,cc} and the parts of
+// src/maglev/maglev-known-node-aspects.{h,cc} the graph builder uses:
+//
+//   InterpreterFrameState            the abstract interpreter frame while
+//                                    building: one ValueNode per parameter,
+//                                    register, the context and the accumulator
+//   KnownNodeAspects / NodeInfo      what is known about values on the current
+//                                    path: static type, possible maps (with
+//                                    their stability), cached conversions
+//   MergePointInterpreterFrameState  the frame at a bytecode with several
+//                                    predecessors: creates Phis, loop phis for
+//                                    the registers a loop assigns, and merges
+//                                    the known node aspects
+//
+// The frame is indexed by "frame slot": parameters 0..n-1 (receiver first),
+// then the context, the registers, and the accumulator last (V8's
+// RegisterFrameArray uses the register index directly; the slot index is the
+// same thing shifted to start at 0).
+using V8Sharp.Interpreter;
+
+namespace V8Sharp.Maglev;
+
+/// <summary>NodeInfo.</summary>
+public sealed class NodeInfo
+{
+    public NodeType Type = NodeType.kUnknown;
+    /// <summary>The maps the value may have (null: unknown).</summary>
+    public Map[]? PossibleMaps;
+    /// <summary>Whether some possible map is unstable (the map set must be dropped after side effects).</summary>
+    public bool AnyMapIsUnstable;
+    // Cached conversions (NodeInfo::alternative()).
+    public ValueNode? Int32Alternative;
+    public ValueNode? Float64Alternative;
+    /// <summary>The Float64 of ToNumber for a number or oddball (not the value itself for oddballs).</summary>
+    public ValueNode? NumberOrOddballFloat64Alternative;
+    public ValueNode? TaggedAlternative;
+    public ValueNode? TruncatedInt32Alternative;
+
+    public NodeInfo Clone() => (NodeInfo)MemberwiseClone();
+
+    public bool HasMaps => PossibleMaps is not null;
+}
+
+/// <summary>
+/// The key of a loaded property (KnownNodeAspects::loaded_properties'
+/// PropertyKey): a field's storage index (FieldIndex.StorageIndex, so two
+/// maps' fields at the same index share a key: a store to one forgets the
+/// other's), or one of the special keys.
+/// </summary>
+public static class PropertyKeys
+{
+    public const int kElements = -1;
+    public const int kJSArrayLength = -2;
+    /// <summary>The length of a FixedArray(Base) (the object is the elements).</summary>
+    public const int kFixedArrayLength = -3;
+    public const int kTypedArrayLength = -4;
+    /// <summary>A global property cell's value (the object is the cell's constant).</summary>
+    public const int kPropertyCellValue = -5;
+}
+
+/// <summary>
+/// KnownNodeAspects: node infos, and the loaded properties and context slots
+/// (load elimination: a load of a known (object, key) reuses the value).
+/// </summary>
+public sealed class KnownNodeAspects
+{
+    readonly Dictionary<ValueNode, NodeInfo> _infos;
+    /// <summary>loaded_properties: (object, key) -> value.</summary>
+    public readonly Dictionary<(ValueNode Object, int Key), ValueNode> LoadedProperties;
+    /// <summary>loaded_context_slots: (context, depth, slot) -> value.</summary>
+    public readonly Dictionary<(ValueNode Context, int Depth, int Slot), ValueNode> LoadedContextSlots;
+    /// <summary>loaded_context_constants: immutable slots (never forgotten).</summary>
+    public readonly Dictionary<(ValueNode Context, int Depth, int Slot), ValueNode> LoadedContextConstants;
+    /// <summary>
+    /// V8Sharp: the prototype validity cells checked on this path since the
+    /// last node that could invalidate one (a call or an unknown write; field
+    /// stores and map transitions of non-prototype objects cannot).
+    /// </summary>
+    public readonly HashSet<Cell> CheckedValidityCells;
+    /// <summary>
+    /// Elements nodes checked not to be copy-on-write on this path (whether a
+    /// FixedArray is copy-on-write never changes, so no effect forgets it).
+    /// </summary>
+    public readonly HashSet<ValueNode> WritableElements;
+    /// <summary>virtual_objects: the current versions of the tracked allocations (immutable, shared by clones).</summary>
+    public VirtualObjectList VirtualObjects = VirtualObjectList.Empty;
+
+    public KnownNodeAspects()
+    {
+        _infos = new Dictionary<ValueNode, NodeInfo>(ReferenceEqualityComparer.Instance);
+        LoadedProperties = new();
+        LoadedContextSlots = new();
+        LoadedContextConstants = new();
+        CheckedValidityCells = new(ReferenceEqualityComparer.Instance);
+        WritableElements = new(ReferenceEqualityComparer.Instance);
+    }
+
+    KnownNodeAspects(Dictionary<ValueNode, NodeInfo> infos, KnownNodeAspects from)
+    {
+        _infos = infos;
+        LoadedProperties = new(from.LoadedProperties);
+        LoadedContextSlots = new(from.LoadedContextSlots);
+        LoadedContextConstants = new(from.LoadedContextConstants);
+        CheckedValidityCells = new(from.CheckedValidityCells, ReferenceEqualityComparer.Instance);
+        WritableElements = new(from.WritableElements, ReferenceEqualityComparer.Instance);
+        VirtualObjects = from.VirtualObjects;
+    }
+
+    public KnownNodeAspects Clone()
+    {
+        var copy = new Dictionary<ValueNode, NodeInfo>(_infos.Count, ReferenceEqualityComparer.Instance);
+        foreach (KeyValuePair<ValueNode, NodeInfo> e in _infos) copy[e.Key] = e.Value.Clone();
+        return new KnownNodeAspects(copy, this);
+    }
+
+    /// <summary>After a call or an unknown write: every mutable loaded property and context slot.</summary>
+    public void ClearLoaded(bool keepValidityCells = false)
+    {
+        LoadedProperties.Clear();
+        LoadedContextSlots.Clear();
+        if (!keepValidityCells) CheckedValidityCells.Clear();
+    }
+
+    /// <summary>A store to <paramref name="key"/> of some object: loads of that key of any object (aliasing) are forgotten.</summary>
+    public void ForgetPropertyKey(int key)
+    {
+        List<(ValueNode, int)>? remove = null;
+        foreach (KeyValuePair<(ValueNode Object, int Key), ValueNode> e in LoadedProperties)
+        {
+            if (e.Key.Key == key) (remove ??= []).Add(e.Key);
+        }
+        if (remove is not null) foreach ((ValueNode, int) k in remove) LoadedProperties.Remove(k);
+    }
+
+    /// <summary>A store to context slot <paramref name="slot"/> of some context.</summary>
+    public void ForgetContextSlot(int slot)
+    {
+        List<(ValueNode, int, int)>? remove = null;
+        foreach (KeyValuePair<(ValueNode Context, int Depth, int Slot), ValueNode> e in LoadedContextSlots)
+        {
+            if (e.Key.Slot == slot) (remove ??= []).Add(e.Key);
+        }
+        if (remove is not null) foreach ((ValueNode, int, int) k in remove) LoadedContextSlots.Remove(k);
+    }
+
+    static void Intersect<TKey>(Dictionary<TKey, ValueNode> mine, Dictionary<TKey, ValueNode> theirs) where TKey : notnull
+    {
+        List<TKey>? remove = null;
+        foreach (KeyValuePair<TKey, ValueNode> e in mine)
+        {
+            if (!theirs.TryGetValue(e.Key, out ValueNode? v) || !ReferenceEquals(v, e.Value)) (remove ??= []).Add(e.Key);
+        }
+        if (remove is not null) foreach (TKey k in remove) mine.Remove(k);
+    }
+
+    public NodeInfo? TryGetInfoFor(ValueNode node) => _infos.GetValueOrDefault(node);
+
+    public NodeInfo GetOrCreateInfoFor(ValueNode node)
+    {
+        if (!_infos.TryGetValue(node, out NodeInfo? info))
+        {
+            info = new NodeInfo { Type = node.Type };
+            _infos[node] = info;
+        }
+        return info;
+    }
+
+    public NodeType GetType(ValueNode node)
+    {
+        NodeType type = node.Type;
+        if (_infos.TryGetValue(node, out NodeInfo? info)) type &= info.Type;
+        return type;
+    }
+
+    /// <summary>Records that <paramref name="node"/> has <paramref name="type"/> on this path.</summary>
+    public void EnsureType(ValueNode node, NodeType type)
+    {
+        NodeInfo info = GetOrCreateInfoFor(node);
+        info.Type &= type;
+    }
+
+    /// <summary>
+    /// After a node with side effects: maps of unstable map sets can change
+    /// (V8's KnownNodeAspects::ClearUnstableMaps / ResetUnstable...). Stable
+    /// maps cannot (their dependency deoptimizes the code when they become
+    /// unstable).
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="keepUnescapedAllocations"/>: after a node's side
+    /// effects, the map of an allocation that has not escaped cannot have
+    /// changed (nothing else refers to it); loop headers forget them too.
+    /// </remarks>
+    public void ClearUnstableMaps(bool keepUnescapedAllocations = false)
+    {
+        foreach (KeyValuePair<ValueNode, NodeInfo> e in _infos)
+        {
+            NodeInfo info = e.Value;
+            if (info.AnyMapIsUnstable)
+            {
+                if (keepUnescapedAllocations && e.Key is InlinedAllocation { EscapedDuringBuild: false }) continue;
+                info.PossibleMaps = null;
+                info.AnyMapIsUnstable = false;
+                // A heap object stays a heap object; its finer type came from the maps.
+                if (NodeTypes.Is(info.Type, NodeType.kJSReceiver)) info.Type = NodeType.kJSReceiver;
+            }
+        }
+    }
+
+    /// <summary>
+    /// After an elements kind transition from one of <paramref name="sources"/>
+    /// (V8's ClearUnstableMapsIfAny for TransitionElementsKind): only objects
+    /// that may have a source map can have changed their map.
+    /// </summary>
+    public void ClearMapsIntersecting(Map[] sources)
+    {
+        foreach (KeyValuePair<ValueNode, NodeInfo> e in _infos)
+        {
+            NodeInfo info = e.Value;
+            if (info.PossibleMaps is not { } maps) continue;
+            bool hit = false;
+            foreach (Map m in maps)
+            {
+                if (Array.IndexOf(sources, m) >= 0)
+                {
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit) continue;
+            info.PossibleMaps = null;
+            info.AnyMapIsUnstable = false;
+            if (NodeTypes.Is(info.Type, NodeType.kJSReceiver)) info.Type = NodeType.kJSReceiver;
+        }
+    }
+
+    /// <summary>
+    /// KnownNodeAspects::Merge: keep only what both paths know. The virtual
+    /// objects are intersected, unless the caller merged them
+    /// (<paramref name="mergeVirtualObjects"/> false:
+    /// MergePointInterpreterFrameState.MergeVirtualObjects).
+    /// </summary>
+    public void Merge(KnownNodeAspects other, bool mergeVirtualObjects = true)
+    {
+        List<ValueNode>? remove = null;
+        foreach (KeyValuePair<ValueNode, NodeInfo> e in _infos)
+        {
+            if (!other._infos.TryGetValue(e.Key, out NodeInfo? theirs))
+            {
+                (remove ??= []).Add(e.Key);
+                continue;
+            }
+            NodeInfo mine = e.Value;
+            mine.Type |= theirs.Type;
+            if (mine.PossibleMaps is null || theirs.PossibleMaps is null)
+            {
+                mine.PossibleMaps = null;
+                mine.AnyMapIsUnstable = false;
+            }
+            else
+            {
+                mine.PossibleMaps = UnionMaps(mine.PossibleMaps, theirs.PossibleMaps);
+                mine.AnyMapIsUnstable |= theirs.AnyMapIsUnstable;
+            }
+            if (!ReferenceEquals(mine.Int32Alternative, theirs.Int32Alternative)) mine.Int32Alternative = null;
+            if (!ReferenceEquals(mine.Float64Alternative, theirs.Float64Alternative)) mine.Float64Alternative = null;
+            if (!ReferenceEquals(mine.NumberOrOddballFloat64Alternative, theirs.NumberOrOddballFloat64Alternative))
+            {
+                mine.NumberOrOddballFloat64Alternative = null;
+            }
+            if (!ReferenceEquals(mine.TaggedAlternative, theirs.TaggedAlternative)) mine.TaggedAlternative = null;
+            if (!ReferenceEquals(mine.TruncatedInt32Alternative, theirs.TruncatedInt32Alternative)) mine.TruncatedInt32Alternative = null;
+        }
+        if (remove is not null) foreach (ValueNode n in remove) _infos.Remove(n);
+        Intersect(LoadedProperties, other.LoadedProperties);
+        Intersect(LoadedContextSlots, other.LoadedContextSlots);
+        Intersect(LoadedContextConstants, other.LoadedContextConstants);
+        if (mergeVirtualObjects) VirtualObjects = VirtualObjects.Intersect(other.VirtualObjects);
+        CheckedValidityCells.IntersectWith(other.CheckedValidityCells);
+        WritableElements.IntersectWith(other.WritableElements);
+    }
+
+    /// <summary>Forgets the loaded values that are <paramref name="values"/> or have them as object (a loop's phis).</summary>
+    public void ForgetLoadedInvolving(HashSet<ValueNode> values)
+    {
+        if (values.Count == 0) return;
+        List<(ValueNode, int)>? remove = null;
+        foreach (KeyValuePair<(ValueNode Object, int Key), ValueNode> e in LoadedProperties)
+        {
+            if (values.Contains(e.Key.Object) || values.Contains(e.Value)) (remove ??= []).Add(e.Key);
+        }
+        if (remove is not null) foreach ((ValueNode, int) k in remove) LoadedProperties.Remove(k);
+        List<(ValueNode, int, int)>? removeSlots = null;
+        foreach (KeyValuePair<(ValueNode Context, int Depth, int Slot), ValueNode> e in LoadedContextSlots)
+        {
+            if (values.Contains(e.Key.Context) || values.Contains(e.Value)) (removeSlots ??= []).Add(e.Key);
+        }
+        if (removeSlots is not null) foreach ((ValueNode, int, int) k in removeSlots) LoadedContextSlots.Remove(k);
+    }
+
+    static Map[] UnionMaps(Map[] a, Map[] b)
+    {
+        var result = new List<Map>(a);
+        foreach (Map m in b) if (!result.Contains(m)) result.Add(m);
+        return result.ToArray();
+    }
+
+    /// <summary>Forget everything (loop headers: the back edge is not known yet).</summary>
+    public void Clear()
+    {
+        _infos.Clear();
+        ClearLoaded();
+        LoadedContextConstants.Clear();
+        VirtualObjects = VirtualObjectList.Empty;
+    }
+}
+
+/// <summary>InterpreterFrameState.</summary>
+public sealed class InterpreterFrameState
+{
+    public readonly MaglevCompilationUnit Unit;
+    public readonly ValueNode?[] Values;
+    public KnownNodeAspects Known;
+    /// <summary>
+    /// V8Sharp: the parameters (bit i: parameter i) assigned since the frame's
+    /// parameter slots were last written (MaglevGraphBuilder.FlushDirtyParameters).
+    /// </summary>
+    public ulong DirtyParameters;
+
+    public InterpreterFrameState(MaglevCompilationUnit unit)
+    {
+        Unit = unit;
+        Values = new ValueNode?[SlotCount(unit)];
+        Known = new KnownNodeAspects();
+    }
+
+    public static int SlotCount(MaglevCompilationUnit unit) => unit.ParameterCount + unit.RegisterCount + 2;
+    public static int ContextSlot(MaglevCompilationUnit unit) => unit.ParameterCount;
+    public static int AccumulatorSlot(MaglevCompilationUnit unit) => unit.ParameterCount + 1 + unit.RegisterCount;
+
+    /// <summary>The frame slot of an interpreter register (parameters, the context, registers, the accumulator).</summary>
+    public static int SlotOf(MaglevCompilationUnit unit, Register reg)
+    {
+        if (reg == Register.VirtualAccumulator()) return AccumulatorSlot(unit);
+        if (reg == Register.CurrentContext()) return ContextSlot(unit);
+        if (reg.IsParameter) return reg.ToParameterIndex();
+        return unit.ParameterCount + 1 + reg.Index;
+    }
+
+    /// <summary>The register of a frame slot.</summary>
+    public static Register RegisterOf(MaglevCompilationUnit unit, int slot)
+    {
+        if (slot < unit.ParameterCount) return Register.FromParameterIndex(slot);
+        if (slot == unit.ParameterCount) return Register.CurrentContext();
+        if (slot == AccumulatorSlot(unit)) return Register.VirtualAccumulator();
+        return new Register(slot - unit.ParameterCount - 1);
+    }
+
+    public ValueNode Get(Register reg)
+    {
+        // The function_closure register is not part of the frame state: it
+        // holds the same value throughout (V8 initialises it once in
+        // BuildRegisterFrameInitialization and never merges it).
+        if (reg.IsFunctionClosure) return Unit.Closure!;
+        return Values[SlotOf(Unit, reg)] ?? throw new InvalidOperationException($"register {reg} has no value");
+    }
+
+    public ValueNode? TryGet(Register reg) => Values[SlotOf(Unit, reg)];
+
+    public void Set(Register reg, ValueNode value) => Values[SlotOf(Unit, reg)] = value;
+
+    public ValueNode Accumulator
+    {
+        get => Values[AccumulatorSlot(Unit)] ?? throw new InvalidOperationException("accumulator has no value");
+        set => Values[AccumulatorSlot(Unit)] = value;
+    }
+
+    public ValueNode Context
+    {
+        get => Values[ContextSlot(Unit)]!;
+        set => Values[ContextSlot(Unit)] = value;
+    }
+
+    /// <summary>Whether a frame slot is live per <paramref name="liveness"/> (parameters and the context always are).</summary>
+    public static bool IsLive(MaglevCompilationUnit unit, BytecodeLivenessState liveness, int slot)
+    {
+        if (slot <= unit.ParameterCount) return true;
+        if (slot == AccumulatorSlot(unit)) return liveness.AccumulatorIsLive();
+        return liveness.RegisterIsLive(slot - unit.ParameterCount - 1);
+    }
+
+    /// <summary>
+    /// The frame state values for a deopt frame (CompactInterpreterFrameState):
+    /// parameters, the context, the live registers and, when live, the accumulator.
+    /// </summary>
+    public (Register Register, ValueNode Value)[] Snapshot(BytecodeLivenessState liveness, bool includeAccumulator)
+    {
+        var result = new List<(Register, ValueNode)>(Unit.ParameterCount + 4);
+        int accumulatorSlot = AccumulatorSlot(Unit);
+        for (int slot = 0; slot < Values.Length; slot++)
+        {
+            if (slot == accumulatorSlot && !includeAccumulator) continue;
+            if (!IsLive(Unit, liveness, slot)) continue;
+            ValueNode? value = Values[slot];
+            if (value is null) continue;
+            result.Add((RegisterOf(Unit, slot), value));
+        }
+        return result.ToArray();
+    }
+
+    public void CopyFrom(MergePointInterpreterFrameState merge)
+    {
+        Array.Copy(merge.Values, Values, Values.Length);
+        Known = merge.Known!.Clone();
+        DirtyParameters = merge.DirtyParameters;
+    }
+}
+
+/// <summary>MergePointInterpreterFrameState.</summary>
+public sealed class MergePointInterpreterFrameState
+{
+    public readonly MaglevCompilationUnit Unit;
+    public readonly int MergeOffset;
+    public int PredecessorCount;
+    public int PredecessorsSoFar;
+    public readonly List<BasicBlock> Predecessors = [];
+    public readonly ValueNode?[] Values;
+    public readonly List<Phi> Phis = [];
+    public KnownNodeAspects? Known;
+    public readonly BytecodeLivenessState Liveness;
+    public readonly LoopInfo? Loop;
+    public BasicBlock? Block;
+    /// <summary>
+    /// A loop header's frame on entry to the loop (the entry values, the
+    /// header's bytecode): the deopt frame of the untagging checks the phi
+    /// representation selector hoists out of the loop.
+    /// </summary>
+    public DeoptFrame? LoopEntryDeoptFrame;
+    /// <summary>The union of the predecessors' InterpreterFrameState.DirtyParameters.</summary>
+    public ulong DirtyParameters;
+    /// <summary>A loop entered by generator resume edges too (is_resumable_loop).</summary>
+    public bool IsResumableLoop;
+    /// <summary>The loop's back edge has been merged.</summary>
+    public bool LoopClosed;
+    /// <summary>A catch block's state (NewForCatchBlock): merged from the throwing nodes (MergeThrow).</summary>
+    public bool IsExceptionHandler;
+    /// <summary>The register holding the context of the try block (the handler table's range data).</summary>
+    public Interpreter.Register CatchBlockContextRegister;
+
+    public MergePointInterpreterFrameState(MaglevCompilationUnit unit, int mergeOffset, int predecessorCount,
+        BytecodeLivenessState liveness, LoopInfo? loop)
+    {
+        Unit = unit;
+        MergeOffset = mergeOffset;
+        PredecessorCount = predecessorCount;
+        Liveness = liveness;
+        Loop = loop;
+        Values = new ValueNode?[InterpreterFrameState.SlotCount(unit)];
+    }
+
+    public bool IsLoop => Loop is not null;
+
+    /// <summary>
+    /// Merge: the first predecessor's frame is copied; a later predecessor
+    /// with a different value for a live slot turns the slot into a Phi
+    /// (inputs tagged in their predecessor blocks).
+    /// </summary>
+    public void Merge(MaglevGraphBuilder builder, InterpreterFrameState unmerged, BasicBlock predecessor)
+    {
+        int index = PredecessorsSoFar;
+        if (index == 0)
+        {
+            for (int slot = 0; slot < Values.Length; slot++)
+            {
+                Values[slot] = InterpreterFrameState.IsLive(Unit, Liveness, slot) ? unmerged.Values[slot] : null;
+            }
+            Known = unmerged.Known.Clone();
+        }
+        else
+        {
+            for (int slot = 0; slot < Values.Length; slot++)
+            {
+                if (!InterpreterFrameState.IsLive(Unit, Liveness, slot))
+                {
+                    Values[slot] = null;
+                    continue;
+                }
+                ValueNode? existing = Values[slot];
+                ValueNode? incoming = unmerged.Values[slot];
+                if (existing is null || incoming is null)
+                {
+                    // A slot with no value on some path is dead there (e.g. a
+                    // register only written in a branch that does not reach here).
+                    Values[slot] = null;
+                    continue;
+                }
+                if (existing is Phi phi && ReferenceEquals(phi.Block, null) && phi.MergeOffset == MergeOffset && Phis.Contains(phi))
+                {
+                    // MergeValue: the phi's type is the union of its inputs' types
+                    // (taken before tagging: untagged nodes know more).
+                    phi.Type |= unmerged.Known.GetType(incoming);
+                    phi.InputList.Add(builder.GetTaggedValueForPhi(incoming, predecessor));
+                    continue;
+                }
+                if (ReferenceEquals(existing, incoming)) continue;
+                var newPhi = new Phi(InterpreterFrameState.RegisterOf(Unit, slot), MergeOffset)
+                {
+                    Id = builder.Graph.NewNodeId(),
+                    // The previous predecessors' type of the value (what they
+                    // all know: the merged aspects so far) and this one's.
+                    Type = Known!.GetType(existing) | unmerged.Known.GetType(incoming),
+                };
+                // The existing value came from all previous predecessors.
+                for (int i = 0; i < index; i++)
+                {
+                    newPhi.InputList.Add(builder.GetTaggedValueForPhi(existing, Predecessors[i]));
+                }
+                newPhi.InputList.Add(builder.GetTaggedValueForPhi(incoming, predecessor));
+                Phis.Add(newPhi);
+                Values[slot] = newPhi;
+            }
+            // (The types of the virtual objects' phis are what the paths knew before the merge.)
+            VirtualObjectList objects = MergeVirtualObjects(builder, unmerged, predecessor, index);
+            Known!.Merge(unmerged.Known, mergeVirtualObjects: false);
+            Known.VirtualObjects = objects;
+        }
+        DirtyParameters |= unmerged.DirtyParameters;
+        Predecessors.Add(predecessor);
+        PredecessorsSoFar++;
+    }
+
+    /// <summary>For A/B measurements: V8SHARP_MAGLEV_NO_VO_MERGE=1 drops differing versions at every merge.</summary>
+    static readonly bool s_noVirtualObjectMerge = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_VO_MERGE") == "1";
+
+    /// <summary>The phis this merge created for the fields of virtual objects (MergeVirtualObjectValue).</summary>
+    HashSet<Phi>? _virtualObjectPhis;
+
+    /// <summary>
+    /// MergeVirtualObjects: the versions of the tracked allocations after the
+    /// merge. An allocation both paths track keeps a version whose fields are
+    /// phis where the paths' versions differ (MergeVirtualObject); one only
+    /// the merged paths track is dropped (it was allocated on those paths, so
+    /// nothing after the merge refers to it but phis, which escape it).
+    /// Catch blocks and loop headers drop differing versions, where V8 escapes
+    /// the allocation (it has no phis of virtual object fields there).
+    /// </summary>
+    VirtualObjectList MergeVirtualObjects(MaglevGraphBuilder builder, InterpreterFrameState unmerged, BasicBlock predecessor, int index)
+    {
+        VirtualObjectList mine = Known!.VirtualObjects, theirs = unmerged.Known.VirtualObjects;
+        VirtualObjectList result;
+        if (ReferenceEquals(mine, theirs))
+        {
+            result = mine;
+        }
+        else if (IsLoop || IsExceptionHandler || s_noVirtualObjectMerge)
+        {
+            result = mine.Intersect(theirs);
+        }
+        else
+        {
+            List<VirtualObject>? merged = null;
+            for (int i = 0; i < mine.Count; i++)
+            {
+                VirtualObject vo = mine[i];
+                VirtualObject? other = theirs.Find(vo.Allocation);
+                VirtualObject? version = other is null ? null
+                    : ReferenceEquals(vo, other) ? vo
+                    : MergeVirtualObject(builder, vo, other, unmerged.Known, predecessor, index);
+                if (ReferenceEquals(version, vo) && merged is null) continue;
+                if (merged is null)
+                {
+                    merged = new List<VirtualObject>(mine.Count);
+                    for (int j = 0; j < i; j++) merged.Add(mine[j]);
+                }
+                if (version is not null) merged.Add(version);
+                else if (builder.IsTracing) Console.WriteLine($"[maglev] not merging virtual object n{vo.Allocation.Id} at @{MergeOffset}");
+            }
+            result = merged is null ? mine : VirtualObjectList.From(merged);
+        }
+        // A phi of a version the merge dropped (no path after the merge uses
+        // it) still needs an input per predecessor.
+        if (_virtualObjectPhis is not null)
+        {
+            foreach (Phi phi in _virtualObjectPhis)
+            {
+                while (phi.InputList.Count <= index) phi.InputList.Add(builder.GetUndefinedForPhi());
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// MergeVirtualObject: the version of <paramref name="merged"/>'s
+    /// allocation after merging <paramref name="unmerged"/> (the incoming
+    /// path's version): each field that differs becomes a phi
+    /// (MergeVirtualObjectValue), or null when the versions cannot be merged
+    /// (different maps, or different nested allocations in a field).
+    /// </summary>
+    /// <remarks>
+    /// Deviation: V8's virtual objects never change their map (StoreMap
+    /// escapes the allocation); V8Sharp's record map transitions, and versions
+    /// with different maps are not merged.
+    /// </remarks>
+    VirtualObject? MergeVirtualObject(MaglevGraphBuilder builder, VirtualObject merged, VirtualObject unmerged,
+        KnownNodeAspects unmergedKnown, BasicBlock predecessor, int index)
+    {
+        if (!ReferenceEquals(merged.Map, unmerged.Map) || merged.Slots.Length != unmerged.Slots.Length) return null;
+        // Decide first, so that a version that cannot be merged leaves no phis behind.
+        for (int i = 0; i < merged.Slots.Length; i++)
+        {
+            ValueNode a = merged.Slots[i], b = unmerged.Slots[i];
+            if (IsVirtualObjectPhi(a) || ReferenceEquals(a, b)) continue;
+            // A nested allocation that differs between the paths: V8 gives up too.
+            if (a is InlinedAllocation && b is InlinedAllocation) return null;
+        }
+        ValueNode[]? slots = null;
+        for (int i = 0; i < merged.Slots.Length; i++)
+        {
+            ValueNode a = merged.Slots[i], b = unmerged.Slots[i];
+            if (IsVirtualObjectPhi(a))
+            {
+                var existing = (Phi)a;
+                existing.Type |= unmergedKnown.GetType(b);
+                existing.InputList.Add(builder.GetTaggedValueForPhi(b, predecessor));
+                continue;
+            }
+            if (ReferenceEquals(a, b)) continue;
+            var phi = new Phi(Interpreter.Register.InvalidValue(), MergeOffset)
+            {
+                Id = builder.Graph.NewNodeId(),
+                Type = Known!.GetType(a) | unmergedKnown.GetType(b),
+            };
+            for (int j = 0; j < index; j++) phi.InputList.Add(builder.GetTaggedValueForPhi(a, Predecessors[j]));
+            phi.InputList.Add(builder.GetTaggedValueForPhi(b, predecessor));
+            Phis.Add(phi);
+            (_virtualObjectPhis ??= new HashSet<Phi>(ReferenceEqualityComparer.Instance)).Add(phi);
+            builder.Graph.HasVirtualObjectPhis = true;
+            (slots ??= (ValueNode[])merged.Slots.Clone())[i] = phi;
+            if (builder.IsTracing) Console.WriteLine($"[maglev] merging field {i} of virtual object n{merged.Allocation.Id} at @{MergeOffset}: phi n{phi.Id}");
+        }
+        return slots is null ? merged : new VirtualObject(merged.Allocation, merged.Map, slots);
+    }
+
+    bool IsVirtualObjectPhi(ValueNode value) => value is Phi phi && _virtualObjectPhis is not null && _virtualObjectPhis.Contains(phi);
+
+    /// <summary>
+    /// NewForCatchBlock: the state of the catch block at
+    /// <paramref name="handlerOffset"/>; the accumulator, when live, is the
+    /// exception (an exception phi without inputs).
+    /// </summary>
+    public static MergePointInterpreterFrameState NewForCatchBlock(MaglevGraphBuilder builder, MaglevCompilationUnit unit,
+        BytecodeLivenessState liveness, int handlerOffset, Interpreter.Register contextRegister)
+    {
+        var state = new MergePointInterpreterFrameState(unit, handlerOffset, 0, liveness, null)
+        {
+            IsExceptionHandler = true,
+            CatchBlockContextRegister = contextRegister,
+        };
+        if (liveness.AccumulatorIsLive())
+        {
+            var phi = new Phi(Interpreter.Register.VirtualAccumulator(), handlerOffset)
+            {
+                Id = builder.Graph.NewNodeId(),
+                IsExceptionPhi = true,
+            };
+            state.Phis.Add(phi);
+            state.Values[InterpreterFrameState.AccumulatorSlot(unit)] = phi;
+        }
+        return state;
+    }
+
+    /// <summary>
+    /// MergeThrow: merges the frame at a throwing node into the catch block
+    /// (the parameters, the live registers, and the context from the catch
+    /// block's context register). A value that differs between throws becomes
+    /// an exception phi whose inputs are the values at each throw.
+    /// </summary>
+    public void MergeThrow(MaglevGraphBuilder builder, InterpreterFrameState frame, KnownNodeAspects? known = null)
+    {
+        known ??= frame.Known;
+        int index = PredecessorsSoFar;
+        int accumulatorSlot = InterpreterFrameState.AccumulatorSlot(Unit);
+        int contextSlot = InterpreterFrameState.ContextSlot(Unit);
+        int contextRegisterSlot = InterpreterFrameState.SlotOf(Unit, CatchBlockContextRegister);
+        for (int slot = 0; slot < Values.Length; slot++)
+        {
+            if (slot == accumulatorSlot) continue;
+            ValueNode? incoming;
+            if (slot == contextSlot) incoming = frame.Values[contextRegisterSlot];
+            else if (!InterpreterFrameState.IsLive(Unit, Liveness, slot)) continue;
+            else incoming = frame.Values[slot];
+            if (index == 0)
+            {
+                Values[slot] = incoming;
+                continue;
+            }
+            ValueNode? existing = Values[slot];
+            if (existing is null || incoming is null)
+            {
+                Values[slot] = null;
+                continue;
+            }
+            if (existing is Phi { IsExceptionPhi: true } phi && phi.MergeOffset == MergeOffset && Phis.Contains(phi))
+            {
+                MaglevGraphBuilder.EscapeDuringBuild(incoming);
+                phi.InputList.Add(incoming);
+                continue;
+            }
+            if (ReferenceEquals(existing, incoming)) continue;
+            var newPhi = new Phi(InterpreterFrameState.RegisterOf(Unit, slot), MergeOffset)
+            {
+                Id = builder.Graph.NewNodeId(),
+                Type = NodeType.kUnknown,
+                IsExceptionPhi = true,
+            };
+            MaglevGraphBuilder.EscapeDuringBuild(existing);
+            MaglevGraphBuilder.EscapeDuringBuild(incoming);
+            for (int i = 0; i < index; i++) newPhi.InputList.Add(existing);
+            newPhi.InputList.Add(incoming);
+            Phis.Add(newPhi);
+            Values[slot] = newPhi;
+        }
+        if (Known is null) Known = known.Clone();
+        else Known.Merge(known);
+        DirtyParameters |= frame.DirtyParameters;
+        PredecessorsSoFar++;
+    }
+
+    /// <summary>
+    /// InitializeLoop: the loop header's frame from the entry predecessor,
+    /// with a Phi for every live slot the loop assigns (and the context when
+    /// the loop changes it).
+    /// </summary>
+    /// <remarks>
+    /// A resumable loop (<paramref name="resumable"/>) is also entered by the
+    /// resume edges of the generator switch, which do not pass its header: every
+    /// live value is a phi, and nothing is known at the header
+    /// (NewForLoop's is_resumable_loop).
+    /// </remarks>
+    public void InitializeLoop(MaglevGraphBuilder builder, InterpreterFrameState unmerged, BasicBlock? predecessor,
+        bool loopChangesContext, bool resumable = false, LoopEffects? assumed = null)
+    {
+        IsResumableLoop = resumable;
+        LoopInfo loop = Loop!;
+        int accumulatorSlot = InterpreterFrameState.AccumulatorSlot(Unit);
+        int contextSlot = InterpreterFrameState.ContextSlot(Unit);
+        // The back edge brings the parameters the loop assigns.
+        DirtyParameters = unmerged.DirtyParameters;
+        for (int p = 0; p < Unit.ParameterCount && p < 64; p++)
+        {
+            if (resumable || loop.Assignments.ContainsParameter(p)) DirtyParameters |= 1UL << p;
+        }
+        for (int slot = 0; slot < Values.Length; slot++)
+        {
+            if (!InterpreterFrameState.IsLive(Unit, Liveness, slot))
+            {
+                Values[slot] = null;
+                continue;
+            }
+            ValueNode? entry = unmerged.Values[slot];
+            bool assigned;
+            if (slot == accumulatorSlot || resumable) assigned = true;
+            else if (slot == contextSlot) assigned = loopChangesContext;
+            else if (slot < Unit.ParameterCount) assigned = loop.Assignments.ContainsParameter(slot);
+            else assigned = loop.Assignments.ContainsLocal(slot - Unit.ParameterCount - 1);
+            if (!assigned || entry is null)
+            {
+                Values[slot] = entry;
+                continue;
+            }
+            var phi = new Phi(InterpreterFrameState.RegisterOf(Unit, slot), MergeOffset)
+            {
+                Id = builder.Graph.NewNodeId(),
+                IsLoopPhi = true,
+                // UpdateLoopPhiType: the type stays unknown inside the loop;
+                // the entry's type starts the type after the loop.
+                PostLoopType = predecessor is null || resumable ? NodeType.kUnknown : unmerged.Known.GetType(entry),
+            };
+            if (predecessor is not null) phi.InputList.Add(builder.GetTaggedValueForPhi(entry, predecessor));
+            Phis.Add(phi);
+            Values[slot] = phi;
+        }
+        // The back edge can change anything the loop body changes: V8 keeps
+        // the stable facts (LoopEffects); V8Sharp starts the loop with the
+        // entry's facts about values the loop does not assign, minus unstable maps.
+        // V8Sharp: with the effects the body is assumed to have (LoopEffects,
+        // checked at the back edge), the rest of what the entry knows holds
+        // in the loop too: maps and loaded values (V8 learns the effects by
+        // peeling the loop's first iteration).
+        Known = resumable ? new KnownNodeAspects() : unmerged.Known.Clone();
+        if (assumed is null)
+        {
+            Known.ClearUnstableMaps();
+            Known.ClearLoaded();
+        }
+        else
+        {
+            assumed.ApplyTo(Known);
+        }
+        foreach (Phi phi in Phis)
+        {
+            // Nothing is known about a loop phi until the back edge is merged.
+            NodeInfo? info = Known.TryGetInfoFor(phi);
+            if (info is not null) info.Type = NodeType.kUnknown;
+        }
+        if (predecessor is not null)
+        {
+            Predecessors.Add(predecessor);
+            PredecessorsSoFar++;
+        }
+    }
+
+    /// <summary>MergeLoop: the back edge's values become the loop phis' last inputs.</summary>
+    public void MergeLoop(MaglevGraphBuilder builder, InterpreterFrameState loopEndState, BasicBlock predecessor)
+    {
+        foreach (Phi phi in Phis)
+        {
+            int slot = InterpreterFrameState.SlotOf(Unit, phi.Owner);
+            ValueNode? incoming = loopEndState.Values[slot];
+            if (incoming is null) throw new MaglevBailoutException("loop phi without back-edge value");
+            // merge_post_loop_type, then promote_post_loop_type: uses after
+            // the loop see the union of the entry's and the back edge's types.
+            phi.PostLoopType |= loopEndState.Known.GetType(incoming);
+            phi.Type = phi.PostLoopType;
+            phi.InputList.Add(builder.GetTaggedValueForPhi(incoming, predecessor));
+        }
+        Predecessors.Add(predecessor);
+        PredecessorsSoFar++;
+        LoopClosed = true;
+    }
+}
+
+/// <summary>Thrown by the graph builder when it cannot (yet) compile a function.</summary>
+public sealed class MaglevBailoutException(string reason) : Exception(reason)
+{
+}

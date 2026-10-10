@@ -1,0 +1,497 @@
+// Copyright 2024 Kelvin Nishikawa
+// 
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+// 
+//     http://www.apache.org/licenses/LICENSE-2.0
+// 
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using Wacs.Core.Validation;
+using Wacs.Core.Instructions;
+using Wacs.Core.Instructions.Reference;
+using Wacs.Core.OpCodes;
+using Wacs.Core.Types;
+using Wacs.Core.Types.Defs;
+using Wacs.Core.Utilities;
+
+namespace Wacs.Core
+{
+    /// <summary>
+    /// @Spec 2.5. Modules
+    /// Represents a WebAssembly module, including its sections and definitions.
+    /// Sections are defined across the partial class
+    /// </summary>
+    public partial class Module
+    {
+        internal Module()
+        {
+        }
+
+        public void ValidateAndThrow() => new ModuleValidator().ValidateAndThrow(this);
+        public void ValidateAndThrow(Runtime.RuntimeAttributes attributes) =>
+            new ModuleValidator(attributes).ValidateAndThrow(this);
+    }
+
+    /// <summary>
+    /// @Spec 5.5. Modules
+    /// </summary>
+    public static partial class BinaryModuleParser
+    {
+        //Add Ids to objects while parsing
+        public static bool AnnotateWhileParsing = true;
+        public static bool SkipFinalization = false;
+        public static bool ParseCustomNames = false;
+
+        /// <summary>
+        /// Opt-in for the <c>wacs.trivia</c> custom section — an
+        /// optimistic in-band carrier for WAT comments and
+        /// <c>(@name …)</c> annotations. Off by default since most
+        /// consumers (interpreter, transpiler) don't care about
+        /// human-authored trivia. Set to <c>true</c> when the parsed
+        /// Module is going to be re-rendered as WAT and you want
+        /// comments to survive the wasm leg.
+        /// </summary>
+        public static bool ParseTrivia = false;
+
+        /// <summary>
+        /// Opt-in for the `metadata.code.branch_hint` custom section
+        /// (and WAT-level `(@metadata.code.branch_hint …)` annotations).
+        /// Off by default — interpreter / switch-runtime consumers
+        /// don't read the hints, so parsing them is dead work. The
+        /// transpiler is the only consumer today; CLI commands that
+        /// transpile (`wacs build`, `wacs aot`) set this true before
+        /// parsing. Programmatic embedders should do the same when
+        /// they intend to feed the parsed Module into
+        /// <c>ModuleTranspiler</c>.
+        /// </summary>
+        public static bool ParseBranchHints = false;
+
+        public static uint MaximumFunctionLocals = 2048;
+
+        public static readonly SectionId[] SectionOrder = new[]
+        {
+            SectionId.Type,
+            SectionId.Import,
+            SectionId.Function,
+            SectionId.Table,
+            SectionId.Memory,
+            SectionId.Tag,
+            SectionId.Global,
+            SectionId.Export,
+            SectionId.Start,
+            SectionId.Element,
+            SectionId.DataCount,
+            SectionId.Code,
+            SectionId.Data
+        };
+
+        static readonly HashSet<ByteCode> MemoryInstructions = new HashSet<ByteCode> { ExtCode.MemoryInit, ExtCode.DataDrop };
+        public static InstructionBaseFactory InstructionFactory { get; private set; } = SpecFactory.Factory;
+
+        public static void UseInstructionFactory(InstructionBaseFactory factory) =>
+            InstructionFactory = factory;
+
+        /// <summary>
+        /// @Spec 5.5.16. Modules
+        /// Parses a WebAssembly module from a binary stream.
+        /// </summary>
+        public static Module ParseWasm(Stream stream)
+        {
+            var module = new Module();
+            var reader = new BinaryReader(stream);
+
+            // Read and validate the magic number and version
+            try
+            {
+                uint magicNumber = reader.ReadUInt32(); //Exactly 4bytes, little endian
+                if (magicNumber != 0x6D736100) // '\0asm'
+                {
+                    throw new FormatException("Invalid magic number for WebAssembly module.");
+                }
+
+                uint version = reader.ReadUInt32(); //Exactly 4bytes, little endian
+                if (version != 1)
+                {
+                    throw new NotSupportedException($"Unsupported WebAssembly version: {version}");
+                }
+
+                int order = -1;
+                // Parse sections
+                while (stream.Position < stream.Length)
+                {
+                    var sectionId = ParseSection(reader, module);
+                    if (sectionId != SectionId.Custom)
+                    {
+                        int sectionIndex = Array.IndexOf(SectionOrder, sectionId);
+                        if (sectionIndex <= order)
+                            throw new FormatException(
+                                $"Module sections must occur at most once and in the prescribed order.");
+                        order = sectionIndex;
+                    }
+                }
+            }
+            catch (EndOfStreamException e)
+            {
+                throw new FormatException($"Encountered premature end of stream {e.Message}");
+            }
+
+            FinalizeModule(module);
+
+            return module;
+        }
+
+        /// <summary>
+        /// @Spec 5.5.2. Sections
+        /// </summary>
+        private static SectionId ParseSection(BinaryReader reader, Module module)
+        {
+            var start = reader.BaseStream.Position;
+            var sectionId = (SectionId)reader.ReadByte();
+            var payloadLength = reader.ReadLeb128_u32();
+            var payloadStart = reader.BaseStream.Position;
+            var payloadEnd = (uint)(payloadStart + payloadLength);
+
+            if (payloadEnd > reader.BaseStream.Length)
+                throw new FormatException("Section end out of bounds");
+            
+            // Console.WriteLine($"Section: {(SectionId)sectionId}");
+            // @Spec 2.5. Modules
+            switch (sectionId)
+            {
+                case SectionId.Type:
+                    module.Types = ParseTypeSection(reader);
+                    break;
+                case SectionId.Import:
+                    module.Imports = ParseImportSection(reader);
+                    foreach (var import in module.Imports)
+                    {
+                        if (import.Desc is Module.ImportDesc.FuncDesc fd)
+                            if (module.Types.Count == 0)
+                                throw new FormatException($"Module must have Types section before importing Functions");
+
+                    }
+                    break;
+                case SectionId.Function:
+                    module.Funcs = ParseFunctionSection(reader).ToList();
+                    int fIdx = module.ImportedFunctions.Count;
+                    foreach (var func in module.Funcs)
+                    {
+                        if (module.Types.Count == 0)
+                            throw new FormatException($"Module must have Types section before declaring Functions");
+                        
+                        func.Index = (FuncIdx)fIdx++;
+                    }
+                    break;
+                case SectionId.Table:
+                    module.Tables = ParseTableSection(reader);
+                    if (AnnotateWhileParsing)
+                    {
+                        int idx = module.ImportedTables.Count;
+                        foreach (var table in module.Tables)
+                        {
+                            table.Id = $"{idx++}";
+                        }
+                    }
+                    break;
+                case SectionId.Memory:
+                    module.Memories = ParseMemorySection(reader);
+                    if (AnnotateWhileParsing)
+                    {
+                        int idx = module.ImportedMems.Count;
+                        foreach (var mem in module.Memories)
+                        {
+                            mem.Id = $"{idx++}";
+                        }
+                    }
+                    break;
+                case SectionId.Tag:
+                    module.Tags = ParseTagSection(reader);
+                    break;
+                case SectionId.Global:
+                    module.Globals = ParseGlobalSection(reader);
+                    if (AnnotateWhileParsing)
+                    {
+                        int idx = module.ImportedGlobals.Count;
+                        foreach (var glob in module.Globals)
+                        {
+                            glob.Id = $"{idx++}";
+                        }
+                    }
+                    break;
+                case SectionId.Export:
+                    module.Exports = ParseExportSection(reader);
+                    break;
+                case SectionId.Start:
+                    module.StartIndex = ParseStartSection(reader);
+                    break;
+                case SectionId.Element:
+                    module.Elements = ParseElementSection(reader);
+                    if (AnnotateWhileParsing)
+                    {
+                        int idx = 0;
+                        foreach (var elem in module.Elements)
+                        {
+                            elem.Id = $"{idx++}";
+                        }
+                    }
+                    break;
+                case SectionId.DataCount:
+                    module.DataCount = ParseDataCountSection(reader);
+                    break;
+                case SectionId.Code:
+                    module.Codes = ParseCodeSection(reader);
+                    break;
+                case SectionId.Data:
+                    module.Datas = ParseDataSection(reader);
+                    
+                    if (AnnotateWhileParsing)
+                    {
+                        int idx = 0;
+                        foreach (var data in module.Datas)
+                        {
+                            data.Id = $"{idx++}";
+                        }
+                    }
+                    break;
+                case SectionId.Custom: break; //Handled below 
+                default:
+                    throw new FormatException($"Unknown section ID: {sectionId} at offset {start}.");
+            }
+
+            // Custom sections
+            if (sectionId == SectionId.Custom)
+            {
+                var customSectionName = reader.ReadUtf8String();
+                switch (customSectionName)
+                {
+                    case "name" when ParseCustomNames:
+                        using (var subreader = reader.GetSubsectionTo((int)payloadEnd))
+                        {
+                            module.Names = ParseNameSection(subreader);
+                        }
+                        break;
+                    case "metadata.code.branch_hint" when ParseBranchHints:
+                        // Capture every hint in the section. Gated
+                        // behind the opt-in flag because interpreter
+                        // consumers don't use it and parsing is dead
+                        // work for them. Validation against the actual
+                        // instruction stream happens later, after the
+                        // code section is fully resolved.
+                        using (var subreader = reader.GetSubsectionTo((int)payloadEnd))
+                        {
+                            module.BranchHints = ParseBranchHintSection(subreader);
+                        }
+                        break;
+                    case "wacs.trivia" when ParseTrivia:
+                        // Optimistic in-band WAT comment / annotation
+                        // sidecar. WACS-specific (no spec), ignored by
+                        // other engines. Populates Module.Comments and
+                        // Module.Annotations.
+                        using (var subreader = reader.GetSubsectionTo((int)payloadEnd))
+                        {
+                            Wacs.Core.Bin.CustomSectionEncoders
+                                .ParseTriviaSection(subreader, module);
+                        }
+                        break;
+                    default:
+                        //Skip others
+                        // Console.WriteLine($"   name: {customSectionName}");
+                        // // Read the bytes from the current position to payloadEnd
+                        // byte[] sectionData = reader.ReadBytes((int)(payloadEnd - reader.BaseStream.Position));
+                        // // Console.WriteLine(BitConverter.ToString(sectionData).Replace("-", " "));
+                        // // Convert section bytes to characters and print
+                        // string sectionString = System.Text.Encoding.UTF8.GetString(sectionData);
+                        // Console.WriteLine($"    {sectionString}");
+
+                        if (reader.BaseStream.Position > payloadEnd)
+                            throw new FormatException("Unexpected end to Custom section");
+                        
+                        //Discard and fast-forward to the end of the section payload
+                        reader.BaseStream.Position = payloadEnd;
+                        break;
+                }
+            }
+
+            if (reader.BaseStream.Position != payloadEnd)
+            {
+                throw new FormatException(
+                    $"Section size mismatch. Expected {payloadLength} bytes, but got {reader.BaseStream.Position - payloadStart}.");
+            }
+
+            return sectionId;
+        }
+
+        /// <summary>
+        /// @Spec 5.4 Instructions
+        /// Parse an instruction sequence, return null for End (0x0B)
+        /// </summary>
+        /// <summary>
+        /// V8Sharp: while a function body is parsed, the module offset of each
+        /// instruction in parse order (which is the flattened, linked order).
+        /// </summary>
+        [ThreadStatic] internal static List<uint>? InstructionOffsetRecorder;
+
+        /// <summary>
+        /// V8Sharp: set while a module translated from asm.js is parsed, whose
+        /// function bodies may use V8's asm.js opcodes (prefix 0xFA).
+        /// </summary>
+        [ThreadStatic] public static bool AsmJsOpcodesAllowed;
+
+        public static InstructionBase? ParseInstruction(BinaryReader reader)
+        {
+            InstructionOffsetRecorder?.Add((uint)reader.BaseStream.Position);
+            //Splice another byte if the first byte is a prefix
+            var first = (OpCode)reader.ReadByte();
+            if (first == OpCode.FA && AsmJsOpcodesAllowed)
+            {
+                // V8Sharp: V8's asm.js compatibility opcodes, decoded only in
+                // modules translated from asm.js (V8: is_asmjs_module).
+                uint asmIndex = reader.ReadLeb128_u32();
+                var asmOp = (AsmJsCode)asmIndex;
+                if (asmIndex > 0xFF || !InstAsmJs.IsDefined(asmOp))
+                    throw new FormatException($"invalid asmjs opcode: 0xfa{asmIndex:x2}");
+                return new InstAsmJs(asmOp);
+            }
+            bool prefixed = first is OpCode.FB or OpCode.FC or OpCode.FD or OpCode.FE;
+            uint index = prefixed ? reader.ReadLeb128_u32() : 0;
+            var opcode = first switch {
+                OpCode.FB => new ByteCode((GcCode)index),
+                OpCode.FC => new ByteCode((ExtCode)index),
+                OpCode.FD => new ByteCode((SimdCode)index),
+                OpCode.FE => new ByteCode((AtomCode)index),
+                var b => new ByteCode(b)
+            };
+            try
+            {
+                // V8Sharp: an index beyond the opcode enum is no opcode.
+                if (prefixed && first != OpCode.FD && index > 0xFF)
+                    throw new InvalidDataException("Unsupported instruction");
+                return InstructionFactory.CreateInstruction(opcode)?.Parse(reader);
+            }
+            catch (InvalidDataException exc) when (prefixed && exc.Message.StartsWith("Unsupported instruction", StringComparison.Ordinal))
+            {
+                // V8Sharp: V8's message ("invalid %s opcode: 0x%x").
+                string kind = first switch
+                {
+                    OpCode.FB => "gc",
+                    OpCode.FC => "numeric",
+                    OpCode.FD => "simd",
+                    _ => "atomic",
+                };
+                uint full = ((uint)first << (index < 0x100 ? 8 : 12)) | index;
+                throw new FormatException($"invalid {kind} opcode: 0x{full:x}");
+            }
+            catch (InvalidDataException exc)
+            {
+                throw new FormatException($"Exception in Instruction decode: {exc.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Walk every place a function index can become "fully
+        /// declared" (exports, FuncRef-typed element initializers,
+        /// declarative element segments, FuncRef-typed global
+        /// initializers) and set <see cref="Module.Function.ElementDeclared"/>
+        /// on each matching defined function.
+        ///
+        /// Without this pass, <c>ref.func $x</c> instructions inside
+        /// function bodies fail validation with "func N is not fully
+        /// declared" — even when the surrounding module has an
+        /// <c>(elem declare func $x)</c> segment specifically intended
+        /// to declare it. Both the binary parser and the WAT parser
+        /// must run this; previously only the binary path did.
+        ///
+        /// Also enforces "memory.init requires DataCount section"
+        /// (the binary spec rule); for WAT inputs the DataCount field
+        /// always reflects the actual data section, so the check is
+        /// effectively skipped.
+        /// </summary>
+        public static void PropagateRefFuncDeclarations(Module module)
+        {
+            HashSet<FuncIdx> fullyDeclared = new();
+            var funcDescs = module.Exports
+                .Select(export => export.Desc)
+                .OfType<Module.ExportDesc.FuncDesc>();
+            foreach (var funcDesc in funcDescs) fullyDeclared.Add(funcDesc.FunctionIndex);
+
+            var elementIni = module.Elements
+                .Where(elem => elem.Type == ValType.FuncRef)
+                .SelectMany(elem => elem.Initializers)
+                .SelectMany(ini => ini.Instructions)
+                .OfType<InstRefFunc>();
+            foreach (var refFunc in elementIni) fullyDeclared.Add(refFunc.FunctionIndex);
+
+            var elementDecl = module.Elements
+                .Where(elem => elem.Mode is Module.ElementMode.DeclarativeMode)
+                .SelectMany(elem => elem.Initializers)
+                .SelectMany(ini => ini.Instructions)
+                .OfType<InstRefFunc>();
+            foreach (var refFunc in elementDecl) fullyDeclared.Add(refFunc.FunctionIndex);
+
+            var globalIni = module.Globals
+                .Where(global => global.Type.ContentType == ValType.FuncRef)
+                .SelectMany(global => global.Initializer.Instructions)
+                .OfType<InstRefFunc>();
+            foreach (var refFunc in globalIni) fullyDeclared.Add(refFunc.FunctionIndex);
+
+            bool lacksMemoryInit = module.DataCount == uint.MaxValue;
+            foreach (var func in module.Funcs)
+            {
+                if (lacksMemoryInit)
+                    if (func.Body.ContainsInstructions(MemoryInstructions))
+                        throw new FormatException($"memory.init instruction requires Data Count section");
+
+                if (fullyDeclared.Contains(func.Index))
+                    func.ElementDeclared = true;
+            }
+        }
+
+        private static void FinalizeModule(Module module)
+        {
+            PatchFuncSection(module);
+            PropagateRefFuncDeclarations(module);
+            
+            if (module.DataCount == uint.MaxValue)
+                module.DataCount = (uint)module.Datas.Length;
+
+            if (module.DataCount != module.Datas.Length)
+                throw new FormatException($"Data count and data section have inconsistent lengths.");
+
+            PatchNames(module);
+
+            // Branch-hint funcidx range check: a module-level
+            // assertion that's cheap and catches obvious corruption.
+            // Per-instruction target validation (hint must land on an
+            // `if`/`br_if`) is intentionally not enforced here — the
+            // proposal classifies bad targets as advisory and we
+            // prefer to surface the data verbatim. Consumers of
+            // BranchHints can re-check at use-site.
+            if (module.BranchHints != null)
+            {
+                int funcCount = module.Funcs.Count + module.ImportedFunctions.Count;
+                foreach (var funcIdx in module.BranchHints.ByFuncIndex.Keys)
+                {
+                    if (funcIdx >= funcCount)
+                        throw new FormatException(
+                            $"branch_hint: funcidx {funcIdx} out of range " +
+                            $"(module has {funcCount} functions)");
+                }
+                // Bridge the offset-keyed parse data to the
+                // ref-keyed transpile data. After this, both binary
+                // and WAT inputs have a uniform `TryGet(inst)` lookup.
+                module.BranchHints.JoinByInstruction(
+                    module.Funcs.Select(f => (f.Index.Value, f.Body.Instructions)));
+            }
+        }
+    }
+}

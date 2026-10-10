@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>V8Sharp.Base.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/V8Sharp.Base/V8Sharp.Base.csproj" />
+    <!-- Differential tests against the real V8. -->
+    <ProjectReference Include="../../src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The Gay's-dtoa tables of test/unittests are read straight from the V8 tree. -->
+    <EmbeddedResource Include="../../../test/unittests/gay-fixed.cc" LogicalName="gay-fixed.cc" />
+    <EmbeddedResource Include="../../../test/unittests/gay-precision.cc" LogicalName="gay-precision.cc" />
+    <EmbeddedResource Include="../../../test/unittests/gay-shortest.cc" LogicalName="gay-shortest.cc" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+  </ItemGroup>
+
+</Project>

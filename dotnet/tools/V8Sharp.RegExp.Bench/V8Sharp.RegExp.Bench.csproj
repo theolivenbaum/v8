@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Stopwatch micro benchmark of the irregexp tiers (bytecode interpreter,
+       IL native tier) against the real V8 and System.Text.RegularExpressions,
+       on the regexp operations of Octane's regexp.js. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>V8Sharp.RegExp.Bench</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/V8Sharp.RegExp/V8Sharp.RegExp.csproj" />
+    <ProjectReference Include="../../src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ClearScript.V8" />
+  </ItemGroup>
+
+</Project>

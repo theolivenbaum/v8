@@ -1,0 +1,530 @@
+// Tests of the Maglev port's code quality work: what the optimized code
+// keeps untagged or specialized (elements kind transitions of keyed loads,
+// parameter assignments kept out of the frame, loop entry values untagged
+// before the loop, int32 conversions), and that each gives the
+// interpreter's results and deoptimizes where it must.
+namespace V8Sharp.Tests.Maglev;
+
+public class MaglevCodeQualityTest
+{
+    public static TheoryData<string> Snippets => new()
+    {
+        // Keyed loads whose feedback transitions packed arrays to holey ones
+        // (LoadHandler::TransitionAndLoadElement), out of bounds and holes.
+        """
+        (function() {
+          function at(a, i) { return a[i]; }
+          var out = [];
+          for (var k = 0; k < 40; k++) {
+            var packed = [1, 2, 3], holey = [1, , 3], dbl = [1.5, 2.5], hdbl = [1.5, , 2.5];
+            out.push(at(packed, k % 3), at(holey, k % 3), at(dbl, k % 2), at(hdbl, k % 3), at(packed, 5));
+          }
+          out.push(at({0: 'o'}, 0), at('str', 1), at([[1]], 0));
+          return out.join();
+        })()
+        """,
+        // Parameters assigned in loops and before calls: function.arguments
+        // sees the current values whatever the tier.
+        """
+        (function() {
+          function peek() { return outer.arguments[0] + ':' + outer.arguments[1]; }
+          function outer(a, b) {
+            var r = [];
+            for (var i = 0; i < 3; i++) { a = a + 1; b += 'x'; }
+            r.push(peek());
+            if (a & 1) a = -a;
+            r.push(peek());
+            a = a * 2;
+            try { b = b.length; r.push(peek()); } catch (e) { r.push('caught'); }
+            return r.join('/');
+          }
+          var out = [];
+          for (var k = 0; k < 30; k++) out.push(outer(k, 'y' + k));
+          return out.join(';');
+        })()
+        """,
+        // Loop counters that come from parameters (untagged before the loop),
+        // then a double or a non-number: the check before the loop deopts.
+        """
+        (function() {
+          function sum(i, n, step) { var s = 0; for (; i < n; i += step) s += i; return s; }
+          function count(i, n) { var c = 0; while (i < n) { i++; c++; } return c + ':' + i; }
+          var out = [];
+          for (var k = 0; k < 40; k++) out.push(sum(k, k + 20, 3), count(k, 30));
+          out.push(sum(0.5, 10, 1), sum('1', 5, 1), count(1.5, 4), count(-0, 2), count(undefined, 3));
+          out.push(sum(2147483640, 2147483650, 3), count(2147483646, 2147483649));
+          for (var k = 0; k < 20; k++) out.push(sum(k * 0.25, 10, 1));
+          return out.join();
+        })()
+        """,
+        // Int32 conversions: -0, NaN, fractions, values beyond int32, Smi range ends.
+        """
+        (function() {
+          function t(x) { return [x | 0, x >> 1, x >>> 0, ~x, x & 255].join(); }
+          function idx(a, x) { return a[x]; }
+          var vals = [0, -0, 1, -1, 0.5, -0.5, NaN, Infinity, -Infinity, 2147483647, 2147483648, -2147483648, -2147483649,
+                      4294967296, 1e20, -1e20, 1073741823, 1073741824, -1073741824, -1073741825, 4294967295.5];
+          var out = [];
+          for (var k = 0; k < 30; k++) for (var v of vals) out.push(t(v));
+          var a = [10, 20, 30];
+          for (var k = 0; k < 30; k++) out.push(idx(a, k % 3), idx(a, -0), idx(a, 1.0));
+          out.push(idx(a, 0.5), idx(a, -1), idx(a, NaN));
+          return out.join(';');
+        })()
+        """,
+        // Object literals with nested object and array boilerplates: each
+        // evaluation is a fresh deep copy (mutating one copy, its nested
+        // arrays or objects, never reaches the next), field type changes.
+        """
+        (function() {
+          function make(k) { return { a: 1, b: { c: [1, 2, 3], d: { e: 'x' } }, f: [1.5, 2.5], g: k }; }
+          var out = [], prev = null;
+          for (var k = 0; k < 40; k++) {
+            var o = make(k);
+            out.push(JSON.stringify(o), prev === null || (prev.b !== o.b && prev.b.c !== o.b.c && prev.f !== o.f));
+            o.b.c.push(k); o.b.d.e = k; o.f[0] = 'str'; o.a = 'changed'; o.b.c[0] = 0.5;
+            if (k == 25) { o.b.d.z = 1; o.b.d = 7; }
+            prev = o;
+          }
+          return out.join(';');
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(Snippets))]
+    public void SameResultWhenOptimized(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
+    public static TheoryData<string> LoadEliminationSnippets => new()
+    {
+        // instanceof with the feedback's constructor: prototype reassignment,
+        // primitives, Symbol.hasInstance, proxies, bound functions.
+        """
+        (function() {
+          function A() {} function B() {} B.prototype = Object.create(A.prototype);
+          function isA(x) { return x instanceof A; }
+          var out = [], a = new A(), b = new B();
+          for (var k = 0; k < 40; k++) {
+            out.push(isA(a), isA(b), isA({}), isA(k), isA(null), isA('s'));
+            if (k == 20) A.prototype = {};
+            if (k == 30) Object.defineProperty(A, Symbol.hasInstance, { value: function(v) { return v === 5; } });
+          }
+          out.push(isA(5), isA(new Proxy(b, {})));
+          function isF(x, F) { return x instanceof F; }
+          var bound = A.bind(null);
+          for (var k = 0; k < 20; k++) out.push(isF(b, B), isF(b, k > 10 ? bound : B));
+          return out.join();
+        })()
+        """,
+        // Loaded fields, lengths and context slots reused across a loop whose
+        // body stores some of them (the loop's effects), through aliases, and
+        // with growing arrays and calls.
+        """
+        (function() {
+          var width = 4, height = 3;
+          function f(o, p, a) {
+            var s = 0;
+            for (var i = 0; i < width; i++) {
+              s += o.x + p.x + a.length + a[i % a.length];
+              p.x = p.x + 1;
+              if (i == 2) a.push(i);
+              if (i == 3) width = 3;
+            }
+            width = 4;
+            return s + ':' + o.x + ':' + p.x + ':' + a.length;
+          }
+          function g(o, n) { var t = 0; for (var i = 0; i < n; i++) { t += o.y; o.y = i; height++; t += height; } return t; }
+          var out = [];
+          for (var k = 0; k < 40; k++) {
+            var o = { x: k, y: 1 }, p = (k & 1) ? o : { x: 2 * k, y: 2 }, a = [1, 2, 3];
+            out.push(f(o, p, a), g(o, 5), g(p, 3));
+          }
+          return out.join();
+        })()
+        """,
+        // Context slots an "immutable" load reads while a call assigns them:
+        // a generator's var after its resumption, a derived constructor's
+        // this read by an arrow before and after super().
+        """
+        (function() {
+          function* f() { yield function g() { return '' + test + (gen.next(), test); }; var test = 10; }
+          var gen, out = [];
+          for (var k = 0; k < 40; k++) { gen = f(); out.push(gen.next().value()); }
+          class B { constructor() { this.b = 1; } }
+          class D extends B {
+            constructor(k) {
+              var get = () => { try { return this.b; } catch (e) { return 'tdz'; } };
+              var before = get();
+              super();
+              this.r = before + ':' + get();
+            }
+          }
+          for (var k = 0; k < 40; k++) out.push(new D(k).r);
+          return out.join();
+        })()
+        """,
+        """
+        (function() {
+          function sum(a, n) { var s = 0; for (var j = 0; j < n; j++) for (var i = 0; i < a.length; i++) s += a[i]; return s; }
+          function mutate(a, n) { var s = 0; for (var i = 0; i < n; i++) { s += a.length; if (i % 3 == 0) a.pop(); else a.push(i); } return s + ':' + a.length; }
+          function poly(objs) { var s = 0; for (var i = 0; i < objs.length; i++) { var o = objs[i]; s += o.v; o.v = s; } return s; }
+          var out = [];
+          for (var k = 0; k < 40; k++) {
+            out.push(sum([1, 2, 3, k], 3), sum([1.5, 2], 2), mutate([1, 2, 3], 10));
+            var a = { v: 1 }, b = { w: 0, v: 2 };
+            out.push(poly([a, b, a, b, a]), a.v, b.v);
+          }
+          return out.join();
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(LoadEliminationSnippets))]
+    public void LoadEliminationGivesTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
+    public static TheoryData<string> FieldRepresentationSnippets => new()
+    {
+        // Double fields loaded and stored untagged (LoadDoubleField,
+        // StoreDoubleField): NaN, -0, integers stored into them, the field
+        // generalized to Tagged while the code runs (map deprecation).
+        """
+        (function() {
+          function V(x, y) { this.x = x; this.y = y; }
+          function step(v, w, k) { v.x = v.x * 0.5 + w.y; v.y = v.y - w.x / k; return v.x + v.y; }
+          var out = [], v = new V(1.5, 2.5), w = new V(0.25, -1.75);
+          for (var k = 1; k < 60; k++) {
+            out.push(step(v, w, k).toFixed(9));
+            if (k == 20) w.x = NaN;
+            if (k == 25) { w.x = 0.125; w.y = -0; }
+            if (k == 30) v.x = 7;
+            if (k == 40) { var t = new V(1.5, 2.5); t.x = 'str'; out.push(step(t, w, 1)); }
+          }
+          var z = new V(0.5, 0.5); z.x = NaN; out.push(Object.is(z.x, NaN), step(z, w, 2));
+          var f = new Float64Array(2); var g = new V(0.5, 1.5); g.x = 0 / 0; f[0] = g.x;
+          out.push(new Uint32Array(f.buffer)[1]);
+          return out.join();
+        })()
+        """,
+        // Smi fields (an unchecked untag) generalized to Double and Tagged in
+        // place or by deprecation after the code was optimized.
+        """
+        (function() {
+          function C(n) { this.n = n; this.m = n + 1; }
+          function f(c) { return (c.n | 0) + c.m * 2 + (c.n << 1); }
+          var out = [], cs = [];
+          for (var k = 0; k < 50; k++) {
+            var c = new C(k);
+            cs.push(c);
+            out.push(f(c));
+            if (k == 20) c.n = 2.5;
+            if (k == 30) c.m = 'x';
+            if (k == 40) c.n = {};
+          }
+          for (var c of cs) out.push(f(c));
+          return out.join();
+        })()
+        """,
+        // HeapObject fields with a class field type (the loaded value's map
+        // is known): the field type generalized in place by storing an object
+        // of another shape, or null, after the code was optimized.
+        """
+        (function() {
+          function Vec(x, y) { this.x = x; this.y = y; }
+          function Body(p, v) { this.pos = p; this.vel = v; }
+          function move(b) { b.pos.x += b.vel.x; b.pos.y += b.vel.y; return b.pos.x * 10 + b.pos.y; }
+          var out = [], bodies = [];
+          for (var k = 0; k < 8; k++) bodies.push(new Body(new Vec(k, 1), new Vec(1, k)));
+          for (var k = 0; k < 60; k++) {
+            for (var b of bodies) out.push(move(b));
+            if (k == 25) bodies[3].vel = { y: 2, x: 3 };
+            if (k == 35) bodies[4].pos = { x: 1, y: 1, z: 0 };
+            if (k == 45) { bodies[5].vel = null; try { move(bodies[5]); } catch (e) { out.push(e.constructor.name); } bodies[5].vel = new Vec(0, 0); }
+          }
+          return out.join();
+        })()
+        """,
+        // Field-adding transitions in constructors written inline (in-object
+        // fields: the value, then the map): doubles, NaN, objects, fields
+        // beyond the in-object ones, construction after slack tracking.
+        """
+        (function() {
+          function V(x, y, z) { this.x = x; this.y = y; this.z = z; }
+          V.prototype.add = function (o) { return new V(this.x + o.x, this.y + o.y, this.z + o.z); };
+          function Big(a) { this.a = a; this.b = a + 1; this.c = { a: a }; this.d = 'd' + a; this.e = a * 0.5; this.f = [a]; this.g = a; this.h = a; this.i = a; this.j = a; this.k = a; }
+          var out = [], acc = new V(0, 0, 0);
+          for (var k = 0; k < 60; k++) {
+            acc = acc.add(new V(k * 0.5, -k, k % 3 ? 0 / 0 : 1));
+            var b = new Big(k);
+            out.push(acc.x, acc.y, isNaN(acc.z), b.c.a + b.d + b.e + b.f[0] + b.k);
+          }
+          var f = new Float64Array(1); f[0] = new V(0 / 0, 0, 0).x;
+          out.push(new Uint32Array(f.buffer)[1], Object.keys(new Big(1)).join(''));
+          return out.join();
+        })()
+        """,
+        // Const fields of constant objects folded (TryFoldLoadConstantDataField):
+        // the field changed after optimization (constness generalized, the
+        // code deoptimized), a double const field, a prototype's const field.
+        """
+        (function() {
+          var Dir = { FWD: 1, BACK: -1, scale: 0.5 };
+          function P() {} P.prototype = { k: 10 };
+          function f(x) { return (x == Dir.FWD ? 'f' : 'b') + x * Dir.scale + new P().k; }
+          var out = [];
+          for (var k = 0; k < 60; k++) {
+            out.push(f(k & 1 ? 1 : -1));
+            if (k == 30) Dir.FWD = -1;
+            if (k == 40) Dir.scale = 2.25;
+            if (k == 50) P.prototype.k = 'changed';
+          }
+          return out.join();
+        })()
+        """,
+        // Polymorphic loads of one field index with different representations
+        // (merged maps load it tagged).
+        """
+        (function() {
+          function A(v) { this.v = v; } function B(v) { this.v = v; } function D(v) { this.v = v; }
+          function get(o) { return o.v; }
+          var out = [], os = [new A(1), new B(1.5), new D({ k: 1 }), new A(2), new B(-0)];
+          for (var k = 0; k < 60; k++) for (var o of os) { var r = get(o); out.push(typeof r === 'object' ? r.k : r); }
+          return out.join();
+        })()
+        """,
+    };
+
+    public static TheoryData<string> StoreSnippets => new()
+    {
+        // Element and context slot stores written inline: numbers (their
+        // payload only), objects into slots that held numbers and back, fresh
+        // objects into old arrays and contexts kept across garbage
+        // collections (the write barrier of a changed reference).
+        """
+        (function() {
+          var counter = 0, last = null;
+          function bump(a, k) {
+            counter = counter + k;
+            for (var i = 0; i < a.length; i++) a[i] = (a[i] * 3 + k) & 0xffff;
+            return counter;
+          }
+          function fill(a, k) {
+            for (var i = 0; i < a.length; i++) a[i] = (i & 1) ? { v: k + i, s: 'x' + i } : k * 0.5 + i;
+            last = a[k % a.length];
+            return a.length;
+          }
+          function nested() {
+            var depth1 = 0;
+            return function (k) { return (function () { depth1 = depth1 + k; return depth1; })(); };
+          }
+          var smis = [1, 2, 3, 4, 5, 6, 7, 8], objs = new Array(16).fill(0), out = [], n = nested();
+          for (var k = 0; k < 60; k++) {
+            out.push(bump(smis, k), fill(objs, k), n(k));
+            var junk = [];
+            for (var j = 0; j < 200; j++) junk.push({ j: j, s: 'junk' + j });
+          }
+          for (var i = 0; i < objs.length; i++) out.push(typeof objs[i] === 'object' ? objs[i].v + objs[i].s : objs[i]);
+          out.push(smis.join(), typeof last === 'object' ? last.v : last);
+          return out.join();
+        })()
+        """,
+    };
+
+    public static TheoryData<string> IndexSnippets => new()
+    {
+        // Keyed accesses whose keys are tagged values of unknown type
+        // (CheckedObjectToIndex): integral numbers inline, -0, fractions,
+        // NaN, out of int32 range, negative, array index strings and others.
+        """
+        (function() {
+          var a = [10, 20, 30, 40];
+          function at(o) { return a[o.k]; }
+          function put(o, v) { a[o.k] = v; return a.length; }
+          var keys = [0, 1, 2, 3, -0, 1.5, NaN, 2147483648, -1, '2', '01', 'x', 4294967295, 1e21];
+          var out = [];
+          for (var r = 0; r < 30; r++) for (var k of keys) out.push(at({ k: k }));
+          for (var k of keys) { try { out.push(put({ k: k }, 7)); } catch (e) { out.push(e.constructor.name); } }
+          out.push(a.join(), Object.keys(a).join());
+          return out.join();
+        })()
+        """,
+    };
+
+    public static TheoryData<string> LoopPeelingSnippets => new()
+    {
+        // Peeled loops (PeelLoop): zero, one and many iterations; exits by
+        // break, return and throw in the first iteration and later; continue;
+        // a map change of a checked object inside the loop after the first
+        // iteration; loops in inlined functions; nested loops (the inner one
+        // peeled); the accumulator and registers live after the loop.
+        """
+        (function() {
+          function sum(a, n) { var s = 0; for (var i = 0; i < n; i++) s += a.x * a.v[i % a.v.length]; return s; }
+          function find(a, k) { for (var i = 0; i < a.length; i++) { if (a[i] === k) return i; if (a[i] < 0) break; } return -1; }
+          function skip(a) { var c = 0; for (var i = 0; i < a.length; i++) { if (a[i] & 1) continue; c += a[i]; } return c; }
+          function grow(o, n) { for (var i = 0; i < n; i++) { o.x = o.x + i; if (i == 3) o.y = 'new'; } return o.x + (o.y || ''); }
+          function thrower(a) { for (var i = 0; i < a.length; i++) if (a[i] === 'boom') throw new Error('at ' + i); return 'none'; }
+          function nested(m) { var t = 0; for (var i = 0; i < m.length; i++) for (var j = 0; j < m[i].length; j++) t += m[i][j] * (i + 1); return t; }
+          function outer(a, n) { return sum(a, n) + sum(a, 1); }
+          var out = [], o = { x: 2, v: [1, 2, 3] };
+          for (var k = 0; k < 40; k++) {
+            out.push(sum(o, k % 5), find([5, 6, k, -1, k], k), skip([1, 2, 3, 4, k]), grow({ x: k }, k % 6), outer(o, 3));
+            try { out.push(thrower(k % 4 ? [1, 2] : [1, 'boom'])); } catch (e) { out.push(e.message); }
+            out.push(nested([[1, 2], [k], []]));
+          }
+          out.push(sum({ x: 1.5, v: [0.5, 2] }, 4), sum({ v: [1], x: 3 }, 2), find('abc', 'c'));
+          return out.join();
+        })()
+        """,
+    };
+
+    [Theory]
+    [MemberData(nameof(LoopPeelingSnippets))]
+    public void PeeledLoopsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
+    [Theory]
+    [MemberData(nameof(IndexSnippets))]
+    public void ObjectKeysGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
+    [Fact]
+    public void DoubleFieldTransitionOfATaggedValueCompiles()
+    {
+        // A field-adding transition to a Double field whose value is a tagged
+        // phi (x ? x : 0) stores the number's payload inline; the code must
+        // compile (a failed compile leaves the function unoptimized).
+        Assert.Equal("2.5,8", MaglevCompilerTest.Run("--maglev", """
+            function V(x) { this.initialize(x); }
+            V.prototype = { x: 0.0, initialize: function (x) { this.x = (x ? x : 0); } };
+            var init = V.prototype.initialize;
+            %PrepareFunctionForOptimization(init);
+            new V(0.5); new V(1.5); new V(0);
+            %OptimizeMaglevOnNextCall(init);
+            var v = new V(2.5);
+            [v.x, %GetOptimizationStatus(init) & 8].join();
+            """));
+    }
+
+    [Fact]
+    public void StoresInAFunctionWithACatchBlock()
+    {
+        // With exception handlers, transition, element and context stores go
+        // through the inlined StoreSlot helper (RyuJIT is very slow on the
+        // shared address locals there): same results, optimized.
+        Assert.Equal("1,2,3,4,8", MaglevCompilerTest.Run("--maglev", """
+            function P(a, b) { this.a = a; this.b = b; }
+            function f(arr, n) {
+              var c = 0;
+              function inc() { c++; }
+              var p = new P(n, n + 1);
+              arr[0] = p.a; arr[1] = p.b;
+              inc(); inc(); inc();
+              try { if (n > 100) throw new Error(); } catch (e) { return -1; }
+              return arr.concat([c, c + 1]);
+            }
+            %PrepareFunctionForOptimization(f);
+            f([0, 0], 1); f([0, 0], 1);
+            %OptimizeMaglevOnNextCall(f);
+            var r = f([0, 0], 1);
+            r.join() === "1,2,3,4" ? [r.join(), %GetOptimizationStatus(f) & 8].join() : r.join();
+            """));
+    }
+
+    [Fact]
+    public void InlineElementStoreKeepsItsUntaggedValueLive()
+    {
+        // The store writes x + 1's int32 (under its tagging): its IL local
+        // must not be shared with the values defined between the two.
+        Assert.Equal("6,6", MaglevCompilerTest.Run("--maglev", """
+            function f(a, b, i) { var x = a[i]; b[i] = x + 1; var y = a[i]; return y; }
+            function make() { var a = new Array(4); a[2] = 5; return a; }
+            %PrepareFunctionForOptimization(f);
+            var w = make(); f(w, w, 2);
+            var e = make(); var expected = f(e, e, 2);
+            %OptimizeMaglevOnNextCall(f);
+            var r = make();
+            [expected, f(r, r, 2)].join();
+            """));
+    }
+
+    [Theory]
+    [MemberData(nameof(StoreSnippets))]
+    public void InlineStoresGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
+    [Theory]
+    [MemberData(nameof(FieldRepresentationSnippets))]
+    public void FieldRepresentationsGiveTheSameResults(string source) => MaglevCompilerTest.AssertSameWhenOptimized(source);
+
+    [Fact]
+    public void UndetectableComparesFollowTheProtector()
+    {
+        // x == null: null and undefined only while no undetectable object
+        // exists (NoUndetectableObjects protector); creating one deoptimizes
+        // the code, which then also tests the map bit.
+        string source = """
+            function isNull(x) { return x == null; }
+            function nn(x) { return x != null ? 1 : 0; }
+            function tb(o) { var r = o; if (o && o.k) r = o.k; return r ? 1 : 0; }
+            var vals = [null, undefined, 0, '', {}, [], false, NaN];
+            var out = [];
+            for (var k = 0; k < 30; k++) for (var v of vals) out.push(isNull(v), nn(v), tb(v), tb({ k: v }), tb(k & 1 ? null : { k: k }));
+            var u = %GetUndetectable();
+            out.push(isNull(u), nn(u), isNull({}), nn(null));
+            for (var k = 0; k < 30; k++) out.push(isNull(u), isNull(k), nn(u), tb(u), tb({ k: u }), tb(k & 1 ? null : { k: k }));
+            out.join();
+            """;
+        string interpreted = MaglevCompilerTest.Run("--no-maglev --no-sparkplug", source);
+        foreach (string flags in MaglevCompilerTest.StressConfigurations)
+        {
+            Assert.Equal(interpreted, MaglevCompilerTest.Run(flags, source));
+        }
+    }
+
+    [Fact]
+    public void KeyedLoadsWithElementsKindTransitionsStayOptimized()
+    {
+        // The IC's transitioning handler for the packed map: the optimized
+        // load transitions the array to holey and loads (no generic access).
+        Assert.Equal("1,,3,8,true", MaglevCompilerTest.Run("--maglev", """
+            function at(a, i) { return a[i]; }
+            %PrepareFunctionForOptimization(at);
+            at([1, 2], 0); at([1, , 2], 0); at([1, 2], 1); at([3, , 4], 1);
+            %OptimizeMaglevOnNextCall(at);
+            var p = [1, 2, 3];
+            var r = [at(p, 0), at([1, , 2], 1), at(p, 2), %GetOptimizationStatus(at) & 8, %HasHoleyElements(p)];
+            r.join();
+            """));
+    }
+
+    [Fact]
+    public void FunctionArgumentsSeesAssignedParameters()
+    {
+        // The assignments stay in IL locals in the loop and are written to
+        // the frame before the calls that can read them.
+        Assert.Equal("5,2|8;8", MaglevCompilerTest.Run("--maglev", """
+            function read() { return f.arguments[0] + ',' + f.arguments.length; }
+            function f(a, n) { for (var i = 0; i < n; i++) a++; var r = read(); a += 3; return r + '|' + read().split(',')[0]; }
+            %PrepareFunctionForOptimization(f);
+            f(0, 2); f(1, 2);
+            %OptimizeMaglevOnNextCall(f);
+            [f(2, 3), %GetOptimizationStatus(f) & 8].join(';');
+            """));
+    }
+
+    [Fact]
+    public void FailedLoopEntryUntaggingDeoptsOnceThenStaysTagged()
+    {
+        // A loop counter from a parameter is untagged before the loop; a
+        // double makes that check deopt, and the next compile keeps the phi
+        // tagged (no deopt loop).
+        Assert.Equal("45,8,50,0,50,8", MaglevCompilerTest.Run("--maglev", """
+            function sum(i, n) { var s = 0; for (; i < n; i++) s += i; return s; }
+            %PrepareFunctionForOptimization(sum);
+            sum(0, 10); sum(1, 10);
+            %OptimizeMaglevOnNextCall(sum);
+            var r = [sum(0, 10), %GetOptimizationStatus(sum) & 8, sum(0.5, 10), %GetOptimizationStatus(sum) & 8];
+            %OptimizeMaglevOnNextCall(sum);
+            r.push(sum(0.5, 10), %GetOptimizationStatus(sum) & 8);
+            r.join();
+            """));
+    }
+}

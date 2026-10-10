@@ -1,0 +1,312 @@
+// The fast paths of the hottest TFJ/Torque builtins, taken by the interpreter's
+// call handlers before the generic call path, as V8's builtins take them on
+// entry:
+//   math.tq          MathAbs/Ceil/Floor/Round/Trunc/Sqrt: typeswitch on Smi and
+//                    HeapNumber; MathMax/MathMin/MathPow/MathAtan2/MathImul with
+//                    Number arguments.
+//   builtins-string.tq  StringPrototypeCharCodeAt/CharAt/CodePointAt: a String
+//                    receiver and a Smi position (ToInteger_Inline's fast case).
+//   string.tq        StringFromCharCode with one Number argument (the single
+//                    character string cache).
+//   string-indexof.tq   StringPrototypeIndexOf with a String receiver and a
+//                    String search string, and a Number position or none.
+//   string-substring.tq, string-slice.tq, string-substr.tq  with a String
+//                    receiver and Number positions.
+//   number.tq        NumberPrototypeToString without a radix: NumberToString
+//                    (the number-string cache).
+//   typed_array.tq   TypedArrayPrototypeLength (the length getter) of an
+//                    attached fixed-length typed array.
+//   array-push/pop/shift (builtins-array-gen.cc): BuiltinsArray.TryFastPush,
+//                    TryFastPop, TryFastShift.
+// Each returns false, having done nothing, when its fast case does not apply;
+// the call then goes through InterpreterCalls.Call and the builtin itself.
+// None of these cases can run JavaScript or throw, so they need no builtin
+// frame record (see BuiltinFramelessCalls.cs).
+using System.Runtime.CompilerServices;
+using V8Sharp.Objects;
+using V8Sharp.Roots;
+
+namespace V8Sharp.Builtins;
+
+public static class BuiltinFastPaths
+{
+    /// <summary>The fast paths of builtins called with no arguments.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryCall0(Isolate isolate, JSValue callee, JSValue receiver, out JSValue result)
+    {
+        if (callee._obj is JSFunction function && function.Shared.BuiltinId != Builtin.NoBuiltinId)
+        {
+            return TryCall0(isolate, function.Shared.BuiltinId, receiver, out result);
+        }
+        result = default;
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool TryCall0(Isolate isolate, Builtin id, JSValue receiver, out JSValue result)
+    {
+        switch (id)
+        {
+            case Builtin.ArrayPrototypePop:
+                return BuiltinsArray.TryFastPop(isolate, receiver, out result);
+            case Builtin.ArrayPrototypeShift:
+                return BuiltinsArray.TryFastShift(isolate, receiver, out result);
+            case Builtin.NumberPrototypeToString:
+                if (receiver._obj == NumberTag.Instance)
+                {
+                    result = isolate.Factory.NumberToString(receiver);
+                    return true;
+                }
+                break;
+            case Builtin.TypedArrayPrototypeLength:
+                // The getter (typed_array.tq) on an attached fixed-length array:
+                // JSTypedArray::length.
+                if (receiver._obj is JSTypedArray typedArray && TypedArrayElementsOps.TryGetFixedLength(typedArray, out ulong length))
+                {
+                    result = JSValue.FromNumber(length);
+                    return true;
+                }
+                break;
+        }
+        result = default;
+        return false;
+    }
+
+    /// <summary>The fast paths of builtins called with one argument.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryCall1(Isolate isolate, JSValue callee, JSValue receiver, JSValue arg0, out JSValue result)
+    {
+        if (callee._obj is JSFunction function && function.Shared.BuiltinId != Builtin.NoBuiltinId)
+        {
+            return TryCall1(isolate, function, receiver, arg0, out result);
+        }
+        result = default;
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool TryCall1(Isolate isolate, JSFunction function, JSValue receiver, JSValue arg0, out JSValue result)
+    {
+        Builtin id = function.Shared.BuiltinId;
+        if (arg0._obj == NumberTag.Instance)
+        {
+            double x = arg0._num;
+            switch (id)
+            {
+                case Builtin.MathFloor:
+                    result = JSValue.FromNumber(Math.Floor(x));
+                    return true;
+                case Builtin.MathCeil:
+                    result = JSValue.FromNumber(Math.Ceiling(x));
+                    return true;
+                case Builtin.MathRound:
+                    result = JSValue.FromNumber(BuiltinsMath.Float64Round(x));
+                    return true;
+                case Builtin.MathTrunc:
+                    result = JSValue.FromNumber(Math.Truncate(x));
+                    return true;
+                case Builtin.MathAbs:
+                    result = JSValue.FromNumber(Math.Abs(x));
+                    return true;
+                case Builtin.MathSqrt:
+                    result = JSValue.FromNumber(Math.Sqrt(x));
+                    return true;
+                case Builtin.StringPrototypeCharCodeAt:
+                case Builtin.StringPrototypeCharAt:
+                case Builtin.StringPrototypeCodePointAt:
+                    if (receiver.StringOrNull is JSString s)
+                    {
+                        // GenerateStringAt with a Smi position.
+                        int index = (int)x;
+                        if (index != x) break;
+                        if ((uint)index >= (uint)s.Length)
+                        {
+                            result = id switch
+                            {
+                                Builtin.StringPrototypeCharCodeAt => JSValue.NaN,
+                                Builtin.StringPrototypeCharAt => ReadOnlyRoots.empty_string,
+                                _ => JSValue.Undefined,
+                            };
+                            return true;
+                        }
+                        if (id == Builtin.StringPrototypeCodePointAt) break;
+                        char c = s is SeqString seq ? seq.Value[index] : s.Get(index);
+                        result = id == Builtin.StringPrototypeCharCodeAt
+                            ? JSValue.FromInt(c)
+                            : BuiltinsString.StringFromSingleCharCode(isolate, c);
+                        return true;
+                    }
+                    break;
+                case Builtin.StringFromCharCode:
+                    // StringFromCharCode's single argument case (string.tq):
+                    // TruncateTaggedToWord32 of a Number, then the single
+                    // character string cache.
+                    result = isolate.Factory.LookupSingleCharacterStringFromCode((char)V8Sharp.Base.Numbers.Conversions.DoubleToInt32(x));
+                    return true;
+            }
+        }
+        if (receiver._obj is { IsString: true } && arg0._obj == NumberTag.Instance &&
+            TryCallString2(isolate, id, Unsafe.As<JSString>(receiver._obj), arg0, JSValue.Undefined, out result))
+        {
+            return true;
+        }
+        if (id == Builtin.StringPrototypeIndexOf && arg0._obj is JSString search && receiver.StringOrNull is JSString subject)
+        {
+            // StringPrototypeIndexOf (string-indexof.tq) with a String receiver
+            // and search string and no position: StringIndexOf from 0.
+            result = JSValue.FromInt(BuiltinsString.StringIndexOf(subject, search, 0));
+            return true;
+        }
+        if (id == Builtin.ArrayPrototypePush) return BuiltinsArray.TryFastPush(isolate, function, receiver, arg0, out result);
+        if (IsRegExpStringBuiltin(isolate, id, receiver, arg0, JSValue.Undefined, 1) && IsSameRealm(isolate, function))
+        {
+            result = BuiltinRegistry.Invoke(isolate, id, function, JSValue.Undefined, receiver, new ReadOnlySpan<JSValue>(in arg0));
+            return true;
+        }
+        result = default;
+        return false;
+    }
+
+    /// <summary>
+    /// The fast paths of builtins called with two arguments and a receiver:
+    /// those of <see cref="TryCall2(JSValue, JSValue, JSValue, out JSValue)"/>,
+    /// then the String.prototype methods taking positions.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryCall2(Isolate isolate, JSValue callee, JSValue receiver, JSValue arg0, JSValue arg1, out JSValue result)
+    {
+        if (TryCall2(callee, arg0, arg1, out result)) return true;
+        if (receiver._obj is { IsString: true } && callee._obj is JSFunction function && function.Shared.BuiltinId != Builtin.NoBuiltinId)
+        {
+            Builtin id = function.Shared.BuiltinId;
+            if (IsRegExpStringBuiltin(isolate, id, receiver, arg0, arg1, 2) && IsSameRealm(isolate, function))
+            {
+                ReadOnlySpan<JSValue> args = [arg0, arg1];
+                result = BuiltinRegistry.Invoke(isolate, id, function, JSValue.Undefined, receiver, args);
+                return true;
+            }
+            return TryCallString2(isolate, id, Unsafe.As<JSString>(receiver._obj), arg0, arg1, out result);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// String.prototype.substring/slice/substr (string-substring.tq,
+    /// string-slice.tq, string-substr.tq) with Number positions (or an
+    /// undefined end), and indexOf with a String search string and a Number
+    /// position: the clamping of these cannot call JavaScript or throw.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool TryCallString2(Isolate isolate, Builtin id, JSString s, JSValue arg0, JSValue arg1, out JSValue result)
+    {
+        bool numbers = arg0._obj == NumberTag.Instance && (arg1._obj == NumberTag.Instance || arg1.IsUndefined);
+        int length = s.Length;
+        switch (id)
+        {
+            case Builtin.StringPrototypeSubstring when numbers:
+            {
+                int start = BuiltinsString.ClampToIndexRange(isolate, arg0, length);
+                int end = arg1.IsUndefined ? length : BuiltinsString.ClampToIndexRange(isolate, arg1, length);
+                if (end < start) (start, end) = (end, start);
+                result = BuiltinsString.SubString(isolate, s, start, end);
+                return true;
+            }
+            case Builtin.StringPrototypeSlice when numbers:
+            {
+                int start = BuiltinsString.ConvertAndClampRelativeIndex(isolate, arg0, length);
+                int end = arg1.IsUndefined ? length : BuiltinsString.ConvertAndClampRelativeIndex(isolate, arg1, length);
+                result = end <= start ? ReadOnlyRoots.empty_string : BuiltinsString.SubString(isolate, s, start, end);
+                return true;
+            }
+            case Builtin.StringPrototypeSubstr when numbers:
+            {
+                int start = BuiltinsString.ConvertAndClampRelativeIndex(isolate, arg0, length);
+                int lengthLimit = length - start;
+                int resultLength = arg1.IsUndefined ? lengthLimit : BuiltinsString.ClampToIndexRange(isolate, arg1, lengthLimit);
+                result = resultLength == 0 ? ReadOnlyRoots.empty_string : BuiltinsString.SubString(isolate, s, start, start + resultLength);
+                return true;
+            }
+            case Builtin.StringPrototypeIndexOf when arg0._obj is JSString search && arg1._obj == NumberTag.Instance:
+                result = JSValue.FromInt(BuiltinsString.StringIndexOf(s, search, BuiltinsString.ClampToIndexRange(isolate, arg1, length)));
+                return true;
+        }
+        result = default;
+        return false;
+    }
+
+    /// <summary>
+    /// RegExp.prototype.exec/test with an unmodified JSRegExp receiver (the
+    /// initial map) and a String; String.prototype.match/replace/split with a
+    /// String receiver, a String or unmodified JSRegExp pattern, and a String
+    /// replacement or no limit. These are TFJ builtins in V8 (no frame of
+    /// their own, never in stack traces), so V8Sharp invokes them without the
+    /// builtin frame record (BuiltinFramelessCalls.cs) when, as here, their
+    /// fast paths apply: the builtins still check the prototype themselves
+    /// and take their slow paths when it changed.
+    /// </summary>
+    static bool IsRegExpStringBuiltin(Isolate isolate, Builtin id, JSValue receiver, JSValue arg0, JSValue arg1, int argc)
+    {
+        switch (id)
+        {
+            case Builtin.RegExpPrototypeExec:
+            case Builtin.RegExpPrototypeTest:
+                return argc == 1 && BuiltinsRegExp.HasInitialRegExpMap(isolate, receiver._obj) && arg0._obj is { IsString: true };
+            case Builtin.StringPrototypeMatch:
+                return argc == 1 && receiver._obj is { IsString: true } && BuiltinsRegExp.HasInitialRegExpMap(isolate, arg0._obj);
+            case Builtin.StringPrototypeSplit:
+                return argc == 1 && receiver._obj is { IsString: true } && arg0._obj is { IsString: true };
+            case Builtin.StringPrototypeReplace:
+                return argc == 2 && receiver._obj is { IsString: true } &&
+                       (arg0._obj is { IsString: true } || BuiltinsRegExp.HasInitialRegExpMap(isolate, arg0._obj)) &&
+                       arg1._obj is { IsString: true };
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// The builtin belongs to the current realm, so running it in the
+    /// caller's context allocates its results in the right native context.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsSameRealm(Isolate isolate, JSFunction function) =>
+        ReferenceEquals(function.Context.NativeContext, isolate.Context?.NativeContext);
+
+    /// <summary>The fast paths of builtins called with two arguments.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryCall2(JSValue callee, JSValue arg0, JSValue arg1, out JSValue result)
+    {
+        if (callee._obj is JSFunction function && function.Shared.BuiltinId != Builtin.NoBuiltinId &&
+            arg0._obj == NumberTag.Instance && arg1._obj == NumberTag.Instance)
+        {
+            return TryCall2(function.Shared.BuiltinId, arg0._num, arg1._num, out result);
+        }
+        result = default;
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool TryCall2(Builtin id, double x, double y, out JSValue result)
+    {
+        switch (id)
+        {
+            case Builtin.MathMax:
+                result = JSValue.FromNumber(Math.Max(x, y));
+                return true;
+            case Builtin.MathMin:
+                result = JSValue.FromNumber(Math.Min(x, y));
+                return true;
+            case Builtin.MathPow:
+                result = JSValue.FromNumber(V8Sharp.Base.Numbers.InternalMath.pow(x, y));
+                return true;
+            case Builtin.MathAtan2:
+                result = JSValue.FromNumber(V8Sharp.Base.Ieee754.atan2(x, y));
+                return true;
+            case Builtin.MathImul:
+                result = JSValue.FromInt(unchecked(V8Sharp.Base.Numbers.Conversions.DoubleToInt32(x) * V8Sharp.Base.Numbers.Conversions.DoubleToInt32(y)));
+                return true;
+        }
+        result = default;
+        return false;
+    }
+}
