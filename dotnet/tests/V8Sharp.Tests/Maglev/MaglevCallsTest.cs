@@ -11,6 +11,23 @@ public class MaglevCallsTest
 {
     public static TheoryData<string> Snippets => new()
     {
+        // parseInt and Number.parseInt of integers (TryReduceNumberParseInt),
+        // radix undefined, 0, 10 and others, no argument, and the inputs that
+        // are not reduced (doubles, strings, booleans).
+        """
+        (function() {
+          var o = { n: 3 };
+          function f(i, s) {
+            var a = [parseInt(i), parseInt(i | 0, 10), Number.parseInt(o.n, 0), parseInt(i, undefined), parseInt(i, 16),
+                     parseInt(), parseInt(s), parseInt(i / 3), parseInt(i > 5), parseInt(-1), parseInt(i >>> 0)];
+            return a.join(',');
+          }
+          var out = [];
+          for (var i = 0; i < 150; i++) { o.n = i; out.push(f(i, ' 0x1' + i)); }
+          out.push(f(-7, '12abc'), f(2147483647, '-0'));
+          return out.slice(-4).join('|');
+        })()
+        """,
         // Function.prototype.call (ReduceFunctionPrototypeCall): super
         // constructor and super method calls through call, call of call, and
         // receivers of call that are not functions.

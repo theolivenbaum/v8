@@ -601,6 +601,8 @@ public sealed partial class MaglevGraphBuilder
                 case Builtin.MathMax:
                 case Builtin.MathMin:
                     return ReduceMathMinMax(id == Builtin.MathMax, args);
+                case Builtin.NumberParseInt:
+                    return TryReduceNumberParseInt(args);
                 case Builtin.ArrayPrototypePush:
                     return TryReduceArrayPrototypePush(receiver, args);
                 case Builtin.ArrayPrototypePop:
@@ -655,6 +657,32 @@ public sealed partial class MaglevGraphBuilder
             return null;
         }
         return null;
+    }
+
+    /// <summary>TryReduceNumberParseInt (also the global parseInt): an integer with radix undefined, 0 or 10 is itself.</summary>
+    ValueNode? TryReduceNumberParseInt(ValueNode[] args)
+    {
+        if (args.Length == 0) return GetFloat64Constant(double.NaN);
+        if (args.Length != 1)
+        {
+            ValueNode radix = args[1];
+            if (radix.Opcode == Opcode.RootConstant)
+            {
+                if (!radix.ConstantValue().IsUndefined) return null;
+            }
+            else if (radix.Opcode is not (Opcode.SmiConstant or Opcode.Int32Constant) || !radix.TryGetInt32Constant(out int r) || r is not (10 or 0))
+            {
+                return null;
+            }
+        }
+        ValueNode arg = args[0];
+        return arg.Representation switch
+        {
+            ValueRepresentation.kInt32 or ValueRepresentation.kUint32 => arg,
+            ValueRepresentation.kTagged when CheckType(arg, NodeType.kSmi) => arg,
+            // TODO in V8 as well: strings, doubles.
+            _ => null,
+        };
     }
 
     ValueNode? ReduceMathUnary(Builtin id, ValueNode[] args)
