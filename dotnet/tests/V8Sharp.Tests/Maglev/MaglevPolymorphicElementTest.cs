@@ -23,6 +23,21 @@ public class MaglevPolymorphicElementTest
           return out.slice(-12).join(',');
         })()
         """,
+        // Stores: typed arrays of several kinds and an array (gbemu's getTypedArray),
+        // clamping and wrapping, doubles into integer kinds, out of bounds.
+        """
+        (function() {
+          function fill(a, n, v) { for (var i = 0; i < n; i++) a[i] = v; return a; }
+          var out = [];
+          for (var k = 0; k < 60; k++) {
+            out.push(fill(new Uint8Array(3), 3, 300 + k).join(), fill(new Int32Array(2), 2, -k - 0.5).join(),
+                     fill(new Float32Array(2), 2, k / 3).join(), fill([], 3, k).join(), fill(new Uint8ClampedArray(2), 2, 1.5 * k).join());
+          }
+          var t = new Int16Array(2); fill(t, 4, 7); out.push(t.join(), String(t[3]));
+          out.push(fill(new Float64Array(2), 2, 'x').join(), fill([1.5], 2, 'str').join());
+          return out.slice(-9).join('|');
+        })()
+        """,
     };
 
     [Theory]

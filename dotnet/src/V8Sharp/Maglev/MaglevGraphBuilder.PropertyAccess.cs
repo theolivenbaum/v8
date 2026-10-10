@@ -1809,12 +1809,18 @@ public sealed partial class MaglevGraphBuilder
             if (feedback.Count < 2 && !IsElementsTransitionStore(feedback[0], out _)) return false;
             foreach ((Map Map, JSValue Handler) entry in feedback)
             {
-                if (!CollectElementAccess([entry], load: false, out _, out _, out _) && !IsElementsTransitionStore(entry, out _)) return false;
+                if (!CollectElementAccess([entry], load: false, out _, out _, out _) && !IsElementsTransitionStore(entry, out _) &&
+                    !CollectTypedArrayAccess([entry], load: false, out _, out _))
+                {
+                    return false;
+                }
             }
         }
         KeyedAccessStoreMode mode = KeyedAccessStoreMode.kInBounds;
-        foreach ((Map _, JSValue handler) in feedback)
+        foreach ((Map map, JSValue handler) in feedback)
         {
+            // (A typed array arm has its own out-of-bounds mode.)
+            if (!grouped && map.InstanceType == InstanceType.JSTypedArrayType) continue;
             KeyedAccessStoreMode m = ((StoreHandler)handler.Object).StoreMode;
             if (m == KeyedAccessStoreMode.kIgnoreTypedArrayOOB) return false;
             if (m != KeyedAccessStoreMode.kInBounds) mode = KeyedAccessStoreMode.kGrowAndHandleCOW;
@@ -1862,6 +1868,17 @@ public sealed partial class MaglevGraphBuilder
                         }, DeoptimizeReason.kWrongMap);
                         RecordKnownMaps(obj, [to]);
                         BuildElementStore(obj, polymorphicIndex, value, to.ElementsKind, to.InstanceType == InstanceType.JSArrayType, mode);
+                        return null;
+                    }));
+                    continue;
+                }
+                if (CollectTypedArrayAccess([entry], load: false, out ElementsKind typedEntryKind, out bool entryIgnoresOOB))
+                {
+                    // A typed array arm (V8's polymorphic access builds each map's element access).
+                    List<(Map Map, JSValue Handler)> typedEntry = [entry];
+                    cases.Add(([entry.Map], () =>
+                    {
+                        BuildTypedArrayElementStore(obj, key, value, typedEntry, typedEntryKind, entryIgnoresOOB);
                         return null;
                     }));
                     continue;
