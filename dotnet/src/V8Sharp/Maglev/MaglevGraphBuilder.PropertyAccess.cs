@@ -137,6 +137,11 @@ public sealed partial class MaglevGraphBuilder
         ValueNode receiver = LoadRegister(0);
         JSValue name = Constant(ConstantPoolIndex(1));
         int slot = FeedbackSlot(2);
+        if (TryFoldFunctionPrototype(receiver, (Name)name.Object) is { } prototype)
+        {
+            SetAccumulator(GetConstant(prototype));
+            return;
+        }
         if (IsUninitializedIC(slot))
         {
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForGenericNamedAccess);
@@ -159,6 +164,36 @@ public sealed partial class MaglevGraphBuilder
         }
         SetAccumulator(LabelGenericSite(CallBaseline("GetNamedProperty", [receiver],
             [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.C(name)]), slot, (Name)name.Object)!);
+    }
+
+    /// <summary>
+    /// TryBuildNamedAccess's "prototype" of a constant JSFunction: the
+    /// prototype as a constant (V8: DependOnPrototypeProperty). V8Sharp folds
+    /// it only for a function with an initial map, whose prototype changes
+    /// deoptimize the code depending on the map (InitialMapChanged), and with
+    /// its "prototype" property still the FunctionPrototypeAccessor; V8 also
+    /// creates the initial map of a function without one when it installs the
+    /// code, which a V8Sharp graph built off the main thread cannot.
+    /// </summary>
+    JSReceiver? TryFoldFunctionPrototype(ValueNode receiver, Name name)
+    {
+        if (!ReferenceEquals(name, ReadOnlyRoots.prototype_string) || receiver.Opcode != Opcode.Constant ||
+            receiver.Value0.HeapObjectOrNull is not JSFunction function)
+        {
+            return null;
+        }
+        Map functionMap = function.Map;
+        if (functionMap.IsDictionaryMap) return null;
+        DescriptorArray descriptors = functionMap.InstanceDescriptors;
+        InternalIndex index = descriptors.Search(ReadOnlyRoots.prototype_string, functionMap);
+        if (index.IsNotFound || !ReferenceEquals(descriptors.GetStrongValue(index).HeapObjectOrNull, Builtins.Accessors.FunctionPrototypeAccessor))
+        {
+            return null;
+        }
+        // (Not the non-instance prototype mode, where "prototype" is the Tuple2's value.)
+        if (function.PrototypeOrInitialMap is not Map initialMap || initialMap.Prototype is not { } prototype) return null;
+        _info.AddDependency(initialMap, Objects.DependentCode.DependencyGroups.InitialMapChanged);
+        return prototype;
     }
 
     /// <summary>Diagnostics: labels a generic access with its site and feedback (MaglevGenericCallCounts.BySite).</summary>
@@ -1077,8 +1112,8 @@ public sealed partial class MaglevGraphBuilder
             return;
         }
         if (_info.IsTracing) TraceGenericAccess("keyed load", nexus, slot);
-        SetAccumulator(CallBaseline("GetKeyedProperty", [obj, key],
-            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1)])!);
+        SetAccumulator(LabelGenericSite(CallBaseline("GetKeyedProperty", [obj, key],
+            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1)])!, slot, null)!);
     }
 
     /// <summary>--trace-maglev-graph-building: why a property access is generic (its feedback).</summary>
@@ -1607,12 +1642,12 @@ public sealed partial class MaglevGraphBuilder
         if (nexus.IcState() == InlineCacheState.MEGAMORPHIC)
         {
             // BuildCallBuiltin<KeyedStoreIC_Megamorphic>.
-            CallMaglev("KeyedStoreICMegamorphic", [obj, key, value],
-                [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)], OpProperties.kGenericCall);
+            LabelGenericSite(CallMaglev("KeyedStoreICMegamorphic", [obj, key, value],
+                [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)], OpProperties.kGenericCall), slot, null);
             return;
         }
-        CallBaseline("SetKeyedProperty", [obj, key, value],
-            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)]);
+        LabelGenericSite(CallBaseline("SetKeyedProperty", [obj, key, value],
+            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)]), slot, null);
     }
 
     /// <summary>MapRef::PrototypesElementsDoNotHaveAccessorsOrThrow.</summary>
