@@ -742,6 +742,15 @@ for now, to be revisited when the reason goes away.
   when the function has its initial map (dependency kInitialMapChanged);
   V8 also folds a non-map prototype slot with a prototype-property
   dependency.
+- Getter and setter calls (`BuildPropertyGetterCall`,
+  `BuildPropertySetterCall`, TryBuildPropertyGetterCall /
+  TryBuildPropertySetterCall) are built for JavaScript accessors on the
+  prototype chain of fast-mode JSObject receivers when all maps of the
+  access reach the same accessor; V8 also builds them in the arms of a
+  polymorphic access, for own accessor pairs, API accessors and primitive
+  receivers. Setters are never inlined: a deopt that materializes an
+  inlined setter frame would return its result into the caller's
+  accumulator, which must keep the assigned value.
 - Keyed loads of string characters (`TryBuildElementAccessOnString`) are
   built only for in-bounds feedback; with out-of-bounds feedback V8 selects
   undefined after the bounds check, V8Sharp leaves the load generic.
