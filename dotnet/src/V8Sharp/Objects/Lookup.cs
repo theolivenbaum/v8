@@ -1141,7 +1141,7 @@ public struct LookupIterator
     }
 
     /// <summary>ReadOnlyRoots::IsNameForProtector.</summary>
-    static bool IsNameForProtector(Name name) =>
+    internal static bool IsNameForProtector(Name name) =>
         ReferenceEquals(name, ReadOnlyRoots.constructor_string) || ReferenceEquals(name, ReadOnlyRoots.next_string) ||
         ReferenceEquals(name, ReadOnlyRoots.resolve_string) || ReferenceEquals(name, ReadOnlyRoots.then_string) ||
         ReferenceEquals(name, ReadOnlyRoots.is_concat_spreadable_symbol) ||

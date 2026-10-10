@@ -52,7 +52,8 @@ public sealed class TierProfiler
         _resumedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         _pauseAt = GC.GetTotalPauseDuration();
         (_gen0At, _gen1At, _gen2At) = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
-        _missesAt = (IC.ICStats.LoadMisses, IC.ICStats.KeyedLoadMisses, IC.ICStats.StoreMisses, IC.ICStats.KeyedStoreMisses);
+        IC.ICIsolateState stats = IC.ICIsolateState.Get(_isolate);
+        _missesAt = (stats.LoadMisses, stats.KeyedLoadMisses, stats.StoreMisses, stats.KeyedStoreMisses);
         _sampling = true;
     }
 
@@ -65,10 +66,11 @@ public sealed class TierProfiler
         _gen0 += GC.CollectionCount(0) - _gen0At;
         _gen1 += GC.CollectionCount(1) - _gen1At;
         _gen2 += GC.CollectionCount(2) - _gen2At;
-        _misses.Load += IC.ICStats.LoadMisses - _missesAt.Load;
-        _misses.KeyedLoad += IC.ICStats.KeyedLoadMisses - _missesAt.KeyedLoad;
-        _misses.Store += IC.ICStats.StoreMisses - _missesAt.Store;
-        _misses.KeyedStore += IC.ICStats.KeyedStoreMisses - _missesAt.KeyedStore;
+        IC.ICIsolateState stats = IC.ICIsolateState.Get(_isolate);
+        _misses.Load += stats.LoadMisses - _missesAt.Load;
+        _misses.KeyedLoad += stats.KeyedLoadMisses - _missesAt.KeyedLoad;
+        _misses.Store += stats.StoreMisses - _missesAt.Store;
+        _misses.KeyedStore += stats.KeyedStoreMisses - _missesAt.KeyedStore;
     }
 
     (long Load, long KeyedLoad, long Store, long KeyedStore) _missesAt, _misses;

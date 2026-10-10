@@ -280,7 +280,7 @@ public sealed class StoreIC : IC
     public static void Miss(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name, JSValue value,
         FeedbackSlotKind defaultKind)
     {
-        ICStats.StoreMisses++;
+        ICIsolateState.Get(isolate).StoreMisses++;
         var ic = new StoreIC(isolate, vector, slot, defaultKind);
         ic.UpdateState(receiver, name);
         ic.Store(receiver, name, value);
@@ -981,6 +981,13 @@ public sealed class KeyedStoreIC : IC
         {
             JSValue feedback = vector.Slots[slot];
             FeedbackSlotKind kind = vector.GetKind(slot);
+            // KeyedStoreIC_Megamorphic ([[Set]] only).
+            if (ReferenceEquals(feedback._obj, ReadOnlyRoots.megamorphic_symbol) &&
+                kind is FeedbackSlotKind.kSetKeyedSloppy or FeedbackSlotKind.kSetKeyedStrict)
+            {
+                StoreGeneric(isolate, obj, key, value);
+                return;
+            }
             if (key.HeapObjectOrNull is Name name)
             {
                 // A named key that matches the keyed IC's name: named store handlers.
@@ -1002,11 +1009,70 @@ public sealed class KeyedStoreIC : IC
         Miss(isolate, vector, slot, obj, key, value, defaultKind);
     }
 
+    /// <summary>
+    /// KeyedStoreGenericAssembler::KeyedStoreGeneric (KeyedStoreIC_Megamorphic):
+    /// a megamorphic keyed store overwrites an existing writable data property
+    /// itself and leaves everything else to the runtime's SetKeyedProperty, not
+    /// the IC miss (V8 probes the stub cache only for API objects, which
+    /// V8Sharp's hosts do not create). V8 also adds transitions, dictionary
+    /// properties and elements inline (EmitGenericPropertyStore,
+    /// EmitGenericElementStore); here those are the runtime's.
+    /// </summary>
+    static void StoreGeneric(Isolate isolate, JSValue obj, JSValue key, JSValue value)
+    {
+        if (obj._obj is JSObject receiver && !key.IsNumber && !Map.IsCustomElementsReceiverMap(receiver.Map) &&
+            key.HeapObjectOrNull is Name name)
+        {
+            if (name is JSString { IsInternalized: false } keyString) name = isolate.StringTable.TryLookupExisting(keyString)!;
+            if (name is not null && !(name is JSString nameString && nameString.AsArrayIndex(out _)) &&
+                TryOverwriteExistingDataProperty(isolate, receiver, name, value))
+            {
+                return;
+            }
+        }
+        // KeyedStoreGeneric_slow: Runtime::kSetKeyedProperty.
+        RuntimeObject.SetObjectProperty(isolate, obj, key, value, StoreOrigin.MaybeKeyed);
+    }
+
+    /// <summary>
+    /// EmitGenericPropertyStore's overwrite of an existing own data property:
+    /// a mutable tagged field (OverwriteExistingFastDataProperty; fields of
+    /// other representations and const fields check the value first, which the
+    /// runtime does) or a dictionary entry. Names with an associated protector
+    /// and prototype objects are the runtime's.
+    /// </summary>
+    static bool TryOverwriteExistingDataProperty(Isolate isolate, JSObject receiver, Name name, JSValue value)
+    {
+        Map map = receiver.Map;
+        if (map.IsPrototypeMap || LookupIterator.IsNameForProtector(name)) return false;
+        if (!map.IsDictionaryMap)
+        {
+            DescriptorArray descriptors = map.InstanceDescriptors;
+            InternalIndex descriptor = descriptors.Search(name, map);
+            if (!descriptor.IsFound) return false;
+            PropertyDetails details = descriptors.GetDetails(descriptor);
+            if (details.Kind != PropertyKind.Data || details.IsReadOnly || details.Location != PropertyLocation.Field ||
+                details.Constness != PropertyConstness.Mutable || !details.Representation.IsTagged)
+            {
+                return false;
+            }
+            receiver.WriteToField(descriptor, details, value);
+            return true;
+        }
+        NameDictionary properties = receiver.PropertyDictionary;
+        InternalIndex entry = properties.FindEntry(name);
+        if (!entry.IsFound) return false;
+        PropertyDetails entryDetails = properties.DetailsAt(entry);
+        if (entryDetails.Kind != PropertyKind.Data || entryDetails.IsReadOnly) return false;
+        properties.ValueAtPut(entry, value);
+        return true;
+    }
+
     /// <summary>Runtime_KeyedStoreIC_Miss / Runtime_DefineKeyedOwnIC_Miss.</summary>
     public static void Miss(Isolate isolate, FeedbackVector? vector, int slot, JSValue obj, JSValue key, JSValue value,
         FeedbackSlotKind defaultKind)
     {
-        ICStats.KeyedStoreMisses++;
+        ICIsolateState.Get(isolate).KeyedStoreMisses++;
         var ic = new KeyedStoreIC(isolate, vector, slot, defaultKind);
         ic.UpdateState(obj, key);
         ic.Store(obj, key, value);
