@@ -891,6 +891,11 @@ public sealed partial class MaglevGraphBuilder
         inner._frame.Known = _frame.Known.Clone();
         inner.BuildInlined(callBlock);
         _latestCheckpointedFrame = null;
+        if (inner._mayHaveChangedMaps)
+        {
+            _mayHaveChangedMaps = true;
+            _forInState.ReceiverNeedsMapCheck = true;
+        }
 
         // The continuation: the returns of the callee join here.
         List<(BasicBlock Block, ValueNode Value, KnownNodeAspects Known)> returns = inner._inlinedReturns;

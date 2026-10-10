@@ -303,6 +303,18 @@ public enum Opcode : ushort
     StoreTypedArrayElement,
     LoadPropertyCellValue,
     StorePropertyCellValue,
+    /// <summary>CheckDynamicValue: the two tagged inputs are the same object (V8 compares the words).</summary>
+    CheckDynamicValue,
+    /// <summary>The enum cache keys of the map input (DescriptorArray::enum_cache().keys()).</summary>
+    LoadEnumCacheKeys,
+    /// <summary>The enum cache indices of the map input (field indices in GetLoadByFieldIndex's encoding).</summary>
+    LoadEnumCacheIndices,
+    /// <summary>LoadEnumCacheLength: Map::EnumLength of the map input.</summary>
+    LoadEnumCacheLength,
+    /// <summary>CheckCacheIndicesNotCleared: the indices (input 0) cover the cache length (input 1).</summary>
+    CheckCacheIndicesNotCleared,
+    /// <summary>LoadTaggedFieldByFieldIndex: the field of the object at an encoded field index (an Int32 input).</summary>
+    LoadTaggedFieldByFieldIndex,
     /// <summary>V8Sharp: EnsureWritableFastElements + MaybeGrowFastElements for an append store.</summary>
     MaybeGrowFastElements,
     UpdateJSArrayLength,

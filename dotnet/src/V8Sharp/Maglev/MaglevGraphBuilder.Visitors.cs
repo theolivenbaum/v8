@@ -217,6 +217,7 @@ public sealed partial class MaglevGraphBuilder
                 VisitGetKeyedProperty();
                 break;
             case Bytecode.GetEnumeratedKeyedProperty:
+                if (TryBuildGetKeyedPropertyWithEnumeratedKey(LoadRegister(0), FeedbackSlot(3))) break;
                 SetAccumulator(CallBaseline("GetEnumeratedKeyedProperty",
                     [LoadRegister(0), GetAccumulator(), LoadRegister(1), LoadRegister(2)],
                     [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(3)), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2),
@@ -741,34 +742,20 @@ public sealed partial class MaglevGraphBuilder
 
             // ---- for-in / for-of ---------------------------------------------------------------------------
             case Bytecode.ForInEnumerate:
-                SetAccumulator(CallBaseline("ForInEnumerate", [LoadRegister(0)], [BuiltinArg.Isolate, BuiltinArg.In(0)])!);
+            {
+                // Pass the receiver to ForInPrepare.
+                ValueNode receiver = LoadRegister(0);
+                _forInState = default;
+                _forInState.Receiver = receiver;
+                SetAccumulator(CallBaseline("ForInEnumerate", [receiver], [BuiltinArg.Isolate, BuiltinArg.In(0)])!);
                 break;
+            }
             case Bytecode.ForInPrepare:
-            {
-                Register output = _it.GetRegisterOperand(0);
-                ValueNode enumerator = GetAccumulator();
-                WithLazyResult<ValueNode?>(output, 3, () =>
-                {
-                    CallBaseline("ForInPrepare", [enumerator],
-                        [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(1)), BuiltinArg.In(0), BuiltinArg.RegRef(output),
-                         BuiltinArg.RegRef(new Register(output.Index + 1)), BuiltinArg.RegRef(new Register(output.Index + 2))]);
-                    return null!;
-                });
-                LoadRegisterOutputs(output, 3);
-                // The cache length is a Smi.
-                EnsureType(_frame.Get(new Register(output.Index + 2)), NodeType.kSmi);
-                SetAccumulator(GetSmiConstant(0));
+                VisitForInPrepare();
                 break;
-            }
             case Bytecode.ForInNext:
-            {
-                Register pair = _it.GetRegisterOperand(2);
-                SetAccumulator(CallBaseline("ForInNext", [LoadRegister(0), LoadRegister(1), _frame.Get(pair),
-                        _frame.Get(new Register(pair.Index + 1))],
-                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(3)), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2),
-                     BuiltinArg.In(3)])!);
+                VisitForInNext();
                 break;
-            }
             case Bytecode.ForInStep:
             {
                 Register index = _it.GetRegisterOperand(0);
@@ -778,6 +765,9 @@ public sealed partial class MaglevGraphBuilder
                     Properties = OpProperties.kEagerDeopt,
                 }, DeoptimizeReason.kOverflow);
                 StoreRegister(index, next);
+                // With loop peeling, only the ForInStep in the non-peeled loop body
+                // marks the end of the for-in (V8: in_peeled_iteration()).
+                if (!_inPeeledIteration) _forInState = default;
                 break;
             }
             case Bytecode.ForOfNext:

@@ -297,6 +297,34 @@ public static class MaglevBuiltins
         Unsafe.As<JSObject>(obj._obj!).FieldAt(storageIndex) = value;
     }
 
+    // ---- for-in (MaglevGraphBuilder.ForIn.cs) -----------------------------------------------------------------
+
+    /// <summary>LoadEnumCacheKeys: the keys of the enum cache of a map.</summary>
+    public static JSValue EnumCacheKeys(JSValue map) => Unsafe.As<Map>(map._obj!).InstanceDescriptors.EnumCache.Keys;
+
+    /// <summary>LoadEnumCacheIndices: the field indices of the enum cache of a map.</summary>
+    public static JSValue EnumCacheIndices(JSValue map) => Unsafe.As<Map>(map._obj!).InstanceDescriptors.EnumCache.Indices;
+
+    /// <summary>LoadEnumCacheLength.</summary>
+    public static int EnumCacheLength(JSValue map) => Unsafe.As<Map>(map._obj!).EnumLength;
+
+    /// <summary>CheckCacheIndicesNotCleared: false (deopt) when the indices do not cover the length.</summary>
+    public static bool CacheIndicesCover(JSValue indices, int length) => Unsafe.As<FixedArray>(indices._obj!).Length >= length;
+
+    /// <summary>
+    /// LoadTaggedFieldByFieldIndex: <paramref name="encoded"/> is
+    /// FieldIndex::GetLoadByFieldIndex's encoding (in-object indices positive,
+    /// out-of-object ones -index-1, shifted left by one, the low bit marking a
+    /// double field, whose value V8Sharp also keeps as a JSValue).
+    /// </summary>
+    public static JSValue LoadFieldByFieldIndex(JSValue obj, int encoded)
+    {
+        var o = Unsafe.As<JSObject>(obj._obj!);
+        int index = encoded >> 1;
+        int propertyIndex = index >= 0 ? index : o.Map.GetInObjectProperties() - index - 1;
+        return o.RawFastPropertyAt(FieldIndex.ForPropertyIndex(o.Map, propertyIndex));
+    }
+
     /// <summary>StoreDoubleField's payload: the double's bits, NaNs canonicalized (StoreIC's CanonicalizeDouble).</summary>
     [MethodImpl(Inline)]
     public static long DoubleFieldBits(double value) => double.IsNaN(value) ? JSValue.NaN._bits : BitConverter.DoubleToInt64Bits(value);

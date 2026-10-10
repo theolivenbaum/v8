@@ -2169,6 +2169,40 @@ internal sealed partial class MaglevCodeGenerator
             case Opcode.CheckMaps:
                 EmitCheckMaps(node);
                 return;
+            case Opcode.CheckDynamicValue:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                _il.Emit(OpCodes.Ldfld, s_obj);
+                Load(node.Inputs[1], ValueRepresentation.kTagged);
+                _il.Emit(OpCodes.Ldfld, s_obj);
+                _il.Emit(OpCodes.Bne_Un, EagerExit(node.EagerDeoptInfo!));
+                return;
+            case Opcode.CheckCacheIndicesNotCleared:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Load(node.Inputs[1], ValueRepresentation.kInt32);
+                Call(nameof(MaglevBuiltins.CacheIndicesCover));
+                _il.Emit(OpCodes.Brfalse, EagerExit(node.EagerDeoptInfo!));
+                return;
+            case Opcode.LoadEnumCacheKeys:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Call(nameof(MaglevBuiltins.EnumCacheKeys));
+                Store(v!);
+                return;
+            case Opcode.LoadEnumCacheIndices:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Call(nameof(MaglevBuiltins.EnumCacheIndices));
+                Store(v!);
+                return;
+            case Opcode.LoadEnumCacheLength:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Call(nameof(MaglevBuiltins.EnumCacheLength));
+                Store(v!);
+                return;
+            case Opcode.LoadTaggedFieldByFieldIndex:
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                Load(node.Inputs[1], ValueRepresentation.kInt32);
+                Call(nameof(MaglevBuiltins.LoadFieldByFieldIndex));
+                Store(v!);
+                return;
             case Opcode.CheckInt32IsSmi:
                 Load(node.Inputs[0], ValueRepresentation.kInt32);
                 _il.Emit(OpCodes.Ldc_I4, JSValue.SmiMinValue);

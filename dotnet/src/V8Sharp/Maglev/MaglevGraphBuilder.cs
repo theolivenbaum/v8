@@ -315,6 +315,7 @@ public sealed partial class MaglevGraphBuilder
         ResolveEdges(0, firstBlock, o => o == header ? entryBlock : null);
 
         if (_info.IsTracing) Console.WriteLine($"[maglev] {_unit} @{header} {_it.CurrentBytecode()} (peeled)");
+        _inPeeledIteration = true;
         VisitSingleBytecode();
         while (true)
         {
@@ -331,6 +332,7 @@ public sealed partial class MaglevGraphBuilder
             if (_info.IsTracing) Console.WriteLine($"[maglev] {_unit} @{offset} {_it.CurrentBytecode()} (peeled)");
             VisitSingleBytecode();
         }
+        _inPeeledIteration = false;
         // The peeled iteration's edges inside the loop go to its own blocks;
         // the loop's interior merge points start again for the loop.
         ResolveEdges(firstBlock, _graph.Blocks.Count, o => o > header && o <= jumpLoop ? ResolveEdge(o) : null);
@@ -1085,6 +1087,8 @@ public sealed partial class MaglevGraphBuilder
                     // A transition of a non-prototype object (the feedback's map is
                     // not a prototype map): what the default clears, but no
                     // prototype chain changes (the checked validity cells hold).
+                    _forInState.ReceiverNeedsMapCheck = true;
+                    _mayHaveChangedMaps = true;
                     known.ClearUnstableMaps(keepUnescapedAllocations: true);
                     known.ClearLoaded(keepValidityCells: true);
                     _info.RecordLoopEffect(clearsAll: true);
@@ -1103,6 +1107,9 @@ public sealed partial class MaglevGraphBuilder
         known.ClearUnstableMaps(keepUnescapedAllocations: true);
         known.ClearLoaded();
         _info.RecordLoopEffect(clearsAll: true);
+        // ResetBuilderCachedState<is_possible_map_change>.
+        _forInState.ReceiverNeedsMapCheck = true;
+        _mayHaveChangedMaps = true;
     }
 
     /// <summary>A load of <paramref name="key"/> of <paramref name="obj"/>: the known value, or the new load (recorded).</summary>
