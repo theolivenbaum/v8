@@ -442,6 +442,34 @@ public sealed partial class MaglevGraphBuilder
                         SetAccumulator(GetBooleanConstant(false));
                         break;
                     }
+                    if (ObjectOps.OrdinaryHasInstancePrototype(constructor) is { } fastPrototype && constructor.PrototypeOrInitialMap is { } protoOrMap)
+                    {
+                        // TryBuildFastOrdinaryHasInstance: HasInPrototypeChain with
+                        // the prototype as a constant. V8 depends on the function's
+                        // prototype property and calls the runtime from deferred
+                        // code for special receivers; this node checks the
+                        // constructor and deoptimizes in both cases, and the deopt
+                        // makes the slot's feedback megamorphic (the next code takes
+                        // the generic path).
+                        int instanceOfSlot = FeedbackSlot(1);
+                        (FeedbackVector? savedVector, int savedSlot) = (_speculationVector, _speculationSlot);
+                        (_speculationVector, _speculationSlot) = (_unit.Feedback, instanceOfSlot);
+                        try
+                        {
+                            SetAccumulator(AddNewNode(new ValueNode(Opcode.HasInPrototypeChain, ValueRepresentation.kTagged)
+                            {
+                                Inputs = [obj],
+                                Obj0 = new HasInstanceInfo(constructor, constructor.Map, protoOrMap, fastPrototype),
+                                Type = NodeType.kBoolean,
+                                Properties = OpProperties.kEagerDeopt | OpProperties.kCanRead,
+                            }, DeoptimizeReason.kWrongValue));
+                        }
+                        finally
+                        {
+                            (_speculationVector, _speculationSlot) = (savedVector, savedSlot);
+                        }
+                        break;
+                    }
                     if (ObjectOps.OrdinaryHasInstancePrototype(constructor) is { } prototype)
                     {
                         // The prototype as a constant, checked against the

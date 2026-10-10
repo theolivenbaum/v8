@@ -252,6 +252,29 @@ public static class MaglevBuiltins
         return InstanceOfFunction(isolate, obj, function);
     }
 
+    /// <summary>
+    /// HasInPrototypeChain: 1 when <paramref name="prototype"/> is on the
+    /// prototype chain of <paramref name="obj"/>, 0 when not, 2 when the
+    /// optimized code must deoptimize (the constructor's map or prototype slot
+    /// changed, or a special receiver such as a proxy is on the chain).
+    /// </summary>
+    [MethodImpl(Inline)]
+    public static int HasInPrototypeChain(JSValue obj, JSFunction function, Map functionMap, HeapObject protoOrMap, JSReceiver prototype)
+    {
+        if (!ReferenceEquals(function.Map, functionMap) || !ReferenceEquals(function.PrototypeOrInitialMap, protoOrMap)) return 2;
+        HeapObject? o = obj._obj;
+        if (o is null || o.InstanceType < InstanceTypeChecks.FirstJSReceiver) return 0;
+        Map map = Unsafe.As<JSReceiver>(o).Map;
+        while (true)
+        {
+            if (Map.IsSpecialReceiverMap(map)) return 2;
+            JSReceiver? next = map.Prototype;
+            if (next is null) return 0;
+            if (ReferenceEquals(next, prototype)) return 1;
+            map = next.Map;
+        }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue InstanceOfFunction(Isolate isolate, JSValue obj, JSValue constructor)
     {

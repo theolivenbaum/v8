@@ -303,6 +303,13 @@ public enum Opcode : ushort
     StoreTypedArrayElement,
     LoadPropertyCellValue,
     StorePropertyCellValue,
+    /// <summary>
+    /// HasInPrototypeChain (Obj0: HasInstanceInfo): whether the prototype is on
+    /// the input's prototype chain, for a constructor whose map and prototype
+    /// slot are still the compiled ones; eager deopt where V8 makes a
+    /// deferred call (a special receiver on the chain, a changed constructor).
+    /// </summary>
+    HasInPrototypeChain,
     /// <summary>CheckDynamicValue: the two tagged inputs are the same object (V8 compares the words).</summary>
     CheckDynamicValue,
     /// <summary>The enum cache keys of the map input (DescriptorArray::enum_cache().keys()).</summary>
@@ -769,6 +776,15 @@ public sealed class CallBuiltinInfo(MethodInfo method, BuiltinArg[] args, string
 /// and the receiver the callee sees when the call converts it statically
 /// (the global proxy for a sloppy callee).
 /// </summary>
+/// <summary>The constants of a HasInPrototypeChain node.</summary>
+public sealed class HasInstanceInfo(JSFunction function, Map functionMap, HeapObject prototypeOrInitialMap, JSReceiver prototype)
+{
+    public readonly JSFunction Function = function;
+    public readonly Map FunctionMap = functionMap;
+    public readonly HeapObject PrototypeOrInitialMap = prototypeOrInitialMap;
+    public readonly JSReceiver Prototype = prototype;
+}
+
 public sealed class KnownCallInfo
 {
     /// <summary>The callee, when it is a constant (null: the input <see cref="TargetInput"/>).</summary>

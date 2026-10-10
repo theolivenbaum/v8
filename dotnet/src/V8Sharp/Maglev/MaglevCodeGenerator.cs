@@ -2169,6 +2169,26 @@ internal sealed partial class MaglevCodeGenerator
             case Opcode.CheckMaps:
                 EmitCheckMaps(node);
                 return;
+            case Opcode.HasInPrototypeChain:
+            {
+                var info = (HasInstanceInfo)node.Obj0!;
+                Load(node.Inputs[0], ValueRepresentation.kTagged);
+                LoadConstantObject(info.Function, typeof(JSFunction));
+                LoadConstantObject(info.FunctionMap, typeof(Map));
+                LoadConstantObject(info.PrototypeOrInitialMap, typeof(HeapObject));
+                LoadConstantObject(info.Prototype, typeof(JSReceiver));
+                Call(nameof(MaglevBuiltins.HasInPrototypeChain));
+                _il.Emit(OpCodes.Dup);
+                _il.Emit(OpCodes.Ldc_I4_2);
+                Label fits = _il.DefineLabel();
+                _il.Emit(OpCodes.Bne_Un, fits);
+                _il.Emit(OpCodes.Pop);
+                _il.Emit(OpCodes.Br, EagerExit(node.EagerDeoptInfo!));
+                _il.MarkLabel(fits);
+                Call(nameof(MaglevBuiltins.Boolean));
+                Store(v!);
+                return;
+            }
             case Opcode.CheckDynamicValue:
                 Load(node.Inputs[0], ValueRepresentation.kTagged);
                 _il.Emit(OpCodes.Ldfld, s_obj);
