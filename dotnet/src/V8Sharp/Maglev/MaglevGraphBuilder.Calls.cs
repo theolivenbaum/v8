@@ -173,7 +173,13 @@ public sealed partial class MaglevGraphBuilder
             }
             if (argsFirst.IsValid || args.Length < s_callWithValues.Length)
             {
-                SetAccumulator(BuildCallKnownJSFunction(target, receiver, args, argsFirst, mode));
+                ValueNode knownCall = BuildCallKnownJSFunction(target, receiver, args, argsFirst, mode);
+                if (MaglevGenericCallCounts.BySite)
+                {
+                    LabelSite(knownCall, $"{MaglevCompiler.DebugName(_unit.SharedFunctionInfo)}@{_it.CurrentOffset()} known target " +
+                        MaglevCompiler.DebugName(target.Shared) + (_lastNotInlined is { } why ? " (" + why + ")" : ""));
+                }
+                SetAccumulator(knownCall);
                 return;
             }
         }

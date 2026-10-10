@@ -2362,11 +2362,14 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
        allocation and escape analysis".
     3. Hot-loop code quality (spills, deopt exits): the other agent's
        pass.
-    4. Typescript still spends most of its time below Maglev (interpreter
-       and baseline), so call costs there are the baseline frame's.
+    4. (Measured 2026-10-10, see "Maglev coverage of large programs": the
+       measured iterations of Typescript, Gameboy, Box2D and EarleyBoyer
+       run 97-99% in Maglev code; what keeps them slow is generic and
+       megamorphic code inside Maglev and GC.)
     5. Class constructors and derived constructors have no direct entry
-       (frameful construct path); calls with more than six arguments use a
-       register window; ForInPrepare keeps an entry frameful.
+       (frameful construct path; no Octane benchmark spends measurable time
+       there); calls with more than six arguments and ForInPrepare now keep
+       the lazy entry with a written register window.
   - Compile pipeline and tier-up (2026-10-04, f93817c5..dbf2af5b):
     concurrent jobs (MaglevConcurrentDispatcher.cs, maglev-concurrent-
     dispatcher.cc) build the graph on two worker threads (the main thread
