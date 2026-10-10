@@ -2425,7 +2425,12 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     DeltaBlue 2182/6882, Crypto 277/778, RayTrace 1123/2664, EarleyBoyer
     157/654, RegExp 211/776, Splay 2207/8184, NavierStokes 1529/1730, PdfJS
     1256/6696, Mandreel 510/3344, Gameboy 1552/4887, CodeLoad 2916/3416,
-    Box2D 3305/14101, zlib 910/1667, Typescript 496/2071. Conformance after
+    Box2D 3305/14101, zlib 910/1667, Typescript 496/2071. Cold octane
+    (compile time included), parity publish of 9f53f81b, 2 runs
+    (bench-20261010-100646; load 3-4, idle 97-99%): geomean 4714 vs
+    v8:maglev 18248 and v8:jit 22132 (26% of V8's Maglev); Box2D 3460 vs
+    44384, PdfJS 2294 vs 19054 and Gameboy 5116 vs 42710 are where start-up
+    costs most. Conformance after
     merging main 8f390cd2 (9f53f81b; flock -s, --jobs 2): V8Sharp.Tests
     1250/1250; mjsunit default and forced 0 newly failing (forced:
     regress-331074427 crashed under load, passes alone 3/3); test262
