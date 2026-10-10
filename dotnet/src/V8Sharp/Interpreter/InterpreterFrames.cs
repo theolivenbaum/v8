@@ -66,6 +66,12 @@ namespace V8Sharp
         /// but unwritten until a deopt materializes it (MaglevCalls.MaterializeLazyFrame).
         /// </summary>
         Lazy = 32,
+        /// <summary>
+        /// A <see cref="Lazy"/> frame whose code uses its register window for
+        /// register-list arguments and builtin outputs (MaglevCalls.EnterLazyWindow):
+        /// the window's registers are kept when a deopt materializes the frame.
+        /// </summary>
+        LazyWindow = 64,
     }
 
     /// <summary>

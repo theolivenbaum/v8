@@ -2363,11 +2363,90 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
        allocation and escape analysis".
     3. Hot-loop code quality (spills, deopt exits): the other agent's
        pass.
-    4. Typescript still spends most of its time below Maglev (interpreter
-       and baseline), so call costs there are the baseline frame's.
+    4. (Measured 2026-10-10, see "Maglev coverage of large programs": the
+       measured iterations of Typescript, Gameboy, Box2D and EarleyBoyer
+       run 97-99% in Maglev code; what keeps them slow is generic and
+       megamorphic code inside Maglev and GC.)
     5. Class constructors and derived constructors have no direct entry
-       (frameful construct path); calls with more than six arguments use a
-       register window; ForInPrepare keeps an entry frameful.
+       (frameful construct path; no Octane benchmark spends measurable time
+       there); calls with more than six arguments and ForInPrepare now keep
+       the lazy entry with a written register window.
+  - Maglev coverage of large programs (2026-10-10, c39c1120..3ab91b5d).
+    Measured with `V8SHARP_TIER_PROFILE=1` (TierProfiler: 1 ms samples of
+    the measured iterations only) and `V8SHARP_MAGLEV_COUNT_GENERIC=2`
+    (generic builtin calls of Maglev code by site). Warm tier shares
+    (interpreter / baseline / Maglev, octane-steady, before -> after):
+    Typescript 0.1/0.1/99.8 -> 0.1/0.1/99.7, PdfJS 11.3/4.1/84.5 ->
+    7.8/3.5/88.7, Gameboy 2.6/0.3/97.2 -> 1.6/0.8/97.6, Box2D 2.5/0.1/97.4
+    -> 2.6/0.0/97.4, CodeLoad 62.9/37.0/0.1 -> 67.6/32.2/0.1, EarleyBoyer
+    1.2/1.5/97.3 -> 2.1/1.3/96.6. The hot code of these programs was
+    already in Maglev; what is below Maglev is the harness (bm.run,
+    Measure, NotifyResult), PdfJS's teardown and CodeLoad's freshly
+    evaluated code (parse and first runs: inherent, as in V8). No Octane
+    function hits a Maglev bailout, and there are no deopts in the measured
+    iterations (the OSR early exits and feedback deopts of the warm-up
+    match V8). What was slow was generic code inside Maglev:
+    - Megamorphic keyed loads and stores missed to the runtime on every
+      access (Typescript: 84K keyed load and 33K keyed store IC misses per
+      iteration, now ~0): KeyedLoadIC.LoadGeneric and
+      KeyedStoreIC.StoreGeneric (KeyedLoadICGeneric, KeyedStoreGeneric).
+    - Lazy entries with a written register window (calls with more than six
+      arguments, ForInPrepare, register-range builtins) instead of frameful
+      entries; for-in fast paths (ForInPrepare/ForInNext with the enum
+      cache, keyed loads by the enumerated key).
+    - instanceof without the generic call (HasInPrototypeChain; EarleyBoyer:
+      35M OrdinaryHasInstance calls), `F.prototype` folded (RayTrace's
+      Class.create), recursion check of the inliner limited to the current
+      unit as V8 (RayTrace: 727K non-inlined constructs), keyed loads of
+      string characters (PdfJS), getters and setters on the prototype
+      chain (Box2D), parseInt of integers (Box2D), String.fromCharCode
+      (PdfJS, 1.3M calls per 4 iterations), typed array arms in polymorphic
+      element loads and stores (PdfJS's decrypt, Gameboy's getTypedArray),
+      megamorphic keyed stores into holes and array appends without the
+      runtime (Crypto's bnpSquareTo).
+    Per-change octane-quick (bench-session.sh, interleaved, load ~2, noise
+    about 15% per run): A = 8203504e (before), D = cc02e3be (+ keyed
+    generic ICs, lazy windows, for-in, instanceof, prototype fold, inliner
+    recursion rule, string characters), F = 9d0e005c (+ accessors, parseInt,
+    fromCharCode, polymorphic typed arrays, keyed store holes); 3 runs,
+    session-20261010-060337: Typescript 32.0 / 35.3 / 35.7 (+12%), PdfJS
+    752 / 811 / 814 (+8%), Crypto 739 / 645 / 760, EarleyBoyer 282 / 282 /
+    266 (one outlier run of F; medians 293 / 282 / 281), RayTrace 1273 /
+    1384 / 1666 (+31%), Box2D 1165 / 1162 / 1211 (+4%), Gameboy 549 / 538
+    / 581 (+6%), geomean +7.7%; V8 --jit is 4.4x (Typescript) to 8.8x
+    (PdfJS) faster. Crypto, RayTrace and Richards from C = d92cdb5e (before
+    instanceof .. string characters), 5 runs: Crypto 676 / 679 / 662,
+    RayTrace 908 / 1543 / 1386 (+53% from the inliner's recursion rule and
+    the prototype fold), Richards 3396 / 3405 / 3372.
+    octane-steady, parity publish of 3ab91b5d, 2 runs (session
+    bench-20261010-073856; load 3-5, idle 98%, cpu-cal 1.9 s): geomean
+    1929 vs V8 --no-turbofan 5138 and V8 --jit 5052 (V8Sharp at 38% of
+    V8's Maglev); per benchmark vs v8:maglev: Richards 1863/6338,
+    DeltaBlue 2182/6882, Crypto 277/778, RayTrace 1123/2664, EarleyBoyer
+    157/654, RegExp 211/776, Splay 2207/8184, NavierStokes 1529/1730, PdfJS
+    1256/6696, Mandreel 510/3344, Gameboy 1552/4887, CodeLoad 2916/3416,
+    Box2D 3305/14101, zlib 910/1667, Typescript 496/2071. Cold octane
+    (compile time included), parity publish of 9f53f81b, 2 runs
+    (bench-20261010-100646; load 3-4, idle 97-99%): geomean 4714 vs
+    v8:maglev 18248 and v8:jit 22132 (26% of V8's Maglev); Box2D 3460 vs
+    44384, PdfJS 2294 vs 19054 and Gameboy 5116 vs 42710 are where start-up
+    costs most. Conformance after
+    merging main 8f390cd2 (9f53f81b; flock -s, --jobs 2): V8Sharp.Tests
+    1250/1250; mjsunit default and forced 0 newly failing (forced:
+    regress-331074427 crashed under load, passes alone 3/3); test262
+    default and forced 0 newly failing (95123 run).
+    Remaining generic code in Maglev, ranked by calls per
+    measured iteration: Typescript's megamorphic named stores in the AST
+    constructors (9.5M SetNamedProperty through the stub cache, as V8) and
+    megamorphic calls of its AST walker table (as V8); Gameboy's opcode
+    table calls (megamorphic, as V8); EarleyBoyer's strict equality with
+    kAny feedback (4.8M, generic in V8 too); PdfJS's StaInArrayLiteral
+    (345K, V8 builds it from the literal's element feedback); getters and
+    setters in polymorphic accesses and own accessor pairs (V8 builds
+    them); class and derived constructors still have no direct entry (no
+    Octane time).
+    GC pauses are 10-17% of Typescript, PdfJS, Gameboy and EarleyBoyer (the
+    allocation work).
   - Hot loop code quality (2026-10-09, 5aca1629..; V8 files:
     maglev-code-generator.cc (deferred code), maglev-ir.cc
     (HandleNoHeapWritesInterrupt, TransitionElementsKind), maglev-graph-builder.cc

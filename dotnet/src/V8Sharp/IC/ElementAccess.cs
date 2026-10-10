@@ -220,6 +220,42 @@ public static class ElementAccess
     }
 
     /// <summary>
+    /// GenericElementLoad (KeyedLoadIC_Megamorphic) for an element of a fast
+    /// kind that is in bounds and not a hole, without a handler. False when
+    /// the runtime must decide (holes and out-of-bounds keys look at the
+    /// prototype chain, which V8 checks inline with BranchIfPrototypesHaveNoElements).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool TryLoadInBounds(JSObject obj, double key, out JSValue result)
+    {
+        result = default;
+        if (!JSValue.TryGetIndex(key, out int index)) return false;
+        if (obj.InstanceType == InstanceType.JSArrayType && index >= Unsafe.As<JSArray>(obj).Length._num) return false;
+        ElementsKind kind = obj.Map.ElementsKind;
+        FixedArrayBase elements = obj.Elements;
+        if (elements is FixedArray fixedArray)
+        {
+            JSValue[] data = fixedArray._data;
+            if ((uint)index >= (uint)data.Length || !ElementsKinds.IsSmiOrObjectElementsKind(kind)) return false;
+            JSValue value = data[index];
+            if (ReferenceEquals(value._obj, Oddball.TheHole)) return false;
+            result = value;
+            return true;
+        }
+        if (elements is FixedDoubleArray doubleArray)
+        {
+            double[] data = doubleArray._data;
+            if ((uint)index >= (uint)data.Length || !ElementsKinds.IsDoubleElementsKind(kind) || FixedDoubleArray.IsHoleBits(data[index]))
+            {
+                return false;
+            }
+            result = JSValue.FromNumber(data[index]);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
     /// The in-bounds case of TryStoreFastElement that needs no transition, no
     /// growth and no prototype chain check: an element of a fast kind that the
     /// value fits, stored over a non-hole value (so holey kinds need no
@@ -305,6 +341,69 @@ public static class ElementAccess
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    /// <summary>
+    /// EmitGenericElementStore (KeyedStoreGeneric) for a fast elements kind
+    /// the value fits without a transition: in-bounds stores, holes included,
+    /// and the append at a JSArray's length (growing its capacity), when no
+    /// prototype has elements (BranchIfPrototypesHaveNoElements). False when
+    /// the runtime must decide (transitions, other growth, prototype objects,
+    /// read-only lengths).
+    /// </summary>
+    public static bool TryStoreGeneric(Isolate isolate, JSObject obj, double key, JSValue value)
+    {
+        if (TryStoreInBounds(obj, key, value)) return true;
+        if (!JSValue.TryGetIndex(key, out int index)) return false;
+        Map map = obj.Map;
+        ElementsKind kind = map.ElementsKind;
+        if (!ElementsKinds.IsFastElementsKind(kind) || map.IsPrototypeMap) return false;
+        if (ElementsKinds.IsSmiElementsKind(kind))
+        {
+            if (!value.IsSmi) return false;
+        }
+        else if (ElementsKinds.IsDoubleElementsKind(kind) && !value.IsNumber)
+        {
+            return false;
+        }
+        FixedArrayBase elements = obj.Elements;
+        if (elements.IsCowArray || !PrototypesHaveNoElements(map)) return false;
+        JSArray? array = obj as JSArray;
+        int length = array is not null ? (int)array.Length._num : elements.Length;
+        if (index < length)
+        {
+            // A hole (TryStoreInBounds stored everything else it could).
+            return index < elements.Length && IsHoleAt(elements, index) && WriteElement(elements, kind, index, value);
+        }
+        // The append at the end of a JSArray (V8: if_grow, for JSArrays only).
+        if (array is null || index != length || JSArray.HasReadOnlyLength(array)) return false;
+        if (index >= elements.Length)
+        {
+            if (!ElementsAccessor.ForKind(kind).GrowCapacity(isolate, obj, (uint)index)) return false;
+            if (obj.Map.ElementsKind != kind) return false;
+            elements = obj.Elements;
+        }
+        if (!WriteElement(elements, kind, index, value)) return false;
+        array.Length = JSValue.FromInt(index + 1);
+        return true;
+    }
+
+    /// <summary>
+    /// BranchIfPrototypesHaveNoElements: every prototype is an ordinary
+    /// JSObject without elements, so a hole or an index past the end reads
+    /// undefined and a store there finds no setter.
+    /// </summary>
+    static bool PrototypesHaveNoElements(Map map)
+    {
+        for (JSReceiver? prototype = map.Prototype; prototype is not null; prototype = prototype.Map.Prototype)
+        {
+            if (Map.IsSpecialReceiverMap(prototype.Map) || prototype is not JSObject p || p.Elements.Length != 0 ||
+                !ElementsKinds.IsFastElementsKind(p.Map.ElementsKind) && p.Map.ElementsKind != ElementsKind.DICTIONARY_ELEMENTS)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     static bool IsHoleAt(FixedArrayBase elements, int index) => elements switch
     {
         FixedArray fixedArray => fixedArray.IsTheHole(index),

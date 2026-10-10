@@ -24,7 +24,7 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>A PropertyAccessInfo for one receiver map.</summary>
     sealed class PropertyAccessInfo
     {
-        public enum Kind { DataField, DataConstant, NotFound, ArrayLength, StringLength, TypedArrayLength, FieldStore, ConstFieldStore, TransitionStore }
+        public enum Kind { DataField, DataConstant, AccessorConstant, NotFound, ArrayLength, StringLength, TypedArrayLength, FieldStore, ConstFieldStore, TransitionStore }
         public Kind AccessKind;
         public Map Map = null!;
         public int StorageIndex = -1;
@@ -137,6 +137,11 @@ public sealed partial class MaglevGraphBuilder
         ValueNode receiver = LoadRegister(0);
         JSValue name = Constant(ConstantPoolIndex(1));
         int slot = FeedbackSlot(2);
+        if (TryFoldFunctionPrototype(receiver, (Name)name.Object) is { } prototype)
+        {
+            SetAccumulator(GetConstant(prototype));
+            return;
+        }
         if (IsUninitializedIC(slot))
         {
             EmitUnconditionalDeopt(DeoptimizeReason.kInsufficientTypeFeedbackForGenericNamedAccess);
@@ -157,8 +162,68 @@ public sealed partial class MaglevGraphBuilder
             SetAccumulator(known);
             return;
         }
-        SetAccumulator(CallBaseline("GetNamedProperty", [receiver],
-            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.C(name)])!);
+        SetAccumulator(LabelGenericSite(CallBaseline("GetNamedProperty", [receiver],
+            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.C(name)]), slot, (Name)name.Object)!);
+    }
+
+    /// <summary>
+    /// TryBuildNamedAccess's "prototype" of a constant JSFunction: the
+    /// prototype as a constant (V8: DependOnPrototypeProperty). V8Sharp folds
+    /// it only for a function with an initial map, whose prototype changes
+    /// deoptimize the code depending on the map (InitialMapChanged), and with
+    /// its "prototype" property still the FunctionPrototypeAccessor; V8 also
+    /// creates the initial map of a function without one when it installs the
+    /// code, which a V8Sharp graph built off the main thread cannot.
+    /// </summary>
+    JSReceiver? TryFoldFunctionPrototype(ValueNode receiver, Name name)
+    {
+        if (!ReferenceEquals(name, ReadOnlyRoots.prototype_string) || receiver.Opcode != Opcode.Constant ||
+            receiver.Value0.HeapObjectOrNull is not JSFunction function)
+        {
+            return null;
+        }
+        Map functionMap = function.Map;
+        if (functionMap.IsDictionaryMap) return null;
+        DescriptorArray descriptors = functionMap.InstanceDescriptors;
+        InternalIndex index = descriptors.Search(ReadOnlyRoots.prototype_string, functionMap);
+        if (index.IsNotFound || !ReferenceEquals(descriptors.GetStrongValue(index).HeapObjectOrNull, Builtins.Accessors.FunctionPrototypeAccessor))
+        {
+            return null;
+        }
+        // (Not the non-instance prototype mode, where "prototype" is the Tuple2's value.)
+        if (function.PrototypeOrInitialMap is not Map initialMap || initialMap.Prototype is not { } prototype) return null;
+        _info.AddDependency(initialMap, Objects.DependentCode.DependencyGroups.InitialMapChanged);
+        return prototype;
+    }
+
+    /// <summary>Diagnostics: labels a generic access with its site and feedback (MaglevGenericCallCounts.BySite).</summary>
+    ValueNode? LabelGenericSite(ValueNode? node, int slot, Name? name)
+    {
+        if (!MaglevGenericCallCounts.BySite) return node;
+        // (A store's CallBuiltin is no value: the block's last node.)
+        Node? labeled = node ?? (_currentBlock is { Nodes.Count: > 0 } block ? block.Nodes[^1] : null);
+        if (labeled?.Obj0 is not CallBuiltinInfo info) return node;
+        var nexus = new FeedbackNexus(Isolate, _unit.Feedback, slot);
+        var sb = new System.Text.StringBuilder();
+        sb.Append(MaglevCompiler.DebugName(_unit.SharedFunctionInfo)).Append('@').Append(_it.CurrentOffset());
+        if (name is not null) sb.Append(" '").Append(name.ToString()).Append('\'');
+        sb.Append(' ').Append(nexus.IcState());
+        if (MapsAndHandlers(slot, name) is { } pairs)
+        {
+            sb.Append(" maps=").Append(pairs.Count).Append(':');
+            foreach ((Map map, JSValue handler) in pairs)
+            {
+                sb.Append(handler.HeapObjectOrNull switch
+                {
+                    LoadHandler h => h.HandlerKind.ToString() + (h.LookupOnLookupStartObject ? "+lookup" : "") + (h.Holder is null ? "" : "+holder"),
+                    StoreHandler h => h.HandlerKind.ToString(),
+                    { } o => o.GetType().Name,
+                    null => "null",
+                }).Append(map.IsDictionaryMap ? "(dict)" : "").Append(',');
+            }
+        }
+        info.Site = sb.ToString();
+        return node;
     }
 
     /// <summary>ComputePropertyAccessInfo for a load handler, or null when Maglev does not handle it.</summary>
@@ -198,6 +263,22 @@ public sealed partial class MaglevGraphBuilder
                     h.Holder is not null)
                 {
                     info.AccessKind = PropertyAccessInfo.Kind.TypedArrayLength;
+                    info.Holder = h.Holder;
+                    return info;
+                }
+                // kFastAccessorConstant: a JavaScript getter on the (fast)
+                // holder, called with the receiver (TryBuildPropertyGetterCall).
+                // The validity cell guards the holder's descriptor, as it does
+                // for the IC. Primitive receivers stay generic (the getter's
+                // receiver conversion), as do dictionary-mode receivers
+                // (which can have the property themselves) and special
+                // receivers (the global proxy, whose map changes with its
+                // prototype: __proto__ assignments).
+                if (h.Holder is not null && !map.IsDictionaryMap && !ICMaps.IsPrimitiveMap(map) && !Map.IsSpecialReceiverMap(map) &&
+                    h.Data.HeapObjectOrNull is JSFunction { Shared.IsClassConstructor: false } getter && getter.Map.IsCallable)
+                {
+                    info.AccessKind = PropertyAccessInfo.Kind.AccessorConstant;
+                    info.Constant = h.Data;
                     info.Holder = h.Holder;
                     return info;
                 }
@@ -367,6 +448,9 @@ public sealed partial class MaglevGraphBuilder
             BuildCheckMaps(receiver, groups[0].Maps.ToArray());
             return BuildPropertyLoad(receiver, groups[0].Info);
         }
+        // V8Sharp: getter calls are built for one access (all maps reaching the
+        // same getter); V8 also calls getters in the arms of a polymorphic access.
+        if (groups.Exists(static g => g.Info.AccessKind == PropertyAccessInfo.Kind.AccessorConstant)) return null;
         var cases = new List<(Map[] Maps, Func<ValueNode?> Build)>();
         foreach ((List<Map> maps, PropertyAccessInfo info) in groups)
         {
@@ -648,6 +732,8 @@ public sealed partial class MaglevGraphBuilder
             }
             case PropertyAccessInfo.Kind.DataConstant:
                 return GetConstant(info.Constant);
+            case PropertyAccessInfo.Kind.AccessorConstant:
+                return BuildPropertyGetterCall(receiver, (JSFunction)info.Constant.HeapObjectOrNull!);
             case PropertyAccessInfo.Kind.NotFound:
                 return GetRootConstant(RootIndex.kUndefinedValue);
             case PropertyAccessInfo.Kind.ArrayLength:
@@ -674,6 +760,44 @@ public sealed partial class MaglevGraphBuilder
             default:
                 throw new InvalidOperationException();
         }
+    }
+
+    /// <summary>
+    /// TryBuildPropertyGetterCall with TryReduceCallForConstant: the getter is
+    /// called with the receiver (kNotNullOrUndefined) and no call feedback, as
+    /// a builtin reduction, inlined, through its direct entry, or as a call of
+    /// a known function.
+    /// </summary>
+    ValueNode BuildPropertyGetterCall(ValueNode receiver, JSFunction getter)
+    {
+        const ConvertReceiverMode mode = ConvertReceiverMode.NotNullOrUndefined;
+        if (TryReduceBuiltin(getter, receiver, []) is { } reduced) return reduced;
+        var noFeedback = new FeedbackNexus(Isolate, null, 0);
+        if (TryBuildInlinedCall(getter, GetConstant(getter), receiver, [], mode, noFeedback, isConstruct: false, null) is { } inlined)
+        {
+            return inlined;
+        }
+        if (TryBuildDirectCall(getter, receiver, [], Register.InvalidValue(), mode) is { } direct) return direct;
+        return BuildCallKnownJSFunction(getter, receiver, [], Register.InvalidValue(), mode);
+    }
+
+    /// <summary>
+    /// TryBuildPropertySetterCall: the setter is called with the receiver and
+    /// the value, and its result is dropped (the accumulator keeps the value,
+    /// also in the frame a lazy deopt resumes in: a result location of size 0).
+    /// </summary>
+    /// <remarks>
+    /// V8Sharp: the setter is not inlined (V8 may inline it): an inlined
+    /// frame materialized by a deopt returns into the caller's accumulator.
+    /// </remarks>
+    void BuildPropertySetterCall(ValueNode receiver, ValueNode value, JSFunction setter)
+    {
+        const ConvertReceiverMode mode = ConvertReceiverMode.NotNullOrUndefined;
+        ValueNode[] args = [value];
+        WithLazyResult<ValueNode>(new Register(0), 0, () =>
+            TryReduceBuiltin(setter, receiver, args) ??
+            TryBuildDirectCall(setter, receiver, args, Register.InvalidValue(), mode) ??
+            BuildCallKnownJSFunction(setter, receiver, args, Register.InvalidValue(), mode));
     }
 
     /// <summary>
@@ -847,8 +971,8 @@ public sealed partial class MaglevGraphBuilder
             return;
         }
         if (MapsAndHandlers(slot) is { } feedback && TryBuildNamedStore(receiver, value, feedback)) return;
-        CallBaseline(defineOwn ? "DefineNamedOwnProperty" : "SetNamedProperty", [receiver, value],
-            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.C(name), BuiltinArg.In(1)]);
+        LabelGenericSite(CallBaseline(defineOwn ? "DefineNamedOwnProperty" : "SetNamedProperty", [receiver, value],
+            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.C(name), BuiltinArg.In(1)]), slot, (Name)name.Object);
     }
 
     static PropertyAccessInfo? StoreAccessInfo(Map map, JSValue handlerValue)
@@ -871,6 +995,18 @@ public sealed partial class MaglevGraphBuilder
                 info.AccessKind = PropertyAccessInfo.Kind.TransitionStore;
                 info.TransitionMap = h.TransitionMap;
                 break;
+            case StoreHandler.Kind.kAccessorFromPrototype:
+                // kFastAccessorConstant: a JavaScript setter on the prototype
+                // chain of a fast-mode receiver (TryBuildPropertySetterCall).
+                if (map.IsDictionaryMap || Map.IsSpecialReceiverMap(map) ||
+                    h.Data.HeapObjectOrNull is not JSFunction { Shared.IsClassConstructor: false } setter ||
+                    !setter.Map.IsCallable)
+                {
+                    return null;
+                }
+                info.AccessKind = PropertyAccessInfo.Kind.AccessorConstant;
+                info.Constant = h.Data;
+                return info;
             default:
                 return null;
         }
@@ -899,7 +1035,8 @@ public sealed partial class MaglevGraphBuilder
             {
                 if (info.AccessKind != PropertyAccessInfo.Kind.TransitionStore && other.AccessKind == info.AccessKind &&
                     other.StorageIndex == info.StorageIndex && other.Representation.Equals(info.Representation) &&
-                    ReferenceEquals(other.FieldTypeClass, info.FieldTypeClass))
+                    ReferenceEquals(other.FieldTypeClass, info.FieldTypeClass) && other.Constant.IsIdenticalTo(info.Constant) &&
+                    (info.AccessKind != PropertyAccessInfo.Kind.AccessorConstant || ReferenceEquals(other.ValidityCell, info.ValidityCell)))
                 {
                     maps.Add(info.Map);
                     merged = true;
@@ -914,6 +1051,8 @@ public sealed partial class MaglevGraphBuilder
             BuildPropertyStore(receiver, value, groups[0].Info);
             return true;
         }
+        // V8Sharp: setter calls are built for one access only (V8 also in polymorphic arms).
+        if (groups.Exists(static g => g.Info.AccessKind == PropertyAccessInfo.Kind.AccessorConstant)) return false;
         var cases = new List<(Map[] Maps, Func<ValueNode?> Build)>();
         foreach ((List<Map> maps, PropertyAccessInfo info) in groups)
         {
@@ -956,6 +1095,12 @@ public sealed partial class MaglevGraphBuilder
 
     void BuildPropertyStore(ValueNode receiver, ValueNode value, PropertyAccessInfo info)
     {
+        if (info.AccessKind == PropertyAccessInfo.Kind.AccessorConstant)
+        {
+            if (info.ValidityCell is { } accessorCell) BuildCheckValidityCell(accessorCell);
+            BuildPropertySetterCall(receiver, value, (JSFunction)info.Constant.HeapObjectOrNull!);
+            return;
+        }
         if (info.ValidityCell is { } cell && info.AccessKind == PropertyAccessInfo.Kind.TransitionStore) BuildCheckValidityCell(cell);
         if (info.AccessKind == PropertyAccessInfo.Kind.FieldStore && info.Representation.IsDouble)
         {
@@ -1050,8 +1195,8 @@ public sealed partial class MaglevGraphBuilder
             return;
         }
         if (_info.IsTracing) TraceGenericAccess("keyed load", nexus, slot);
-        SetAccumulator(CallBaseline("GetKeyedProperty", [obj, key],
-            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1)])!);
+        SetAccumulator(LabelGenericSite(CallBaseline("GetKeyedProperty", [obj, key],
+            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1)])!, slot, null)!);
     }
 
     /// <summary>--trace-maglev-graph-building: why a property access is generic (its feedback).</summary>
@@ -1126,9 +1271,43 @@ public sealed partial class MaglevGraphBuilder
         return !first;
     }
 
+    /// <summary>
+    /// TryBuildElementAccessOnString: a keyed load whose only feedback is a
+    /// string receiver (kIndexedString) loads the character (StringAt), after
+    /// a bounds check that deoptimizes; with out-of-bounds feedback V8 selects
+    /// undefined instead (LoadModeHandlesOOB), which V8Sharp leaves generic.
+    /// </summary>
+    ValueNode? TryBuildElementAccessOnString(ValueNode obj, ValueNode key, List<(Map Map, JSValue Handler)> feedback)
+    {
+        if (feedback.Count != 1 || feedback[0].Handler.HeapObjectOrNull is not LoadHandler { HandlerKind: LoadHandler.Kind.kIndexedString } handler ||
+            handler.AllowOutOfBounds || !ReferenceEquals(feedback[0].Map, Isolate.NativeContext.ICPrimitiveMaps?.StringMap) ||
+            key.Representation == ValueRepresentation.kTagged && !NodeTypes.CanBe(GetType(key), NodeType.kNumber))
+        {
+            return null;
+        }
+        BuildCheckString(obj);
+        ValueNode index = GetInt32ElementIndex(key);
+        ValueNode length = AddNewNode(new ValueNode(Opcode.StringLength, ValueRepresentation.kInt32)
+        {
+            Inputs = [obj],
+            Type = NodeType.kSmi,
+        });
+        AddNewNode(new Node(Opcode.CheckInt32Condition)
+        {
+            Inputs = [index, length],
+            Int0 = (int)CompareOperation.kLessThan,
+            Int1 = 1, // unsigned
+            Properties = OpProperties.kEagerDeopt,
+        }, DeoptimizeReason.kOutOfBounds);
+        // StringAt: the one-character string (from the single character string table).
+        return CallMaglev("StringAt", [obj, index], [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1)], OpProperties.kNone,
+            type: NodeType.kString);
+    }
+
     ValueNode? TryBuildElementLoad(ValueNode obj, ValueNode key, List<(Map Map, JSValue Handler)> feedback)
     {
         if (obj.Representation != ValueRepresentation.kTagged) return null;
+        if (TryBuildElementAccessOnString(obj, key, feedback) is { } character) return character;
         if (TryApplyElementLoadTransitions(obj, feedback) is not { } refined) return null;
         feedback = refined;
         if (CollectTypedArrayAccess(feedback, load: true, out ElementsKind typedKind, out bool typedHandlesOOB))
@@ -1253,13 +1432,23 @@ public sealed partial class MaglevGraphBuilder
         for (int i = 0; i < feedback.Count; i++)
         {
             entries[i] = [feedback[i]];
-            if (!CollectElementAccess(entries[i], load: true, out _, out _, out _)) return null;
+            if (!CollectElementAccess(entries[i], load: true, out _, out _, out _) &&
+                !(CollectTypedArrayAccess(entries[i], load: true, out _, out bool oob) && !oob))
+            {
+                return null;
+            }
         }
         ValueNode index = GetInt32ElementIndex(key);
         for (int i = 0; i < feedback.Count; i++)
         {
             List<(Map Map, JSValue Handler)> entry = entries[i];
             Map[] maps = [entry[0].Map];
+            // A typed array arm (V8's polymorphic access builds each map's element access).
+            if (CollectTypedArrayAccess(entry, load: true, out ElementsKind typedKind, out _))
+            {
+                cases.Add((maps, () => BuildTypedArrayElementLoad(obj, key, entry, typedKind, handlesOOB: false)));
+                continue;
+            }
             CollectElementAccess(entry, load: true, out ElementsKind kind, out bool isJSArray, out bool anyHoley);
             cases.Add((maps, () =>
             {
@@ -1594,12 +1783,12 @@ public sealed partial class MaglevGraphBuilder
         if (nexus.IcState() == InlineCacheState.MEGAMORPHIC)
         {
             // BuildCallBuiltin<KeyedStoreIC_Megamorphic>.
-            CallMaglev("KeyedStoreICMegamorphic", [obj, key, value],
-                [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)], OpProperties.kGenericCall);
+            LabelGenericSite(CallMaglev("KeyedStoreICMegamorphic", [obj, key, value],
+                [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)], OpProperties.kGenericCall), slot, null);
             return;
         }
-        CallBaseline("SetKeyedProperty", [obj, key, value],
-            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)]);
+        LabelGenericSite(CallBaseline("SetKeyedProperty", [obj, key, value],
+            [BuiltinArg.Isolate, Fv, BuiltinArg.I(slot), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2)]), slot, null);
     }
 
     /// <summary>MapRef::PrototypesElementsDoNotHaveAccessorsOrThrow.</summary>
@@ -1637,12 +1826,18 @@ public sealed partial class MaglevGraphBuilder
             if (feedback.Count < 2 && !IsElementsTransitionStore(feedback[0], out _)) return false;
             foreach ((Map Map, JSValue Handler) entry in feedback)
             {
-                if (!CollectElementAccess([entry], load: false, out _, out _, out _) && !IsElementsTransitionStore(entry, out _)) return false;
+                if (!CollectElementAccess([entry], load: false, out _, out _, out _) && !IsElementsTransitionStore(entry, out _) &&
+                    !CollectTypedArrayAccess([entry], load: false, out _, out _))
+                {
+                    return false;
+                }
             }
         }
         KeyedAccessStoreMode mode = KeyedAccessStoreMode.kInBounds;
-        foreach ((Map _, JSValue handler) in feedback)
+        foreach ((Map map, JSValue handler) in feedback)
         {
+            // (A typed array arm has its own out-of-bounds mode.)
+            if (!grouped && map.InstanceType == InstanceType.JSTypedArrayType) continue;
             KeyedAccessStoreMode m = ((StoreHandler)handler.Object).StoreMode;
             if (m == KeyedAccessStoreMode.kIgnoreTypedArrayOOB) return false;
             if (m != KeyedAccessStoreMode.kInBounds) mode = KeyedAccessStoreMode.kGrowAndHandleCOW;
@@ -1691,6 +1886,17 @@ public sealed partial class MaglevGraphBuilder
                         }, DeoptimizeReason.kWrongMap);
                         RecordKnownMaps(obj, [to]);
                         BuildElementStore(obj, polymorphicIndex, value, to.ElementsKind, to.InstanceType == InstanceType.JSArrayType, mode);
+                        return null;
+                    }));
+                    continue;
+                }
+                if (CollectTypedArrayAccess([entry], load: false, out ElementsKind typedEntryKind, out bool entryIgnoresOOB))
+                {
+                    // A typed array arm (V8's polymorphic access builds each map's element access).
+                    List<(Map Map, JSValue Handler)> typedEntry = [entry];
+                    cases.Add(([entry.Map], () =>
+                    {
+                        BuildTypedArrayElementStore(obj, key, value, typedEntry, typedEntryKind, entryIgnoresOOB);
                         return null;
                     }));
                     continue;

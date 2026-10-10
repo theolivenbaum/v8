@@ -8,6 +8,20 @@ public class MaglevBuiltinReductionTest
 {
     public static TheoryData<string> Snippets => new()
     {
+        // String.fromCharCode of one argument (TryReduceStringFromCharCode):
+        // code units above 0xFF, wrap-around (ToUint16), doubles, negatives,
+        // oddballs, and a string argument (a deopt).
+        """
+        (function() {
+          function ch(c) { return String.fromCharCode(c); }
+          function two(a, b) { return String.fromCharCode(a, b); }
+          var out = [];
+          for (var i = 0; i < 150; i++) out.push(ch(65 + i % 26), ch(0x4e00 + i), ch(65536 + 66), ch(i + 0.9), two(72, 105));
+          out.push(ch(-1).charCodeAt(0), ch(true), ch(undefined).charCodeAt(0), ch(null).charCodeAt(0), ch('67'), ch(NaN).charCodeAt(0));
+          for (var i = 0; i < 5; i++) out.push(ch(97 + i));
+          return out.slice(-16).join('|');
+        })()
+        """,
         // Array.prototype.push / pop on every fast elements kind, several
         // arguments, growing, empty arrays, holes, kind changes (deopts).
         """

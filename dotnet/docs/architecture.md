@@ -778,9 +778,15 @@ arguments and constructs with up to six pass their arguments as values
 (no register window in the frame); arguments objects, rest parameters
 and apply(this, arguments) of a lazy frame copy its activation's arguments
 into its window first (`MaglevCalls.CreateMappedArgumentsLazy` and the
-others); code that still reads or writes its frame (register-list calls
-with more arguments, other builtins taking the frame state) keeps the
-frameful direct entry
+others). Code whose nodes address registers of the window (register-list
+calls with more than six arguments, ForInPrepare's cache triple, builtins
+taking a register range) keeps the lazy entry and gets a written window
+(`InterpreterFrameFlags.LazyWindow`, `MaglevCalls.EnterLazyWindow`: the
+window below the stack's dirty end is cleared once and the nodes address
+it as a frameful entry would; `MaterializeLazyFrame` then keeps its
+registers); only code that reads or writes its parameters or the frame
+state through the frame keeps the frameful direct entry
+(`V8SHARP_MAGLEV_NO_LAZY_WINDOW=1` turns the window off)
 (`V8SHARP_MAGLEV_TRACE_ENTRIES=1` names the node).
 `V8SHARP_MAGLEV_NO_LAZY_FRAMES=1` and `V8SHARP_MAGLEV_NO_LAZY_INLINED_FRAMES=1`
 turn them off.
@@ -799,6 +805,17 @@ would have built, deoptimizes into it and continues in the interpreter. The
 two passes share the code's deopt points. When the graph turns out to
 need the frame (the second pass touches it), the frameful direct entry is
 used.
+
+**Tier profile.** `V8SHARP_TIER_PROFILE=1` (V8Sharp.Bench, the measured
+iterations only) starts `TierProfiler`, a sampling thread that reads the
+top interpreter frame record of the main thread every millisecond and
+classifies it as interpreter, baseline or Maglev (lazy, frameful or
+inlined), with the GC pause share, IC misses per kind (`ICIsolateState`)
+and the functions with most samples below Maglev (their tiering state,
+compiles, deopts, invalidations and why Maglev gave up). With
+`V8SHARP_MAGLEV_COUNT_GENERIC=1` Maglev code counts its generic builtin
+calls by builtin, `=2` by site (function, bytecode offset, feedback), which
+is how hot code that is in Maglev but still generic is found.
 
 **Allocations and escape analysis.** `new` of a known constructor (with
 the constructor inlined), object literals of primitive fields and `{}` are

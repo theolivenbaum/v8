@@ -64,6 +64,7 @@ sealed class V8SharpHost : IBenchHost
 {
     readonly Isolate _isolate;
     readonly string _workDir;
+    readonly TierProfiler? _profiler;
 
     public V8SharpHost(string flags, string workDir)
     {
@@ -85,8 +86,19 @@ sealed class V8SharpHost : IBenchHost
                 static (Isolate i, in BuiltinArguments a) => JSValue.FromNumber(Program.ThreadCpuTimeMs()));
             // octane-steady: compiles queued during the warm-up finish before the
             // measured runs, so the score is the generated code, not RyuJIT.
+            // V8SHARP_TIER_PROFILE=1: sample the tiers in the measured runs of
+            // octane-steady (tierProfile(on), called by the driver; TierProfiler).
+            if (Environment.GetEnvironmentVariable("V8SHARP_TIER_PROFILE") == "1") _profiler = TierProfiler.Attach(_isolate);
             Install(context, global, "settle",
                 static (Isolate i, in BuiltinArguments a) => { Program.Settle(); return JSValue.Undefined; });
+            if (_profiler is not null)
+            {
+                Install(context, global, "tierProfile", (Isolate i, in BuiltinArguments a) =>
+                {
+                    if (a.AtOrUndefined(1).IsTrue) _profiler.Resume(); else _profiler.Pause();
+                    return JSValue.Undefined;
+                });
+            }
             Install(context, global, "waitForCompilations",
                 static (Isolate i, in BuiltinArguments a) => { i.WaitForBackgroundCompilation(); return JSValue.Undefined; });
             // Bytes the CLR allocated on this thread (micro/cpu.js prints bytes per iteration).
@@ -185,7 +197,14 @@ sealed class V8SharpHost : IBenchHost
 
     public void LoadFile(string path) => RunOnLargeStack(File.ReadAllText(path), Path.GetFileName(path));
     public void Execute(string source, string name) => RunOnLargeStack(source, name);
-    public void Dispose() { }
+
+    public void Dispose()
+    {
+        if (_profiler is null) return;
+        _profiler.Stop();
+        int top = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_TIER_PROFILE_TOP"), out int t) ? t : 40;
+        using (_isolate.Enter()) _profiler.Report(Console.Out, top);
+    }
 }
 
 /// <summary>The CLR heap's work over a window of a measurement (octane-steady's measured runs).</summary>

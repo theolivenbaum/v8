@@ -221,6 +221,7 @@ public sealed class LoadIC : IC
     /// <summary>Runtime_LoadIC_Miss / LoadNoFeedbackIC_Miss.</summary>
     public static JSValue Miss(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name)
     {
+        ICIsolateState.Get(isolate).LoadMisses++;
         var ic = new LoadIC(isolate, vector, slot, FeedbackSlotKind.kLoadProperty);
         ic.UpdateState(receiver, name);
         return ic.Load(receiver, name);
@@ -813,6 +814,8 @@ public sealed class KeyedLoadIC : IC
         if (vector is not null && isolate.Flags.use_ic)
         {
             JSValue feedback = vector.Slots[slot];
+            // KeyedLoadIC_Megamorphic.
+            if (ReferenceEquals(feedback._obj, ReadOnlyRoots.megamorphic_symbol)) return LoadGeneric(isolate, vector, slot, obj, key);
             // A named key that matches the keyed IC's name: the handlers are named-load handlers.
             Name? name = key.HeapObjectOrNull as Name;
             if (name is JSString { IsInternalized: false } keyString)
@@ -869,6 +872,149 @@ public sealed class KeyedLoadIC : IC
     }
 
     /// <summary>
+    /// AccessorAssembler::KeyedLoadICGeneric (KeyedLoadIC_Megamorphic): a
+    /// megamorphic keyed load looks the key up itself and goes to the runtime's
+    /// GetProperty, not the IC miss, for what it does not handle; only a unique
+    /// name absent from a fast-mode receiver and from the stub cache misses
+    /// (GenericPropertyLoad's stub cache miss). Element keys load fast
+    /// elements in bounds; V8 also loads dictionary elements, holes and
+    /// out-of-bounds keys inline (GenericElementLoad), here the runtime does.
+    /// </summary>
+    static JSValue LoadGeneric(Isolate isolate, FeedbackVector vector, int slot, JSValue obj, JSValue key)
+    {
+        // Smis, null and undefined, and receivers requiring non-standard element
+        // accesses (strings and string wrappers, proxies, interceptors, access
+        // checks) are the runtime's.
+        if (obj._obj is not JSObject receiver || Map.IsCustomElementsReceiverMap(receiver.Map))
+        {
+            return RuntimeLoad(isolate, obj, key);
+        }
+        if (key.IsNumber)
+        {
+            // GenericElementLoad: fast elements in bounds here; holes, typed
+            // arrays and other kinds in the runtime.
+            if (receiver is not JSTypedArray && ElementAccess.TryLoadInBounds(receiver, key._num, out JSValue element)) return element;
+            return RuntimeLoad(isolate, obj, key);
+        }
+        if (key.HeapObjectOrNull is not Name name) return RuntimeLoad(isolate, obj, key);
+        bool useStubCache = true;
+        if (name is JSString { IsInternalized: false } keyString)
+        {
+            // TryInternalizeString: no internalized copy means the runtime (V8
+            // returns through it, as named interceptors may still match); with
+            // one, GenericPropertyLoad without the stub cache (too much traffic
+            // on it, as V8 measured).
+            if (isolate.StringTable.TryLookupExisting(keyString) is not { } internalized) return RuntimeLoad(isolate, obj, key);
+            name = internalized;
+            useStubCache = false;
+        }
+        // TryToName: an array index string is an element key.
+        if (name is JSString nameString && nameString.AsArrayIndex(out _)) return RuntimeLoad(isolate, obj, key);
+        return GenericPropertyLoad(isolate, vector, slot, receiver, name, key, useStubCache);
+    }
+
+    /// <summary>AccessorAssembler::GenericPropertyLoad for a lookup start object that is not special.</summary>
+    static JSValue GenericPropertyLoad(Isolate isolate, FeedbackVector vector, int slot, JSObject receiver, Name name, JSValue key,
+        bool useStubCache)
+    {
+        Map map = receiver.Map;
+        if (!map.IsDictionaryMap)
+        {
+            // Try looking up the property on the receiver; if unsuccessful, look
+            // for a handler in the stub cache.
+            DescriptorArray descriptors = map.InstanceDescriptors;
+            InternalIndex descriptor = descriptors.Search(name, map);
+            if (descriptor.IsFound)
+            {
+                return TryLoadFastOwnProperty(map, descriptors, descriptor, receiver, out JSValue value)
+                    ? value
+                    : RuntimeLoad(isolate, receiver, key);
+            }
+            if (useStubCache)
+            {
+                if (name is Symbol { IsPrivate: true }) return RuntimeLoad(isolate, receiver, key);
+                if (ICIsolateState.Get(isolate).LoadStubCache.Get(name, map) is LoadHandler cached &&
+                    LoadIC.TryHandleLoad(isolate, cached, receiver, name, out JSValue cachedResult))
+                {
+                    return cachedResult;
+                }
+                // KeyedLoadGeneric_miss.
+                return Miss(isolate, vector, slot, receiver, name, FeedbackSlotKind.kLoadKeyed);
+            }
+        }
+        else
+        {
+            NameDictionary properties = receiver.PropertyDictionary;
+            InternalIndex entry = properties.FindEntry(name);
+            if (entry.IsFound)
+            {
+                PropertyDetails details = properties.DetailsAt(entry);
+                // CallGetterIfAccessor: accessors are the runtime's here.
+                if (details.Kind != PropertyKind.Data) return RuntimeLoad(isolate, receiver, key);
+                return properties.ValueAt(entry);
+            }
+        }
+
+        // lookup_prototype_chain.
+        if (name is Symbol { IsPrivate: true }) return name.IsAnyPrivateName ? RuntimeLoad(isolate, receiver, key) : JSValue.Undefined;
+        Map holderMap = map;
+        while (true)
+        {
+            // Bailout if it can be an integer indexed exotic case.
+            if (holderMap.InstanceType == InstanceType.JSTypedArrayType) return RuntimeLoad(isolate, receiver, key);
+            JSReceiver? proto = holderMap.Prototype;
+            if (proto is null) return JSValue.Undefined;
+            holderMap = proto.Map;
+            // TryGetOwnProperty: special receivers and accessors are the runtime's.
+            if (proto is not JSObject holder || Map.IsSpecialReceiverMap(holderMap)) return RuntimeLoad(isolate, receiver, key);
+            if (!holderMap.IsDictionaryMap)
+            {
+                DescriptorArray descriptors = holderMap.InstanceDescriptors;
+                InternalIndex descriptor = descriptors.Search(name, holderMap);
+                if (descriptor.IsFound)
+                {
+                    return TryLoadFastOwnProperty(holderMap, descriptors, descriptor, holder, out JSValue value)
+                        ? value
+                        : RuntimeLoad(isolate, receiver, key);
+                }
+            }
+            else
+            {
+                NameDictionary properties = holder.PropertyDictionary;
+                InternalIndex entry = properties.FindEntry(name);
+                if (entry.IsFound)
+                {
+                    PropertyDetails details = properties.DetailsAt(entry);
+                    if (details.Kind != PropertyKind.Data) return RuntimeLoad(isolate, receiver, key);
+                    return properties.ValueAt(entry);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// LoadPropertyFromFastObject for a data property (a field or a constant);
+    /// false for accessors and fields not yet initialized, which take the
+    /// runtime path (CallGetterIfAccessor's slow cases).
+    /// </summary>
+    static bool TryLoadFastOwnProperty(Map map, DescriptorArray descriptors, InternalIndex descriptor, JSObject holder, out JSValue value)
+    {
+        PropertyDetails details = descriptors.GetDetails(descriptor);
+        value = default;
+        if (details.Kind != PropertyKind.Data) return false;
+        if (details.Location == PropertyLocation.Field)
+        {
+            value = holder.RawFastPropertyAt(FieldIndex.ForDetails(map, details));
+            return !ReferenceEquals(value.HeapObjectOrNull, Oddball.Uninitialized);
+        }
+        value = descriptors.GetStrongValue(descriptor);
+        return true;
+    }
+
+    /// <summary>KeyedLoadGeneric_slow: Runtime::kGetProperty.</summary>
+    static JSValue RuntimeLoad(Isolate isolate, JSValue obj, JSValue key) => RuntimeObject.GetObjectProperty(isolate, obj, key, obj, out _);
+
+    /// <summary>
     /// GetEnumeratedKeyedProperty: a keyed load whose key comes from for-in
     /// (EnumeratedKeyedLoadIC); with the receiver's map still the enum cache
     /// type, the key is an own fast property.
@@ -902,6 +1048,7 @@ public sealed class KeyedLoadIC : IC
     /// <summary>Runtime_KeyedLoadIC_Miss / Runtime_KeyedHasIC_Miss.</summary>
     public static JSValue Miss(Isolate isolate, FeedbackVector? vector, int slot, JSValue obj, JSValue key, FeedbackSlotKind kind)
     {
+        ICIsolateState.Get(isolate).KeyedLoadMisses++;
         var ic = new KeyedLoadIC(isolate, vector, slot, kind);
         ic.UpdateState(obj, key);
         return ic.Load(obj, key);

@@ -303,6 +303,25 @@ public enum Opcode : ushort
     StoreTypedArrayElement,
     LoadPropertyCellValue,
     StorePropertyCellValue,
+    /// <summary>
+    /// HasInPrototypeChain (Obj0: HasInstanceInfo): whether the prototype is on
+    /// the input's prototype chain, for a constructor whose map and prototype
+    /// slot are still the compiled ones; eager deopt where V8 makes a
+    /// deferred call (a special receiver on the chain, a changed constructor).
+    /// </summary>
+    HasInPrototypeChain,
+    /// <summary>CheckDynamicValue: the two tagged inputs are the same object (V8 compares the words).</summary>
+    CheckDynamicValue,
+    /// <summary>The enum cache keys of the map input (DescriptorArray::enum_cache().keys()).</summary>
+    LoadEnumCacheKeys,
+    /// <summary>The enum cache indices of the map input (field indices in GetLoadByFieldIndex's encoding).</summary>
+    LoadEnumCacheIndices,
+    /// <summary>LoadEnumCacheLength: Map::EnumLength of the map input.</summary>
+    LoadEnumCacheLength,
+    /// <summary>CheckCacheIndicesNotCleared: the indices (input 0) cover the cache length (input 1).</summary>
+    CheckCacheIndicesNotCleared,
+    /// <summary>LoadTaggedFieldByFieldIndex: the field of the object at an encoded field index (an Int32 input).</summary>
+    LoadTaggedFieldByFieldIndex,
     /// <summary>V8Sharp: EnsureWritableFastElements + MaybeGrowFastElements for an append store.</summary>
     MaybeGrowFastElements,
     UpdateJSArrayLength,
@@ -713,6 +732,11 @@ public sealed class CallBuiltinInfo(MethodInfo method, BuiltinArg[] args, string
     public MethodInfo Method = method;
     public BuiltinArg[] Args = args;
     public string Name = name;
+    /// <summary>
+    /// Diagnostics (V8SHARP_MAGLEV_COUNT_GENERIC=2): the site and feedback of a
+    /// generic access, counted by its own name (MaglevGenericCallCounts).
+    /// </summary>
+    public string? Site;
     /// <summary>The method returns bool and the node branches/deopts on it (CallBuiltin as a check).</summary>
     public bool DeoptIfFalse;
     /// <summary>Registers to write before the call: (register, value).</summary>
@@ -752,6 +776,15 @@ public sealed class CallBuiltinInfo(MethodInfo method, BuiltinArg[] args, string
 /// and the receiver the callee sees when the call converts it statically
 /// (the global proxy for a sloppy callee).
 /// </summary>
+/// <summary>The constants of a HasInPrototypeChain node.</summary>
+public sealed class HasInstanceInfo(JSFunction function, Map functionMap, HeapObject prototypeOrInitialMap, JSReceiver prototype)
+{
+    public readonly JSFunction Function = function;
+    public readonly Map FunctionMap = functionMap;
+    public readonly HeapObject PrototypeOrInitialMap = prototypeOrInitialMap;
+    public readonly JSReceiver Prototype = prototype;
+}
+
 public sealed class KnownCallInfo
 {
     /// <summary>The callee, when it is a constant (null: the input <see cref="TargetInput"/>).</summary>

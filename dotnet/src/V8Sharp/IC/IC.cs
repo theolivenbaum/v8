@@ -353,6 +353,13 @@ public sealed class ICIsolateState
     public readonly StubCache StoreStubCache = new();
     public readonly StubCache DefineOwnStubCache = new();
 
+    /// <summary>
+    /// V8Sharp diagnostics: IC misses (the runtime's LoadIC_Miss,
+    /// KeyedLoadIC_Miss, StoreIC_Miss and KeyedStoreIC_Miss), which
+    /// TierProfiler reports for the measured part of a warm run.
+    /// </summary>
+    public long LoadMisses, KeyedLoadMisses, StoreMisses, KeyedStoreMisses;
+
     public static ICIsolateState Get(Isolate isolate) => isolate.ICState ??= new ICIsolateState();
 }
 
@@ -433,3 +440,4 @@ public static class ICMaps
     /// <summary>Whether the map is one of the primitive stand-in maps (V8's IsPrimitiveMap).</summary>
     public static bool IsPrimitiveMap(Map map) => !InstanceTypeChecks.IsJSReceiver(map.InstanceType);
 }
+

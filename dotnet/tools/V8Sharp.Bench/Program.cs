@@ -278,6 +278,8 @@ public static partial class Program
                         bm.deterministicIterations = warm + measuredRuns;
                         var half = warm >> 1;
                         bm.run = function () {
+                          // V8SHARP_TIER_PROFILE: sample the measured runs only.
+                          if (n === 0 && typeof tierProfile === 'function') tierProfile(false);
                           if (n === half && half > 0) {
                             // Halfway through the warm-up: the tiers' background
                             // compiles finish and install, so the second half runs
@@ -286,6 +288,7 @@ public static partial class Program
                             // first, optimized after call counting); these runs let
                             // it reach its optimized code before measuring.
                             waitForCompilations();
+                            if (__benchTrace) print('@warmup-half ' + bm.name);
                           }
                           if (n++ === warm) {
                             // Compiles queued since, and .NET's own background
@@ -297,6 +300,8 @@ public static partial class Program
                               print('@compilations-awaited'); awaited = true;
                               if (typeof gcMark === 'function') gcMark();
                             }
+                            if (__benchTrace) print('@measure-start ' + bm.name);
+                            if (typeof tierProfile === 'function') tierProfile(true);
                             last = cpuTimeMs();
                           }
                           var result = run.apply(this, arguments);
@@ -331,6 +336,7 @@ public static partial class Program
                     ? "var __benchScale = " + int.Parse(scale, CultureInfo.InvariantCulture) + ", __benchIterations = " +
                       IterationsLiteral(Environment.GetEnvironmentVariable("V8SHARP_BENCH_ITERATIONS")) + ", __benchWarmup = " +
                       int.Parse(Environment.GetEnvironmentVariable("V8SHARP_BENCH_WARMUP") ?? "2", CultureInfo.InvariantCulture) +
+                      ", __benchTrace = " + (Environment.GetEnvironmentVariable("V8SHARP_BENCH_TRACE") == "1" ? "true" : "false") +
                       ", __benchSteady = " +
                       (steady ? "true" : "false") + ";\n" + fixedDriver
                     : driver);

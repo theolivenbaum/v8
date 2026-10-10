@@ -173,7 +173,13 @@ public sealed partial class MaglevGraphBuilder
             }
             if (argsFirst.IsValid || args.Length < s_callWithValues.Length)
             {
-                SetAccumulator(BuildCallKnownJSFunction(target, receiver, args, argsFirst, mode));
+                ValueNode knownCall = BuildCallKnownJSFunction(target, receiver, args, argsFirst, mode);
+                if (MaglevGenericCallCounts.BySite)
+                {
+                    LabelSite(knownCall, $"{MaglevCompiler.DebugName(_unit.SharedFunctionInfo)}@{_it.CurrentOffset()} known target " +
+                        MaglevCompiler.DebugName(target.Shared) + (_lastNotInlined is { } why ? " (" + why + ")" : ""));
+                }
+                SetAccumulator(knownCall);
                 return;
             }
         }
@@ -205,7 +211,19 @@ public sealed partial class MaglevGraphBuilder
         if (argsFirst.IsValid || args.Length < s_callWithValues.Length)
         {
             // V8's generic Call node: the Call builtin, without feedback collection.
-            SetAccumulator(BuildCall(callee, receiver, args, argsFirst, mode));
+            ValueNode genericCall = BuildCall(callee, receiver, args, argsFirst, mode);
+            if (MaglevGenericCallCounts.BySite)
+            {
+                LabelSite(genericCall, $"{MaglevCompiler.DebugName(_unit.SharedFunctionInfo)}@{_it.CurrentOffset()} {nexus.IcState()} " +
+                    (feedback.HeapObjectOrNull switch
+                    {
+                        JSFunction f => "target " + MaglevCompiler.DebugName(f.Shared) + (_lastNotInlined is { } why ? " (" + why + ")" : ""),
+                        FeedbackCell => "feedback cell",
+                        { } o => o.GetType().Name,
+                        null => "none",
+                    }) + (speculate ? "" : " no-speculation"));
+            }
+            SetAccumulator(genericCall);
             return;
         }
         SetAccumulator(BuildGenericCall(bytecode, callee, receiver, args, slot));
@@ -589,6 +607,13 @@ public sealed partial class MaglevGraphBuilder
                 case Builtin.MathMax:
                 case Builtin.MathMin:
                     return ReduceMathMinMax(id == Builtin.MathMax, args);
+                case Builtin.NumberParseInt:
+                    return TryReduceNumberParseInt(args);
+                case Builtin.StringFromCharCode:
+                    // TryReduceStringFromCharCode (maglev-reducer-inl.h).
+                    if (args.Length != 1) return null;
+                    return CallMaglev("StringFromCharCode", [GetTruncatedInt32ForToNumber(args[0], NodeType.kNumberOrOddball)],
+                        [BuiltinArg.Isolate, BuiltinArg.In(0)], OpProperties.kNone, type: NodeType.kString);
                 case Builtin.ArrayPrototypePush:
                     return TryReduceArrayPrototypePush(receiver, args);
                 case Builtin.ArrayPrototypePop:
@@ -645,6 +670,32 @@ public sealed partial class MaglevGraphBuilder
         return null;
     }
 
+    /// <summary>TryReduceNumberParseInt (also the global parseInt): an integer with radix undefined, 0 or 10 is itself.</summary>
+    ValueNode? TryReduceNumberParseInt(ValueNode[] args)
+    {
+        if (args.Length == 0) return GetFloat64Constant(double.NaN);
+        if (args.Length != 1)
+        {
+            ValueNode radix = args[1];
+            if (radix.Opcode == Opcode.RootConstant)
+            {
+                if (!radix.ConstantValue().IsUndefined) return null;
+            }
+            else if (radix.Opcode is not (Opcode.SmiConstant or Opcode.Int32Constant) || !radix.TryGetInt32Constant(out int r) || r is not (10 or 0))
+            {
+                return null;
+            }
+        }
+        ValueNode arg = args[0];
+        return arg.Representation switch
+        {
+            ValueRepresentation.kInt32 or ValueRepresentation.kUint32 => arg,
+            ValueRepresentation.kTagged when CheckType(arg, NodeType.kSmi) => arg,
+            // TODO in V8 as well: strings, doubles.
+            _ => null,
+        };
+    }
+
     ValueNode? ReduceMathUnary(Builtin id, ValueNode[] args)
     {
         if (args.Length == 0) return GetFloat64Constant(double.NaN);
@@ -698,6 +749,13 @@ public sealed partial class MaglevGraphBuilder
     /// <summary>Whether <paramref name="target"/> can be inlined here (MaglevGraphBuilder::ShouldInlineCall).</summary>
     /// <summary>The call being considered passes an allocation that has not escaped (TryBuildInlinedCall).</summary>
     bool _callReceivesFreshAllocation;
+    /// <summary>Diagnostics (MaglevGenericCallCounts.BySite): the last call not inlined and why.</summary>
+    string? _lastNotInlined;
+
+    static void LabelSite(ValueNode? node, string? site)
+    {
+        if (MaglevGenericCallCounts.BySite && site is not null && node?.Obj0 is CallBuiltinInfo info) info.Site = site;
+    }
     static readonly bool s_inlineForEscapeAnalysis = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_INLINE_FOR_EA") != "1";
 
     string? ShouldInlineCall(JSFunction target, FeedbackNexus nexus, bool isConstruct) =>
@@ -737,11 +795,11 @@ public sealed partial class MaglevGraphBuilder
             float frequency = nexus.IsNull ? 1f : nexus.ComputeCallFrequency();
             if (frequency < MinInliningFrequency) return "infrequent";
         }
-        // Direct recursion is not inlined.
-        for (MaglevCompilationUnit? u = _unit; u is not null; u = u.Caller)
-        {
-            if (ReferenceEquals(u.SharedFunctionInfo, shared)) return "recursive";
-        }
+        // Direct recursion is not inlined (MaglevReducer::CanInlineCall checks
+        // the current unit only: a function further up the inlining stack, as
+        // the shared constructor of Class.create classes constructing each
+        // other, is inlined again within the depth limits).
+        if (ReferenceEquals(_unit.SharedFunctionInfo, shared)) return "recursive";
         return null;
     }
 
@@ -817,6 +875,7 @@ public sealed partial class MaglevGraphBuilder
         if (reason is not null)
         {
             if (_info.IsTracing) Console.WriteLine($"[maglev] not inlining {MaglevCompiler.DebugName(shared)}: {reason}");
+            if (MaglevGenericCallCounts.BySite) _lastNotInlined = $"{MaglevCompiler.DebugName(_unit.SharedFunctionInfo)}@{_it.CurrentOffset()} -> {MaglevCompiler.DebugName(shared)}: {reason}";
             return null;
         }
         // The receiver a sloppy callee sees (ConvertReceiver).
@@ -891,6 +950,11 @@ public sealed partial class MaglevGraphBuilder
         inner._frame.Known = _frame.Known.Clone();
         inner.BuildInlined(callBlock);
         _latestCheckpointedFrame = null;
+        if (inner._mayHaveChangedMaps)
+        {
+            _mayHaveChangedMaps = true;
+            _forInState.ReceiverNeedsMapCheck = true;
+        }
 
         // The continuation: the returns of the callee join here.
         List<(BasicBlock Block, ValueNode Value, KnownNodeAspects Known)> returns = inner._inlinedReturns;
@@ -1024,6 +1088,7 @@ public sealed partial class MaglevGraphBuilder
                     valueArgs[1 + i] = BuiltinArg.In(i);
                 }
                 ValueNode constructedValues = CallMaglev2("ConstructKnownJSFunction" + args.Length, valueInputs, valueArgs, []);
+                LabelSite(constructedValues, _lastNotInlined);
                 constructedValues.Type = NodeType.kJSReceiver;
                 SetAccumulator(constructedValues);
                 return;

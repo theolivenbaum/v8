@@ -252,6 +252,32 @@ public static class MaglevBuiltins
         return InstanceOfFunction(isolate, obj, function);
     }
 
+    /// <summary>
+    /// HasInPrototypeChain: 1 when <paramref name="prototype"/> is on the
+    /// prototype chain of <paramref name="obj"/>, 0 when not, 2 when the
+    /// optimized code must deoptimize (the constructor's map or prototype slot
+    /// changed, or a proxy or an access-checked object is on the chain).
+    /// </summary>
+    [MethodImpl(Inline)]
+    public static int HasInPrototypeChain(JSValue obj, JSFunction function, Map functionMap, HeapObject protoOrMap, JSReceiver prototype)
+    {
+        if (!ReferenceEquals(function.Map, functionMap) || !ReferenceEquals(function.PrototypeOrInitialMap, protoOrMap)) return 2;
+        HeapObject? o = obj._obj;
+        if (o is null || o.InstanceType < InstanceTypeChecks.FirstJSReceiver) return 0;
+        Map map = Unsafe.As<JSReceiver>(o).Map;
+        while (true)
+        {
+            // HasInPrototypeChain::GenerateCode: special receivers continue
+            // through their map's prototype, except proxies and objects that
+            // need access checks (V8's deferred runtime call).
+            if (Map.IsSpecialReceiverMap(map) && (map.InstanceType == InstanceType.JSProxyType || map.IsAccessCheckNeeded)) return 2;
+            JSReceiver? next = map.Prototype;
+            if (next is null) return 0;
+            if (ReferenceEquals(next, prototype)) return 1;
+            map = next.Map;
+        }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static JSValue InstanceOfFunction(Isolate isolate, JSValue obj, JSValue constructor)
     {
@@ -295,6 +321,34 @@ public static class MaglevBuiltins
     {
         if (double.IsNaN(value._num)) value = JSValue.NaN;
         Unsafe.As<JSObject>(obj._obj!).FieldAt(storageIndex) = value;
+    }
+
+    // ---- for-in (MaglevGraphBuilder.ForIn.cs) -----------------------------------------------------------------
+
+    /// <summary>LoadEnumCacheKeys: the keys of the enum cache of a map.</summary>
+    public static JSValue EnumCacheKeys(JSValue map) => Unsafe.As<Map>(map._obj!).InstanceDescriptors.EnumCache.Keys;
+
+    /// <summary>LoadEnumCacheIndices: the field indices of the enum cache of a map.</summary>
+    public static JSValue EnumCacheIndices(JSValue map) => Unsafe.As<Map>(map._obj!).InstanceDescriptors.EnumCache.Indices;
+
+    /// <summary>LoadEnumCacheLength.</summary>
+    public static int EnumCacheLength(JSValue map) => Unsafe.As<Map>(map._obj!).EnumLength;
+
+    /// <summary>CheckCacheIndicesNotCleared: false (deopt) when the indices do not cover the length.</summary>
+    public static bool CacheIndicesCover(JSValue indices, int length) => Unsafe.As<FixedArray>(indices._obj!).Length >= length;
+
+    /// <summary>
+    /// LoadTaggedFieldByFieldIndex: <paramref name="encoded"/> is
+    /// FieldIndex::GetLoadByFieldIndex's encoding (in-object indices positive,
+    /// out-of-object ones -index-1, shifted left by one, the low bit marking a
+    /// double field, whose value V8Sharp also keeps as a JSValue).
+    /// </summary>
+    public static JSValue LoadFieldByFieldIndex(JSValue obj, int encoded)
+    {
+        var o = Unsafe.As<JSObject>(obj._obj!);
+        int index = encoded >> 1;
+        int propertyIndex = index >= 0 ? index : o.Map.GetInObjectProperties() - index - 1;
+        return o.RawFastPropertyAt(FieldIndex.ForPropertyIndex(o.Map, propertyIndex));
     }
 
     /// <summary>StoreDoubleField's payload: the double's bits, NaNs canonicalized (StoreIC's CanonicalizeDouble).</summary>
@@ -719,6 +773,14 @@ public static class MaglevBuiltins
         JSString str = Unsafe.As<JSString>(s._obj!);
         return str is SeqString seq ? seq.Value[index] : str.Get(index);
     }
+
+    /// <summary>StringAt: the one-character string at an index the code checked (as LoadIndexedString).</summary>
+    public static JSValue StringAt(Isolate isolate, JSValue s, int index) =>
+        isolate.Factory.LookupSingleCharacterStringFromCode(StringCharCodeAt(s, index));
+
+    /// <summary>BuiltinStringFromCharCode: the one-character string of a code unit (ToUint16 of the truncated value).</summary>
+    public static JSValue StringFromCharCode(Isolate isolate, int code) =>
+        isolate.Factory.LookupSingleCharacterStringFromCode(code & 0xFFFF);
 
     public static JSValue StringAdd(Isolate isolate, JSValue left, JSValue right) =>
         InterpreterOps.StringAdd(isolate, Unsafe.As<JSString>(left._obj!), Unsafe.As<JSString>(right._obj!));
@@ -1208,5 +1270,55 @@ public sealed class LiteralShape
         JSObject copy = isolate.Factory.CopyJSObject(Boilerplate);
         foreach ((FieldIndex index, LiteralShape child) in Nested) copy.FastPropertyAtPut(index, child.Clone(isolate));
         return copy;
+    }
+}
+
+/// <summary>
+/// V8Sharp diagnostics (V8SHARP_MAGLEV_COUNT_GENERIC=1): how often Maglev code
+/// calls each builtin and runtime helper (CallBuiltin nodes: generic nodes,
+/// calls, allocations), which TierProfiler reports for the measured part of a
+/// warm run. The code generator emits a counter increment before each call.
+/// </summary>
+public static class MaglevGenericCallCounts
+{
+    public static readonly bool Enabled = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_COUNT_GENERIC") is "1" or "2";
+    /// <summary>V8SHARP_MAGLEV_COUNT_GENERIC=2: generic property accesses are counted per site, with their feedback.</summary>
+    public static readonly bool BySite = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_COUNT_GENERIC") == "2";
+    static readonly Dictionary<string, int> s_ids = new(StringComparer.Ordinal);
+    static string[] s_names = new string[64];
+    public static long[] Counts = new long[64];
+
+    /// <summary>The counter of <paramref name="name"/> (code generation, any thread).</summary>
+    public static int Id(string name)
+    {
+        lock (s_ids)
+        {
+            if (s_ids.TryGetValue(name, out int id)) return id;
+            id = s_ids.Count;
+            if (id >= s_names.Length)
+            {
+                Array.Resize(ref s_names, id * 2);
+                long[] counts = Counts;
+                Array.Resize(ref counts, id * 2);
+                Counts = counts;
+            }
+            s_names[id] = name;
+            s_ids[name] = id;
+            return id;
+        }
+    }
+
+    public static void Count(int id) => Counts[id]++;
+
+    /// <summary>A copy of the counts and their names.</summary>
+    public static (string Name, long Count)[] Snapshot()
+    {
+        lock (s_ids)
+        {
+            var result = new (string, long)[s_ids.Count];
+            long[] counts = Counts;
+            for (int i = 0; i < result.Length; i++) result[i] = (s_names[i], i < counts.Length ? counts[i] : 0);
+            return result;
+        }
     }
 }

@@ -217,6 +217,7 @@ public sealed partial class MaglevGraphBuilder
                 VisitGetKeyedProperty();
                 break;
             case Bytecode.GetEnumeratedKeyedProperty:
+                if (TryBuildGetKeyedPropertyWithEnumeratedKey(LoadRegister(0), FeedbackSlot(3))) break;
                 SetAccumulator(CallBaseline("GetEnumeratedKeyedProperty",
                     [LoadRegister(0), GetAccumulator(), LoadRegister(1), LoadRegister(2)],
                     [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(3)), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2),
@@ -439,6 +440,34 @@ public sealed partial class MaglevGraphBuilder
                     if (obj.Representation != ValueRepresentation.kTagged || !NodeTypes.CanBe(GetType(obj), NodeType.kJSReceiver))
                     {
                         SetAccumulator(GetBooleanConstant(false));
+                        break;
+                    }
+                    if (ObjectOps.OrdinaryHasInstancePrototype(constructor) is { } fastPrototype && constructor.PrototypeOrInitialMap is { } protoOrMap)
+                    {
+                        // TryBuildFastOrdinaryHasInstance: HasInPrototypeChain with
+                        // the prototype as a constant. V8 depends on the function's
+                        // prototype property and calls the runtime from deferred
+                        // code for special receivers; this node checks the
+                        // constructor and deoptimizes in both cases, and the deopt
+                        // makes the slot's feedback megamorphic (the next code takes
+                        // the generic path).
+                        int instanceOfSlot = FeedbackSlot(1);
+                        (FeedbackVector? savedVector, int savedSlot) = (_speculationVector, _speculationSlot);
+                        (_speculationVector, _speculationSlot) = (_unit.Feedback, instanceOfSlot);
+                        try
+                        {
+                            SetAccumulator(AddNewNode(new ValueNode(Opcode.HasInPrototypeChain, ValueRepresentation.kTagged)
+                            {
+                                Inputs = [obj],
+                                Obj0 = new HasInstanceInfo(constructor, constructor.Map, protoOrMap, fastPrototype),
+                                Type = NodeType.kBoolean,
+                                Properties = OpProperties.kEagerDeopt | OpProperties.kCanRead,
+                            }, DeoptimizeReason.kWrongValue));
+                        }
+                        finally
+                        {
+                            (_speculationVector, _speculationSlot) = (savedVector, savedSlot);
+                        }
                         break;
                     }
                     if (ObjectOps.OrdinaryHasInstancePrototype(constructor) is { } prototype)
@@ -741,34 +770,20 @@ public sealed partial class MaglevGraphBuilder
 
             // ---- for-in / for-of ---------------------------------------------------------------------------
             case Bytecode.ForInEnumerate:
-                SetAccumulator(CallBaseline("ForInEnumerate", [LoadRegister(0)], [BuiltinArg.Isolate, BuiltinArg.In(0)])!);
+            {
+                // Pass the receiver to ForInPrepare.
+                ValueNode receiver = LoadRegister(0);
+                _forInState = default;
+                _forInState.Receiver = receiver;
+                SetAccumulator(CallBaseline("ForInEnumerate", [receiver], [BuiltinArg.Isolate, BuiltinArg.In(0)])!);
                 break;
+            }
             case Bytecode.ForInPrepare:
-            {
-                Register output = _it.GetRegisterOperand(0);
-                ValueNode enumerator = GetAccumulator();
-                WithLazyResult<ValueNode?>(output, 3, () =>
-                {
-                    CallBaseline("ForInPrepare", [enumerator],
-                        [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(1)), BuiltinArg.In(0), BuiltinArg.RegRef(output),
-                         BuiltinArg.RegRef(new Register(output.Index + 1)), BuiltinArg.RegRef(new Register(output.Index + 2))]);
-                    return null!;
-                });
-                LoadRegisterOutputs(output, 3);
-                // The cache length is a Smi.
-                EnsureType(_frame.Get(new Register(output.Index + 2)), NodeType.kSmi);
-                SetAccumulator(GetSmiConstant(0));
+                VisitForInPrepare();
                 break;
-            }
             case Bytecode.ForInNext:
-            {
-                Register pair = _it.GetRegisterOperand(2);
-                SetAccumulator(CallBaseline("ForInNext", [LoadRegister(0), LoadRegister(1), _frame.Get(pair),
-                        _frame.Get(new Register(pair.Index + 1))],
-                    [BuiltinArg.Isolate, Fv, BuiltinArg.I(FeedbackSlot(3)), BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.In(2),
-                     BuiltinArg.In(3)])!);
+                VisitForInNext();
                 break;
-            }
             case Bytecode.ForInStep:
             {
                 Register index = _it.GetRegisterOperand(0);
@@ -778,6 +793,9 @@ public sealed partial class MaglevGraphBuilder
                     Properties = OpProperties.kEagerDeopt,
                 }, DeoptimizeReason.kOverflow);
                 StoreRegister(index, next);
+                // With loop peeling, only the ForInStep in the non-peeled loop body
+                // marks the end of the for-in (V8: in_peeled_iteration()).
+                if (!_inPeeledIteration) _forInState = default;
                 break;
             }
             case Bytecode.ForOfNext:
@@ -1503,8 +1521,13 @@ public sealed partial class MaglevGraphBuilder
                 properties: OpProperties.kNotIdempotent)!, NodeType.kBoolean));
             return;
         }
-        SetAccumulator(WithType(CallBaseline(generic, [left, right],
-            [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.FeedbackRef(EmbeddedFeedbackOffset(1))])!, NodeType.kBoolean));
+        ValueNode genericCompare = WithType(CallBaseline(generic, [left, right],
+            [BuiltinArg.Isolate, BuiltinArg.In(0), BuiltinArg.In(1), BuiltinArg.FeedbackRef(EmbeddedFeedbackOffset(1))])!, NodeType.kBoolean);
+        if (MaglevGenericCallCounts.BySite && genericCompare.Obj0 is CallBuiltinInfo compareInfo)
+        {
+            compareInfo.Site = $"{MaglevCompiler.DebugName(_unit.SharedFunctionInfo)}@{_it.CurrentOffset()} {hint} {GetType(left)} {GetType(right)}";
+        }
+        SetAccumulator(genericCompare);
     }
 
     bool MaybeOddball(ValueNode value) => value.Representation == ValueRepresentation.kTagged && !CheckType(value, NodeType.kNumber);

@@ -54,7 +54,14 @@ public static class Deoptimizer
             (FeedbackVector vector, int slot) = code.SpeculationFeedback[feedback - 1];
             // TranslatedState::DoUpdateFeedback.
             var nexus = new FeedbackNexus(isolate, vector, slot);
-            if (point.Reason == DeoptimizeReason.kOutOfBounds)
+            if (vector.GetKind(slot) == FeedbackSlotKind.kInstanceOf)
+            {
+                // V8Sharp: a HasInPrototypeChain deopt (the constructor changed,
+                // or a special receiver on the chain): the instanceof feedback
+                // goes megamorphic, so later code takes the generic path.
+                vector.Slots[slot] = FeedbackVector.MegamorphicSentinel;
+            }
+            else if (point.Reason == DeoptimizeReason.kOutOfBounds)
             {
                 nexus.SetSpeculationMode(nexus.GetSpeculationMode() == SpeculationMode.kAllowSpeculation
                     ? SpeculationMode.kDisallowBoundsCheckSpeculation
