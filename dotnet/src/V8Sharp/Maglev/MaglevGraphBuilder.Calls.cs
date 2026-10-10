@@ -609,6 +609,11 @@ public sealed partial class MaglevGraphBuilder
                     return ReduceMathMinMax(id == Builtin.MathMax, args);
                 case Builtin.NumberParseInt:
                     return TryReduceNumberParseInt(args);
+                case Builtin.StringFromCharCode:
+                    // TryReduceStringFromCharCode (maglev-reducer-inl.h).
+                    if (args.Length != 1) return null;
+                    return CallMaglev("StringFromCharCode", [GetTruncatedInt32ForToNumber(args[0], NodeType.kNumberOrOddball)],
+                        [BuiltinArg.Isolate, BuiltinArg.In(0)], OpProperties.kNone, type: NodeType.kString);
                 case Builtin.ArrayPrototypePush:
                     return TryReduceArrayPrototypePush(receiver, args);
                 case Builtin.ArrayPrototypePop:

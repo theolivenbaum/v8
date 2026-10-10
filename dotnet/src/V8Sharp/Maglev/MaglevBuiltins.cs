@@ -718,6 +718,10 @@ public static class MaglevBuiltins
     public static JSValue StringAt(Isolate isolate, JSValue s, int index) =>
         isolate.Factory.LookupSingleCharacterStringFromCode(StringCharCodeAt(s, index));
 
+    /// <summary>BuiltinStringFromCharCode: the one-character string of a code unit (ToUint16 of the truncated value).</summary>
+    public static JSValue StringFromCharCode(Isolate isolate, int code) =>
+        isolate.Factory.LookupSingleCharacterStringFromCode(code & 0xFFFF);
+
     public static JSValue StringAdd(Isolate isolate, JSValue left, JSValue right) =>
         InterpreterOps.StringAdd(isolate, Unsafe.As<JSString>(left._obj!), Unsafe.As<JSString>(right._obj!));
 
