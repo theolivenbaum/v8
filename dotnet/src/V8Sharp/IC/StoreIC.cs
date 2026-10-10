@@ -280,6 +280,7 @@ public sealed class StoreIC : IC
     public static void Miss(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name, JSValue value,
         FeedbackSlotKind defaultKind)
     {
+        ICStats.StoreMisses++;
         var ic = new StoreIC(isolate, vector, slot, defaultKind);
         ic.UpdateState(receiver, name);
         ic.Store(receiver, name, value);
@@ -1005,6 +1006,7 @@ public sealed class KeyedStoreIC : IC
     public static void Miss(Isolate isolate, FeedbackVector? vector, int slot, JSValue obj, JSValue key, JSValue value,
         FeedbackSlotKind defaultKind)
     {
+        ICStats.KeyedStoreMisses++;
         var ic = new KeyedStoreIC(isolate, vector, slot, defaultKind);
         ic.UpdateState(obj, key);
         ic.Store(obj, key, value);

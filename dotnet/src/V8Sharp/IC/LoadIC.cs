@@ -221,6 +221,7 @@ public sealed class LoadIC : IC
     /// <summary>Runtime_LoadIC_Miss / LoadNoFeedbackIC_Miss.</summary>
     public static JSValue Miss(Isolate isolate, FeedbackVector? vector, int slot, JSValue receiver, Name name)
     {
+        ICStats.LoadMisses++;
         var ic = new LoadIC(isolate, vector, slot, FeedbackSlotKind.kLoadProperty);
         ic.UpdateState(receiver, name);
         return ic.Load(receiver, name);
@@ -902,6 +903,7 @@ public sealed class KeyedLoadIC : IC
     /// <summary>Runtime_KeyedLoadIC_Miss / Runtime_KeyedHasIC_Miss.</summary>
     public static JSValue Miss(Isolate isolate, FeedbackVector? vector, int slot, JSValue obj, JSValue key, FeedbackSlotKind kind)
     {
+        ICStats.KeyedLoadMisses++;
         var ic = new KeyedLoadIC(isolate, vector, slot, kind);
         ic.UpdateState(obj, key);
         return ic.Load(obj, key);

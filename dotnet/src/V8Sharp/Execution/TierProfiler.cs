@@ -52,6 +52,7 @@ public sealed class TierProfiler
         _resumedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         _pauseAt = GC.GetTotalPauseDuration();
         (_gen0At, _gen1At, _gen2At) = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
+        _missesAt = (IC.ICStats.LoadMisses, IC.ICStats.KeyedLoadMisses, IC.ICStats.StoreMisses, IC.ICStats.KeyedStoreMisses);
         _sampling = true;
     }
 
@@ -64,7 +65,13 @@ public sealed class TierProfiler
         _gen0 += GC.CollectionCount(0) - _gen0At;
         _gen1 += GC.CollectionCount(1) - _gen1At;
         _gen2 += GC.CollectionCount(2) - _gen2At;
+        _misses.Load += IC.ICStats.LoadMisses - _missesAt.Load;
+        _misses.KeyedLoad += IC.ICStats.KeyedLoadMisses - _missesAt.KeyedLoad;
+        _misses.Store += IC.ICStats.StoreMisses - _missesAt.Store;
+        _misses.KeyedStore += IC.ICStats.KeyedStoreMisses - _missesAt.KeyedStore;
     }
+
+    (long Load, long KeyedLoad, long Store, long KeyedStore) _missesAt, _misses;
 
     public void Stop()
     {
@@ -122,6 +129,7 @@ public sealed class TierProfiler
         double wallMs = _wallTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
         writer.WriteLine($"@tier-gc sampled-wall={wallMs:F0}ms gc-pause={_gcPause.TotalMilliseconds:F0}ms " +
                          $"({(wallMs > 0 ? 100 * _gcPause.TotalMilliseconds / wallMs : 0):F1}%) gen0={_gen0} gen1={_gen1} gen2={_gen2}");
+        writer.WriteLine($"@tier-ic-misses load={_misses.Load} keyed-load={_misses.KeyedLoad} store={_misses.Store} keyed-store={_misses.KeyedStore}");
         long inJs = _tierSamples[0] + _tierSamples[1] + _tierSamples[2] + _tierSamples[3];
         long all = inJs + _tierSamples[4];
         writer.WriteLine($"@tier-samples total={all} interpreter={_tierSamples[0]} baseline={_tierSamples[1]} " +

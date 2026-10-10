@@ -433,3 +433,15 @@ public static class ICMaps
     /// <summary>Whether the map is one of the primitive stand-in maps (V8's IsPrimitiveMap).</summary>
     public static bool IsPrimitiveMap(Map map) => !InstanceTypeChecks.IsJSReceiver(map.InstanceType);
 }
+
+/// <summary>
+/// V8Sharp diagnostics: IC misses (the runtime's LoadIC_Miss, KeyedLoadIC_Miss,
+/// StoreIC_Miss and KeyedStoreIC_Miss), which TierProfiler reports for the
+/// measured part of a warm run. Process-wide and unsynchronized: counts only.
+/// </summary>
+public static class ICStats
+{
+    public static long LoadMisses, KeyedLoadMisses, StoreMisses, KeyedStoreMisses;
+
+    public static void Reset() => LoadMisses = KeyedLoadMisses = StoreMisses = KeyedStoreMisses = 0;
+}
