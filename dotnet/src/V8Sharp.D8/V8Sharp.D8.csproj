@@ -32,6 +32,18 @@
     <RuntimeHostConfigurationOption Include="System.Runtime.TieredCompilation.CallCountingDelayMs" Value="0" />
   </ItemGroup>
 
+  <!-- Host GC configuration (deviations.md, General): arrays up to 2 MB are
+       allocated in the young generation instead of the large object heap,
+       whose budget otherwise triggers a blocking full collection every few
+       MB of large element backing stores (Gameboy: 11-12 full GCs, 230 ms,
+       in its measured runs, 1 full GC with this; PdfJS 4 of 4). V8 keeps
+       such stores in its young generation too (kMaxRegularHeapObjectSize is
+       128 KB, but large objects are collected by the scavenger's
+       young large object space). -->
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.LOHThreshold" Value="2097152" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="../../src/V8Sharp/V8Sharp.csproj" />
   </ItemGroup>

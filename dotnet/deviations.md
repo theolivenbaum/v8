@@ -27,6 +27,16 @@ for now, to be revisited when the reason goes away.
   the .NET GC's non-region write barrier (`DOTNET_GCWriteBarrier=3`), as V8's
   stack stores need no barrier at all and the register stack is an old,
   pinned array (tools/V8Sharp.Bench/README.md). Other hosts may set it too.
+- Host configuration: d8sharp and V8Sharp.Bench set `System.GC.LOHThreshold`
+  to 2 MB in their runtimeconfig, so element backing stores up to 2 MB are
+  young objects, as V8's young large object space keeps them; with the
+  default 85 KB, every few MB of large stores trigger a blocking full GC
+  (Gameboy 11-12 per measured window, PdfJS 4; 1 and 0 with the setting).
+  Workstation GC, non-concurrent, stays the default: concurrent GC made
+  Splay's collections blocking gen-1 GCs (4x the pause), and server GC
+  (2 heaps) moved GC work to its threads but measured -19% DeltaBlue and
+  -11% RayTrace against +14-22% EarleyBoyer and Typescript (todo.md,
+  "Allocation and GC").
 
 ## V8Sharp.Base (numbers, math, unicode, hashing)
 

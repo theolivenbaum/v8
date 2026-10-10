@@ -98,6 +98,15 @@ byte. octane-quick, 3 interleaved runs (session ab3 of the ninth pass):
 Richards +11%, EarleyBoyer +8%, DeltaBlue +5%, RayTrace +5%, Splay and PdfJS
 within noise. Run d8sharp with the same variable for comparable numbers.
 
+**The large object threshold.** d8sharp and V8Sharp.Bench raise
+`System.GC.LOHThreshold` to 2 MB in their runtimeconfig (the csproj files):
+large element backing stores are then collected with the young generation
+instead of triggering blocking full GCs through the large object heap's
+budget (Gameboy octane-quick +8%/+18% in two sessions, PdfJS and Box2D
+within noise; deviations.md, General). `V8SHARP_BENCH_GCTRACE=1` prints the
+collections of the measured runs by generation, with pause, promoted bytes
+and the gen-2 type/reason; every octane-steady child prints an `@gc` line.
+
 The yardsticks: phase 1 (interpreter) is measured against `v8:jitless`,
 the baseline IL tier against `v8:sparkplug`, the optimizing tier against
 `v8:maglev` and `v8:jit`.
