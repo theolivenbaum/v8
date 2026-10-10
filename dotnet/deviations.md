@@ -730,9 +730,37 @@ for now, to be revisited when the reason goes away.
   `BaselineBuiltins.StoreSlot` and transitions their helper, because the
   shared address locals make RyuJIT take seconds per compile in such
   methods (mjsunit compiler/constructor-inlining: 15 s for 20 KB of IL).
+- instanceof of a constant function with an intact Symbol.hasInstance
+  (`HasInPrototypeChain` node): V8 depends at compile time on the
+  constructor's initial map and prototype and emits a deferred runtime call
+  for proxies and access-checked objects on the chain; V8Sharp compares the
+  constructor's map and prototype slot at run time and deoptimizes when they
+  changed or a special receiver is on the chain, and the deoptimizer then
+  marks the instanceof slot megamorphic so the next code takes the generic
+  path (no deopt loop).
+- `function.prototype` of a constant function folds to the prototype only
+  when the function has its initial map (dependency kInitialMapChanged);
+  V8 also folds a non-map prototype slot with a prototype-property
+  dependency.
+- Keyed loads of string characters (`TryBuildElementAccessOnString`) are
+  built only for in-bounds feedback; with out-of-bounds feedback V8 selects
+  undefined after the bounds check, V8Sharp leaves the load generic.
 
 ## Interpreter execution, ICs, runtime, compiler and modules
 
+- Megamorphic keyed loads (`KeyedLoadIC.LoadGeneric`, port of
+  KeyedLoadICGeneric): numbers in bounds of fast elements and internalized
+  names (own fast or dictionary properties, the stub cache, the prototype
+  chain) are handled inline; receivers that are not plain JSObjects, array
+  index strings and names that are not internalized (unless an internalized
+  copy exists) go to the runtime, where V8's builtin handles more cases
+  itself. Not a behaviour difference.
+- Megamorphic keyed stores (`KeyedStoreIC.StoreGeneric`, KeyedStoreGeneric):
+  in-bounds element stores and overwrites of an existing writable data
+  property (a mutable tagged field or a dictionary entry; not on prototype
+  maps or protector names) are inline; everything else, including the
+  property additions V8's builtin performs inline, is
+  `Runtime::SetObjectProperty`.
 - Dispatch: one C# loop specialized per operand scale
   (`InterpreterExecution.Loop<TS>`) instead of generated handlers. The loop
   keeps only the handlers whose fast path is a few instructions (and the
