@@ -777,10 +777,22 @@ internal sealed partial class MaglevCodeGenerator
     /// <summary>Pushes the address of register <paramref name="index"/> of <paramref name="unit"/>'s frame.</summary>
     void LoadFrameSlotAddress(MaglevCompilationUnit? unit, int index)
     {
-        if (_lazyFrame && (unit is null || !unit.IsInline))
+        if (_lazyFrame && (unit is null || !unit.IsInline) && (index < 0 || !_needsLazyWindow))
         {
             // The parameters of a lazy frame are its activation's.
             LoadActivationSlotAddress(index);
+            return;
+        }
+        if (_lazyFrame && (unit is null || !unit.IsInline))
+        {
+            // Its registers are in its window (EnterLazyWindow).
+            _il.Emit(OpCodes.Ldloc, _fpRef);
+            if (index != 0)
+            {
+                _il.Emit(OpCodes.Ldc_I4, index * kJSValueSize);
+                _il.Emit(OpCodes.Conv_I);
+                _il.Emit(OpCodes.Add);
+            }
             return;
         }
         if (_frameless && (unit is null || !unit.IsInline)) throw new FramelessUnsupportedException();
@@ -801,6 +813,11 @@ internal sealed partial class MaglevCodeGenerator
 
     void LoadFp(MaglevCompilationUnit? unit)
     {
+        if (_lazyFrame && _needsLazyWindow && (unit is null || !unit.IsInline))
+        {
+            _il.Emit(OpCodes.Ldloc, _fp);
+            return;
+        }
         if (_frameless && (unit is null || !unit.IsInline || _lazyUnits.Contains(unit))) throw new FramelessUnsupportedException();
         if (unit is null || !unit.IsInline) _il.Emit(OpCodes.Ldloc, _fp);
         else _il.Emit(OpCodes.Ldloc, unit.FpLocal!);
@@ -3153,13 +3170,19 @@ internal sealed partial class MaglevCodeGenerator
                 if (node.Unit is { IsInline: true }) continue;
                 switch (node.Opcode)
                 {
+                    // Registers live in the window (EnterLazyWindow).
+                    case Opcode.LoadRegister when !new Register(node.Int0).IsParameter:
+                    case Opcode.StoreRegister when !new Register(node.Int0).IsParameter:
+                        _needsLazyWindow = true;
+                        break;
                     case Opcode.LoadRegister:
                         return Reject(node);
-                    case Opcode.StoreRegister when !new Register(node.Int0).IsParameter:
-                        return Reject(node);
-                    case Opcode.CallBuiltin when node.Obj0 is CallBuiltinInfo info && UsesFrame(info):
-                        return Reject(node);
+                    case Opcode.CallBuiltin when node.Obj0 is CallBuiltinInfo info:
+                        if (UsesState(info) || AddressesParameters(info)) return Reject(node);
+                        if (UsesRegisters(info)) _needsLazyWindow = true;
+                        break;
                 }
+                if (_needsLazyWindow && Flags_NoLazyWindow) return Reject(node);
             }
         }
         return true;
@@ -3173,7 +3196,7 @@ internal sealed partial class MaglevCodeGenerator
             return false;
         }
 
-        static bool UsesFrame(CallBuiltinInfo info)
+        static bool UsesRegisters(CallBuiltinInfo info)
         {
             foreach ((Register r, ValueNode _) in info.RegisterStores)
             {
@@ -3182,11 +3205,40 @@ internal sealed partial class MaglevCodeGenerator
             foreach (BuiltinArg arg in info.Args)
             {
                 if (arg.Kind is BuiltinArgKind.RegisterIndex or BuiltinArgKind.RegisterRef) return true;
+            }
+            return false;
+        }
+
+        // A register range or reference that starts at a parameter would address
+        // the window's parameter slots, which a lazy frame keeps in its activation.
+        static bool AddressesParameters(CallBuiltinInfo info)
+        {
+            foreach (BuiltinArg arg in info.Args)
+            {
+                if (arg.Kind is BuiltinArgKind.RegisterIndex or BuiltinArgKind.RegisterRef && arg.Index < 0) return true;
+            }
+            return false;
+        }
+
+        static bool UsesState(CallBuiltinInfo info)
+        {
+            foreach (BuiltinArg arg in info.Args)
+            {
                 if (arg.Kind == BuiltinArgKind.State && LazyTwin(info.Method) is null) return true;
             }
             return false;
         }
     }
+
+    /// <summary>
+    /// The lazy entry's code uses the registers of its reserved window
+    /// (register-list call arguments, builtin outputs); its prologue calls
+    /// MaglevCalls.EnterLazyWindow. V8SHARP_MAGLEV_NO_LAZY_WINDOW=1 keeps
+    /// such code frameful (for A/B).
+    /// </summary>
+    bool _needsLazyWindow;
+    static readonly bool Flags_NoLazyWindow = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_LAZY_WINDOW") == "1";
+    static readonly MethodInfo s_enterLazyWindow = typeof(MaglevCalls).GetMethod(nameof(MaglevCalls.EnterLazyWindow))!;
 
     static readonly Dictionary<string, MethodInfo> s_lazyTwins = new(StringComparer.Ordinal)
     {
@@ -3291,6 +3343,21 @@ internal sealed partial class MaglevCodeGenerator
         _il.Emit(OpCodes.Ldarg_3);
         _il.Emit(OpCodes.Call, s_enterLazyFrame);
         _il.Emit(OpCodes.Stloc, _lazySaved);
+        if (_needsLazyWindow)
+        {
+            // fp = EnterLazyWindow(isolate, depth, registers); fpRef = ref RegisterStack[fp]
+            _il.Emit(OpCodes.Ldarg_1);
+            _il.Emit(OpCodes.Ldloc, _baseFrameIndex);
+            _il.Emit(OpCodes.Ldc_I4, bytecode.RegisterCount);
+            _il.Emit(OpCodes.Call, s_enterLazyWindow);
+            _il.Emit(OpCodes.Stloc, _fp);
+            _il.Emit(OpCodes.Ldarg_1);
+            _il.Emit(OpCodes.Ldfld, s_registerStack);
+            _il.Emit(OpCodes.Call, s_arrayDataReference.MakeGenericMethod(typeof(JSValue)));
+            _il.Emit(OpCodes.Ldloc, _fp);
+            _il.Emit(OpCodes.Call, s_unsafeAddInt.MakeGenericMethod(typeof(JSValue)));
+            _il.Emit(OpCodes.Stloc, _fpRef);
+        }
         _il.BeginExceptionBlock();
     }
 
@@ -3469,7 +3536,7 @@ internal sealed partial class MaglevCodeGenerator
             }
         }
         int deoptPoints = _deoptPoints.Count, feedback = _speculationFeedback.Count;
-        var generator = new MaglevCodeGenerator(_info, _code, _optimizeFully, this, lazy) { _framelessPrimary = this };
+        var generator = new MaglevCodeGenerator(_info, _code, _optimizeFully, this, lazy) { _framelessPrimary = this, _needsLazyWindow = lazy && _needsLazyWindow };
         try
         {
             if (lazy) generator.GenerateLazy();

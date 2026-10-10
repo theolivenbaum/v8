@@ -268,6 +268,40 @@ public class MaglevCallsTest
           return out.join();
         })()
         """,
+        // Lazy frames that use their register window (MaglevCalls.EnterLazyWindow):
+        // calls with more than six arguments, for-in, constructs with many
+        // arguments; deopts in the frame and in the callee, a lazy deopt of
+        // the frame during such a call (a prototype change the code depends
+        // on), exceptions, stack traces and arguments objects through it.
+        """
+        (function() {
+          function P() {} P.prototype.w = 2;
+          function many(a, b, c, d, e, f, g, h) {
+            if (h === 'proto') P.prototype.w = 3;
+            if (h === 'throw') throw new Error('t' + a);
+            return a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + (h === undefined ? 100 : h * 8);
+          }
+          function Many(a, b, c, d, e, f, g) { this.s = a + b + c + d + e + f + g; }
+          function lazyWindow(x, o, h) {
+            var p = new P();
+            var keys = '';
+            for (var k in o) keys += k + o[k];
+            var r = many(x, x + 1, x + 2, x + 3, x + 4, x + 5, x + 6, h);
+            var m = new Many(x, 1, 2, 3, 4, 5, 6);
+            return r + '/' + p.w + '/' + keys + '/' + m.s + '/' + arguments.length + '/' + Math.max(x, 1, 2, 3, 4, 5, 6, 7);
+          }
+          function where(x) { try { return lazyWindow(x, {}, 'throw'); } catch (e) { return e.message + e.stack.split('lazyWindow').length; } }
+          var out = [];
+          var objs = [{ a: 1 }, { a: 1, b: 2 }, { b: 2 }, { a: 3 }];
+          for (var i = 0; i < 400; i++) {
+            var x = i == 250 ? 0.5 : i;
+            var h = i == 300 ? 'proto' : i == 350 ? 1.25 : i;
+            out.push(lazyWindow(x, objs[i & 3], h));
+            if (i % 37 == 0) out.push(where(i));
+          }
+          return out.join(',');
+        })()
+        """,
     };
 
     [Theory]

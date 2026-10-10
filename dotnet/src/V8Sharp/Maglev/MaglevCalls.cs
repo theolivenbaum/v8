@@ -570,6 +570,29 @@ public static class MaglevCalls
     }
 
     /// <summary>
+    /// V8Sharp: a lazy frame whose code stores call arguments in its registers
+    /// and reads builtin outputs from them (register-list calls with more
+    /// arguments than the value calls take, ForInPrepare): its reserved window
+    /// holds its registers from now on, cleared as a new interpreter frame's
+    /// (V8 pushes such arguments on the machine stack, which a MaglevFrame
+    /// spans). Returns the frame's fp.
+    /// </summary>
+    public static int EnterLazyWindow(Isolate isolate, int depth, int registerCount)
+    {
+        ref InterpreterFrameRecord record = ref isolate.InterpreterFrames[depth];
+        record.Flags |= InterpreterFrameFlags.LazyWindow;
+        int fp = record.Fp, end = fp + registerCount;
+        if (isolate.RegisterStackDirtyEnd > fp)
+        {
+            if (registerCount > 0) MemoryMarshal.CreateSpan(ref isolate.RegisterStack[fp], registerCount).Clear();
+        }
+        // The values the code writes stay above the stack top when the frame
+        // returns (dirty, as a popped interpreter frame's).
+        if (end > isolate.RegisterStackDirtyEnd) isolate.RegisterStackDirtyEnd = end;
+        return fp;
+    }
+
+    /// <summary>
     /// EnterInlinedFrame for a lazy inlined frame (MaglevCodeGenerator, lazy
     /// inlined frames): reserves the frame's register window, pushes the lazy
     /// record pointing at the activation the code filled, and switches to the
@@ -621,9 +644,11 @@ public static class MaglevCalls
         Unsafe.Add(ref fpRef, InterpreterRuntime.kFeedbackVectorOffset) = vector is null ? JSValue.Undefined : vector;
         InterpreterRuntime.InitializeFrameSlots(ref fpRef, bytecode, a.Argc);
         InterpreterRuntime.SetFramePc(ref fpRef, a.Pc);
-        // The registers are undefined, as the frameful entry leaves them.
-        MemoryMarshal.CreateSpan(ref fpRef, bytecode.RegisterCount).Clear();
-        record.Flags &= ~InterpreterFrameFlags.Lazy;
+        // The registers are undefined, as the frameful entry leaves them; a
+        // frame that uses its window (EnterLazyWindow) keeps what its code
+        // wrote there, as a frameful frame does.
+        if ((record.Flags & InterpreterFrameFlags.LazyWindow) == 0) MemoryMarshal.CreateSpan(ref fpRef, bytecode.RegisterCount).Clear();
+        record.Flags &= ~(InterpreterFrameFlags.Lazy | InterpreterFrameFlags.LazyWindow);
         record.Activation = 0;
     }
 
