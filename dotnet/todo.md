@@ -2370,6 +2370,52 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
        (frameful construct path; no Octane benchmark spends measurable time
        there); calls with more than six arguments and ForInPrepare now keep
        the lazy entry with a written register window.
+  - Maglev coverage of large programs (2026-10-10, c39c1120..9d0e005c).
+    Measured with `V8SHARP_TIER_PROFILE=1` (TierProfiler: 1 ms samples of
+    the measured iterations only) and `V8SHARP_MAGLEV_COUNT_GENERIC=2`
+    (generic builtin calls of Maglev code by site). Warm tier shares
+    (interpreter / baseline / Maglev, octane-steady, before -> after):
+    Typescript 0.1/0.1/99.8 -> 0.1/0.1/99.7, PdfJS 11.3/4.1/84.5 ->
+    7.8/3.5/88.7, Gameboy 2.6/0.3/97.2 -> 1.6/0.8/97.6, Box2D 2.5/0.1/97.4
+    -> 2.6/0.0/97.4, CodeLoad 62.9/37.0/0.1 -> 67.6/32.2/0.1, EarleyBoyer
+    1.2/1.5/97.3 -> 2.1/1.3/96.6. The hot code of these programs was
+    already in Maglev; what is below Maglev is the harness (bm.run,
+    Measure, NotifyResult), PdfJS's teardown and CodeLoad's freshly
+    evaluated code (parse and first runs: inherent, as in V8). No Octane
+    function hits a Maglev bailout, and there are no deopts in the measured
+    iterations (the OSR early exits and feedback deopts of the warm-up
+    match V8). What was slow was generic code inside Maglev:
+    - Megamorphic keyed loads and stores missed to the runtime on every
+      access (Typescript: 84K keyed load and 33K keyed store IC misses per
+      iteration, now ~0): KeyedLoadIC.LoadGeneric and
+      KeyedStoreIC.StoreGeneric (KeyedLoadICGeneric, KeyedStoreGeneric).
+    - Lazy entries with a written register window (calls with more than six
+      arguments, ForInPrepare, register-range builtins) instead of frameful
+      entries; for-in fast paths (ForInPrepare/ForInNext with the enum
+      cache, keyed loads by the enumerated key).
+    - instanceof without the generic call (HasInPrototypeChain; EarleyBoyer:
+      35M OrdinaryHasInstance calls), `F.prototype` folded (RayTrace's
+      Class.create), recursion check of the inliner limited to the current
+      unit as V8 (RayTrace: 727K non-inlined constructs), keyed loads of
+      string characters (PdfJS), getters and setters on the prototype
+      chain (Box2D), parseInt of integers (Box2D), String.fromCharCode
+      (PdfJS, 1.3M calls per 4 iterations), typed array arms in polymorphic
+      element loads and stores (PdfJS's decrypt, Gameboy's getTypedArray),
+      megamorphic keyed stores into holes and array appends without the
+      runtime (Crypto's bnpSquareTo).
+    Per-change octane-quick (bench-session.sh, 3 interleaved runs): see the
+    A/B table below. Remaining generic code in Maglev, ranked by calls per
+    measured iteration: Typescript's megamorphic named stores in the AST
+    constructors (9.5M SetNamedProperty through the stub cache, as V8) and
+    megamorphic calls of its AST walker table (as V8); Gameboy's opcode
+    table calls (megamorphic, as V8); EarleyBoyer's strict equality with
+    kAny feedback (4.8M, generic in V8 too); PdfJS's StaInArrayLiteral
+    (345K, V8 builds it from the literal's element feedback); getters and
+    setters in polymorphic accesses and own accessor pairs (V8 builds
+    them); class and derived constructors still have no direct entry (no
+    Octane time).
+    GC pauses are 10-17% of Typescript, PdfJS, Gameboy and EarleyBoyer (the
+    allocation work).
   - Compile pipeline and tier-up (2026-10-04, f93817c5..dbf2af5b):
     concurrent jobs (MaglevConcurrentDispatcher.cs, maglev-concurrent-
     dispatcher.cc) build the graph on two worker threads (the main thread
