@@ -2418,6 +2418,18 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
     instanceof .. string characters), 5 runs: Crypto 676 / 679 / 662,
     RayTrace 908 / 1543 / 1386 (+53% from the inliner's recursion rule and
     the prototype fold), Richards 3396 / 3405 / 3372.
+    octane-steady, parity publish of 3ab91b5d, 2 runs (session
+    bench-20261010-073856; load 3-5, idle 98%, cpu-cal 1.9 s): geomean
+    1929 vs V8 --no-turbofan 5138 and V8 --jit 5052 (V8Sharp at 38% of
+    V8's Maglev); per benchmark vs v8:maglev: Richards 1863/6338,
+    DeltaBlue 2182/6882, Crypto 277/778, RayTrace 1123/2664, EarleyBoyer
+    157/654, RegExp 211/776, Splay 2207/8184, NavierStokes 1529/1730, PdfJS
+    1256/6696, Mandreel 510/3344, Gameboy 1552/4887, CodeLoad 2916/3416,
+    Box2D 3305/14101, zlib 910/1667, Typescript 496/2071. Conformance after
+    merging main 8f390cd2 (9f53f81b; flock -s, --jobs 2): V8Sharp.Tests
+    1250/1250; mjsunit default and forced 0 newly failing (forced:
+    regress-331074427 crashed under load, passes alone 3/3); test262
+    default and forced 0 newly failing (95123 run).
     Remaining generic code in Maglev, ranked by calls per
     measured iteration: Typescript's megamorphic named stores in the AST
     constructors (9.5M SetNamedProperty through the stub cache, as V8) and
