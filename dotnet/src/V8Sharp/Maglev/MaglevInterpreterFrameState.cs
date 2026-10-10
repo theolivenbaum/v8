@@ -491,6 +491,9 @@ public sealed class MergePointInterpreterFrameState
         PredecessorsSoFar++;
     }
 
+    /// <summary>For A/B measurements: V8SHARP_MAGLEV_NO_VO_MERGE=1 drops differing versions at every merge.</summary>
+    static readonly bool s_noVirtualObjectMerge = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NO_VO_MERGE") == "1";
+
     /// <summary>The phis this merge created for the fields of virtual objects (MergeVirtualObjectValue).</summary>
     HashSet<Phi>? _virtualObjectPhis;
 
@@ -511,7 +514,7 @@ public sealed class MergePointInterpreterFrameState
         {
             result = mine;
         }
-        else if (IsLoop || IsExceptionHandler)
+        else if (IsLoop || IsExceptionHandler || s_noVirtualObjectMerge)
         {
             result = mine.Intersect(theirs);
         }
