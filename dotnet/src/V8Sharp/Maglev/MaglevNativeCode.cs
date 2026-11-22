@@ -70,6 +70,8 @@ namespace V8Sharp.Maglev
         kHoleyFloat64,
         /// <summary>An InitialValue: the frame slot (native code never writes the frame).</summary>
         kFrameSlot,
+        /// <summary>A frame slot the code writes (StoreRegister, SetCurrentContext): snapshotted before managed nodes.</summary>
+        kWrittenFrameSlot,
         /// <summary>A tagged number whose double is the home's second word.</summary>
         kTaggedNumber,
         /// <summary>A tagged holey double (undefined for the hole) in the home's second word.</summary>
@@ -533,6 +535,20 @@ namespace V8Sharp.Maglev
                 }
                 case Opcode.FastNewObject:
                     return MaglevBuiltins.FastNewObject(isolate, (Map)node.Obj0!);
+                case Opcode.CheckMaps:
+                    passed = MaglevBuiltins.MigrateAndCheckMaps(isolate, In(0), (Map[])node.Obj0!);
+                    return default;
+                case Opcode.StoreRegister:
+                    JSValue.StoreSlot(ref frame[fp + node.Int0], In(0));
+                    return default;
+                case Opcode.SetCurrentContext:
+                {
+                    // (An inlined function's frame is not pushed: only the isolate's context, as the IL's lazy frames.)
+                    JSValue context = In(0);
+                    if (node.Inlined) isolate.Context = (Context)context.Object;
+                    else MaglevBuiltins.SetCurrentContext(isolate, ref frame[fp + InterpreterRuntime.kContextOffset], context);
+                    return default;
+                }
                 case Opcode.StoreMapTransition:
                     MaglevBuiltins.StoreTransition(In(0), (Map)node.Obj0!, node.Int0, In(1), node.Int1 != 0);
                     return default;
@@ -1001,6 +1017,7 @@ namespace V8Sharp.Maglev
                 case NativeValueKind.kHoleyFloat64:
                     return MaglevBuiltins.HoleyFloat64ToTagged(BitConverter.Int64BitsToDouble(ctx[v.Home]));
                 case NativeValueKind.kFrameSlot:
+                case NativeValueKind.kWrittenFrameSlot:
                     return frame[fp + v.FrameIndex];
                 case NativeValueKind.kTaggedNumber:
                     return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[v.Home + 1]));

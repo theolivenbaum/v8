@@ -291,9 +291,16 @@ internal sealed class MaglevNativeCodeGenerator
         Number();
         ComputeLiveness();
         PlanKinds();
+        // (A frame slot the code writes, StoreRegister or SetCurrentContext, is copied at entry.)
+        HashSet<int> written = _writtenSlots;
+        foreach (NodeBase n in _managedNodes)
+        {
+            if (n.Opcode == Opcode.StoreRegister) written.Add(n.Int0);
+            if (n.Opcode == Opcode.SetCurrentContext) written.Add(Interpreter.InterpreterRuntime.kContextOffset);
+        }
         foreach (Val? v in _vals)
         {
-            if (v is not null && v.Node.Opcode == Opcode.InitialValue && !v.NeedsKind) v.InFrame = true;
+            if (v is not null && v.Node.Opcode == Opcode.InitialValue && !v.NeedsKind && !written.Contains(v.Node.Int0)) v.InFrame = true;
         }
         AllocateRegisters();
 
@@ -485,7 +492,8 @@ internal sealed class MaglevNativeCodeGenerator
     static bool HasInlineFastPath(Node node) => node.Opcode is Opcode.StoreTaggedField or Opcode.StoreDoubleField or Opcode.StoreFixedArrayElement or Opcode.StoreContextSlot or
         Opcode.ToBoolean or Opcode.ToBooleanLogicalNot or Opcode.LoadTypedArrayLength or Opcode.TestUndetectable or Opcode.TestTypeOf or
         Opcode.CheckInstanceType or Opcode.StringLength or Opcode.LoadFixedArrayLength or Opcode.BuiltinStringPrototypeCharCodeAt or
-        Opcode.BuiltinStringPrototypeCharCodeAtOrNaN or Opcode.CheckedObjectToIndex or Opcode.MaybeGrowFastElements || HasNativeCallFastPath(node);
+        Opcode.BuiltinStringPrototypeCharCodeAtOrNaN or Opcode.CheckedObjectToIndex or Opcode.MaybeGrowFastElements or Opcode.CheckMaps ||
+        HasNativeCallFastPath(node);
 
     /// <summary>
     /// Nodes the managed side runs (MaglevNativeCode.Execute); <paramref name="why"/>
@@ -524,6 +532,15 @@ internal sealed class MaglevNativeCodeGenerator
                 return true;
             case Opcode.MaybeGrowFastElements:
                 if (NativeLayout.FixedArrayData != NativeLayout.FixedDoubleArrayData) why = "MaybeGrowFastElements layout";
+                return true;
+            case Opcode.CheckMaps:
+                // CheckMapsWithMigration: the maps inline, the migration on the managed side.
+                return !CheckMapsSupported(node);
+            case Opcode.StoreRegister:
+                // (The frame of an inlined function is not pushed: its registers are in no frame.)
+                if (node.Unit is { IsInline: true }) why = "StoreRegister in an inlined function";
+                return true;
+            case Opcode.SetCurrentContext:
                 return true;
             case Opcode.InlinedAllocation:
                 // (An elided one is not in the graph's blocks: its deopts capture it.)
@@ -701,6 +718,9 @@ internal sealed class MaglevNativeCodeGenerator
 
     /// <summary>The values a managed node in inlined functions pushes their frames with (InlinedFrameInputs).</summary>
     readonly Dictionary<Node, ValueNode[]> _frameInputs = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>The frame slots the code writes (StoreRegister, SetCurrentContext).</summary>
+    readonly HashSet<int> _writtenSlots = [];
 
     /// <summary>
     /// The receivers, arguments, closures (when not constant) and new.targets of
@@ -1504,7 +1524,8 @@ internal sealed class MaglevNativeCodeGenerator
         switch (n.Opcode)
         {
             case Opcode.InitialValue:
-                info.Kind = NativeValueKind.kFrameSlot;
+                // (A slot the code writes holds another value later: kept before managed nodes, as a reload.)
+                info.Kind = _writtenSlots.Contains(n.Int0) ? NativeValueKind.kWrittenFrameSlot : NativeValueKind.kFrameSlot;
                 info.FrameIndex = n.Int0;
                 break;
             case Opcode.Int32ToNumber:
@@ -1582,6 +1603,7 @@ internal sealed class MaglevNativeCodeGenerator
     }
 
     static bool IsReloadKind(NativeValueKind kind) => kind is NativeValueKind.kElements or NativeValueKind.kFixedArrayElement or
+        NativeValueKind.kWrittenFrameSlot or
         NativeValueKind.kTaggedField or NativeValueKind.kContextSlot or NativeValueKind.kMap or NativeValueKind.kPropertyCell;
 
     /// <summary>
@@ -2352,6 +2374,7 @@ internal sealed class MaglevNativeCodeGenerator
             case Opcode.InitialValue:
             {
                 if (r!.InFrame) return;
+                ClearSnapshot(r);
                 // The frame slot (fp + Int0) into the home (a kind word is needed).
                 _masm.Movq(rcx, new Operand(rbx, NativeCode.kFrameSlot * 8));
                 _masm.Movq(rax, new Operand(rcx, node.Int0 * 16 + 8));
@@ -3406,6 +3429,7 @@ internal sealed class MaglevNativeCodeGenerator
             Opcode.LoadFixedArrayLength => EmitFixedArrayLengthFastPath(node, slow, cont),
             Opcode.CheckedObjectToIndex => EmitObjectToIndexFastPath(node, slow, cont),
             Opcode.MaybeGrowFastElements => EmitMaybeGrowFastElementsFastPath(node, slow, cont),
+            Opcode.CheckMaps => EmitCheckMapsFastPath(node, slow, cont),
             _ => EmitStoreNumberFastPath(node, slow, cont),
         };
         // The slow path out of line when there is a fast path.
@@ -3548,6 +3572,28 @@ internal sealed class MaglevNativeCodeGenerator
         if (!EmitTypeTest(node.Opcode, node.Int0, node.Inputs[0])) return false;
         StoreTaggedBoolean(V((ValueNode)node));
         _masm.Jmp(done);
+        return true;
+    }
+
+    /// <summary>CheckMapsWithMigration: a receiver with one of the maps passes inline; the managed side migrates and checks again (MigrateAndCheckMaps).</summary>
+    bool EmitCheckMapsFastPath(Node node, XLabel slow, XLabel done)
+    {
+        var maps = (Map[])node.Obj0!;
+        ValueNode value = node.Inputs[0];
+        if (!value.IsConstant && V(value).Repr != ValueRepresentation.kTagged) return false;
+        LoadTaggedPtr(value, rax);
+        if (!(node.CheckType == CheckType.kOmitHeapObjectCheck || NodeTypes.Is(value.Type, NodeType.kJSReceiver)))
+        {
+            EmitBranchIfNotReceiver(slow);
+        }
+        _masm.Movq(rax, new Operand(rax, NativeLayout.JSReceiverMap));
+        _masm.Movq(rdx, new Operand(rbx, NativeCode.kConstantsSlot * 8));
+        foreach (Map map in maps)
+        {
+            _masm.Cmpq(rax, new Operand(rdx, ConstantIndex(map) * 16));
+            _masm.J(Condition.equal, done);
+        }
+        _masm.Jmp(slow);
         return true;
     }
 

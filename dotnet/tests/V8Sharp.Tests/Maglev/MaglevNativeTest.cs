@@ -316,6 +316,21 @@ public class MaglevNativeTest
         function outer2(o, k) { return mid2(o, k) * 2; }
         opt(outer2, [new Ob(), 1], [new Ob(), 2]); rec(outer2(new Ob(), 3)); rec(outer2(new Ob(), 9)); rec(outer2(new Ob(), 4));
         """,
+        // Frame writes (assigned parameters flushed before a call that can read
+        // them through f.arguments; block contexts) and CheckMaps with migration.
+        """
+        function cal(x) {
+          const ar = sr.arguments; let s = ar ? ar[0] * 1000 + ar[1] : -1;
+          for (let i = 0; i < 3; i++) s += i; s = s * 3 + 1; s = s ^ 5; s = (s + x) | 0; s = s % 100000; s = s + String(x).length; s = s + (x > 10 ? 1 : 2); s = s + (x & 3); s = s + (x | 8); return s;
+        }
+        function sr(a, b) { a = a * 2; b = (b | 0) + 1; const r = cal(a); return a + b + r; }
+        opt(sr, [1, 2], [3, 4]); rec(sr(5, 6)); rec(sr(7, 'x')); rec(sr(2.5, 1));
+        function bc(n) { let s = 0; { let k = n * 2; const f = () => k + 1; s += f(); k = 3; s += f(); } { let m = s; const g = () => m * 2; s += g(); } return s; }
+        opt(bc, [1], [2]); rec(bc(5)); rec(bc(10));
+        function mo(o) { return o.x + o.y; }
+        const mo1 = {x: 1, y: 2}, mo2 = {x: 3, y: 4};
+        opt(mo, [mo1], [mo2]); rec(mo(mo1)); mo2.x = 1.5; rec(mo(mo2)); rec(mo(mo1)); opt(mo, [mo1], [mo2]); rec(mo({x: 2, y: 1})); rec(mo(mo1));
+        """,
         // Allocations (managed nodes), object literals, double field stores (inline over a number).
         """
         function C(a) { this.a = a; }
