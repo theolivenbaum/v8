@@ -3035,8 +3035,10 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
       allocations captured by deopts, allocations (InlinedAllocation,
       FastNewObject) and StoreDoubleField as managed nodes. Leaf call from
       native code: 8-9 ns vs IL 7.8 ns (was 13-21 ns through the managed side).
-      MaglevNativeTest passes with 1000 random programs; full unit and
-      mjsunit reruns pending.
+      Verified: unit tests all pass; MaglevNativeTest with 1000 random
+      programs; mjsunit (8902 run) 0 newly failing with the defaults and
+      with `--no-maglev-native-loops-only` (which also newly passes
+      turboshaft/regress-380487911).
       Mutation check (tools/maglev-native/mutations.py, 16 planted bugs): 14
       caught; the other 2 (register sharing at one position, deopt-only uses
       not extended within a block) are equivalent in the graphs Maglev builds,
