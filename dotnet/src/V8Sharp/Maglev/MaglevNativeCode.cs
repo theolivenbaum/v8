@@ -22,6 +22,7 @@
 // a stale reference. Resumable exits hand the rebuilt values back to the
 // code through a managed array (the spill array), whose elements the code
 // reads again as addresses on re-entry.
+using System.Runtime.CompilerServices;
 using V8Sharp.Codegen;
 using V8Sharp.Interpreter;
 
@@ -253,6 +254,11 @@ namespace V8Sharp.Maglev
         public int ContextWords;
         /// <summary>The tagged values' homes (slots of the homes buffer), and with a callee's call area.</summary>
         public int TaggedSlots, HomesNeeded;
+        /// <summary>The code offset of each resume entry (by NativeExit.ResumeId).</summary>
+        public int[] ResumeOffsets = [];
+
+        /// <summary>The entry word of a resume: the resume entry's address (the code jumps there).</summary>
+        long ResumeAddress(int resumeId) => Entry + ResumeOffsets[resumeId];
         public JSValue[] Constants = [];
         public NativeValueInfo[] Values = [];
         public NativeExit[] Exits = [];
@@ -274,6 +280,12 @@ namespace V8Sharp.Maglev
 
         /// <summary>The exit code of a number return: its double is in the context's return word.</summary>
         internal const long kNumberReturn = -1;
+
+        /// <summary>The exit code of a tagged return: the value is in the return home (MaglevNativeCodeGenerator.kReturnHome).</summary>
+        internal const long kTaggedReturn = -2;
+
+        static JSValue ReturnHome(long[] ctx) =>
+            NativeCode.RefAt<JSValue>((nint)ctx[MaglevNativeCodeGenerator.kHomesSlot] + MaglevNativeCodeGenerator.kReturnHome * 16);
 
         /// <summary>The constants table's address (Constants is on the pinned object heap).</summary>
         public nint ConstantsAddress;
@@ -342,6 +354,7 @@ namespace V8Sharp.Maglev
 
         void Profile(Isolate isolate)
         {
+            if (s_noProfile) return;
             if (++_calls % kProfileCalls != 0 || _managedExits == 0) return;
             if (_managedExits * kMinBackEdgesPerExit <= _backEdges || Code.MarkedForDeoptimization || _replaced) return;
             GoBackToIL(isolate);
@@ -356,6 +369,7 @@ namespace V8Sharp.Maglev
 
         bool ProfileExit(Isolate isolate)
         {
+            if (s_noProfile) return false;
             if (_managedExits % kProfileExits != 0 || _replaced || Code.MarkedForDeoptimization) return false;
             if (_managedExits * kMinBackEdgesPerExit <= _backEdges) return false;
             GoBackToIL(isolate);
@@ -410,6 +424,8 @@ namespace V8Sharp.Maglev
         /// every resumable exit, which moves the objects the GC-visible homes
         /// hold before the code resumes.)
         /// </summary>
+        /// <summary>(Measurements: V8SHARP_MAGLEV_NATIVE_NO_PROFILE=1 keeps native code that takes many managed exits.)</summary>
+        static readonly bool s_noProfile = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_NO_PROFILE") == "1";
         static readonly bool s_gcAtExits = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_GC_AT_EXITS") == "1";
 
         internal static void StressGC()
@@ -460,6 +476,7 @@ namespace V8Sharp.Maglev
                 long id = Enter(isolate, ctx, activation.ContextAddress, isolate.RegisterStackAddress + fp * 16, spill);
                 _backEdges += kPollBudget - ctx[MaglevNativeCodeGenerator.kPollBudgetSlot];
                 if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
+                if (id == kTaggedReturn) return ReturnHome(ctx);
                 NativeExit exit = Exits[id];
                 switch (exit.Kind)
                 {
@@ -521,7 +538,7 @@ namespace V8Sharp.Maglev
                 // A resumable exit: the live tagged values are in their GC-visible
                 // homes (updated by any GC meanwhile); the code reloads them there.
                 if (s_gcAtExits) StressGC();
-                ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = exit.ResumeId;
+                ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = ResumeAddress(exit.ResumeId);
                 ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
             }
         }
@@ -747,6 +764,25 @@ namespace V8Sharp.Maglev
                         return callee.ContinueFrameless(isolate, function, info.Argc, calleeFrame, calleeCtx, calleeExit - 1);
                     }
                     int argc = info.Argc;
+                    // (The IL's EmitCallKnownJSFunction: the callee's direct entry when its
+                    // Maglev code has the formal count's arity, the generic call otherwise.)
+                    if (info.Vector.MaglevCode is { FastCall: { } fast } calleeCode && calleeCode.FastCallArity == info.FormalCount &&
+                        (!info.CheckReceiver || MaglevBuiltins.IsJSReceiver(In(0))))
+                    {
+                        var function = Unsafe.As<JSFunction>(target.Object);
+                        JSValue receiver = In(info.HasConvertedReceiver ? info.ConvertedReceiverInput : 0);
+                        JSValue A(int i) => i < argc ? In(1 + i) : JSValue.Undefined;
+                        return info.FormalCount switch
+                        {
+                            0 => Unsafe.As<MaglevFastCall0>(fast)(isolate, function, argc, receiver),
+                            1 => Unsafe.As<MaglevFastCall1>(fast)(isolate, function, argc, receiver, A(0)),
+                            2 => Unsafe.As<MaglevFastCall2>(fast)(isolate, function, argc, receiver, A(0), A(1)),
+                            3 => Unsafe.As<MaglevFastCall3>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2)),
+                            4 => Unsafe.As<MaglevFastCall4>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2), A(3)),
+                            5 => Unsafe.As<MaglevFastCall5>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2), A(3), A(4)),
+                            _ => Unsafe.As<MaglevFastCall6>(fast)(isolate, function, argc, receiver, A(0), A(1), A(2), A(3), A(4), A(5)),
+                        };
+                    }
                     return MaglevCalls.CallValuesN(isolate, target, In(0), argc, argc > 0 ? In(1) : default, argc > 1 ? In(2) : default,
                         argc > 2 ? In(3) : default, argc > 3 ? In(4) : default, argc > 4 ? In(5) : default, argc > 5 ? In(6) : default, (int)info.Mode);
                 }
@@ -1024,6 +1060,7 @@ namespace V8Sharp.Maglev
             nint frameAddress = PseudoFrameAddress(isolate) + kPseudoFp * 16;
             long id = Enter(isolate, ctx, activation.ContextAddress, frameAddress, s_noSpillAddress);
             if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
+            if (id == kTaggedReturn) return ReturnHome(ctx);
             return FramelessExits(isolate, function, argc, frame, ctx, activation.ContextAddress, frameAddress, id, activation);
         }
 
@@ -1038,6 +1075,7 @@ namespace V8Sharp.Maglev
         {
             Interlocked.Increment(ref s_continuedCallees);
             if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
+            if (id == kTaggedReturn) return ReturnHome(ctx);
             return FramelessExits(isolate, function, argc, frame, ctx, NativeCode.AddressOf(ctx, 0), NativeCode.AddressOf(frame, 0) + kPseudoFp * 16, id,
                 ActivationAt(isolate, isolate.MaglevNativeDepth, 0));
         }
@@ -1091,10 +1129,11 @@ namespace V8Sharp.Maglev
                     }
                 }
                 if (s_gcAtExits) StressGC();
-                ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = exit.ResumeId;
+                ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = ResumeAddress(exit.ResumeId);
                 ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
                 id = Enter(isolate, ctx, ctxAddress, frameAddress, s_noSpillAddress);
                 if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
+                if (id == kTaggedReturn) return ReturnHome(ctx);
             }
         }
 

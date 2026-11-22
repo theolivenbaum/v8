@@ -158,7 +158,9 @@ internal sealed class MaglevNativeCodeGenerator
     internal const int kCalleeHomes = 64;
     /// <summary>The largest homes buffer (MaglevNativeCode.Run's buffer types).</summary>
     internal const int kMaxHomes = 512;
-    int _taggedSlots;
+    /// <summary>The homes slot a returned tagged value goes to (MaglevNativeCode.kTaggedReturn).</summary>
+    internal const int kReturnHome = 0;
+    int _taggedSlots = kReturnHome + 1;
 
     /// <summary>The frame pointer (the context's frame word): parameters are read in their frame slots.</summary>
     const Reg kFrameRegister = r14;
@@ -357,17 +359,15 @@ internal sealed class MaglevNativeCodeGenerator
         EmitExitStubs();
         // Resumable exits continue here: the live values from their homes (the
         // tagged ones from the spill array, as the managed side rebuilt them).
+        // (The entry word holds the resume entry's address: MaglevNativeCode.ResumeAddress.)
         _masm.Bind(resumeDispatch);
         _masm.Movq(rax, new Operand(rbx, kEntryIdSlot * 8));
-        foreach ((XLabel label, int id, _, _) in _resumes)
-        {
-            _masm.Cmpq(rax, id);
-            _masm.J(Condition.equal, label);
-        }
-        _masm.Ud2();
-        foreach ((XLabel label, int _, List<Val> live, XLabel cont) in _resumes)
+        _masm.Jmp(rax);
+        var resumeOffsets = new int[_resumes.Count + 1];
+        foreach ((XLabel label, int id, List<Val> live, XLabel cont) in _resumes)
         {
             _masm.Bind(label);
+            resumeOffsets[id] = _masm.PcOffset;
             int j = 0;
             _masm.Movq(rcx, new Operand(rbx, NativeCode.kSpillSlot * 8));
             foreach (Val v in live)
@@ -417,6 +417,7 @@ internal sealed class MaglevNativeCodeGenerator
             CodeSize = _masm.PcOffset,
             ContextWords = _homeWords + (_nativeCalls ? CallFrameWords + kCalleeReserve : 0),
             TaggedSlots = _taggedSlots,
+            ResumeOffsets = resumeOffsets,
             HomesNeeded = _taggedSlots + (_nativeCalls ? kCalleeHomes : 0),
             CalleeContextBase = _homeWords + CallFrameWords,
             Constants = PinnedConstants(),
@@ -437,7 +438,8 @@ internal sealed class MaglevNativeCodeGenerator
         if (_fastCallArity >= 0)
         {
             native.FastCallArity = _fastCallArity;
-            native.DirectCallArity = ReturnsOnlyNumbers() ? _fastCallArity : -1;
+            // (Any return: a tagged one comes back in the return home.)
+            native.DirectCallArity = _fastCallArity;
             _code.FastCall = native.CreateFastCall();
             _code.FastCallArity = _fastCallArity;
             _code.DirectEntryKind = MaglevDirectEntryKind.Frameless;
@@ -2008,6 +2010,16 @@ internal sealed class MaglevNativeCodeGenerator
                 LoadFloat64(number, xmm0);
                 _masm.Movsd(new Operand(rbx, kReturnSlot * 8), xmm0);
                 _masm.Movq(rax, MaglevNativeCode.kNumberReturn);
+                _masm.Jmp(_epilogue);
+                return;
+            case Opcode.Return when c.Inputs[0].IsConstant || V(c.Inputs[0]).Repr == ValueRepresentation.kTagged:
+                // A tagged value: into the return home (GC-visible), and the
+                // tagged-return code (MaglevNativeCode.kTaggedReturn): a native
+                // caller takes it from there as a number return.
+                LoadTagged(c.Inputs[0], rax, rcx);
+                _masm.Movq(new Operand(kHomesRegister, kReturnHome * 16), rax);
+                _masm.Movq(new Operand(kHomesRegister, kReturnHome * 16 + 8), rcx);
+                _masm.Movq(rax, MaglevNativeCode.kTaggedReturn);
                 _masm.Jmp(_epilogue);
                 return;
             case Opcode.Return:
@@ -3991,12 +4003,24 @@ internal sealed class MaglevNativeCodeGenerator
                 _masm.Movq(v.XmmReg, rcx);
             }
         }
-        XLabel calleeExit = _masm.NewLabel();
+        XLabel calleeExit = _masm.NewLabel(), tagged = _masm.NewLabel();
         _masm.Cmpq(rax, (int)MaglevNativeCode.kNumberReturn);
-        _masm.J(Condition.not_equal, calleeExit);
+        _masm.J(Condition.not_equal, tagged);
         _masm.Movsd(xmm0, CalleeWord(kReturnSlot));
         StoreTaggedNumber(r, xmm0);
         _masm.Movq(HomeOp(r, 2), (int)NativeTaggedKind.kNumber);
+        _masm.Jmp(done);
+        // A tagged return: the callee's return home (in this frame's call area) into the result's home.
+        _masm.Bind(tagged);
+        _masm.Cmpq(rax, (int)MaglevNativeCode.kTaggedReturn);
+        _masm.J(Condition.not_equal, calleeExit);
+        var calleeReturn = new Operand(kHomesRegister, (_taggedSlots + kReturnHome) * 16);
+        _masm.Movq(rcx, calleeReturn.WithOffset(8));
+        _masm.Movq(rax, calleeReturn);
+        _masm.Movq(HomeOp(r, 1), rcx);
+        _masm.Movq(HomeOp(r), rax);
+        // (The kind word, as a load's: the result may flow into a phi.)
+        EmitClassify(r);
         _masm.Jmp(done);
         _slowPaths.Add(() =>
         {
