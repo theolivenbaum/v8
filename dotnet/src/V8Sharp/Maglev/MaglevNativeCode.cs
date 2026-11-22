@@ -137,8 +137,8 @@ namespace V8Sharp.Maglev
         /// <summary>CallBuiltin as a check, CheckTypedArrayValid: the eager deopt when it fails.</summary>
         public int EagerDeoptIndex = -1;
         public int EagerReason;
-        public int Int0, Int1;
-        public object? Obj0;
+        public int Int0, Int1, Int2;
+        public object? Obj0, Obj1;
         public System.Reflection.MethodInvoker? Invoker;
         /// <summary>InlinedAllocation: the in-object slot class's constructor; InitialFields: an object literal's fields.</summary>
         public System.Reflection.ConstructorInvoker? Allocate;
@@ -512,6 +512,66 @@ namespace V8Sharp.Maglev
                 }
                 case Opcode.FastNewObject:
                     return MaglevBuiltins.FastNewObject(isolate, (Map)node.Obj0!);
+                case Opcode.StoreMapTransition:
+                    MaglevBuiltins.StoreTransition(In(0), (Map)node.Obj0!, node.Int0, In(1), node.Int1 != 0);
+                    return default;
+                case Opcode.MaybeGrowFastElements:
+                {
+                    JSValue elements = node.Int2 > 0
+                        ? MaglevBuiltins.MaybeGrowFastElementsForPush(isolate, In(0), (int)In(1).Number, node.Int2)
+                        : MaglevBuiltins.MaybeGrowFastElements(isolate, In(0), (int)In(1).Number, node.Int0, node.Int1);
+                    passed = elements._obj is not null;
+                    return elements;
+                }
+                case Opcode.TransitionElementsKind:
+                {
+                    JSValue obj = In(0);
+                    if (node.EagerDeoptIndex < 0 && node.Obj1 is Map[] sources)
+                    {
+                        // (The IL's: only an object with one of the source maps transitions.)
+                        if (MaglevBuiltins.MapOf(obj) is { } map && Array.IndexOf(sources, map) >= 0)
+                        {
+                            MaglevBuiltins.TransitionElementsKind(isolate, obj, (Map)node.Obj0!);
+                        }
+                        return default;
+                    }
+                    passed = MaglevBuiltins.TransitionElementsKind(isolate, obj, (Map)node.Obj0!);
+                    return default;
+                }
+                case Opcode.HasInPrototypeChain:
+                {
+                    var info = (HasInstanceInfo)node.Obj0!;
+                    int has = MaglevBuiltins.HasInPrototypeChain(In(0), info.Function, info.FunctionMap, info.PrototypeOrInitialMap, info.Prototype);
+                    passed = has != 2;
+                    return MaglevBuiltins.Boolean(has != 0);
+                }
+                case Opcode.CheckedObjectToIndex:
+                {
+                    // (The IL's: an integral number inline, the rest through the helper.)
+                    JSValue v = In(0);
+                    if (v.IsNumber)
+                    {
+                        double d = v.Number;
+                        int i = (int)d;
+                        passed = i == d;
+                        return JSValue.FromInt(i);
+                    }
+                    long index = MaglevBuiltins.ObjectToIndexOrMin(v);
+                    passed = index != long.MinValue;
+                    return JSValue.FromInt((int)index);
+                }
+                case Opcode.MigrateMapIfNeeded:
+                    return MaglevBuiltins.MigrateMapIfNeeded(isolate, In(0), In(1));
+                case Opcode.Float64Exponentiate:
+                    return JSValue.FromNumber(MaglevBuiltins.Float64Exponentiate(In(0).Number, In(1).Number));
+                case Opcode.Float64Ieee754Unary:
+                    return JSValue.FromNumber(MaglevBuiltins.Float64Ieee754Unary(In(0).Number, node.Int0));
+                case Opcode.LoadFixedArrayLength:
+                    return JSValue.FromInt(MaglevBuiltins.LoadFixedArrayLength(In(0)));
+                case Opcode.BuiltinStringPrototypeCharCodeAt:
+                    return JSValue.FromInt(MaglevBuiltins.StringCharCodeAt(In(0), (int)In(1).Number));
+                case Opcode.BuiltinStringPrototypeCharCodeAtOrNaN:
+                    return JSValue.FromNumber(MaglevBuiltins.StringCharCodeAtOrNaN(In(0), (int)In(1).Number));
                 case Opcode.CheckInstanceType:
                 {
                     JSValue v = In(0);

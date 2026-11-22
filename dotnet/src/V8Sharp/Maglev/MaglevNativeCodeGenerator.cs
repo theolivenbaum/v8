@@ -483,7 +483,9 @@ internal sealed class MaglevNativeCodeGenerator
     /// managed side does the others, so such stores may be in loops.
     /// </summary>
     static bool HasInlineFastPath(Node node) => node.Opcode is Opcode.StoreTaggedField or Opcode.StoreDoubleField or Opcode.StoreFixedArrayElement or Opcode.StoreContextSlot or
-        Opcode.ToBoolean or Opcode.ToBooleanLogicalNot or Opcode.LoadTypedArrayLength || HasNativeCallFastPath(node);
+        Opcode.ToBoolean or Opcode.ToBooleanLogicalNot or Opcode.LoadTypedArrayLength or Opcode.TestUndetectable or Opcode.TestTypeOf or
+        Opcode.CheckInstanceType or Opcode.StringLength or Opcode.LoadFixedArrayLength or Opcode.BuiltinStringPrototypeCharCodeAt or
+        Opcode.BuiltinStringPrototypeCharCodeAtOrNaN or Opcode.CheckedObjectToIndex or Opcode.MaybeGrowFastElements || HasNativeCallFastPath(node);
 
     /// <summary>
     /// Nodes the managed side runs (MaglevNativeCode.Execute); <paramref name="why"/>
@@ -509,6 +511,19 @@ internal sealed class MaglevNativeCodeGenerator
             case Opcode.StringLength:
             case Opcode.CheckInstanceType:
             case Opcode.FastNewObject:
+            case Opcode.StoreMapTransition:
+            case Opcode.TransitionElementsKind:
+            case Opcode.HasInPrototypeChain:
+            case Opcode.CheckedObjectToIndex:
+            case Opcode.MigrateMapIfNeeded:
+            case Opcode.Float64Exponentiate:
+            case Opcode.Float64Ieee754Unary:
+            case Opcode.LoadFixedArrayLength:
+            case Opcode.BuiltinStringPrototypeCharCodeAt:
+            case Opcode.BuiltinStringPrototypeCharCodeAtOrNaN:
+                return true;
+            case Opcode.MaybeGrowFastElements:
+                if (NativeLayout.FixedArrayData != NativeLayout.FixedDoubleArrayData) why = "MaybeGrowFastElements layout";
                 return true;
             case Opcode.InlinedAllocation:
                 // (An elided one is not in the graph's blocks: its deopts capture it.)
@@ -735,6 +750,7 @@ internal sealed class MaglevNativeCodeGenerator
         Opcode.Jump or Opcode.JumpLoop or Opcode.Return or Opcode.Deopt => true,
         Opcode.BranchIfInt32Compare => !c.Unsigned || c.Operation == CompareOperation.kLessThan,
         Opcode.BranchIfToBooleanTrue or Opcode.BranchIfFloat64Compare or Opcode.BranchIfReferenceEqual or Opcode.BranchIfRootConstant or
+            Opcode.BranchIfUndefinedOrNull or
             Opcode.BranchIfInt32ToBooleanTrue or Opcode.BranchIfFloat64ToBooleanTrue => true,
         _ => false,
     };
@@ -1392,7 +1408,16 @@ internal sealed class MaglevNativeCodeGenerator
         {
             // A managed node's value: untagged in its home, tagged in its managed
             // slot. (ToBoolean has an inline path: both paths write its kind word.)
-            if (v.Repr == ValueRepresentation.kTagged && v.Node.Opcode is not (Opcode.ToBoolean or Opcode.ToBooleanLogicalNot))
+            if (v.Node.Opcode == Opcode.MaybeGrowFastElements)
+            {
+                // The object's elements after the node, grown or not: rebuilt by loading them again.
+                info.Kind = NativeValueKind.kElements;
+                info.Input0 = Info(v.Node.Inputs[0]);
+                if (_snapshots) info.SnapSlot = _managedSlots++;
+                return v.Info;
+            }
+            if (v.Repr == ValueRepresentation.kTagged && v.Node.Opcode is not (Opcode.ToBoolean or Opcode.ToBooleanLogicalNot or
+                    Opcode.TestUndetectable or Opcode.TestTypeOf))
             {
                 info.SnapSlot = _managedSlots++;
                 info.Kind = NativeValueKind.kManaged;
@@ -1432,6 +1457,8 @@ internal sealed class MaglevNativeCodeGenerator
             case Opcode.LogicalNot:
             case Opcode.ToBoolean:
             case Opcode.ToBooleanLogicalNot:
+            case Opcode.TestUndetectable:
+            case Opcode.TestTypeOf:
                 info.Kind = NativeValueKind.kTaggedBoolean;
                 break;
             case Opcode.LoadElements:
@@ -1939,6 +1966,15 @@ internal sealed class MaglevNativeCodeGenerator
                 return;
             case Opcode.BranchIfReferenceEqual:
                 EmitIdentical(c.Inputs[0], c.Inputs[1], ifTrue, ifFalse);
+                return;
+            case Opcode.BranchIfUndefinedOrNull:
+                // (MaglevBuiltins.IsUndefinedOrNull.)
+                LoadTaggedPtr(c.Inputs[0], rax);
+                _masm.Testq(rax, rax);
+                _masm.J(Condition.equal, ifTrue);
+                LoadConstantAddress(rcx, kConstNull);
+                _masm.Cmpq(rax, rcx);
+                _masm.J(Condition.equal, ifTrue);
                 return;
             case Opcode.BranchIfRootConstant:
                 LoadTaggedPtr(c.Inputs[0], rax);
@@ -3210,7 +3246,7 @@ internal sealed class MaglevNativeCodeGenerator
         var list = new List<int>();
         foreach (ValueNode n in closure)
         {
-            if (n.IsConstant || !n.IsTagged || _managedNodes.Contains(n)) continue;
+            if (n.IsConstant || !n.IsTagged || _managedNodes.Contains(n) && n.Opcode != Opcode.MaybeGrowFastElements) continue;
             int info = Info(n);
             if (IsReloadKind(_valueInfos[info].Kind) && !list.Contains(info)) list.Add(info);
         }
@@ -3238,6 +3274,8 @@ internal sealed class MaglevNativeCodeGenerator
             Int0 = node.Int0,
             Int1 = node.Int1,
             Obj0 = node.Opcode == Opcode.StorePropertyCellValue ? node.Obj0 : node.Obj0,
+            Obj1 = node.Obj1,
+            Int2 = node.Int2,
             BytecodeOffset = node.BytecodeOffset,
             Inlined = node.Unit is { IsInline: true },
         };
@@ -3292,6 +3330,13 @@ internal sealed class MaglevNativeCodeGenerator
             Opcode.ToBoolean or Opcode.ToBooleanLogicalNot => EmitToBooleanNodeFastPath(node, slow, cont),
             Opcode.LoadTypedArrayLength => EmitTypedArrayLengthFastPath(node, slow, cont),
             Opcode.CallKnownJSFunction => EmitNativeCallFastPath(node, slow, cont),
+            Opcode.TestUndetectable or Opcode.TestTypeOf => EmitTypeTestFastPath(node, slow, cont),
+            Opcode.CheckInstanceType => EmitCheckInstanceTypeFastPath(node, slow, cont),
+            Opcode.StringLength or Opcode.BuiltinStringPrototypeCharCodeAt or Opcode.BuiltinStringPrototypeCharCodeAtOrNaN =>
+                EmitStringFastPath(node, slow, cont),
+            Opcode.LoadFixedArrayLength => EmitFixedArrayLengthFastPath(node, slow, cont),
+            Opcode.CheckedObjectToIndex => EmitObjectToIndexFastPath(node, slow, cont),
+            Opcode.MaybeGrowFastElements => EmitMaybeGrowFastElementsFastPath(node, slow, cont),
             _ => EmitStoreNumberFastPath(node, slow, cont),
         };
         // The slow path out of line when there is a fast path.
@@ -3320,6 +3365,327 @@ internal sealed class MaglevNativeCodeGenerator
     readonly List<Action> _slowPaths = [];
 
     static readonly Reg[] s_callerSavedGp = [rsi, rdi, r8, r9, r10];
+
+    // ---- Inline type tests, strings, lengths, indices, element growth ----------------------------------------
+    //
+    // Nodes the IL backend does with a small builtin: native code does the
+    // common cases inline (the builtin's own logic on the object layout, a
+    // class tested by its method table) and the managed side the others.
+
+    /// <summary>rax = 1 if the tagged value in rcx (not undefined) is a receiver, else jumps to <paramref name="notReceiver"/>; rdx = its map's bit field.</summary>
+    void EmitReceiverMapBits(XLabel notReceiver)
+    {
+        _masm.Movzxwl(rdx, new Operand(rcx, NativeLayout.HeapObjectInstanceType));
+        _masm.Cmpl(rdx, (int)InstanceTypeChecks.FirstJSReceiver);
+        _masm.J(Condition.below, notReceiver);
+        _masm.Movq(rdx, new Operand(rcx, NativeLayout.JSReceiverMap));
+        _masm.Movzxbl(rdx, new Operand(rdx, NativeLayout.MapBitField));
+    }
+
+    /// <summary>
+    /// rax = 0/1, the type test of a tagged value (MaglevBuiltins.TestUndetectable,
+    /// TestUndefinedOrNull, InterpreterOps.TestTypeOf); false when the node's
+    /// input is untagged.
+    /// </summary>
+    bool EmitTypeTest(Opcode opcode, int arg, ValueNode input)
+    {
+        if (!input.IsConstant && V(input).Repr != ValueRepresentation.kTagged) return false;
+        XLabel yes = _masm.NewLabel(), no = _masm.NewLabel(), done = _masm.NewLabel();
+        LoadTaggedPtr(input, rcx);
+        int callable = Map.Bits1.IsCallableBit, undetectable = Map.Bits1.IsUndetectableBit;
+        void IsConst(int index, XLabel target)
+        {
+            LoadConstantAddress(rdx, index);
+            _masm.Cmpq(rcx, rdx);
+            _masm.J(Condition.equal, target);
+        }
+        void TypeIs(Condition cond, InstanceType type)
+        {
+            _masm.Testq(rcx, rcx);
+            _masm.J(Condition.equal, no);
+            _masm.Movzxwl(rdx, new Operand(rcx, NativeLayout.HeapObjectInstanceType));
+            _masm.Cmpl(rdx, (int)type);
+            _masm.J(cond, yes);
+            _masm.Jmp(no);
+        }
+        void MapBits(int mask, int value)
+        {
+            _masm.Testq(rcx, rcx);
+            _masm.J(Condition.equal, no);
+            EmitReceiverMapBits(no);
+            _masm.Andl(rdx, mask);
+            _masm.Cmpl(rdx, value);
+            _masm.J(Condition.equal, yes);
+            _masm.Jmp(no);
+        }
+        if (opcode == Opcode.TestUndetectable)
+        {
+            _masm.Testq(rcx, rcx);
+            _masm.J(Condition.equal, yes);
+            IsConst(kConstNull, yes);
+            if (arg != 0) _masm.Jmp(no);
+            else MapBits(undetectable, undetectable);
+        }
+        else
+        {
+            switch ((V8Sharp.Interpreter.TestTypeOfFlags.LiteralFlag)arg)
+            {
+                case V8Sharp.Interpreter.TestTypeOfFlags.LiteralFlag.Number:
+                    IsConst(kConstNumberTag, yes);
+                    _masm.Jmp(no);
+                    break;
+                case V8Sharp.Interpreter.TestTypeOfFlags.LiteralFlag.Boolean:
+                    IsConst(kConstTrue, yes);
+                    IsConst(kConstFalse, yes);
+                    _masm.Jmp(no);
+                    break;
+                case V8Sharp.Interpreter.TestTypeOfFlags.LiteralFlag.String:
+                    TypeIs(Condition.below_equal, InstanceTypeChecks.LastString);
+                    break;
+                case V8Sharp.Interpreter.TestTypeOfFlags.LiteralFlag.Symbol:
+                    TypeIs(Condition.equal, InstanceType.SymbolType);
+                    break;
+                case V8Sharp.Interpreter.TestTypeOfFlags.LiteralFlag.BigInt:
+                    TypeIs(Condition.equal, InstanceType.BigIntType);
+                    break;
+                case V8Sharp.Interpreter.TestTypeOfFlags.LiteralFlag.Undefined:
+                    _masm.Testq(rcx, rcx);
+                    _masm.J(Condition.equal, yes);
+                    MapBits(undetectable, undetectable);
+                    break;
+                case V8Sharp.Interpreter.TestTypeOfFlags.LiteralFlag.Function:
+                    MapBits(callable | undetectable, callable);
+                    break;
+                case V8Sharp.Interpreter.TestTypeOfFlags.LiteralFlag.Object:
+                    IsConst(kConstNull, yes);
+                    MapBits(callable | undetectable, 0);
+                    break;
+                default:
+                    _masm.Jmp(no);
+                    break;
+            }
+        }
+        _masm.Bind(yes);
+        _masm.Movl(rax, 1);
+        _masm.Jmp(done);
+        _masm.Bind(no);
+        _masm.Movl(rax, 0);
+        _masm.Bind(done);
+        return true;
+    }
+
+    bool EmitTypeTestFastPath(Node node, XLabel slow, XLabel done)
+    {
+        if (!EmitTypeTest(node.Opcode, node.Int0, node.Inputs[0])) return false;
+        StoreTaggedBoolean(V((ValueNode)node));
+        _masm.Jmp(done);
+        return true;
+    }
+
+    /// <summary>CheckInstanceType inline (MaglevBuiltins.IsInternalizedString ...); a failing check goes to the managed side, which deopts.</summary>
+    bool EmitCheckInstanceTypeFastPath(Node node, XLabel slow, XLabel done)
+    {
+        ValueNode input = node.Inputs[0];
+        if (!input.IsConstant && V(input).Repr != ValueRepresentation.kTagged) return false;
+        LoadTaggedPtr(input, rcx);
+        switch (node.Int0)
+        {
+            case 1:
+            case 5:
+                // An internalized string (1); a string (5; wrappers on the managed side).
+                _masm.Testq(rcx, rcx);
+                _masm.J(Condition.equal, slow);
+                _masm.Movzxwl(rdx, new Operand(rcx, NativeLayout.HeapObjectInstanceType));
+                _masm.Cmpl(rdx, (int)InstanceTypeChecks.LastString);
+                _masm.J(Condition.above, slow);
+                if (node.Int0 == 1)
+                {
+                    _masm.Movzxbl(rdx, new Operand(rcx, NativeLayout.HeapObjectHeaderFlags));
+                    _masm.Testl(rdx, rdx);
+                    _masm.J(Condition.equal, slow);
+                }
+                break;
+            case 2:
+                _masm.Testq(rcx, rcx);
+                _masm.J(Condition.equal, slow);
+                _masm.Movzxwl(rdx, new Operand(rcx, NativeLayout.HeapObjectInstanceType));
+                _masm.Cmpl(rdx, (int)InstanceTypeChecks.FirstJSReceiver);
+                _masm.J(Condition.below, slow);
+                break;
+            case 4:
+            {
+                _masm.Testq(rcx, rcx);
+                _masm.J(Condition.equal, done);
+                LoadConstantAddress(rdx, kConstNull);
+                _masm.Cmpq(rcx, rdx);
+                _masm.J(Condition.equal, done);
+                _masm.Movzxwl(rdx, new Operand(rcx, NativeLayout.HeapObjectInstanceType));
+                _masm.Cmpl(rdx, (int)InstanceTypeChecks.FirstJSReceiver);
+                _masm.J(Condition.below, slow);
+                break;
+            }
+            default:
+                // Writable elements: not a copy-on-write array (its hash word).
+                _masm.Movl(rdx, new Operand(rcx, NativeLayout.HeapObjectHashField));
+                _masm.Testl(rdx, rdx);
+                _masm.J(Condition.not_equal, slow);
+                break;
+        }
+        _masm.Jmp(done);
+        return true;
+    }
+
+    /// <summary>rcx = the flat string (System.String) of a SeqString in rcx, else jumps to <paramref name="slow"/>.</summary>
+    void EmitSeqStringValue(XLabel slow)
+    {
+        _masm.Testq(rcx, rcx);
+        _masm.J(Condition.equal, slow);
+        _masm.Movq(r11, (long)typeof(SeqString).TypeHandle.Value);
+        _masm.Cmpq(r11, new Operand(rcx, 0));
+        _masm.J(Condition.not_equal, slow);
+        _masm.Movq(rcx, new Operand(rcx, NativeLayout.SeqStringValue));
+    }
+
+    /// <summary>StringLength and charCodeAt of a flat string (MaglevBuiltins.StringLength, StringCharCodeAt[OrNaN]); ropes on the managed side.</summary>
+    bool EmitStringFastPath(Node node, XLabel slow, XLabel done)
+    {
+        if (!node.Inputs[0].IsConstant && V(node.Inputs[0]).Repr != ValueRepresentation.kTagged) return false;
+        Val r = V((ValueNode)node);
+        LoadTaggedPtr(node.Inputs[0], rcx);
+        EmitSeqStringValue(slow);
+        if (node.Opcode == Opcode.StringLength)
+        {
+            _masm.Movl(rax, new Operand(rcx, NativeLayout.ArrayLength));
+            StoreInt32Result(r, rax);
+            _masm.Jmp(done);
+            return true;
+        }
+        Reg index = Int32Reg(node.Inputs[1], rax);
+        _masm.Cmpl(index, new Operand(rcx, NativeLayout.ArrayLength));
+        if (node.Opcode == Opcode.BuiltinStringPrototypeCharCodeAtOrNaN)
+        {
+            XLabel inBounds = _masm.NewLabel();
+            _masm.J(Condition.below, inBounds);
+            _masm.Movq(rdx, BitConverter.DoubleToInt64Bits(double.NaN));
+            _masm.Movq(xmm0, rdx);
+            StoreFloat64Result(r, xmm0);
+            _masm.Jmp(done);
+            _masm.Bind(inBounds);
+        }
+        else
+        {
+            // (Out of bounds: the managed side's string access throws, as the IL's.)
+            _masm.J(Condition.above_equal, slow);
+        }
+        _masm.Movsxlq(rdx, index);
+        _masm.Movzxwl(rdx, new Operand(rcx, System.Runtime.CompilerServices.RuntimeHelpers.OffsetToStringData, rdx, ScaleFactor.times_2));
+        if (node.Opcode == Opcode.BuiltinStringPrototypeCharCodeAtOrNaN)
+        {
+            _masm.Cvtlsi2sd(xmm0, rdx);
+            StoreFloat64Result(r, xmm0);
+        }
+        else
+        {
+            StoreInt32Result(r, rdx);
+        }
+        _masm.Jmp(done);
+        return true;
+    }
+
+    /// <summary>LoadFixedArrayLength of a FixedArray (its data's length); other backing stores on the managed side.</summary>
+    bool EmitFixedArrayLengthFastPath(Node node, XLabel slow, XLabel done)
+    {
+        if (!node.Inputs[0].IsConstant && V(node.Inputs[0]).Repr != ValueRepresentation.kTagged) return false;
+        LoadTaggedPtr(node.Inputs[0], rcx);
+        _masm.Testq(rcx, rcx);
+        _masm.J(Condition.equal, slow);
+        _masm.Movq(r11, (long)typeof(FixedArray).TypeHandle.Value);
+        _masm.Cmpq(r11, new Operand(rcx, 0));
+        _masm.J(Condition.not_equal, slow);
+        _masm.Movq(rcx, new Operand(rcx, NativeLayout.FixedArrayData));
+        _masm.Movl(rax, new Operand(rcx, NativeLayout.ArrayLength));
+        StoreInt32Result(V((ValueNode)node), rax);
+        _masm.Jmp(done);
+        return true;
+    }
+
+    /// <summary>CheckedObjectToIndex of a number inline (an integral double, as the IL's); strings on the managed side, which deopts otherwise.</summary>
+    bool EmitObjectToIndexFastPath(Node node, XLabel slow, XLabel done)
+    {
+        ValueNode input = node.Inputs[0];
+        if (!input.IsConstant && V(input).Repr != ValueRepresentation.kTagged) return false;
+        LoadTaggedPtr(input, rcx);
+        LoadConstantAddress(rdx, kConstNumberTag);
+        _masm.Cmpq(rcx, rdx);
+        _masm.J(Condition.not_equal, slow);
+        LoadTaggedBits(input, rdx);
+        _masm.Movq(xmm0, rdx);
+        _masm.Cvttsd2si(rax, xmm0);
+        _masm.Cvtlsi2sd(xmm1, rax);
+        _masm.Ucomisd(xmm0, xmm1);
+        _masm.J(Condition.parity_even, slow);
+        _masm.J(Condition.not_equal, slow);
+        StoreInt32Result(V((ValueNode)node), rax);
+        _masm.Jmp(done);
+        return true;
+    }
+
+    /// <summary>
+    /// MaybeGrowFastElements when nothing grows (MaglevBuiltins.MaybeGrowFastElements[ForPush]):
+    /// writable elements with room for the index; an append to a JSArray
+    /// writes its length (a number over a number). Growth, copy-on-write
+    /// arrays and deopts are the managed side's.
+    /// </summary>
+    bool EmitMaybeGrowFastElementsFastPath(Node node, XLabel slow, XLabel done)
+    {
+        if (NativeLayout.FixedArrayData != NativeLayout.FixedDoubleArrayData) return false;
+        if (!node.Inputs[0].IsConstant && V(node.Inputs[0]).Repr != ValueRepresentation.kTagged) return false;
+        Val r = V((ValueNode)node);
+        bool push = node.Int2 > 0;
+        bool isJSArray = push || node.Int0 != 0;
+        LoadTaggedPtr(node.Inputs[0], rcx);
+        _masm.Movq(rdx, new Operand(rcx, NativeLayout.JSObjectElements));
+        _masm.Movl(r11, new Operand(rdx, NativeLayout.HeapObjectHashField));
+        _masm.Testl(r11, r11);
+        _masm.J(Condition.not_equal, slow);
+        // index (or the new length of a push) into rax; the capacity check.
+        Reg index = Int32Reg(node.Inputs[1], rax);
+        if (index != rax) _masm.Movl(rax, index);
+        if (push) _masm.Addl(rax, node.Int2);
+        _masm.Movq(r11, new Operand(rdx, NativeLayout.FixedArrayData));
+        _masm.Cmpl(rax, new Operand(r11, NativeLayout.ArrayLength));
+        _masm.J(push ? Condition.above : Condition.above_equal, slow);
+        if (isJSArray)
+        {
+            // The length (JSArray._length, a double): an append writes index + 1 (a push its new length).
+            var lengthBits = new Operand(rcx, NativeLayout.JSArrayLength);
+            _masm.Movsd(xmm0, lengthBits);
+            _masm.Cvttsd2si(r11, xmm0);
+            XLabel keep = _masm.NewLabel();
+            if (push)
+            {
+                _masm.Cvtlsi2sd(xmm0, rax);
+                _masm.Movsd(lengthBits, xmm0);
+            }
+            else
+            {
+                _masm.Cmpl(rax, r11);
+                _masm.J(Condition.below, keep);
+                // (Past the end only by appending: the managed side decides the rest.)
+                _masm.J(Condition.not_equal, slow);
+                _masm.Leal(r11, new Operand(rax, 1));
+                _masm.Cvtlsi2sd(xmm0, r11);
+                _masm.Movsd(lengthBits, xmm0);
+                _masm.Bind(keep);
+            }
+        }
+        _masm.Movq(HomeOp(r), rdx);
+        _masm.Movq(HomeOp(r, 1), 0);
+        _masm.Movq(HomeOp(r, 2), (int)NativeTaggedKind.kOther);
+        ClearSnapshot(r);
+        _masm.Jmp(done);
+        return true;
+    }
 
     /// <summary>
     /// A direct call of the callee's native code (see "Native-to-native
@@ -3902,6 +4268,7 @@ internal static class NativeLayout
     public static readonly int ViewBuffer, ViewByteOffset, ViewIsLengthTracking, ViewIsBackedByRab, TypedArrayRawLength;
     public static readonly int BufferWasDetached, BufferIsImmutable, BufferBackingStore, BackingStoreBuffer;
     public static readonly int FeedbackVectorMaglevCode, MaglevCodeNative, JSFunctionContext;
+    public static readonly int HeapObjectHashField, HeapObjectHeaderFlags, SeqStringValue;
     public static readonly int NativeEntry, NativeConstantsAddress, NativeContextWords, NativeDirectCallArity;
 
     static NativeLayout()
@@ -3936,6 +4303,10 @@ internal static class NativeLayout
         FixedArrayData = FieldOffsets.Of(fixedArray, ref fixedArray._data);
         var doubleArray = (FixedDoubleArray)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(FixedDoubleArray));
         FixedDoubleArrayData = FieldOffsets.Of(doubleArray, ref doubleArray._data);
+        HeapObjectHashField = FieldOffsets.Of(array, ref array.RawHashField);
+        HeapObjectHeaderFlags = FieldOffsets.Of(array, ref array.RawHeaderFlags);
+        var seq = (SeqString)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(SeqString));
+        SeqStringValue = FieldOffsets.Of(seq, ref System.Runtime.CompilerServices.Unsafe.AsRef(in seq.Value));
         var vector = (FeedbackVector)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(FeedbackVector));
         FeedbackVectorMaglevCode = FieldOffsets.Of(vector, ref vector.MaglevCode);
         var code = (MaglevCode)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MaglevCode));

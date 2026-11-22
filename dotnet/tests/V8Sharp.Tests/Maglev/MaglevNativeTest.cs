@@ -261,6 +261,36 @@ public class MaglevNativeTest
         })();
         opt(bmp, [10, 1]); rec(bmp(10, 2)); rec(bmp(3000000, 7)); rec(bmp(2500000, 9));
         """,
+        // Type tests, strings, lengths, indices and element growth inline (with the
+        // managed side for ropes, wrappers, growth, copy-on-write and deopts).
+        """
+        function ty(a) { let c = 0; for (let i = 0; i < a.length; i++) { const v = a[i];
+          if (typeof v === 'number') c += 1; if (typeof v === 'string') c += 10; if (typeof v === 'undefined') c += 100;
+          if (typeof v === 'function') c += 1000; if (typeof v === 'object') c += 10000; if (typeof v === 'boolean') c += 100000;
+          if (typeof v === 'symbol') c += 1000000; if (v == null) c += 3; } return c; }
+        const tya = [1, 'a', undefined, null, () => 1, {}, true, Symbol(), 2.5, [], 'b' + Math.random(), false];
+        opt(ty, [tya]); rec(ty(tya)); rec(ty([1, 2, 3])); rec(ty([null, null, 'x']));
+        function sl(s) { let t = 0; for (let i = 0; i < s.length; i++) t = (t * 31 + s.charCodeAt(i)) | 0; return t + s.length; }
+        opt(sl, ['hello']); rec(sl('hello world')); rec(sl('abcdefghijklmnop' + String(Math.PI))); rec(sl(''));
+        function sn(s, i) { return s.charCodeAt(i); } opt(sn, ['abc', 1]); rec(sn('abc', 2)); rec(sn('abc', 7)); rec(sn('abc', -1));
+        function pu(n) { const a = []; for (let i = 0; i < n; i++) a.push(i * 2); let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s + a.length; }
+        opt(pu, [5]); rec(pu(10)); rec(pu(1000)); rec(pu(0));
+        function ap(a, n) { for (let i = 0; i < n; i++) a[a.length] = i; return a.length; }
+        opt(ap, [[1], 3]); rec(ap([1, 2], 50)); rec(ap([1.5, 2.5], 5)); rec(ap([], 2));
+        function cw(n) { const a = [1, 2, 3]; for (let i = 0; i < n; i++) a[i % 3] = i; return a.join(); }
+        opt(cw, [4]); rec(cw(10)); rec(cw(2));
+        function tr(a, n) { for (let i = 0; i < n; i++) a[i] = i + 0.5; return a.length; }
+        opt(tr, [[1, 2, 3], 3]); rec(tr([1, 2, 3, 4], 4)); rec(tr(['x', 'y'], 2));
+        function Pt2(x, y) { this.x = x; this.y = y; this.z = x * y; }
+        function mk2(n) { let s = 0; for (let i = 0; i < n; i++) s += i; const p = new Pt2(s, 2); return p.z + p.x; }
+        opt(mk2, [3]); rec(mk2(10)); rec(mk2(0));
+        function io(a) { let c = 0; for (let i = 0; i < a.length; i++) if (a[i] instanceof Pt2) c++; return c; }
+        const ioa = [new Pt2(1, 2), {}, new Pt2(3, 4), 5]; opt(io, [ioa]); rec(io(ioa)); rec(io([1, 2]));
+        function ki(o, ks) { let s = 0; for (let i = 0; i < ks.length; i++) s += o[ks[i]] | 0; return s; }
+        const kio = [10, 20, 30, 40]; opt(ki, [kio, [0, 1, 2]]); rec(ki(kio, [0, 1, 2, 3])); rec(ki(kio, ['1', '2'])); rec(ki(kio, [1.5, 2]));
+        function mp(a) { let s = 0; for (let i = 0; i < a.length; i++) s += Math.pow(a[i], 1.5) + Math.sin(a[i]); return s; }
+        opt(mp, [[1, 2]]); rec(mp([1, 2, 3, 4.5]));
+        """,
         // Allocations (managed nodes), object literals, double field stores (inline over a number).
         """
         function C(a) { this.a = a; }
