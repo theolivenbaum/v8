@@ -74,6 +74,8 @@ namespace V8Sharp.Maglev
         kHoleyFloat64,
         /// <summary>An InitialValue: the frame slot (native code never writes the frame).</summary>
         kFrameSlot,
+        /// <summary>A tagged value in its GC-visible home (the frame's homes buffer, slot Slot).</summary>
+        kStackHome,
         /// <summary>A frame slot the code writes (StoreRegister, SetCurrentContext): snapshotted before managed nodes.</summary>
         kWrittenFrameSlot,
         /// <summary>A tagged number whose double is the home's second word.</summary>
@@ -106,6 +108,8 @@ namespace V8Sharp.Maglev
 
     internal sealed class NativeValueInfo
     {
+        /// <summary>kStackHome: the slot in the homes buffer.</summary>
+        public int Slot = -1;
         public NativeValueKind Kind;
         public int Home = -1;
         public int Input0 = -1;
@@ -144,6 +148,15 @@ namespace V8Sharp.Maglev
         public int CallOffset, Pc;
     }
 
+    // The GC-visible homes buffers (MaglevNativeCodeGenerator, "GC-visible
+    // homes"): a local of the frame running native code, whose JSValue slots
+    // the GC reports and updates. One type per size, so that a frame's
+    // buffer is no larger than its code needs.
+    [System.Runtime.CompilerServices.InlineArray(16)] internal struct NativeHomes16 { JSValue _slot; }
+    [System.Runtime.CompilerServices.InlineArray(64)] internal struct NativeHomes64 { JSValue _slot; }
+    [System.Runtime.CompilerServices.InlineArray(160)] internal struct NativeHomes160 { JSValue _slot; }
+    [System.Runtime.CompilerServices.InlineArray(512)] internal struct NativeHomes512 { JSValue _slot; }
+
     /// <summary>The pinned buffers of native activations at one depth (Isolate.MaglevNativeActivations).</summary>
     internal sealed class NativeActivation
     {
@@ -164,6 +177,8 @@ namespace V8Sharp.Maglev
         public int ResultHome = -1;
         public ValueRepresentation ResultRepresentation;
         public bool ResultNeedsKind;
+        /// <summary>A tagged result's slot in the homes buffer.</summary>
+        public int ResultSlot = -1;
         public int BytecodeOffset = -1;
         public bool Inlined;
         /// <summary>The DeoptPoint of the node's lazy deopt (the code was invalidated meanwhile), or -1.</summary>
@@ -236,6 +251,8 @@ namespace V8Sharp.Maglev
         public nint Entry;
         public int CodeSize;
         public int ContextWords;
+        /// <summary>The tagged values' homes (slots of the homes buffer), and with a callee's call area.</summary>
+        public int TaggedSlots, HomesNeeded;
         public JSValue[] Constants = [];
         public NativeValueInfo[] Values = [];
         public NativeExit[] Exits = [];
@@ -388,6 +405,20 @@ namespace V8Sharp.Maglev
             s_exitStats!.AddOrUpdate(MaglevCompiler.DebugName(Code.SharedFunctionInfo) + " " + node.Opcode +
                 (node.Obj0 is CallBuiltinInfo info ? ":" + info.Method.Name : "") + " @" + node.BytecodeOffset, 1, static (_, n) => n + 1);
 
+        /// <summary>
+        /// (Testing: V8SHARP_MAGLEV_NATIVE_GC_AT_EXITS=1 runs a compacting GC at
+        /// every resumable exit, which moves the objects the GC-visible homes
+        /// hold before the code resumes.)
+        /// </summary>
+        static readonly bool s_gcAtExits = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_GC_AT_EXITS") == "1";
+
+        internal static void StressGC()
+        {
+            // (Garbage first, so that the survivors move.)
+            for (int i = 0; i < 64; i++) _ = new object[4];
+            GC.Collect(0, GCCollectionMode.Forced, blocking: true, compacting: true);
+        }
+
         /// <summary>The MaglevCodeEntry of native code.</summary>
         public JSValue Run(Isolate isolate, ref InterpreterState state)
         {
@@ -395,7 +426,15 @@ namespace V8Sharp.Maglev
             int depth = isolate.MaglevNativeDepth++;
             try
             {
-                return RunAt(isolate, ref state, ActivationAt(isolate, depth, ContextWords));
+                NativeActivation activation = ActivationAt(isolate, depth, ContextWords);
+                // (The homes buffer, a local of RunAt: its size's instantiation.)
+                return HomesNeeded switch
+                {
+                    <= 16 => RunAt<NativeHomes16>(isolate, ref state, activation),
+                    <= 64 => RunAt<NativeHomes64>(isolate, ref state, activation),
+                    <= 160 => RunAt<NativeHomes160>(isolate, ref state, activation),
+                    _ => RunAt<NativeHomes512>(isolate, ref state, activation),
+                };
             }
             finally
             {
@@ -403,9 +442,13 @@ namespace V8Sharp.Maglev
             }
         }
 
-        JSValue RunAt(Isolate isolate, ref InterpreterState state, NativeActivation activation)
+        JSValue RunAt<THomes>(Isolate isolate, ref InterpreterState state, NativeActivation activation) where THomes : struct
         {
+            // The GC-visible homes: this frame's local, its address in the context
+            // (native code writes object addresses there; the GC reports and updates them).
+            THomes homes = default;
             long[] ctx = activation.Context;
+            ctx[MaglevNativeCodeGenerator.kHomesSlot] = NativeCode.AddressOfLocal(ref homes);
             int fp = state.Fp;
             ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = 0;
             ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
@@ -475,12 +518,9 @@ namespace V8Sharp.Maglev
                         break;
                     }
                 }
-                // A resumable exit: the live tagged values, rebuilt now, then
-                // handed back through the spill array.
-                int[] live = exit.TaggedLive;
-                JSValue[] spillArray = SpillOf(activation, live.Length);
-                for (int j = 0; j < live.Length; j++) spillArray[j] = Value(live[j], isolate.RegisterStack, ctx, fp, managed);
-                spill = AddressOfSpill(activation, spillArray);
+                // A resumable exit: the live tagged values are in their GC-visible
+                // homes (updated by any GC meanwhile); the code reloads them there.
+                if (s_gcAtExits) StressGC();
                 ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = exit.ResumeId;
                 ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
             }
@@ -513,13 +553,8 @@ namespace V8Sharp.Maglev
                     ctx[home] = result._bits;
                     return;
             }
-            int slot = Values[node.Result].SnapSlot;
-            if (slot >= 0)
-            {
-                managed ??= new JSValue[ManagedSlots];
-                managed[slot] = result;
-            }
-            ctx[home + 1] = result._bits;
+            // (Into its GC-visible home: a store to the stack, as native code's.)
+            NativeCode.RefAt<JSValue>((nint)ctx[MaglevNativeCodeGenerator.kHomesSlot] + node.ResultSlot * 16) = result;
             // (Always: a boolean's value is its kind word.)
             ctx[home + 2] = (long)KindOf(result);
         }
@@ -700,6 +735,8 @@ namespace V8Sharp.Maglev
                         ctx[MaglevNativeCodeGenerator.kCalleeExitSlot] = 0;
                         MaglevNativeCode callee = info.Vector.MaglevCode!.Native!;
                         var function = (JSFunction)target.Object;
+                        // (Its context word kHomesSlot points into this frame's homes buffer,
+                        // the call area, which stays live: this frame runs the continuation.)
                         long[] calleeCtx = NativeCode.NewContext(callee.ContextWords);
                         ctx.AsSpan(CalleeContextBase, callee.ContextWords).CopyTo(calleeCtx);
                         JSValue[] calleeFrame = NewPseudoFrame(function, In(info.HasConvertedReceiver ? info.ConvertedReceiverInput : 0));
@@ -966,12 +1003,22 @@ namespace V8Sharp.Maglev
             _ => new MaglevFastCall6(FastCall6),
         };
 
-        JSValue RunFrameless(Isolate isolate, JSFunction function, int argc, JSValue[] frame)
+        JSValue RunFrameless(Isolate isolate, JSFunction function, int argc, JSValue[] frame) => HomesNeeded switch
+        {
+            <= 16 => RunFramelessAt<NativeHomes16>(isolate, function, argc, frame),
+            <= 64 => RunFramelessAt<NativeHomes64>(isolate, function, argc, frame),
+            <= 160 => RunFramelessAt<NativeHomes160>(isolate, function, argc, frame),
+            _ => RunFramelessAt<NativeHomes512>(isolate, function, argc, frame),
+        };
+
+        JSValue RunFramelessAt<THomes>(Isolate isolate, JSFunction function, int argc, JSValue[] frame) where THomes : struct
         {
             // (The next depth's buffers, without taking the depth: frameless code
             // makes no calls and its exits run no code before they are done with them.)
             NativeActivation activation = ActivationAt(isolate, isolate.MaglevNativeDepth, ContextWords);
             long[] ctx = activation.Context;
+            THomes homes = default;
+            ctx[MaglevNativeCodeGenerator.kHomesSlot] = NativeCode.AddressOfLocal(ref homes);
             ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = 0;
             ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
             nint frameAddress = PseudoFrameAddress(isolate) + kPseudoFp * 16;
@@ -1043,12 +1090,10 @@ namespace V8Sharp.Maglev
                         break;
                     }
                 }
-                int[] live = exit.TaggedLive;
-                JSValue[] spill = SpillOf(activation, live.Length);
-                for (int j = 0; j < live.Length; j++) spill[j] = Value(live[j], frame, ctx, kPseudoFp, null);
+                if (s_gcAtExits) StressGC();
                 ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = exit.ResumeId;
                 ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
-                id = Enter(isolate, ctx, ctxAddress, frameAddress, AddressOfSpill(activation, spill));
+                id = Enter(isolate, ctx, ctxAddress, frameAddress, s_noSpillAddress);
                 if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
             }
         }
@@ -1077,6 +1122,8 @@ namespace V8Sharp.Maglev
         internal JSValue Value(int index, JSValue[] frame, long[] ctx, int fp, JSValue[]? managed)
         {
             NativeValueInfo v = Values[index];
+            // (A tagged value as it is in its GC-visible home.)
+            if (v.Kind == NativeValueKind.kStackHome) return NativeCode.RefAt<JSValue>((nint)ctx[MaglevNativeCodeGenerator.kHomesSlot] + v.Slot * 16);
             // A value an exit kept before code that may change the heap ran.
             // (Only reload-rebuilt values have the flag: the fourth word of a tagged home.)
             if (v.SnapSlot >= 0 && v.Kind != NativeValueKind.kManaged && ctx[v.Home + 3] != 0) return managed![v.SnapSlot];

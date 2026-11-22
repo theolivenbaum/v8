@@ -459,6 +459,35 @@ public class MaglevNativeTest
     }
 
     [Fact]
+    public void ObjectsInNativeHomesSurviveCollections()
+    {
+        // GC-visible homes: objects native code holds across calls that collect
+        // garbage (moving them) stay its values; a phi of several objects.
+        const string kNoInline = " --max-maglev-inlined-bytecode-size=0 --max-maglev-inlined-bytecode-size-small=0";
+        string source = kPrelude + """
+            function mk(i) { return { v: i, s: 'x' + i, arr: [i, i + 1] }; }
+            function gcAndMake(i) { if (i % 7 === 0) { const junk = []; for (let k = 0; k < 2000; k++) junk.push({ k }); %CollectGarbage(0); } return mk(i); }
+            function hold(n) {
+              let a = mk(1), b = mk(2), s = 0;
+              for (let i = 0; i < n; i++) { const c = gcAndMake(i); s += a.v + b.v + c.v + a.arr[1] + b.arr[0]; if (i % 3 === 0) a = c; else b = c; }
+              return s + a.s.length * 1000 + b.s.length;
+            }
+            opt(hold, [5]); rec(hold(60)); rec(hold(200));
+            function pick(o1, o2, k) { let r = k > 2 ? o1 : o2; const x = gcAndMake(k); return r.v + x.v + r.s.length; }
+            opt(pick, [mk(3), mk(4), 1], [mk(5), mk(6), 3]); for (let k = 0; k < 20; k++) rec(pick(mk(10), mk(20), k));
+            out.join('|')
+            """;
+        string interpreted = MaglevCompilerTest.Run(kInterpreter, source);
+        Assert.Equal(interpreted, MaglevCompilerTest.Run(kIL + kNoInline, source));
+        lock (s_counterLock)
+        {
+            int before = MaglevNativeCodeGenerator.Generated;
+            Assert.Equal(interpreted, MaglevCompilerTest.Run(kNative + kNoInline, source));
+            if (ExecutableMemory.Supported) Assert.True(MaglevNativeCodeGenerator.Generated > before, "nothing was compiled natively");
+        }
+    }
+
+    [Fact]
     public void InterruptsAreServedAndTheLoopResumes()
     {
         // API interrupts requested from another thread while a native loop

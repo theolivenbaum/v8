@@ -46,6 +46,20 @@ public static unsafe class NativeCode
     public static nint AddressOf<T>(T[] pinnedArray, int index) =>
         System.Runtime.InteropServices.Marshal.UnsafeAddrOfPinnedArrayElement(pinnedArray, index);
 
+    /// <summary>
+    /// The address of a stack location (a local of the caller's frame, which
+    /// does not move while the frame is live). Used for the GC-visible native
+    /// homes: a JSValue buffer local whose references the GC reports and
+    /// updates, written by native code without a write barrier (stores to the
+    /// stack need none).
+    /// </summary>
+    /// <remarks>Unsafe: the address of a ref.</remarks>
+    public static nint AddressOfLocal<T>(ref T local) => (nint)Unsafe.AsPointer(ref local);
+
+    /// <summary>A reference to the T at <paramref name="address"/> (a stack location AddressOfLocal gave, while its frame is live).</summary>
+    /// <remarks>Unsafe: a ref from an address.</remarks>
+    public static ref T RefAt<T>(nint address) => ref Unsafe.AsRef<T>((void*)address);
+
     /// <summary>Calls code that takes only its context (tests of the assembler).</summary>
     public static long CallRaw(nint entry, long[] context)
     {
