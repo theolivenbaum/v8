@@ -30,7 +30,7 @@ public sealed class BackingStore
     const ulong kMockAllocationLimit = 10 * 1024 * 1024;
     const int kMockPageSize = 4096;
 
-    byte[] _buffer;
+    internal byte[] _buffer;
     long _byteLength;
 
     BackingStore(byte[] buffer, ulong byteLength, ulong maxByteLength, bool shared, bool resizable)
@@ -220,7 +220,7 @@ public sealed partial class JSArrayBuffer(Map map) : JSObject(map)
     /// </summary>
     public const ulong kMaxByteLength = 32UL * 1024 * 1024 * 1024 - 1;
 
-    BackingStore? _backingStore;
+    internal BackingStore? _backingStore;
     ulong _byteLength;
     ulong _maxByteLength;
     JSValue _detachKey;

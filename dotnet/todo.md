@@ -3043,7 +3043,26 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
       generator's own first JIT adds ~40 ms once per process). Octane: 20 of
       1697 graphs are native with the defaults (kernels with loops; the rest
       need calls, stores or allocation), score unchanged within noise.
-      Open: calls (a resumable exit that runs the node in managed code, with
+      Coverage pass (2026-11-22, .NET 11): managed nodes (a node the
+      managed side runs between an exit and a resume: CallBuiltin,
+      CallKnownJSFunction, stores, ToBoolean, typeof tests, string and typed
+      array lengths, instance type checks), allowed outside loops and, for
+      stores (number over number inline) and ToBoolean (oddballs, numbers,
+      receivers inline), inside loops; snapshots of reload-rebuilt values
+      before code that may change the heap; slot loads keep their kind when
+      stores are inline; lazy deopts after managed calls; native typed arrays
+      (length, validity, every integer kind, Float32/64), Double fields,
+      property cells, ConvertHoleToUndefined; managed nodes that neither call
+      nor throw in inlined functions. Octane: 96 of 1665 graphs native (was
+      20); the rest: 991 without a loop (leaves stay IL), calls in loops,
+      calls in inlined functions, allocation. mjsunit found 4 bugs of the
+      pass (a context slot reloaded after an inline store overwrote it, the
+      hole lost through a resume, untagged managed results read as
+      snapshots, a managed node's own value live before it): fixed, with tests.
+      Open: calls in loops (native-to-native calls, or a cheaper exit), leaves
+      (a cheaper entry), allocation (InlinedAllocation), CheckMaps with
+      migration, MaybeGrowFastElements, element kind transitions.
+      Open (first pass): calls (a resumable exit that runs the node in managed code, with
       its tagged result in the spill array), typed arrays, stores of
       references (number-over-number field stores need no barrier), ToBoolean
       of tagged values, LoadDoubleField, CheckMaps with migration, OSR entry

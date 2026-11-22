@@ -81,6 +81,12 @@ namespace V8Sharp.Maglev
         kContextSlot,
         /// <summary>LoadMap of Input0, done again.</summary>
         kMap,
+        /// <summary>LoadPropertyCellValue of the cell Constant.Object, done again.</summary>
+        kPropertyCell,
+        /// <summary>ConvertHoleToUndefined of Input0.</summary>
+        kHoleToUndefined,
+        /// <summary>The result of a node run by the managed side (kManagedNode): the activation's managed slot SnapSlot.</summary>
+        kManaged,
     }
 
     internal sealed class NativeValueInfo
@@ -94,6 +100,39 @@ namespace V8Sharp.Maglev
         public int FrameIndex;
         public JSValue Constant;
         public int NodeId;
+        /// <summary>
+        /// A value rebuilt by repeating a load, in code with managed nodes or
+        /// interrupts that run code: its slot in the activation's managed
+        /// array, where an exit that may change the heap leaves its value
+        /// (flagged by the home's fourth word); -1 otherwise.
+        /// </summary>
+        public int SnapSlot = -1;
+        /// <summary>A slot load whose kind word was set when it loaded: numbers and oddballs come from it, only objects are loaded again.</summary>
+        public bool KindAtLoad;
+    }
+
+    /// <summary>A node the managed side runs for native code (an exit, then a resume), as the IL backend does.</summary>
+    internal sealed class NativeManagedNode
+    {
+        public Opcode Opcode;
+        public int[] Inputs = [];
+        /// <summary>The node's value (its info), or -1.</summary>
+        public int Result = -1;
+        public int ResultHome = -1;
+        public ValueRepresentation ResultRepresentation;
+        public bool ResultNeedsKind;
+        public int BytecodeOffset = -1;
+        public bool Inlined;
+        /// <summary>The DeoptPoint of the node's lazy deopt (the code was invalidated meanwhile), or -1.</summary>
+        public int LazyDeoptIndex = -1;
+        /// <summary>CallBuiltin as a check, CheckTypedArrayValid: the eager deopt when it fails.</summary>
+        public int EagerDeoptIndex = -1;
+        public int EagerReason;
+        public int Int0, Int1;
+        public object? Obj0;
+        public System.Reflection.MethodInvoker? Invoker;
+        public Type[] ParameterTypes = [];
+        public Type? ReturnType;
     }
 
     internal enum NativeExitKind : byte
@@ -110,6 +149,8 @@ namespace V8Sharp.Maglev
         kAbort,
         /// <summary>Deopt without frame state (unreachable code).</summary>
         kUnreachable,
+        /// <summary>A node the managed side runs (NativeManagedNode); then the code resumes.</summary>
+        kManagedNode,
     }
 
     internal sealed class NativeExit
@@ -129,6 +170,10 @@ namespace V8Sharp.Maglev
         public int InterruptKind;
         public int BytecodeOffset = -1;
         public string? Message;
+        /// <summary>kManagedNode: the node.</summary>
+        public NativeManagedNode? Managed;
+        /// <summary>Resumable exits that may change the heap: the reload-rebuilt values whose values are kept first.</summary>
+        public int[] Snapshot = [];
     }
 
     /// <summary>A function's native code (MaglevCode.Native).</summary>
@@ -144,12 +189,13 @@ namespace V8Sharp.Maglev
         public JSValue[] Constants = [];
         public NativeValueInfo[] Values = [];
         public NativeExit[] Exits = [];
+        /// <summary>The managed slots of an activation (results of managed nodes, snapshots).</summary>
+        public int ManagedSlots;
         /// <summary>For each DeoptPoint: the value of each of its scratch slots (-1: none), as (slot, value) pairs.</summary>
         public (int Slot, int Value)[][] DeoptValues = [];
         /// <summary>The first and last home words of the code (saved around interrupt handling).</summary>
         public int FirstHome, HomeEnd;
-        /// <summary>Some value is rebuilt by repeating a load (deopt after an interrupt that may run code).</summary>
-        public bool RebuildsByLoad;
+
 
         static readonly JSValue[] s_noSpill = new JSValue[1];
 
@@ -172,6 +218,8 @@ namespace V8Sharp.Maglev
             ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = 0;
             ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
             JSValue[] spill = s_noSpill;
+            // The activation's managed slots: results of managed nodes, snapshots.
+            JSValue[]? managed = null;
             while (true)
             {
                 long id = NativeCode.Call(Entry, ctx, ref isolate.RegisterStack[fp], Constants, spill, ref isolate.StackGuard.InterruptFlagsRef);
@@ -179,51 +227,254 @@ namespace V8Sharp.Maglev
                 switch (exit.Kind)
                 {
                     case NativeExitKind.kReturn:
-                        return Value(exit.Value, isolate.RegisterStack, ctx, fp);
+                        return Value(exit.Value, isolate.RegisterStack, ctx, fp, managed);
                     case NativeExitKind.kDeopt:
-                        return Deoptimize(isolate, ref state, ctx, exit);
+                        return Deoptimize(isolate, ref state, ctx, exit, managed);
                     case NativeExitKind.kDeoptAfterMigration:
-                        MaglevBuiltins.TryMigrateInstanceAndMarkMapAsMigrationTarget(isolate, Value(exit.Value, isolate.RegisterStack, ctx, fp));
-                        return Deoptimize(isolate, ref state, ctx, exit);
+                        MaglevBuiltins.TryMigrateInstanceAndMarkMapAsMigrationTarget(isolate, Value(exit.Value, isolate.RegisterStack, ctx, fp, managed));
+                        return Deoptimize(isolate, ref state, ctx, exit, managed);
                     case NativeExitKind.kAbort:
                         throw new IndexOutOfRangeException("V8Sharp: " + exit.Message);
                     case NativeExitKind.kUnreachable:
                         MaglevBuiltins.Unreachable();
                         return JSValue.Undefined;
-                }
-                // A resumable exit: the live tagged values, rebuilt now (the heap
-                // is as the code left it), then handed back through the spill array.
-                int[] live = exit.TaggedLive;
-                spill = live.Length == 0 ? s_noSpill : new JSValue[live.Length];
-                for (int j = 0; j < live.Length; j++) spill[j] = Value(live[j], isolate.RegisterStack, ctx, fp);
-                if (exit.Kind == NativeExitKind.kInterrupt)
-                {
-                    if (exit.InterruptKind == 1)
-                    {
+                    case NativeExitKind.kInterrupt when exit.InterruptKind == 1:
                         // A loop without calls: an interrupt it cannot defer leaves
                         // the code (MaglevCodeGenerator, HandleNoHeapWritesInterrupt).
-                        if (isolate.StackGuard.HasUndeferrableInterrupts) return Deoptimize(isolate, ref state, ctx, exit);
-                    }
-                    else
+                        if (isolate.StackGuard.HasUndeferrableInterrupts) return Deoptimize(isolate, ref state, ctx, exit, managed);
+                        break;
+                    case NativeExitKind.kInterrupt:
+                    case NativeExitKind.kManagedNode:
                     {
-                        // The interrupt may run code that enters native code again
-                        // (an API interrupt): this activation's homes are saved.
+                        // Code may run that changes the heap (an API interrupt, the
+                        // node itself) or enters native code again: the values rebuilt
+                        // by repeating a load are kept as they are now, and this
+                        // activation's homes are saved.
+                        if (exit.Snapshot.Length > 0) Snapshot(exit, isolate.RegisterStack, ctx, fp, ref managed);
                         long[] saved = ctx.AsSpan(FirstHome, HomeEnd - FirstHome).ToArray();
-                        JSValue[]? deoptValues = RebuildsByLoad ? RebuildDeoptValues(exit, isolate.RegisterStack, ctx, fp) : null;
-                        if (exit.BytecodeOffset >= 0) InterpreterRuntime.SetFramePc(isolate, fp, exit.BytecodeOffset);
-                        MaglevBuiltins.HandleInterruptsSlow(isolate);
+                        if (exit.Kind == NativeExitKind.kInterrupt)
+                        {
+                            if (exit.BytecodeOffset >= 0) InterpreterRuntime.SetFramePc(isolate, fp, exit.BytecodeOffset);
+                            MaglevBuiltins.HandleInterruptsSlow(isolate);
+                            ctx = NativeContextOf(isolate, ContextWords);
+                            saved.CopyTo(ctx.AsSpan(FirstHome));
+                            break;
+                        }
+                        NativeManagedNode node = exit.Managed!;
+                        JSValue result = Execute(isolate, node, isolate.RegisterStack, ctx, fp, managed, out bool passed);
                         ctx = NativeContextOf(isolate, ContextWords);
                         saved.CopyTo(ctx.AsSpan(FirstHome));
-                        // The interrupt may have run code that changed what the
-                        // code's reload-rebuilt values read: continue in the
-                        // interpreter (the code stays valid). The deopt's values
-                        // were rebuilt before the interrupt, into the spill array.
-                        if (deoptValues is not null) return DeoptimizeWithValues(isolate, ref state, exit, deoptValues);
+                        if (!passed)
+                        {
+                            return Deoptimize(isolate, ref state, ctx, new NativeExit { DeoptIndex = node.EagerDeoptIndex, Reason = node.EagerReason }, managed);
+                        }
+                        if (node.Result >= 0) StoreResult(node, result, ctx, ref managed);
+                        if (node.Opcode == Opcode.BranchIfToBooleanTrue) ctx[MaglevNativeCodeGenerator.kBoolResultSlot] = result.IsTrue ? 1 : 0;
+                        if (node.LazyDeoptIndex >= 0 && Code.MarkedForDeoptimization)
+                        {
+                            // The code was invalidated while the call ran: continue after
+                            // it in the interpreter (EmitLazyDeoptCheck).
+                            return DeoptimizeLazy(isolate, ref state, ctx, node, result, managed);
+                        }
+                        break;
                     }
                 }
+                // A resumable exit: the live tagged values, rebuilt now, then
+                // handed back through the spill array.
+                int[] live = exit.TaggedLive;
+                spill = live.Length == 0 ? s_noSpill : new JSValue[live.Length];
+                for (int j = 0; j < live.Length; j++) spill[j] = Value(live[j], isolate.RegisterStack, ctx, fp, managed);
                 ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = exit.ResumeId;
                 ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
             }
+        }
+
+        void Snapshot(NativeExit exit, JSValue[] frame, long[] ctx, int fp, ref JSValue[]? managed)
+        {
+            managed ??= new JSValue[ManagedSlots];
+            foreach (int index in exit.Snapshot)
+            {
+                NativeValueInfo v = Values[index];
+                // (Its own value first, then the flag: Value reads the flag.)
+                JSValue value = Value(index, frame, ctx, fp, managed);
+                managed[v.SnapSlot] = value;
+                ctx[v.Home + 3] = 1;
+            }
+        }
+
+        void StoreResult(NativeManagedNode node, JSValue result, long[] ctx, ref JSValue[]? managed)
+        {
+            int home = node.ResultHome;
+            switch (node.ResultRepresentation)
+            {
+                case ValueRepresentation.kInt32:
+                case ValueRepresentation.kUint32:
+                    ctx[home] = (uint)(int)result.Number;
+                    return;
+                case ValueRepresentation.kFloat64:
+                case ValueRepresentation.kHoleyFloat64:
+                    ctx[home] = result._bits;
+                    return;
+            }
+            int slot = Values[node.Result].SnapSlot;
+            if (slot >= 0)
+            {
+                managed ??= new JSValue[ManagedSlots];
+                managed[slot] = result;
+            }
+            ctx[home + 1] = result._bits;
+            // (Always: a boolean's value is its kind word.)
+            ctx[home + 2] = (long)KindOf(result);
+        }
+
+        static NativeTaggedKind KindOf(JSValue v) =>
+            v.IsUndefined ? NativeTaggedKind.kUndefined
+            : v.IsNumber ? NativeTaggedKind.kNumber
+            : v.IsTrue ? NativeTaggedKind.kTrue
+            : v.IsFalse ? NativeTaggedKind.kFalse
+            : v.IsNull ? NativeTaggedKind.kNull
+            : v.IsTheHole ? NativeTaggedKind.kTheHole
+            : NativeTaggedKind.kOther;
+
+        /// <summary>
+        /// Runs a managed node as the IL backend's code does (MaglevCodeGenerator.EmitNode).
+        /// <paramref name="passed"/> is false when a check fails (its eager deopt).
+        /// </summary>
+        JSValue Execute(Isolate isolate, NativeManagedNode node, JSValue[] frame, long[] ctx, int fp, JSValue[]? managed, out bool passed)
+        {
+            passed = true;
+            int[] inputs = node.Inputs;
+            JSValue In(int i) => Value(inputs[i], frame, ctx, fp, managed);
+            // (A node of an inlined function makes no calls: the frame's offset stays the caller's.)
+            if (node.BytecodeOffset >= 0 && !node.Inlined) InterpreterRuntime.SetFramePc(isolate, fp, node.BytecodeOffset);
+            switch (node.Opcode)
+            {
+                case Opcode.StoreTaggedField:
+                {
+                    JSValue obj = In(0), value = In(1);
+                    if (node.Int1 != 0) MaglevBuiltins.StoreDoubleField(obj, node.Int0, value);
+                    else MaglevBuiltins.StoreField(obj, node.Int0, value);
+                    return default;
+                }
+                case Opcode.StoreFixedArrayElement:
+                    MaglevBuiltins.StoreFixedArrayElement(In(0), (int)In(1).Number, In(2));
+                    return default;
+                case Opcode.StoreContextSlot:
+                {
+                    var context = (Context)In(0).Object;
+                    for (int d = 0; d < node.Int1; d++) context = (Context)context.Slots[(int)Context.Field.PREVIOUS_INDEX].Object;
+                    context.Slots[node.Int0] = In(1);
+                    return default;
+                }
+                case Opcode.StorePropertyCellValue:
+                    ((PropertyCell)node.Obj0!).Value = In(0);
+                    return default;
+                case Opcode.ToBoolean:
+                {
+                    bool b = MaglevBuiltins.ToBoolean(In(0));
+                    return JSValue.FromBoolean(b);
+                }
+                case Opcode.BranchIfToBooleanTrue:
+                    return JSValue.FromBoolean(MaglevBuiltins.ToBoolean(In(0)));
+                case Opcode.ToBooleanLogicalNot:
+                    return JSValue.FromBoolean(!MaglevBuiltins.ToBoolean(In(0)));
+                case Opcode.TestUndetectable:
+                    return node.Int0 != 0 ? MaglevBuiltins.TestUndefinedOrNull(In(0)) : MaglevBuiltins.TestUndetectable(In(0));
+                case Opcode.TestTypeOf:
+                    return MaglevBuiltins.TestTypeOf(In(0), node.Int0);
+                case Opcode.LoadTypedArrayLength:
+                    return node.Int0 == 1
+                        ? JSValue.FromNumber(MaglevBuiltins.TypedArrayLengthAsFloat64(In(0)))
+                        : JSValue.FromInt(MaglevBuiltins.TypedArrayLength(In(0)));
+                case Opcode.CheckTypedArrayValid:
+                    passed = MaglevBuiltins.IsTypedArrayValid(In(0), node.Int0 == 1);
+                    return default;
+                case Opcode.StringLength:
+                    return JSValue.FromInt(MaglevBuiltins.StringLength(In(0)));
+                case Opcode.CheckInstanceType:
+                {
+                    JSValue v = In(0);
+                    passed = node.Int0 switch
+                    {
+                        1 => MaglevBuiltins.IsInternalizedString(v),
+                        2 => MaglevBuiltins.IsJSReceiver(v),
+                        4 => MaglevBuiltins.IsJSReceiverOrNullOrUndefined(v),
+                        5 => MaglevBuiltins.IsStringOrStringWrapper(v),
+                        _ => MaglevBuiltins.IsWritableElements(v),
+                    };
+                    return default;
+                }
+                case Opcode.CallKnownJSFunction:
+                {
+                    var info = (KnownCallInfo)node.Obj0!;
+                    JSValue target = info.Target is { } t ? JSValue.FromObject(t) : In(info.TargetInput);
+                    var a = new JSValue[MaglevFastCalls.kMaxArity];
+                    for (int i = 0; i < info.Argc; i++) a[i] = In(1 + i);
+                    return MaglevCalls.CallValuesN(isolate, target, In(0), info.Argc, a[0], a[1], a[2], a[3], a[4], a[5], (int)info.Mode);
+                }
+                case Opcode.CallBuiltin:
+                {
+                    var info = (CallBuiltinInfo)node.Obj0!;
+                    var args = new object?[info.Args.Length];
+                    for (int k = 0; k < args.Length; k++)
+                    {
+                        BuiltinArg arg = info.Args[k];
+                        Type type = node.ParameterTypes[k];
+                        args[k] = arg.Kind switch
+                        {
+                            BuiltinArgKind.Isolate => isolate,
+                            BuiltinArgKind.Input => Convert(In(arg.Index), type),
+                            BuiltinArgKind.Int => type == typeof(uint) ? (uint)arg.Index : arg.Index,
+                            BuiltinArgKind.Bool => arg.Index != 0,
+                            BuiltinArgKind.Constant => type == typeof(JSValue)
+                                ? arg.Object is JSValue jv ? jv : JSValue.FromObject((HeapObject?)arg.Object)
+                                : arg.Object is JSValue jo ? jo.HeapObjectOrNull : arg.Object,
+                            BuiltinArgKind.Closure => Convert(frame[fp + InterpreterRuntime.kClosureOffset], type),
+                            _ => throw new InvalidOperationException("builtin argument " + arg.Kind),
+                        };
+                    }
+                    object? r = node.Invoker!.Invoke(null, new Span<object?>(args));
+                    if (info.DeoptIfFalse)
+                    {
+                        passed = (bool)r!;
+                        return default;
+                    }
+                    return r switch
+                    {
+                        null => default,
+                        JSValue v => v,
+                        int i => JSValue.FromInt(i),
+                        uint u => JSValue.FromNumber(u),
+                        double d => JSValue.FromNumber(d),
+                        bool b => JSValue.FromBoolean(b),
+                        HeapObject o => JSValue.FromObject(o),
+                        _ => throw new InvalidOperationException("builtin result " + r.GetType().Name),
+                    };
+                }
+                default:
+                    throw new InvalidOperationException("managed node " + node.Opcode);
+            }
+        }
+
+        /// <summary>A JSValue as a builtin's parameter type (the IL's Load(input, repr) / LoadAsObject).</summary>
+        static object? Convert(JSValue v, Type type)
+        {
+            if (type == typeof(JSValue)) return v;
+            if (type == typeof(int)) return (int)v.Number;
+            if (type == typeof(uint)) return (uint)(int)v.Number;
+            if (type == typeof(double)) return v.Number;
+            return v.HeapObjectOrNull;
+        }
+
+        JSValue DeoptimizeLazy(Isolate isolate, ref InterpreterState state, long[] ctx, NativeManagedNode node, JSValue result, JSValue[]? managed)
+        {
+            JSValue[] scratch = isolate.MaglevDeoptScratch;
+            int fp = state.Fp;
+            DeoptPoint point = Code.DeoptPoints[node.LazyDeoptIndex];
+            foreach ((int slot, int value) in DeoptValues[node.LazyDeoptIndex]) scratch[slot] = Value(value, isolate.RegisterStack, ctx, fp, managed);
+            if (point.ResultScratchIndex >= 0) scratch[point.ResultScratchIndex] = result;
+            Deoptimizer.Deoptimizer.Deoptimize(isolate, ref state, Code, node.LazyDeoptIndex, (int)Deoptimizer.DeoptimizeReason.kUnknown);
+            return JSValue.Undefined;
         }
 
         // ---- The direct entry (MaglevCode.FastCall) ------------------------------------------------------
@@ -345,11 +596,11 @@ namespace V8Sharp.Maglev
                 switch (exit.Kind)
                 {
                     case NativeExitKind.kReturn:
-                        return Value(exit.Value, frame, ctx, kPseudoFp);
+                        return Value(exit.Value, frame, ctx, kPseudoFp, null);
                     case NativeExitKind.kDeopt:
                         return DeoptimizeFrameless(isolate, function, argc, frame, ctx, exit);
                     case NativeExitKind.kDeoptAfterMigration:
-                        MaglevBuiltins.TryMigrateInstanceAndMarkMapAsMigrationTarget(isolate, Value(exit.Value, frame, ctx, kPseudoFp));
+                        MaglevBuiltins.TryMigrateInstanceAndMarkMapAsMigrationTarget(isolate, Value(exit.Value, frame, ctx, kPseudoFp, null));
                         return DeoptimizeFrameless(isolate, function, argc, frame, ctx, exit);
                     case NativeExitKind.kAbort:
                         throw new IndexOutOfRangeException("V8Sharp: " + exit.Message);
@@ -362,7 +613,7 @@ namespace V8Sharp.Maglev
                 }
                 int[] live = exit.TaggedLive;
                 spill = live.Length == 0 ? s_noSpill : new JSValue[live.Length];
-                for (int j = 0; j < live.Length; j++) spill[j] = Value(live[j], frame, ctx, kPseudoFp);
+                for (int j = 0; j < live.Length; j++) spill[j] = Value(live[j], frame, ctx, kPseudoFp, null);
                 ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = exit.ResumeId;
                 ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
             }
@@ -375,44 +626,50 @@ namespace V8Sharp.Maglev
             {
                 scratch[i] = frame[kPseudoFp + InterpreterRuntime.kReceiverOffset - i];
             }
-            foreach ((int slot, int value) in DeoptValues[exit.DeoptIndex]) scratch[slot] = Value(value, frame, ctx, kPseudoFp);
+            foreach ((int slot, int value) in DeoptValues[exit.DeoptIndex]) scratch[slot] = Value(value, frame, ctx, kPseudoFp, null);
             return MaglevCalls.DeoptimizeFrameless(isolate, Code, exit.DeoptIndex, exit.Reason, function, argc, 0);
         }
 
-        /// <summary>The values of an exit's deopt, rebuilt now (before an interrupt that may change the heap).</summary>
-        JSValue[] RebuildDeoptValues(NativeExit exit, JSValue[] frame, long[] ctx, int fp)
-        {
-            (int Slot, int Value)[] values = DeoptValues[exit.DeoptIndex];
-            var result = new JSValue[values.Length];
-            for (int i = 0; i < values.Length; i++) result[i] = Value(values[i].Value, frame, ctx, fp);
-            return result;
-        }
-
-        /// <summary>A deopt with values rebuilt earlier (RebuildDeoptValues).</summary>
-        JSValue DeoptimizeWithValues(Isolate isolate, ref InterpreterState state, NativeExit exit, JSValue[] rebuilt)
-        {
-            JSValue[] scratch = isolate.MaglevDeoptScratch;
-            (int Slot, int Value)[] values = DeoptValues[exit.DeoptIndex];
-            for (int i = 0; i < values.Length; i++) scratch[values[i].Slot] = rebuilt[i];
-            Deoptimizer.Deoptimizer.Deoptimize(isolate, ref state, Code, exit.DeoptIndex, exit.Reason);
-            return JSValue.Undefined;
-        }
-
-        JSValue Deoptimize(Isolate isolate, ref InterpreterState state, long[] ctx, NativeExit exit)
+        JSValue Deoptimize(Isolate isolate, ref InterpreterState state, long[] ctx, NativeExit exit, JSValue[]? managed)
         {
             JSValue[] scratch = isolate.MaglevDeoptScratch;
             int fp = state.Fp;
-            foreach ((int slot, int value) in DeoptValues[exit.DeoptIndex]) scratch[slot] = Value(value, isolate.RegisterStack, ctx, fp);
+            foreach ((int slot, int value) in DeoptValues[exit.DeoptIndex]) scratch[slot] = Value(value, isolate.RegisterStack, ctx, fp, managed);
             Deoptimizer.Deoptimizer.Deoptimize(isolate, ref state, Code, exit.DeoptIndex, exit.Reason);
             return JSValue.Undefined;
         }
 
         /// <summary>The JSValue of value <paramref name="index"/> at an exit.</summary>
-        internal JSValue Value(int index, JSValue[] frame, long[] ctx, int fp)
+        internal JSValue Value(int index, JSValue[] frame, long[] ctx, int fp, JSValue[]? managed)
         {
             NativeValueInfo v = Values[index];
+            // A value an exit kept before code that may change the heap ran.
+            // (Only reload-rebuilt values have the flag: the fourth word of a tagged home.)
+            if (v.SnapSlot >= 0 && v.Kind != NativeValueKind.kManaged && ctx[v.Home + 3] != 0) return managed![v.SnapSlot];
+            if (v.KindAtLoad)
+            {
+                switch ((NativeTaggedKind)ctx[v.Home + 2])
+                {
+                    case NativeTaggedKind.kUndefined: return JSValue.Undefined;
+                    case NativeTaggedKind.kNumber: return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[v.Home + 1]));
+                    case NativeTaggedKind.kTrue: return JSValue.True;
+                    case NativeTaggedKind.kFalse: return JSValue.False;
+                    case NativeTaggedKind.kNull: return JSValue.Null;
+                    case NativeTaggedKind.kTheHole: return JSValue.TheHole;
+                }
+            }
             switch (v.Kind)
             {
+                case NativeValueKind.kManaged:
+                    if (managed is null) throw new InvalidOperationException($"native code: the value of managed node n{v.NodeId} before the node ran");
+                    return managed[v.SnapSlot];
+                case NativeValueKind.kPropertyCell:
+                    return ((PropertyCell)v.Constant.Object).Value;
+                case NativeValueKind.kHoleToUndefined:
+                {
+                    JSValue input = Value(v.Input0, frame, ctx, fp, managed);
+                    return input.IsTheHole ? JSValue.Undefined : input;
+                }
                 case NativeValueKind.kConstant:
                     return v.Constant;
                 case NativeValueKind.kInt32:
@@ -428,7 +685,9 @@ namespace V8Sharp.Maglev
                 case NativeValueKind.kTaggedNumber:
                     return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[v.Home + 1]));
                 case NativeValueKind.kTaggedHoleyNumber:
-                    return MaglevBuiltins.HoleyFloat64ToTagged(BitConverter.Int64BitsToDouble(ctx[v.Home + 1]));
+                    return ctx[v.Home + 2] == (long)NativeTaggedKind.kUndefined
+                        ? JSValue.Undefined
+                        : JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[v.Home + 1]));
                 case NativeValueKind.kTaggedBoolean:
                     return ctx[v.Home + 2] == (long)NativeTaggedKind.kTrue ? JSValue.True : JSValue.False;
                 case NativeValueKind.kTaggedDynamic:
@@ -440,24 +699,24 @@ namespace V8Sharp.Maglev
                         NativeTaggedKind.kFalse => JSValue.False,
                         NativeTaggedKind.kNull => JSValue.Null,
                         NativeTaggedKind.kTheHole => JSValue.TheHole,
-                        _ => Value(v.Other, frame, ctx, fp),
+                        _ => Value(v.Other, frame, ctx, fp, managed),
                     };
                 case NativeValueKind.kElements:
-                    return JSValue.FromObject(((JSObject)Value(v.Input0, frame, ctx, fp).Object).Elements);
+                    return JSValue.FromObject(((JSObject)Value(v.Input0, frame, ctx, fp, managed).Object).Elements);
                 case NativeValueKind.kFixedArrayElement:
-                    return ((FixedArray)Value(v.Input0, frame, ctx, fp).Object)._data[(int)Value(v.Input1, frame, ctx, fp).Number];
+                    return ((FixedArray)Value(v.Input0, frame, ctx, fp, managed).Object)._data[(int)Value(v.Input1, frame, ctx, fp, managed).Number];
                 case NativeValueKind.kIdentity:
-                    return Value(v.Input0, frame, ctx, fp);
+                    return Value(v.Input0, frame, ctx, fp, managed);
                 case NativeValueKind.kTaggedField:
-                    return MaglevBuiltins.LoadField(Value(v.Input0, frame, ctx, fp), v.FrameIndex);
+                    return MaglevBuiltins.LoadField(Value(v.Input0, frame, ctx, fp, managed), v.FrameIndex);
                 case NativeValueKind.kContextSlot:
                 {
-                    var context = (Context)Value(v.Input0, frame, ctx, fp).Object;
+                    var context = (Context)Value(v.Input0, frame, ctx, fp, managed).Object;
                     for (int d = 0; d < v.Input1; d++) context = (Context)context.Slots[(int)Context.Field.PREVIOUS_INDEX].Object;
                     return context.Slots[v.FrameIndex];
                 }
                 case NativeValueKind.kMap:
-                    return JSValue.FromObject(MaglevBuiltins.MapOf(Value(v.Input0, frame, ctx, fp)));
+                    return JSValue.FromObject(MaglevBuiltins.MapOf(Value(v.Input0, frame, ctx, fp, managed)));
                 default:
                     throw new InvalidOperationException("native value kind " + v.Kind);
             }

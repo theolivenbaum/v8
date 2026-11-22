@@ -176,6 +176,7 @@ public sealed class Assembler
     public void Addl(Register dst, int imm) => AluRI(Alu.Add, dst, imm, false);
     public void Addq(Register dst, int imm) => AluRI(Alu.Add, dst, imm, true);
     public void Addl(Register dst, Operand src) => AluRM(Alu.Add, dst, src, false);
+    public void Addq(Register dst, Operand src) => AluRM(Alu.Add, dst, src, true);
     public void Addq(Operand dst, int imm) => AluMI(Alu.Add, dst, imm, true);
     public void Subl(Register dst, Register src) => AluRR(Alu.Sub, dst, src, false);
     public void Subq(Register dst, Register src) => AluRR(Alu.Sub, dst, src, true);
@@ -261,6 +262,14 @@ public sealed class Assembler
     public void Movzxbl(Register dst, Register src) => EmitRR(0, false, (int)dst, (int)src, true, [0x0F, 0xB6]);
     public void Movzxbl(Register dst, Operand src) => EmitRM(0, false, (int)dst, src, [0x0F, 0xB6]);
     public void Movzxwl(Register dst, Operand src) => EmitRM(0, false, (int)dst, src, [0x0F, 0xB7]);
+    /// <summary>movsxbl reg, byte [m].</summary>
+    public void Movsxbl(Register dst, Operand src) => EmitRM(0, false, (int)dst, src, [0x0F, 0xBE]);
+    /// <summary>movsxwl reg, word [m].</summary>
+    public void Movsxwl(Register dst, Operand src) => EmitRM(0, false, (int)dst, src, [0x0F, 0xBF]);
+    /// <summary>movb [m], reg8.</summary>
+    public void Movb(Operand dst, Register src) => EmitRM(0, false, (int)src, dst, [0x88], byteRegs: true);
+    /// <summary>movw [m], reg16.</summary>
+    public void Movw(Operand dst, Register src) => EmitRM(0x66, false, (int)src, dst, [0x89]);
 
     public void Setcc(Condition cc, Register dst) => EmitRR(0, false, 0, (int)dst, true, [0x0F, (byte)(0x90 | (int)cc)]);
     public void Cmovl(Condition cc, Register dst, Register src) => EmitRR(0, false, (int)dst, (int)src, false, [0x0F, (byte)(0x40 | (int)cc)]);
@@ -270,6 +279,21 @@ public sealed class Assembler
 
     public void Imull(Register dst, Register src) => EmitRR(0, false, (int)dst, (int)src, false, [0x0F, 0xAF]);
     public void Imulq(Register dst, Register src) => EmitRR(0, true, (int)dst, (int)src, false, [0x0F, 0xAF]);
+    /// <summary>imulq dst, src, imm8/imm32.</summary>
+    public void Imulq(Register dst, Register src, int imm)
+    {
+        if (imm is >= -128 and <= 127)
+        {
+            EmitRR(0, true, (int)dst, (int)src, false, [0x6B]);
+            Emit(imm);
+        }
+        else
+        {
+            EmitRR(0, true, (int)dst, (int)src, false, [0x69]);
+            Emitl(imm);
+        }
+    }
+
     /// <summary>imull dst, src, imm: the three-operand form.</summary>
     public void Imull(Register dst, Register src, int imm)
     {
@@ -391,6 +415,12 @@ public sealed class Assembler
 
     public void Movsd(XMMRegister dst, Operand src) => SseM(0xF2, (int)dst, src, 0x10);
     public void Movsd(Operand dst, XMMRegister src) => SseM(0xF2, (int)src, dst, 0x11);
+    public void Movss(XMMRegister dst, Operand src) => SseM(0xF3, (int)dst, src, 0x10);
+    public void Movss(Operand dst, XMMRegister src) => SseM(0xF3, (int)src, dst, 0x11);
+    /// <summary>cvtss2sd: float -> double.</summary>
+    public void Cvtss2sd(XMMRegister dst, XMMRegister src) => Sse(0xF3, (int)dst, (int)src, 0x5A);
+    /// <summary>cvtsd2ss: double -> float (round to nearest, as a C# (float) cast).</summary>
+    public void Cvtsd2ss(XMMRegister dst, XMMRegister src) => Sse(0xF2, (int)dst, (int)src, 0x5A);
     /// <summary>movapd dst, src: the register move V8's Move(XMMRegister, XMMRegister) uses.</summary>
     public void Movapd(XMMRegister dst, XMMRegister src) => Sse(0x66, (int)dst, (int)src, 0x28);
     /// <summary>movq xmm, r64.</summary>

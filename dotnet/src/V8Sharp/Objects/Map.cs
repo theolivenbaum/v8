@@ -119,7 +119,7 @@ public sealed class Map : HeapObject
 
     // ---- Bit fields -------------------------------------------------------------
 
-    static class Bits1
+    internal static class Bits1
     {
         public const byte IsCallableBit = 1 << 0;
         public const byte HasNamedInterceptorBit = 1 << 1;

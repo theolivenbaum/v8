@@ -1073,6 +1073,30 @@ rules make native code safe next to the .NET GC:
   arguments go into a per-isolate pseudo-frame the code reads, and a deopt
   builds the interpreter frame (`MaglevCalls.DeoptimizeFrameless`).
 
+**Managed nodes.** A node native code cannot do inline (a call, a store of
+a reference, a generic operation) is run by the managed side, the way Ryu's
+native code exits to interpret one guest instruction: the exit stores the
+values the node and the rest of the code need, `MaglevNativeCode.Execute`
+runs the node as the IL backend's code does (CallBuiltin through a
+MethodInvoker, CallKnownJSFunction through MaglevCalls.CallValuesN, the
+stores, ToBoolean, typeof tests, typed array lengths, string lengths,
+instance type checks), its value goes to its home (a tagged value to the
+activation's managed array, which the GC sees), and the code resumes after
+the node. A call that invalidates the code meanwhile deopts lazily after it
+(the node's LazyDeoptInfo), a failing check eagerly. Because a managed
+node (or an interrupt of a loop with calls) may change the heap, values
+rebuilt by repeating a load are kept first (snapshots: the managed slot
+and a flag in the home's fourth word, cleared when the load runs again).
+Managed nodes cost a round trip, so they are not allowed in loops, except
+the stores and ToBoolean, which have an inline path: a number stored over a
+number writes only the payload (no write barrier, as the IL backend's
+stores), ToBoolean of an oddball, number or receiver is computed inline, and
+only the other cases exit. Since inline stores can overwrite a slot, slot
+loads record their kind when they load; numbers and oddballs are rebuilt
+from that, objects (which native code never overwrites) by loading again.
+Managed nodes in inlined functions are allowed when they neither call nor
+throw (a call would need the inlined frames pushed).
+
 **What is native.** Int32 and Float64 arithmetic with V8's overflow, -0 and
 division checks; Math.floor/ceil/round/trunc (roundsd), sqrt, abs, min/max,
 `%` of doubles (x87 fprem, exact as fmod); the conversions (ToInt32 of
@@ -1080,13 +1104,15 @@ doubles inline, the checked untaggings, tagging); comparisons and branches;
 checks (Smi, number, heap object, maps (also with migration then deopt),
 string, value, hole, int32 conditions); loads of elements (fixed, double,
 holey double), fields (in-object and PropertyArray), context slots, maps
-and array lengths; stores of doubles into double elements (NaN
-canonicalized); inlined functions whose frames are lazy. Element and
+and array lengths, Double fields, property cells; typed arrays (length,
+validity checks, loads and stores of the integer, Float32 and Float64 kinds,
+clamped stores of int32s); stores of doubles into double elements (NaN
+canonicalized); ToBoolean branches; inlined functions whose frames are lazy. Element and
 PropertyArray accesses are bounds-checked against the CLR array (an index
 the graph's checks let through aborts with an exception, as the IL's array
-access throws). Everything else (calls, allocation, stores of references,
-generic operations, catch blocks, generators) makes the graph go to the IL
-backend. By default only graphs with a loop are generated natively
+access throws). Calls and generic operations outside loops are managed nodes (above);
+calls in loops, allocation, catch blocks and generators make the graph go to
+the IL backend. By default only graphs with a loop are generated natively
 (`--maglev-native-loops-only`): entering native code costs a transition
 (context set-up, pinning, decoding the exit) that a straight-line leaf does
 not earn back against RyuJIT's code, which callers enter directly.

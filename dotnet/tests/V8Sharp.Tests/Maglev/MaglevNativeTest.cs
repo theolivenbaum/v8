@@ -174,6 +174,83 @@ public class MaglevNativeTest
         function late(x, n) { const a = (x | 0) * 3; let s = 0, t = 1; for (let i = 0; i < n; i++) { s = (s + i * t) | 0; t = (t ^ i) & 15; } if (n > 1000) return a; return s; }
         opt(late, [5, 10]); rec(late(5, 20)); rec(late(7, 2000)); rec(late(-4, 1500));
         """,
+        // Managed nodes (run by the managed side, then the native code resumes):
+        // calls and generic operations before a native loop.
+        """
+        function helper(x) { return x * 2 + 1; }
+        function withCall(a, n) { const k = helper(a.length) | 0; const t = String(n).length; let s = 0; for (let i = 0; i < n; i++) s = (s + i * k + t) | 0; return s; }
+        opt(withCall, [[1, 2], 5]); rec(withCall([1, 2, 3], 10)); rec(withCall([], 1000)); rec(withCall([1], 0));
+        function tb(v, n) { const b = !v; const c = typeof v === "string"; let s = 0; for (let i = 0; i < n; i++) s += i; return [b, c, s].join(); }
+        opt(tb, [0, 2], ["", 3], [{}, 4]); for (const v of [0, 1, "", "a", null, undefined, {}, NaN, -0, 2n]) rec(tb(v, 5));
+        """,
+        // Stores in loops: a number over a number inline, anything else through the managed side.
+        """
+        function P() { this.x = 0; this.y = 1.5; }
+        function fields(o, n) { for (let i = 0; i < n; i++) { o.x = o.x + i; o.y = o.y * 0.5 + i; } return o.x + o.y; }
+        opt(fields, [new P(), 3]); rec(fields(new P(), 100)); const po = new P(); po.x = "s"; rec(fields(po, 3)); rec(po.x);
+        function elems(a, n) { for (let i = 0; i < n; i++) a[i % a.length] = a[(i + 1) % a.length] + i; return a.join(); }
+        opt(elems, [[1, 2, 3], 4]); rec(elems([1, 2, 3, 4], 20)); rec(elems([1, "x", 3], 5)); rec(elems([1, {}, 3], 2));
+        let counter = 0;
+        function ctx(n) { for (let i = 0; i < n; i++) counter = counter + i; return counter; }
+        opt(ctx, [3]); rec(ctx(100)); counter = "c"; rec(ctx(3)); counter = 0.5; rec(ctx(10));
+        function closure() { let acc = 0; return function (n) { for (let i = 0; i < n; i++) acc += i * 2; return acc; }; }
+        const cl = closure(); opt(cl, [3]); rec(cl(50)); rec(cl(5));
+        """,
+        // Globals (property cells), typed array lengths.
+        """
+        var g1 = 5;
+        function glob(n) { let s = g1; for (let i = 0; i < n; i++) s = (s + i) | 0; g1 = s; return s; }
+        opt(glob, [3]); rec(glob(100)); rec(g1); g1 = 1.5; rec(glob(2));
+        function tlen(t, n) { const len = t.length; let s = 0; for (let i = 0; i < n; i++) s = (s + len + i) | 0; return s; }
+        opt(tlen, [new Float64Array(8), 3]); rec(tlen(new Float64Array(5), 10)); rec(tlen(new Uint8Array(3), 4));
+        """,
+        // Typed arrays: loads and stores of every element kind, clamping, Float32
+        // rounding, a detached buffer (deopt), a length-tracking view (the managed path).
+        """
+        function tsum(t, n) { let s = 0; for (let i = 0; i < n; i++) s += t[i]; return s; }
+        function tfill(t, n, v) { for (let i = 0; i < n; i++) t[i] = v * i - 3; return t.join(); }
+        const kinds = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array];
+        for (const K of kinds) {
+          const t = new K(16);
+          opt(tfill, [new K(4), 4, 3]); rec(tfill(t, 16, 37));
+          opt(tsum, [new K(4), 4]); rec(tsum(t, 16));
+        }
+        function tf(t, n, v) { for (let i = 0; i < n; i++) t[i] = v / (i + 1); return t.join(); }
+        opt(tf, [new Float32Array(4), 4, 1.5]); rec(tf(new Float32Array(8), 8, 0.1)); rec(tf(new Float64Array(8), 8, 0.1));
+        function tlen2(t) { let s = 0; for (let i = 0; i < t.length; i++) s += t[i]; return s; }
+        const tb = new Float64Array(10).fill(1.5); opt(tlen2, [tb]); rec(tlen2(tb));
+        const rab = new ArrayBuffer(16, { maxByteLength: 64 }); const lt = new Float64Array(rab); lt.fill(2);
+        rec(tlen2(lt)); rab.resize(32); lt.fill(3); rec(tlen2(lt));
+        const det = new Float64Array(4).fill(1); rec(tlen2(det)); %ArrayBufferDetach(det.buffer); rec(tlen2(det));
+        """,
+        // Rebuilt values across stores and resumes (mjsunit regress-100409,
+        // turbolev/holey-float64-deopt): a context slot loaded, then stored
+        // inline, then returned; a holey double's hole through managed calls.
+        """
+        function outer() { var val = 0; function foo() { val = 0; val; var z = false; var y = true;
+          if (!z) { while (z = !z) { if (y) val++; } } return val++; } return foo; }
+        const fo = outer(); %PrepareFunctionForOptimization(fo); rec(fo()); rec(fo()); %OptimizeFunctionOnNextCall(fo); rec(fo()); rec(fo());
+        const harr = [, 1.1, 2.2];
+        function hol(a, x) { const v1 = a[0]; for (let i = 0; i < 10; i++) {} const v2 = x * 10; return [v1, v2]; }
+        opt(hol, [harr, 4]); rec(JSON.stringify(hol(harr, 42))); rec(JSON.stringify(hol(harr, 1000000000)));
+        """,
+        // A managed node whose own value is in its lazy deopt frame (it must not
+        // look live before the node: mjsunit compiler/keyed-load-on-string).
+        """
+        var str = "hello";
+        function at4() { return str[4]; }
+        function at5() { return str[5]; }
+        opt(at4, []); rec(at4()); opt(at5, []); rec(at5()); str = "hi"; rec(at4());
+        """,
+        // A call that invalidates the caller's code (a map it depends on changes): lazy deopt after it.
+        """
+        const proto = { v: 1 };
+        function Obj() {}
+        Obj.prototype = proto;
+        function poke(k) { if (k === 7) proto.v = 2.5; return k; }
+        function lazy(o, k) { const r = poke(k); let s = 0; for (let i = 0; i < 10; i++) s += o.v; return s + r; }
+        opt(lazy, [new Obj(), 1]); rec(lazy(new Obj(), 3)); rec(lazy(new Obj(), 7)); rec(lazy(new Obj(), 4));
+        """,
         // Deopts from inside loops with live values of each representation (the frame state rebuilt).
         """
         function walk(a, n, k) {
@@ -265,14 +342,14 @@ public class MaglevNativeTest
     [Fact]
     public void UnsupportedGraphsUseTheILBackend()
     {
-        // A graph with a call is generated as IL; --no-maglev-native generates IL for every graph.
+        // A graph with a call in a loop is generated as IL; --no-maglev-native generates IL for every graph.
         var flags = new FlagList();
         flags.SetFlagsFromString("--allow-natives-syntax --maglev --maglev-native --no-maglev-native-loops-only --no-concurrent-recompilation");
         Isolate isolate = Isolate.New(flags);
         using (isolate.Enter())
         {
             JSValue result = Compiler.CompileAndRun(isolate, """
-                function g(x) { return String(x).length; }
+                function g(x) { let s = 0; for (let i = 0; i < x; i++) s += String(i).length; return s; }
                 function h(x) { return x + 1; }
                 %PrepareFunctionForOptimization(g); %PrepareFunctionForOptimization(h);
                 g(1); g(2); h(1); h(2);

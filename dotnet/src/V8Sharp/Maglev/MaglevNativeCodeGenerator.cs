@@ -46,6 +46,8 @@ internal sealed class MaglevNativeCodeGenerator
     /// <summary>Three words for the parallel moves' cycle breaking.</summary>
     const int kMoveTempSlot = 8;
     const int kFirstHome = 16;
+    /// <summary>The ToBoolean result of a branch's managed path.</summary>
+    internal const int kBoolResultSlot = 12;
 
     // The constants table's fixed entries (JSValues): the number tag, then the oddballs.
     const int kConstNumberTag = 0, kConstTrue = 1, kConstFalse = 2, kConstNull = 3, kConstTheHole = 4, kFirstObjectConstant = 5;
@@ -117,6 +119,7 @@ internal sealed class MaglevNativeCodeGenerator
     readonly Dictionary<BasicBlock, XLabel> _labels = new(ReferenceEqualityComparer.Instance);
     readonly Dictionary<NodeBase, int> _nodePos = new(ReferenceEqualityComparer.Instance);
     readonly Dictionary<Node, List<Val>> _liveAfter = new(ReferenceEqualityComparer.Instance);
+    readonly Dictionary<ControlNode, List<Val>> _liveAfterControl = new(ReferenceEqualityComparer.Instance);
     int _homeWords = kFirstHome;
 
     // Constants (the code's constants table).
@@ -182,7 +185,19 @@ internal sealed class MaglevNativeCodeGenerator
         }
         if (_graph.HasResumableGenerator) throw Unsupported("generator");
         CheckSupported();
-        _fastCallArity = FramelessArity();
+        foreach (BasicBlock block in _blocks)
+        {
+            foreach (Node node in block.Nodes)
+            {
+                if (node.Opcode == Opcode.HandleNoHeapWritesInterrupt && node.Int0 != 1) _snapshots = true;
+            }
+        }
+        _snapshots |= _managedNodes.Count > 0;
+        foreach (NodeBase n in _managedNodes)
+        {
+            _inlineStores |= n.Opcode is Opcode.StoreTaggedField or Opcode.StoreFixedArrayElement or Opcode.StoreContextSlot;
+        }
+        _fastCallArity = _managedNodes.Count > 0 ? -1 : FramelessArity();
         _scratchBase = _fastCallArity + 1;
         Number();
         ComputeLiveness();
@@ -204,6 +219,7 @@ internal sealed class MaglevNativeCodeGenerator
             EmitBlock(_blocks[i]);
         }
         EmitEdgeStubs();
+        foreach (Action slowPath in _slowPaths) slowPath();
         EmitExitStubs();
         // Resumable exits continue here: the live values from their homes (the
         // tagged ones from the spill array, as the managed side rebuilt them).
@@ -275,6 +291,7 @@ internal sealed class MaglevNativeCodeGenerator
             Values = _valueInfos.ToArray(),
             Exits = _exits.ToArray(),
             DeoptValues = _deoptValues.ToArray(),
+            ManagedSlots = _managedSlots,
             FirstHome = firstHome,
             HomeEnd = _homeWords,
         };
@@ -289,24 +306,6 @@ internal sealed class MaglevNativeCodeGenerator
             _code.FastCall = native.CreateFastCall();
             _code.FastCallArity = _fastCallArity;
             _code.DirectEntryKind = MaglevDirectEntryKind.Frameless;
-        }
-        // Values rebuilt by repeating a load assume the heap is as the code
-        // left it; an interrupt that may run code (InterruptKind 0) breaks that,
-        // so such code deoptimizes after serving it instead of resuming.
-        foreach (NativeValueInfo info in _valueInfos)
-        {
-            native.RebuildsByLoad |= info.Kind is NativeValueKind.kElements or NativeValueKind.kFixedArrayElement or
-                NativeValueKind.kTaggedField or NativeValueKind.kContextSlot or NativeValueKind.kMap;
-        }
-        if (native.RebuildsByLoad)
-        {
-            foreach (NativeExit exit in _exits)
-            {
-                if (exit.Kind == NativeExitKind.kInterrupt && exit.InterruptKind != 1 && exit.DeoptIndex < 0)
-                {
-                    throw Unsupported("interrupt that may run code, without deopt info, in code that rebuilds by loads");
-                }
-            }
         }
         if (_info.Isolate.Flags.print_maglev_code) Print(native);
         Interlocked.Increment(ref s_generated);
@@ -331,6 +330,88 @@ internal sealed class MaglevNativeCodeGenerator
     // ---- Selection -----------------------------------------------------------------------------------------
 
     int _fastCallArity = -1;
+    readonly HashSet<BasicBlock> _loopBlocks = new(ReferenceEqualityComparer.Instance);
+    readonly HashSet<NodeBase> _managedNodes = new(ReferenceEqualityComparer.Instance);
+    /// <summary>
+    /// Some exit may run code that changes the heap (a managed node, an
+    /// interrupt of a loop with calls): reload-rebuilt values get snapshots.
+    /// </summary>
+    bool _snapshots;
+    /// <summary>
+    /// Stores write numbers inline (a number over a number): a slot load's
+    /// value may be overwritten later, so slot loads keep their kind word and
+    /// numbers and oddballs are rebuilt from it (an object in a slot is never
+    /// overwritten by native code; managed stores snapshot it first).
+    /// </summary>
+    bool _inlineStores;
+    int _managedSlots;
+
+    bool InLoop(BasicBlock block) => _loopBlocks.Contains(block);
+
+    /// <summary>
+    /// Stores of a number over a number are done inline (no write barrier:
+    /// only the payload changes, as the IL backend's EmitStoreTagged); the
+    /// managed side does the others, so such stores may be in loops.
+    /// </summary>
+    static bool HasInlineFastPath(Node node) => node.Opcode is Opcode.StoreTaggedField or Opcode.StoreFixedArrayElement or Opcode.StoreContextSlot or
+        Opcode.ToBoolean or Opcode.ToBooleanLogicalNot or Opcode.LoadTypedArrayLength;
+
+    /// <summary>
+    /// Nodes the managed side runs (MaglevNativeCode.Execute); <paramref name="why"/>
+    /// is set when the node is one of them but its form is not supported.
+    /// </summary>
+    static bool IsManagedNode(Node node, out string? why)
+    {
+        why = null;
+        switch (node.Opcode)
+        {
+            case Opcode.StoreTaggedField:
+                if (node.Int0 < JSObject.kPropertyArrayStorageBase && !InObjectLayout.IsContiguous) why = "StoreTaggedField layout";
+                return true;
+            case Opcode.StoreFixedArrayElement:
+            case Opcode.StoreContextSlot:
+            case Opcode.StorePropertyCellValue:
+            case Opcode.ToBoolean:
+            case Opcode.ToBooleanLogicalNot:
+            case Opcode.TestUndetectable:
+            case Opcode.TestTypeOf:
+            case Opcode.LoadTypedArrayLength:
+            case Opcode.StringLength:
+            case Opcode.CheckInstanceType:
+                return true;
+            case Opcode.CallKnownJSFunction:
+            {
+                var info = (KnownCallInfo)node.Obj0!;
+                if (info.Argc > MaglevFastCalls.kMaxArity) why = "CallKnownJSFunction with more than six arguments";
+                return true;
+            }
+            case Opcode.CallBuiltin:
+            {
+                var info = (CallBuiltinInfo)node.Obj0!;
+                if (info.RegisterStores.Length > 0 || info.RegisterOutputs.Length > 0 || info.ForwardsArguments || info.Elided ||
+                    info.ArgumentsKind != ArgumentsObjectKind.None)
+                {
+                    why = "CallBuiltin " + info.Name + " reads or writes the frame";
+                    return true;
+                }
+                foreach (BuiltinArg arg in info.Args)
+                {
+                    if (arg.Kind is BuiltinArgKind.State or BuiltinArgKind.RegisterIndex or BuiltinArgKind.RegisterRef or BuiltinArgKind.FeedbackByteRef)
+                    {
+                        why = "CallBuiltin " + info.Name + " takes " + arg.Kind;
+                        return true;
+                    }
+                }
+                foreach (System.Reflection.ParameterInfo p in info.Method.GetParameters())
+                {
+                    if (p.ParameterType.IsByRef) { why = "CallBuiltin " + info.Name + " by reference"; return true; }
+                }
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
     /// <summary>The first deopt scratch slot of the translations' values (after the receiver and arguments of a frameless entry).</summary>
     int _scratchBase;
 
@@ -367,6 +448,15 @@ internal sealed class MaglevNativeCodeGenerator
 
     void CheckSupported()
     {
+        // The blocks of loops (from a header to the block of its JumpLoop, in block order).
+        for (int i = 0; i < _blocks.Count; i++)
+        {
+            if (_blocks[i].Control is { Opcode: Opcode.JumpLoop, Target: { } header })
+            {
+                int h = _blocks.IndexOf(header);
+                for (int k = Math.Max(h, 0); k <= i; k++) _loopBlocks.Add(_blocks[k]);
+            }
+        }
         if (_info.Isolate.Flags.maglev_native_loops_only)
         {
             bool loop = false;
@@ -388,9 +478,26 @@ internal sealed class MaglevNativeCodeGenerator
                     // Its runtime call would need the inlined frames pushed (EmitEnsureInlinedFrames).
                     throw Unsupported("interrupt check in an inlined function");
                 }
-                if (node.LazyDeoptInfo is not null || node.IsCall) throw Unsupported("call " + node.Opcode);
                 if (node.ExceptionHandler is not null) throw Unsupported("throwing node");
-                if (!IsSupportedNode(node)) throw Unsupported(node.Opcode.ToString());
+                if (IsManagedNode(node, out string? why))
+                {
+                    // Run by the managed side (an exit and a resume): not in a loop,
+                    // where the round trip would cost more than RyuJIT's code.
+                    if (why is not null) throw Unsupported(why);
+                    // A call or a throw in an inlined function needs its frame pushed (EmitEnsureInlinedFrames).
+                    if (node.Unit is { IsInline: true } && (node.IsCall || node.CanThrow || node.LazyDeoptInfo is not null))
+                    {
+                        throw Unsupported("managed call in an inlined function: " + node.Opcode);
+                    }
+                    if (InLoop(block) && !HasInlineFastPath(node)) throw Unsupported("managed node in a loop: " + node.Opcode);
+                    _managedNodes.Add(node);
+                }
+                else
+                {
+                    if (node.LazyDeoptInfo is not null || node.IsCall) throw Unsupported("call " + node.Opcode);
+                    if (!IsSupportedNode(node)) throw Unsupported(node.Opcode.ToString());
+                }
+                if (node.LazyDeoptInfo is { } lazy) CheckDeoptFrame(lazy);
                 if (node is ValueNode v) CheckRepresentation(v);
                 if (node.EagerDeoptInfo is { } eager) CheckDeoptFrame(eager);
                 if (node.Opcode == Opcode.HandleNoHeapWritesInterrupt) interrupt = true;
@@ -409,14 +516,18 @@ internal sealed class MaglevNativeCodeGenerator
         if (v.Representation == ValueRepresentation.kBit) throw Unsupported("bit value");
     }
 
-    static void CheckDeoptFrame(EagerDeoptInfo info)
+    static void CheckDeoptFrame(DeoptInfo info)
     {
         for (DeoptFrame? f = info.TopFrame; f is not null; f = f.Parent)
         {
             if (f is not InterpretedDeoptFrame frame) throw Unsupported("deopt frame kind " + f.GetType().Name);
             foreach ((IRegister _, ValueNode value) in frame.Values)
             {
-                if (value is InlinedAllocation || value.Opcode == Opcode.CallBuiltin) throw Unsupported("captured object in a deopt frame");
+                // Elided allocations and arguments objects (the Deoptimizer materializes them): not generated.
+                if (value is InlinedAllocation || value.Opcode == Opcode.CallBuiltin && ((CallBuiltinInfo)value.Obj0!).Elided)
+                {
+                    throw Unsupported("captured object in a deopt frame");
+                }
             }
         }
     }
@@ -446,8 +557,13 @@ internal sealed class MaglevNativeCodeGenerator
         // calls, and a deopt pushes the frames its translation has
         // (Deoptimizer.Deoptimize, "a lazily pushed inlined frame").
         Opcode.EnterInlinedFrame or Opcode.LeaveInlinedFrame => !((MaglevCompilationUnit)node.Obj0!).EagerFrame,
-        Opcode.LoadTaggedField => node.Int0 >= JSObject.kPropertyArrayStorageBase || InObjectLayout.IsContiguous,
-        Opcode.LoadContextSlot or Opcode.LoadMap => true,
+        Opcode.LoadTaggedField or Opcode.LoadDoubleField => node.Int0 >= JSObject.kPropertyArrayStorageBase || InObjectLayout.IsContiguous,
+        Opcode.LoadContextSlot or Opcode.LoadMap or Opcode.LoadPropertyCellValue or Opcode.ConvertHoleToUndefined => true,
+        Opcode.CheckTypedArrayValid => true,
+        Opcode.LoadTypedArrayElement => TypedElementSize((ElementsKind)node.Int0) > 0,
+        // (Stores that ignore out-of-bounds indices, and clamped stores of doubles, stay IL.)
+        Opcode.StoreTypedArrayElement => node.Int1 == 0 && TypedElementSize((ElementsKind)node.Int0) > 0 &&
+                                         !((ElementsKind)node.Int0 == ElementsKind.UINT8_CLAMPED_ELEMENTS && !IsInt32Stored(node.Inputs[2])),
         Opcode.LoadElements or Opcode.LoadFixedArrayElement or Opcode.LoadFixedDoubleArrayElement or
             Opcode.LoadHoleyFixedDoubleArrayElement or Opcode.StoreFixedDoubleArrayElement or Opcode.LoadJSArrayLength => true,
         Opcode.TaggedEqual or Opcode.TaggedNotEqual or Opcode.LogicalNot => true,
@@ -470,7 +586,7 @@ internal sealed class MaglevNativeCodeGenerator
     {
         Opcode.Jump or Opcode.JumpLoop or Opcode.Return or Opcode.Deopt => true,
         Opcode.BranchIfInt32Compare => !c.Unsigned || c.Operation == CompareOperation.kLessThan,
-        Opcode.BranchIfFloat64Compare or Opcode.BranchIfReferenceEqual or Opcode.BranchIfRootConstant or
+        Opcode.BranchIfToBooleanTrue or Opcode.BranchIfFloat64Compare or Opcode.BranchIfReferenceEqual or Opcode.BranchIfRootConstant or
             Opcode.BranchIfInt32ToBooleanTrue or Opcode.BranchIfFloat64ToBooleanTrue => true,
         _ => false,
     };
@@ -512,12 +628,13 @@ internal sealed class MaglevNativeCodeGenerator
         {
             if (v is null || v.Home >= 0) continue;
             v.Home = _homeWords;
-            _homeWords += v.Repr == ValueRepresentation.kTagged ? 3 : 1;
+            // Tagged: address, payload, kind, snapshot flag (MaglevNativeCode.Value).
+            _homeWords += v.Repr == ValueRepresentation.kTagged ? 4 : 1;
         }
     }
 
     /// <summary>The values a deopt exit needs saved: the frame state's, and what rebuilding them reads.</summary>
-    void DeoptUses(EagerDeoptInfo info, HashSet<ValueNode> into)
+    void DeoptUses(DeoptInfo info, HashSet<ValueNode> into)
     {
         for (DeoptFrame? f = info.TopFrame; f is not null; f = f.Parent)
         {
@@ -538,6 +655,8 @@ internal sealed class MaglevNativeCodeGenerator
             case Opcode.LoadTaggedField:
             case Opcode.LoadContextSlot:
             case Opcode.LoadMap:
+            case Opcode.LoadPropertyCellValue:
+            case Opcode.ConvertHoleToUndefined:
             case Opcode.Identity when value.IsTagged:
                 foreach (ValueNode input in value.Inputs) AddClosure(input, into);
                 break;
@@ -580,8 +699,10 @@ internal sealed class MaglevNativeCodeGenerator
                 for (int k = b.Nodes.Count - 1; k >= 0; k--)
                 {
                     Node node = b.Nodes[k];
+                    if (node.LazyDeoptInfo is { } lz) DeoptUses(lz, live);
+                    // (After the lazy frame's uses: the frame may hold the node's own value.)
                     if (node is ValueNode v) live.Remove(v);
-                    if (node.Opcode == Opcode.HandleNoHeapWritesInterrupt)
+                    if (IsResumable(node))
                     {
                         // A resumable exit: the live values are rebuilt; so are what rebuilding them reads.
                         var closure = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
@@ -633,28 +754,58 @@ internal sealed class MaglevNativeCodeGenerator
                 DeoptUses(ce, uses);
                 foreach (ValueNode u in uses) Extend(V(u), cpos);
             }
+            if (c.Opcode == Opcode.BranchIfToBooleanTrue)
+            {
+                // Its managed path resumes before the branch: what the successors need.
+                var closure = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
+                foreach (ValueNode l in _liveOut[b]) AddClosure(l, closure);
+                var list = new List<Val>();
+                foreach (ValueNode l in closure)
+                {
+                    Val lv = V(l);
+                    Extend(lv, cpos);
+                    if (!list.Contains(lv)) list.Add(lv);
+                }
+                list.Sort(static (x, y) => x.Node.Id.CompareTo(y.Node.Id));
+                _liveAfterControl[c] = list;
+            }
             foreach (ValueNode input in c.Inputs) AddClosure(input, after);
             if (c.EagerDeoptInfo is { } ce2) DeoptUses(ce2, after);
             for (int k = b.Nodes.Count - 1; k >= 0; k--)
             {
                 Node node = b.Nodes[k];
                 int pos = _nodePos[node];
+                bool resultLive = false;
                 if (node is ValueNode v)
                 {
                     Extend(V(v), pos);
-                    after.Remove(v);
+                    resultLive = after.Remove(v);
                 }
-                if (node.Opcode == Opcode.HandleNoHeapWritesInterrupt)
+                if (node.LazyDeoptInfo is { } lz)
+                {
+                    var uses = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
+                    DeoptUses(lz, uses);
+                    foreach (ValueNode u in uses)
+                    {
+                        if (ReferenceEquals(u, node)) continue;
+                        Extend(V(u), pos);
+                        after.Add(u);
+                    }
+                }
+                if (IsResumable(node))
                 {
                     var closure = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
                     foreach (ValueNode l in after) AddClosure(l, closure);
+                    // A managed node's own value, when used later: the resume reloads it.
+                    if (resultLive) closure.Add((ValueNode)node);
                     var list = new List<Val>();
                     foreach (ValueNode l in closure)
                     {
                         Val lv = V(l);
                         Extend(lv, pos);
                         list.Add(lv);
-                        after.Add(l);
+                        // (Not the node's own value: it is not live before the node.)
+                        if (!ReferenceEquals(l, node)) after.Add(l);
                     }
                     list.Sort(static (x, y) => x.Node.Id.CompareTo(y.Node.Id));
                     _liveAfter[node] = list;
@@ -684,6 +835,8 @@ internal sealed class MaglevNativeCodeGenerator
             }
         }
     }
+
+    bool IsResumable(Node node) => node.Opcode == Opcode.HandleNoHeapWritesInterrupt || _managedNodes.Contains(node);
 
     static void AddUse(ValueNode v, HashSet<ValueNode> live)
     {
@@ -1069,6 +1222,17 @@ internal sealed class MaglevNativeCodeGenerator
         var info = new NativeValueInfo { Home = v.Home, NodeId = n.Id };
         v.Info = _valueInfos.Count;
         _valueInfos.Add(info);
+        if (_managedNodes.Contains(v.Node))
+        {
+            // A managed node's value: untagged in its home, tagged in its managed
+            // slot. (ToBoolean has an inline path: both paths write its kind word.)
+            if (v.Repr == ValueRepresentation.kTagged && v.Node.Opcode is not (Opcode.ToBoolean or Opcode.ToBooleanLogicalNot))
+            {
+                info.SnapSlot = _managedSlots++;
+                info.Kind = NativeValueKind.kManaged;
+                return v.Info;
+            }
+        }
         switch (v.Repr)
         {
             case ValueRepresentation.kInt32: info.Kind = NativeValueKind.kInt32; return v.Info;
@@ -1098,6 +1262,8 @@ internal sealed class MaglevNativeCodeGenerator
             case Opcode.TaggedEqual:
             case Opcode.TaggedNotEqual:
             case Opcode.LogicalNot:
+            case Opcode.ToBoolean:
+            case Opcode.ToBooleanLogicalNot:
                 info.Kind = NativeValueKind.kTaggedBoolean;
                 break;
             case Opcode.LoadElements:
@@ -1128,6 +1294,14 @@ internal sealed class MaglevNativeCodeGenerator
                 info.Kind = NativeValueKind.kMap;
                 info.Input0 = Info(n.Inputs[0]);
                 break;
+            case Opcode.ConvertHoleToUndefined:
+                info.Kind = NativeValueKind.kHoleToUndefined;
+                info.Input0 = Info(n.Inputs[0]);
+                break;
+            case Opcode.LoadPropertyCellValue:
+                info.Kind = NativeValueKind.kPropertyCell;
+                info.Constant = JSValue.FromObject((PropertyCell)n.Obj0!);
+                break;
             case Opcode.Phi:
                 info.Kind = NativeValueKind.kTaggedDynamic;
                 ValueNode? other = OtherSource((Phi)n);
@@ -1136,8 +1310,16 @@ internal sealed class MaglevNativeCodeGenerator
             default:
                 throw Unsupported("rebuilding " + n.Opcode);
         }
+        if (_snapshots && IsReloadKind(info.Kind)) info.SnapSlot = _managedSlots++;
+        if (_inlineStores && info.Kind is NativeValueKind.kTaggedField or NativeValueKind.kFixedArrayElement or NativeValueKind.kContextSlot)
+        {
+            info.KindAtLoad = true;
+        }
         return v.Info;
     }
+
+    static bool IsReloadKind(NativeValueKind kind) => kind is NativeValueKind.kElements or NativeValueKind.kFixedArrayElement or
+        NativeValueKind.kTaggedField or NativeValueKind.kContextSlot or NativeValueKind.kMap or NativeValueKind.kPropertyCell;
 
     /// <summary>
     /// The one value a tagged phi holds when its kind is kOther, which must be
@@ -1176,6 +1358,8 @@ internal sealed class MaglevNativeCodeGenerator
                         break;
                     }
                     if (!IsTimeInvariant(n)) throw Unsupported($"tagged phi n{phi.Id} of {n}");
+                    // (Code that may change the heap: only sources no store can change.)
+                    if (_snapshots && !(n.IsConstant || n.Opcode == Opcode.InitialValue)) throw Unsupported($"tagged phi n{phi.Id} of a load");
                     sources.Add(n);
                     break;
             }
@@ -1231,6 +1415,22 @@ internal sealed class MaglevNativeCodeGenerator
     /// <summary>The label of the eager deopt exit for <paramref name="info"/> (EagerExit of the IL backend).</summary>
     XLabel DeoptLabel(EagerDeoptInfo info, NativeExitKind kind = NativeExitKind.kDeopt, ValueNode? migrate = null)
     {
+        int reason = ReasonCode(info);
+        if (kind == NativeExitKind.kDeopt && _deoptLabels.TryGetValue((info, reason, kind), out XLabel existing)) return existing;
+        var needed = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
+        DeoptUses(info, needed);
+        if (migrate is not null) AddClosure(migrate, needed);
+        var exit = new NativeExit { Kind = kind, DeoptIndex = DeoptPointFor(info), Reason = reason };
+        if (migrate is not null) exit.Value = Info(migrate);
+        XLabel label = _masm.NewLabel();
+        _exitStubs.Add((label, NewExit(exit), RegisterStores(needed)));
+        if (kind == NativeExitKind.kDeopt) _deoptLabels[(info, reason, kind)] = label;
+        return label;
+    }
+
+    /// <summary>The reason a deopt passes (with the speculation feedback to update in its high bits), as the IL's EagerExit.</summary>
+    int ReasonCode(EagerDeoptInfo info)
+    {
         int feedback = 0;
         if (info.HoistedUntagging)
         {
@@ -1246,24 +1446,14 @@ internal sealed class MaglevNativeCodeGenerator
             }
             feedback = i + 1;
         }
-        int reason = (int)info.Reason | feedback << 16;
-        if (kind == NativeExitKind.kDeopt && _deoptLabels.TryGetValue((info, reason, kind), out XLabel existing)) return existing;
-        var needed = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
-        DeoptUses(info, needed);
-        if (migrate is not null) AddClosure(migrate, needed);
-        var exit = new NativeExit { Kind = kind, DeoptIndex = DeoptPointFor(info), Reason = reason };
-        if (migrate is not null) exit.Value = Info(migrate);
-        XLabel label = _masm.NewLabel();
-        _exitStubs.Add((label, NewExit(exit), RegisterStores(needed)));
-        if (kind == NativeExitKind.kDeopt) _deoptLabels[(info, reason, kind)] = label;
-        return label;
+        return (int)info.Reason | feedback << 16;
     }
 
-    readonly Dictionary<EagerDeoptInfo, int> _deoptPointIndex = new(ReferenceEqualityComparer.Instance);
+    readonly Dictionary<DeoptInfo, int> _deoptPointIndex = new(ReferenceEqualityComparer.Instance);
     readonly Dictionary<ValueNode, int> _scratchSlots = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>The DeoptPoint of a frame state (built as the IL backend's EmitDeoptExits builds it).</summary>
-    int DeoptPointFor(EagerDeoptInfo info)
+    int DeoptPointFor(DeoptInfo info, ValueNode? lazyResult = null)
     {
         if (_deoptPointIndex.TryGetValue(info, out int index)) return index;
         // Frames outermost first.
@@ -1320,7 +1510,23 @@ internal sealed class MaglevNativeCodeGenerator
                 ScratchSlots = slots,
             };
         }
-        var point = new DeoptPoint { Kind = DeoptimizeKind.kEager, Reason = info.Reason, Frames = data };
+        var point = new DeoptPoint
+        {
+            Kind = info is LazyDeoptInfo ? DeoptimizeKind.kLazy : DeoptimizeKind.kEager,
+            Reason = info is EagerDeoptInfo eager ? eager.Reason : DeoptimizeReason.kUnknown,
+            Frames = data,
+        };
+        if (info is LazyDeoptInfo lazy)
+        {
+            point.ResultLocation = lazy.ResultLocation;
+            if (lazyResult is not null && lazy.ResultSize == 1)
+            {
+                // (The managed side writes the call's result there itself.)
+                int resultSlot = _scratchBase + _scratchSlots.Count;
+                _scratchSlots[new ValueNode(Opcode.Constant, ValueRepresentation.kTagged)] = resultSlot;
+                point.ResultScratchIndex = resultSlot;
+            }
+        }
         index = _deoptPoints.Count;
         _deoptPoints.Add(point);
         _deoptValues.Add(values.ToArray());
@@ -1428,6 +1634,48 @@ internal sealed class MaglevNativeCodeGenerator
     {
         switch (c.Opcode)
         {
+            case Opcode.BranchIfToBooleanTrue:
+            {
+                // Inline for oddballs, numbers and receivers; the managed side for
+                // the others (strings, BigInts ...), resuming with the 0/1 in a context word.
+                XLabel slow = _masm.NewLabel(), join = _masm.NewLabel(), reload = _masm.NewLabel();
+                if (!EmitToBooleanFast(c.Inputs[0], slow)) throw Unsupported("ToBoolean of an untagged value");
+                _masm.Bind(join);
+                _masm.Testl(rax, rax);
+                _masm.J(Condition.not_equal, ifTrue);
+                List<Val> live = _liveAfterControl[c];
+                var needed = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
+                foreach (Val v in live) needed.Add(v.Node);
+                AddClosure(c.Inputs[0], needed);
+                var tagged = new List<int>();
+                foreach (Val v in live)
+                {
+                    if (v.Repr == ValueRepresentation.kTagged) tagged.Add(Info(v.Node));
+                }
+                int resumeId = _resumes.Count + 1;
+                var exit = new NativeExit
+                {
+                    Kind = NativeExitKind.kManagedNode,
+                    Managed = new NativeManagedNode { Opcode = Opcode.BranchIfToBooleanTrue, Inputs = [Info(c.Inputs[0])], BytecodeOffset = c.BytecodeOffset },
+                    ResumeId = resumeId,
+                    TaggedLive = tagged.ToArray(),
+                    Snapshot = SnapshotList(needed),
+                };
+                int exitId = NewExit(exit);
+                List<Val> stores = RegisterStores(needed);
+                _slowPaths.Add(() =>
+                {
+                    _masm.Bind(slow);
+                    EmitExitStores(stores);
+                    _masm.Movl(rax, exitId);
+                    _masm.Jmp(_epilogue);
+                    _masm.Bind(reload);
+                    _masm.Movl(rax, new Operand(rbx, kBoolResultSlot * 8));
+                    _masm.Jmp(join);
+                });
+                _resumes.Add((_masm.NewLabel(), resumeId, live, reload));
+                return;
+            }
             case Opcode.BranchIfInt32Compare:
             {
                 Reg a = Int32Reg(c.Inputs[0], rax);
@@ -1737,6 +1985,11 @@ internal sealed class MaglevNativeCodeGenerator
 
     void EmitNode(Node node)
     {
+        if (_managedNodes.Contains(node))
+        {
+            EmitManagedNode(node);
+            return;
+        }
         var v = node as ValueNode;
         Val? r = v is null ? null : V(v);
         switch (node.Opcode)
@@ -1995,12 +2248,15 @@ internal sealed class MaglevNativeCodeGenerator
                 _masm.Movq(rcx, EngineGlobals.kHoleNanInt64);
                 _masm.Cmpq(rax, rcx);
                 _masm.J(Condition.not_equal, number);
+                // Undefined; the kind word (always kept: a resume rewrites the
+                // payload) tells the rebuild which it is.
                 _masm.Movq(HomeOp(r!), 0);
                 _masm.Movq(HomeOp(r!, 1), 0);
-                if (r!.NeedsKind) _masm.Movq(HomeOp(r, 2), (int)NativeTaggedKind.kUndefined);
+                _masm.Movq(HomeOp(r!, 2), (int)NativeTaggedKind.kUndefined);
                 _masm.Jmp(done);
                 _masm.Bind(number);
-                StoreTaggedNumber(r, xmm0);
+                StoreTaggedNumber(r!, xmm0);
+                _masm.Movq(HomeOp(r!, 2), (int)NativeTaggedKind.kNumber);
                 _masm.Bind(done);
                 return;
             }
@@ -2102,6 +2358,7 @@ internal sealed class MaglevNativeCodeGenerator
                 _masm.Movq(rax, new Operand(rax, NativeLayout.JSObjectElements));
                 _masm.Movq(HomeOp(r!), rax);
                 EmitCacheElementsData(r!);
+                ClearSnapshot(r!);
                 if (r!.NeedsKind) _masm.Movq(HomeOp(r, 2), (int)NativeTaggedKind.kOther);
                 return;
             case Opcode.LoadFixedArrayElement:
@@ -2110,7 +2367,8 @@ internal sealed class MaglevNativeCodeGenerator
                 _masm.Movq(rdx, new Operand(rcx, NativeLayout.ArrayData + 8));
                 _masm.Movq(HomeOp(r!), rax);
                 _masm.Movq(HomeOp(r!, 1), rdx);
-                if (r!.NeedsKind) EmitClassify(r);
+                ClearSnapshot(r!);
+                if (r!.NeedsKind || _inlineStores) EmitClassify(r);
                 return;
             case Opcode.LoadFixedDoubleArrayElement:
             case Opcode.LoadHoleyFixedDoubleArrayElement:
@@ -2133,6 +2391,7 @@ internal sealed class MaglevNativeCodeGenerator
                 return;
             }
             case Opcode.LoadTaggedField:
+            case Opcode.LoadDoubleField:
             {
                 // JSObject.FieldAt: the PropertyArray (bounds-checked) or the in-object slots (from the map check).
                 int storage = node.Int0;
@@ -2149,6 +2408,13 @@ internal sealed class MaglevNativeCodeGenerator
                 else
                 {
                     offset = NativeLayout.InObjectSlots + storage * 16;
+                }
+                if (node.Opcode == Opcode.LoadDoubleField)
+                {
+                    // A Double field holds a number (or the hole NaN): its payload.
+                    _masm.Movsd(xmm0, new Operand(rcx, offset + 8));
+                    StoreFloat64Result(r!, xmm0);
+                    return;
                 }
                 EmitLoadTaggedSlot(r!, new Operand(rcx, offset));
                 return;
@@ -2185,6 +2451,7 @@ internal sealed class MaglevNativeCodeGenerator
                 _masm.Bind(done);
                 _masm.Movq(HomeOp(r!), rax);
                 _masm.Movq(HomeOp(r!, 1), 0);
+                ClearSnapshot(r!);
                 if (r!.NeedsKind)
                 {
                     // Undefined (0) or another object (kOther).
@@ -2210,6 +2477,49 @@ internal sealed class MaglevNativeCodeGenerator
             }
             case Opcode.EnterInlinedFrame:
             case Opcode.LeaveInlinedFrame:
+                return;
+            case Opcode.CheckTypedArrayValid:
+            {
+                // Not detached, and for a write not immutable (MaglevBuiltins.IsTypedArrayValid).
+                XLabel exit = DeoptLabel(node.EagerDeoptInfo!);
+                LoadTaggedPtr(node.Inputs[0], rax);
+                _masm.Movq(rax, new Operand(rax, NativeLayout.ViewBuffer));
+                _masm.Movzxbl(rcx, new Operand(rax, NativeLayout.BufferWasDetached));
+                _masm.Testl(rcx, rcx);
+                _masm.J(Condition.not_equal, exit);
+                if (node.Int0 == 1)
+                {
+                    _masm.Movzxbl(rcx, new Operand(rax, NativeLayout.BufferIsImmutable));
+                    _masm.Testl(rcx, rcx);
+                    _masm.J(Condition.not_equal, exit);
+                }
+                return;
+            }
+            case Opcode.LoadTypedArrayElement:
+                EmitLoadTypedElement(node, r!);
+                return;
+            case Opcode.StoreTypedArrayElement:
+                EmitStoreTypedElement(node);
+                return;
+            case Opcode.ConvertHoleToUndefined:
+            {
+                // The hole is undefined (address 0, payload 0); anything else itself.
+                XLabel notHole = _masm.NewLabel();
+                LoadTagged(node.Inputs[0], rax, rdx);
+                LoadConstantAddress(rcx, kConstTheHole);
+                _masm.Cmpq(rax, rcx);
+                _masm.J(Condition.not_equal, notHole);
+                _masm.Movl(rax, 0);
+                _masm.Movl(rdx, 0);
+                _masm.Bind(notHole);
+                _masm.Movq(HomeOp(r!), rax);
+                _masm.Movq(HomeOp(r!, 1), rdx);
+                if (r!.NeedsKind) EmitClassify(r);
+                return;
+            }
+            case Opcode.LoadPropertyCellValue:
+                LoadConstantAddress(rcx, ConstantIndex((PropertyCell)node.Obj0!));
+                EmitLoadTaggedSlot(r!, new Operand(rcx, NativeLayout.PropertyCellValue));
                 return;
             case Opcode.LoadJSArrayLength:
                 LoadTaggedPtr(node.Inputs[0], rax);
@@ -2633,6 +2943,415 @@ internal sealed class MaglevNativeCodeGenerator
         NativeLayout.FixedArrayData == NativeLayout.FixedDoubleArrayData && !elements.IsConstant &&
         elements.Opcode == Opcode.LoadElements;
 
+    /// <summary>A reload-rebuilt value is defined again: its snapshot (if any) is no longer its value.</summary>
+    void ClearSnapshot(Val r)
+    {
+        if (_snapshots) _masm.Movq(HomeOp(r, 3), 0);
+    }
+
+    /// <summary>The run-time values to keep before an exit that may change the heap: the reload-rebuilt ones among <paramref name="needed"/>.</summary>
+    int[] SnapshotList(IEnumerable<ValueNode> needed)
+    {
+        if (!_snapshots) return [];
+        var closure = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
+        foreach (ValueNode n in needed) AddClosure(n, closure);
+        var list = new List<int>();
+        foreach (ValueNode n in closure)
+        {
+            if (n.IsConstant || !n.IsTagged || _managedNodes.Contains(n)) continue;
+            int info = Info(n);
+            if (IsReloadKind(_valueInfos[info].Kind) && !list.Contains(info)) list.Add(info);
+        }
+        return list.ToArray();
+    }
+
+    /// <summary>
+    /// A node the managed side runs (MaglevNativeCode.Execute), as Ryu's
+    /// native code exits to interpret one instruction: the values it needs
+    /// and the live values are stored, the code returns, and the resume
+    /// entry continues after the node with its value in its home.
+    /// </summary>
+    void EmitManagedNode(Node node)
+    {
+        List<Val> live = _liveAfter[node];
+        var needed = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
+        foreach (Val v in live) needed.Add(v.Node);
+        foreach (ValueNode input in node.Inputs) AddClosure(input, needed);
+        if (node.LazyDeoptInfo is { } lazy) DeoptUses(lazy, needed);
+        if (node.EagerDeoptInfo is { } eager) DeoptUses(eager, needed);
+        needed.Remove(node as ValueNode ?? new ValueNode(Opcode.Constant, ValueRepresentation.kTagged));
+        var m = new NativeManagedNode
+        {
+            Opcode = node.Opcode,
+            Int0 = node.Int0,
+            Int1 = node.Int1,
+            Obj0 = node.Opcode == Opcode.StorePropertyCellValue ? node.Obj0 : node.Obj0,
+            BytecodeOffset = node.BytecodeOffset,
+            Inlined = node.Unit is { IsInline: true },
+        };
+        m.Inputs = new int[node.Inputs.Length];
+        for (int i = 0; i < m.Inputs.Length; i++) m.Inputs[i] = Info(node.Inputs[i]);
+        if (node is ValueNode value)
+        {
+            Val r = V(value);
+            m.Result = Info(value);
+            m.ResultHome = r.Home;
+            m.ResultRepresentation = value.Representation;
+            m.ResultNeedsKind = r.NeedsKind;
+        }
+        if (node.LazyDeoptInfo is { } lazyInfo) m.LazyDeoptIndex = DeoptPointFor(lazyInfo, node as ValueNode);
+        if (node.EagerDeoptInfo is { } eagerInfo)
+        {
+            m.EagerDeoptIndex = DeoptPointFor(eagerInfo);
+            m.EagerReason = ReasonCode(eagerInfo);
+        }
+        if (node.Opcode == Opcode.CallBuiltin)
+        {
+            var info = (CallBuiltinInfo)node.Obj0!;
+            m.Invoker = System.Reflection.MethodInvoker.Create(info.Method);
+            System.Reflection.ParameterInfo[] parameters = info.Method.GetParameters();
+            m.ParameterTypes = new Type[parameters.Length];
+            for (int i = 0; i < parameters.Length; i++) m.ParameterTypes[i] = parameters[i].ParameterType;
+            m.ReturnType = info.Method.ReturnType;
+        }
+        var tagged = new List<int>();
+        foreach (Val v in live)
+        {
+            if (v.Repr == ValueRepresentation.kTagged) tagged.Add(Info(v.Node));
+        }
+        int resumeId = _resumes.Count + 1;
+        var exit = new NativeExit
+        {
+            Kind = NativeExitKind.kManagedNode,
+            Managed = m,
+            ResumeId = resumeId,
+            TaggedLive = tagged.ToArray(),
+            Snapshot = SnapshotList(needed),
+        };
+        XLabel cont = _masm.NewLabel();
+        XLabel slow = _masm.NewLabel();
+        bool fast = HasInlineFastPath(node) && node.Opcode switch
+        {
+            Opcode.ToBoolean or Opcode.ToBooleanLogicalNot => EmitToBooleanNodeFastPath(node, slow, cont),
+            Opcode.LoadTypedArrayLength => EmitTypedArrayLengthFastPath(node, slow, cont),
+            _ => EmitStoreNumberFastPath(node, slow, cont),
+        };
+        // The slow path out of line when there is a fast path.
+        int exitId = NewExit(exit);
+        List<Val> stores = RegisterStores(needed);
+        if (fast)
+        {
+            _slowPaths.Add(() =>
+            {
+                _masm.Bind(slow);
+                EmitExitStores(stores);
+                _masm.Movl(rax, exitId);
+                _masm.Jmp(_epilogue);
+            });
+        }
+        else
+        {
+            EmitExitStores(stores);
+            _masm.Movl(rax, exitId);
+            _masm.Jmp(_epilogue);
+        }
+        _resumes.Add((_masm.NewLabel(), resumeId, live, cont));
+        _masm.Bind(cont);
+    }
+
+    readonly List<Action> _slowPaths = [];
+
+    static int TypedElementSize(ElementsKind kind) => kind switch
+    {
+        ElementsKind.INT8_ELEMENTS or ElementsKind.UINT8_ELEMENTS or ElementsKind.UINT8_CLAMPED_ELEMENTS => 1,
+        ElementsKind.INT16_ELEMENTS or ElementsKind.UINT16_ELEMENTS => 2,
+        ElementsKind.INT32_ELEMENTS or ElementsKind.UINT32_ELEMENTS or ElementsKind.FLOAT32_ELEMENTS => 4,
+        ElementsKind.FLOAT64_ELEMENTS => 8,
+        _ => 0,
+    };
+
+    /// <summary>The value of a typed store goes as an int32 (the IL's isFloat test, negated).</summary>
+    static bool IsInt32Stored(ValueNode stored) =>
+        !(stored.Representation is ValueRepresentation.kFloat64 or ValueRepresentation.kHoleyFloat64 ||
+          stored.IsConstant && !stored.TryGetInt32Constant(out _));
+
+    /// <summary>
+    /// MaglevBuiltins.TypedArrayLength inline for a fixed-length view (0 when
+    /// detached, the length clamped to int.MaxValue); variable-length views go
+    /// to the managed side.
+    /// </summary>
+    bool EmitTypedArrayLengthFastPath(Node node, XLabel slow, XLabel done)
+    {
+        Val r = V((ValueNode)node);
+        XLabel have = _masm.NewLabel();
+        LoadTaggedPtr(node.Inputs[0], rax);
+        _masm.Movzxbl(rcx, new Operand(rax, NativeLayout.ViewIsLengthTracking));
+        _masm.Movzxbl(rdx, new Operand(rax, NativeLayout.ViewIsBackedByRab));
+        _masm.Orl(rcx, rdx);
+        _masm.J(Condition.not_equal, slow);
+        _masm.Movq(rcx, new Operand(rax, NativeLayout.ViewBuffer));
+        _masm.Movq(rdx, new Operand(rax, NativeLayout.TypedArrayRawLength));
+        _masm.Movzxbl(rcx, new Operand(rcx, NativeLayout.BufferWasDetached));
+        _masm.Testl(rcx, rcx);
+        _masm.J(Condition.equal, have);
+        _masm.Movl(rdx, 0);
+        _masm.Bind(have);
+        if (node.Int0 == 1)
+        {
+            // The whole length as a double (lengths are below 2^53).
+            _masm.Xorpd(xmm0, xmm0);
+            _masm.Cvtqsi2sd(xmm0, rdx);
+            StoreFloat64Result(r, xmm0);
+        }
+        else
+        {
+            _masm.Movq(rcx, int.MaxValue);
+            _masm.Cmpq(rdx, rcx);
+            _masm.Cmovq(Condition.above, rdx, rcx);
+            StoreInt32Result(r, rdx);
+        }
+        _masm.Jmp(done);
+        return true;
+    }
+
+    /// <summary>
+    /// The address of a typed element into rcx (MaglevBuiltins.TypedElement:
+    /// the buffer's bytes at ByteOffset + index * size), bounds-checked
+    /// against the byte array (an index the graph's checks let through
+    /// aborts, as the IL's array access throws).
+    /// </summary>
+    void EmitTypedElementAddress(Node node, int size)
+    {
+        XLabel abort = AbortLabel();
+        LoadTaggedPtr(node.Inputs[0], rax);
+        _masm.Movq(rcx, new Operand(rax, NativeLayout.ViewBuffer));
+        _masm.Movq(rcx, new Operand(rcx, NativeLayout.BufferBackingStore));
+        _masm.Testq(rcx, rcx);
+        _masm.J(Condition.equal, abort);
+        _masm.Movq(rcx, new Operand(rcx, NativeLayout.BackingStoreBuffer));
+        // byteIndex = ByteOffset + index * size, in 64 bits; then byteIndex + size <= length.
+        Reg index = Int32Reg(node.Inputs[1], rdx);
+        _masm.Movsxlq(rdx, index);
+        if (size > 1) _masm.Imulq(rdx, rdx, size);
+        _masm.Addq(rdx, new Operand(rax, NativeLayout.ViewByteOffset));
+        _masm.Movl(r11, new Operand(rcx, NativeLayout.ArrayLength));
+        _masm.Subq(r11, size);
+        _masm.Cmpq(rdx, r11);
+        _masm.J(Condition.above, abort);
+        _masm.Leaq(rcx, new Operand(rcx, NativeLayout.ArrayData, rdx));
+    }
+
+    void EmitLoadTypedElement(Node node, Val r)
+    {
+        var kind = (ElementsKind)node.Int0;
+        int size = TypedElementSize(kind);
+        EmitTypedElementAddress(node, size);
+        var slot = new Operand(rcx, 0);
+        switch (kind)
+        {
+            case ElementsKind.INT8_ELEMENTS: _masm.Movsxbl(rax, slot); break;
+            case ElementsKind.UINT8_ELEMENTS or ElementsKind.UINT8_CLAMPED_ELEMENTS: _masm.Movzxbl(rax, slot); break;
+            case ElementsKind.INT16_ELEMENTS: _masm.Movsxwl(rax, slot); break;
+            case ElementsKind.UINT16_ELEMENTS: _masm.Movzxwl(rax, slot); break;
+            case ElementsKind.INT32_ELEMENTS or ElementsKind.UINT32_ELEMENTS: _masm.Movl(rax, slot); break;
+            case ElementsKind.FLOAT32_ELEMENTS:
+                _masm.Movss(xmm0, slot);
+                _masm.Cvtss2sd(xmm0, xmm0);
+                StoreFloat64Result(r, xmm0);
+                return;
+            default:
+                _masm.Movsd(xmm0, slot);
+                StoreFloat64Result(r, xmm0);
+                return;
+        }
+        StoreInt32Result(r, rax);
+    }
+
+    void EmitStoreTypedElement(Node node)
+    {
+        var kind = (ElementsKind)node.Int0;
+        int size = TypedElementSize(kind);
+        ValueNode stored = node.Inputs[2];
+        // The value first (it may use r11), into rsi-free scratch: eax or xmm0.
+        bool floatKind = kind is ElementsKind.FLOAT32_ELEMENTS or ElementsKind.FLOAT64_ELEMENTS;
+        if (floatKind)
+        {
+            LoadFloat64(stored, xmm0);
+            if (kind == ElementsKind.FLOAT32_ELEMENTS) _masm.Cvtsd2ss(xmm0, xmm0);
+        }
+        else
+        {
+            if (!IsInt32Stored(stored)) throw Unsupported("typed store of a double into an integer kind");
+            LoadInt32(stored, rax);
+            if (kind == ElementsKind.UINT8_CLAMPED_ELEMENTS)
+            {
+                // value < 0 ? 0 : value > 255 ? 255 : value.
+                _masm.Movl(rdx, 0);
+                _masm.Cmpl(rax, 0);
+                _masm.Cmovl(Condition.less, rax, rdx);
+                _masm.Movl(rdx, 255);
+                _masm.Cmpl(rax, 255);
+                _masm.Cmovl(Condition.greater, rax, rdx);
+            }
+            // (Kept out of the address computation's registers.)
+            _masm.Movq(new Operand(rbx, kMoveTempSlot * 8), rax);
+        }
+        EmitTypedElementAddress(node, size);
+        var slot = new Operand(rcx, 0);
+        if (floatKind)
+        {
+            if (kind == ElementsKind.FLOAT32_ELEMENTS) _masm.Movss(slot, xmm0);
+            else _masm.Movsd(slot, xmm0);
+            return;
+        }
+        _masm.Movq(rax, new Operand(rbx, kMoveTempSlot * 8));
+        switch (size)
+        {
+            case 1: _masm.Movb(slot, rax); break;
+            case 2: _masm.Movw(slot, rax); break;
+            default: _masm.Movl(slot, rax); break;
+        }
+    }
+
+    /// <summary>The 0/1 of ToBoolean in eax for oddballs, numbers and receivers; others jump to <paramref name="slow"/>.</summary>
+    bool EmitToBooleanFast(ValueNode input, XLabel slow)
+    {
+        if (!input.IsConstant && V(input).Repr != ValueRepresentation.kTagged) return false;
+        XLabel done = _masm.NewLabel(), notNumber = _masm.NewLabel();
+        LoadTaggedPtr(input, rcx);
+        _masm.Movl(rax, 0);
+        _masm.Testq(rcx, rcx);
+        _masm.J(Condition.equal, done);
+        foreach ((int index, int result) in new[] { (kConstTrue, 1), (kConstFalse, 0), (kConstNull, 0) })
+        {
+            LoadConstantAddress(rdx, index);
+            _masm.Movl(rax, result);
+            _masm.Cmpq(rcx, rdx);
+            _masm.J(Condition.equal, done);
+        }
+        LoadConstantAddress(rdx, kConstNumberTag);
+        _masm.Cmpq(rcx, rdx);
+        _masm.J(Condition.not_equal, notNumber);
+        // A number: neither 0 nor NaN (unordered sets ZF).
+        LoadTaggedBits(input, rdx);
+        _masm.Movq(xmm0, rdx);
+        _masm.Xorpd(xmm1, xmm1);
+        _masm.Ucomisd(xmm0, xmm1);
+        _masm.Setcc(Condition.not_equal, rax);
+        _masm.Movzxbl(rax, rax);
+        _masm.Jmp(done);
+        _masm.Bind(notNumber);
+        // A receiver: unless its map is undetectable (MaglevBuiltins.ToBoolean).
+        _masm.Movzxwl(rdx, new Operand(rcx, NativeLayout.HeapObjectInstanceType));
+        _masm.Cmpl(rdx, (int)InstanceTypeChecks.FirstJSReceiver);
+        _masm.J(Condition.below, slow);
+        _masm.Movq(rdx, new Operand(rcx, NativeLayout.JSReceiverMap));
+        _masm.Movzxbl(rdx, new Operand(rdx, NativeLayout.MapBitField));
+        _masm.Testl(rdx, Map.Bits1.IsUndetectableBit);
+        _masm.Setcc(Condition.equal, rax);
+        _masm.Movzxbl(rax, rax);
+        _masm.Bind(done);
+        return true;
+    }
+
+    bool EmitToBooleanNodeFastPath(Node node, XLabel slow, XLabel done)
+    {
+        if (!EmitToBooleanFast(node.Inputs[0], slow)) return false;
+        if (node.Opcode == Opcode.ToBooleanLogicalNot) _masm.Xorl(rax, 1);
+        StoreTaggedBoolean(V((ValueNode)node));
+        _masm.Jmp(done);
+        return true;
+    }
+
+    void EmitExitStores(List<Val> stores)
+    {
+        foreach (Val v in stores)
+        {
+            if (v.InGp) _masm.Movl(HomeOp(v), v.Gp);
+            else _masm.Movsd(HomeOp(v), v.XmmReg);
+        }
+    }
+
+    /// <summary>
+    /// The inline path of a store: a number into a slot holding a number
+    /// writes only the payload (NaN canonical for a Double field, as
+    /// MaglevBuiltins.StoreDoubleField); anything else jumps to
+    /// <paramref name="slow"/>. False when the store has no such path.
+    /// </summary>
+    bool EmitStoreNumberFastPath(Node node, XLabel slow, XLabel done)
+    {
+        // (Decided before any code: a jump to slow must have the slow path.)
+        ValueNode value = node.Opcode switch
+        {
+            Opcode.StoreTaggedField => node.Inputs[1],
+            Opcode.StoreFixedArrayElement => node.Inputs[2],
+            _ => node.Inputs[1],
+        };
+        if (value.IsConstant ? !value.ConstantValue().IsNumber : V(value).Repr == ValueRepresentation.kHoleyFloat64) return false;
+        if (node.Opcode == Opcode.StoreTaggedField && node.Int0 < JSObject.kPropertyArrayStorageBase && !InObjectLayout.IsContiguous) return false;
+        switch (node.Opcode)
+        {
+            case Opcode.StoreTaggedField:
+            {
+                int storage = node.Int0;
+                LoadTaggedPtr(node.Inputs[0], rcx);
+                int offset;
+                if (storage >= JSObject.kPropertyArrayStorageBase)
+                {
+                    int k = storage - JSObject.kPropertyArrayStorageBase;
+                    _masm.Movq(rcx, new Operand(rcx, NativeLayout.JSObjectFields));
+                    _masm.Cmpl(new Operand(rcx, NativeLayout.ArrayLength), k);
+                    _masm.J(Condition.below_equal, slow);
+                    offset = NativeLayout.ArrayData + k * 16;
+                }
+                else
+                {
+                    offset = NativeLayout.InObjectSlots + storage * 16;
+                }
+                _masm.Leaq(rcx, new Operand(rcx, offset));
+                break;
+            }
+            case Opcode.StoreFixedArrayElement:
+                EmitElementAddress(node, NativeLayout.FixedArrayData, 16);
+                _masm.Leaq(rcx, new Operand(rcx, NativeLayout.ArrayData));
+                break;
+            case Opcode.StoreContextSlot:
+                LoadTaggedPtr(node.Inputs[0], rax);
+                for (int d = 0; d < node.Int1; d++)
+                {
+                    _masm.Movq(rcx, new Operand(rax, NativeLayout.ContextSlots));
+                    _masm.Movq(rax, new Operand(rcx, NativeLayout.ArrayData + (int)Context.Field.PREVIOUS_INDEX * 16));
+                }
+                _masm.Movq(rcx, new Operand(rax, NativeLayout.ContextSlots));
+                _masm.Cmpl(new Operand(rcx, NativeLayout.ArrayLength), node.Int0);
+                _masm.J(Condition.below_equal, slow);
+                _masm.Leaq(rcx, new Operand(rcx, NativeLayout.ArrayData + node.Int0 * 16));
+                break;
+            default:
+                return false;
+        }
+        // rcx: the slot. The value a number (its bits in rdx), the slot a number.
+        LoadTaggedPtr(value, rax);
+        LoadConstantAddress(r11, kConstNumberTag);
+        _masm.Cmpq(rax, r11);
+        _masm.J(Condition.not_equal, slow);
+        _masm.Cmpq(new Operand(rcx, 0), r11);
+        _masm.J(Condition.not_equal, slow);
+        LoadTaggedBits(value, rdx);
+        if (node.Opcode == Opcode.StoreTaggedField && node.Int1 != 0)
+        {
+            XLabel store = _masm.NewLabel();
+            _masm.Movq(xmm0, rdx);
+            _masm.Ucomisd(xmm0, xmm0);
+            _masm.J(Condition.parity_odd, store);
+            _masm.Movq(rdx, BitConverter.DoubleToInt64Bits(JSValue.QuietNaN));
+            _masm.Bind(store);
+        }
+        _masm.Movq(new Operand(rcx, 8), rdx);
+        _masm.Jmp(done);
+        return true;
+    }
+
     /// <summary>A tagged JSValue at <paramref name="slot"/> into the home of <paramref name="r"/> (and its kind).</summary>
     void EmitLoadTaggedSlot(Val r, Operand slot)
     {
@@ -2640,7 +3359,8 @@ internal sealed class MaglevNativeCodeGenerator
         _masm.Movq(rax, slot);
         _masm.Movq(HomeOp(r, 1), rdx);
         _masm.Movq(HomeOp(r), rax);
-        if (r.NeedsKind) EmitClassify(r);
+        ClearSnapshot(r);
+        if (r.NeedsKind || _inlineStores) EmitClassify(r);
     }
 
     /// <summary>Jumps to <paramref name="notReceiver"/> unless the address in rax is a JSReceiver's (clobbers rcx).</summary>
@@ -2731,6 +3451,13 @@ internal sealed class MaglevNativeCodeGenerator
             Reason = node.EagerDeoptInfo is { } e2 ? (int)e2.Reason : 0,
         };
         if (node.Int0 == 1 && interrupt.DeoptIndex < 0) throw Unsupported("interrupt check without deopt info");
+        if (node.Int0 != 1)
+        {
+            var keep = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
+            foreach (Val v in live) keep.Add(v.Node);
+            if (node.EagerDeoptInfo is { } fs) DeoptUses(fs, keep);
+            interrupt.Snapshot = SnapshotList(keep);
+        }
         var poll = new NativeExit { Kind = NativeExitKind.kPoll, ResumeId = resumeInterrupt, TaggedLive = interrupt.TaggedLive };
         // The stub stores the live values and, for the deopt an interrupt can
         // take, the frame state's (which may be dead after the check).
@@ -2782,6 +3509,10 @@ internal static class NativeLayout
     /// <summary>The first in-object slot (JSObjectInObject1._slots0; the others follow, InObjectLayout.IsContiguous).</summary>
     public static readonly int InObjectSlots;
     public static readonly int ContextSlots;
+    public static readonly int PropertyCellValue;
+    public static readonly int MapBitField;
+    public static readonly int ViewBuffer, ViewByteOffset, ViewIsLengthTracking, ViewIsBackedByRab, TypedArrayRawLength;
+    public static readonly int BufferWasDetached, BufferIsImmutable, BufferBackingStore, BackingStoreBuffer;
 
     static NativeLayout()
     {
@@ -2795,6 +3526,22 @@ internal static class NativeLayout
         InObjectSlots = FieldOffsets.Of(inObject, ref InObjectLayout.First(inObject));
         var context = (Context)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Context));
         ContextSlots = FieldOffsets.Of(context, ref System.Runtime.CompilerServices.Unsafe.AsRef(in context.Slots));
+        var cell = (PropertyCell)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PropertyCell));
+        PropertyCellValue = FieldOffsets.Of(cell, ref cell.Value);
+        var map = (Map)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Map));
+        MapBitField = FieldOffsets.Of(map, ref map.BitField);
+        var typed = (JSTypedArray)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(JSTypedArray));
+        ViewBuffer = FieldOffsets.Of(typed, ref typed.Buffer);
+        ViewByteOffset = FieldOffsets.Of(typed, ref typed.ByteOffset);
+        ViewIsLengthTracking = FieldOffsets.Of(typed, ref typed.IsLengthTracking);
+        ViewIsBackedByRab = FieldOffsets.Of(typed, ref typed.IsBackedByRab);
+        TypedArrayRawLength = FieldOffsets.Of(typed, ref typed.RawLength);
+        var buffer = (JSArrayBuffer)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(JSArrayBuffer));
+        BufferWasDetached = FieldOffsets.Of(buffer, ref buffer.WasDetached);
+        BufferIsImmutable = FieldOffsets.Of(buffer, ref buffer.IsImmutable);
+        BufferBackingStore = FieldOffsets.Of(buffer, ref buffer._backingStore);
+        var store = (BackingStore)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(BackingStore));
+        BackingStoreBuffer = FieldOffsets.Of(store, ref store._buffer);
         var fixedArray = (FixedArray)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(FixedArray));
         FixedArrayData = FieldOffsets.Of(fixedArray, ref fixedArray._data);
         var doubleArray = (FixedDoubleArray)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(FixedDoubleArray));

@@ -837,10 +837,12 @@ for now, to be revisited when the reason goes away.
   place and also counts a poll budget (2^20 back edges) after which it
   returns and re-enters, so that a GC another thread requests is not held
   off (native code runs in cooperative mode, where no GC can start).
-- After serving interrupts that may run code (the check of a loop with
-  calls), code that rebuilds values by repeating loads deoptimizes instead
-  of resuming (the interrupt could have changed what the loads read); V8
-  resumes its loop. Code without such values resumes.
+- Calls and generic operations of natively compiled graphs run in managed
+  code behind an exit and a resume (V8's Maglev calls the builtin or the
+  callee from machine code); they are allowed only outside loops, except
+  stores and ToBoolean, which have inline paths. Values rebuilt by
+  repeating a load are snapshotted before such an exit (and before an
+  interrupt that may run code), since it may change what the load reads.
 - Code memory: native code is bump-allocated in mmap'd read/write/execute
   chunks and never freed (V8 collects Code objects; V8Sharp's IL code is
   not collected either). After 512 MB of native code new graphs are
