@@ -16,7 +16,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 dotnet_root="$(cd "$here/../.." && pwd)"
-dll="${BENCH_DLL:-$dotnet_root/tools/V8Sharp.Bench/bin/Release/net10.0/V8Sharp.Bench.dll}"
+dll="${BENCH_DLL:-$dotnet_root/tools/V8Sharp.Bench/bin/Release/net11.0/V8Sharp.Bench.dll}"
 lock="${BENCH_LOCK:-/home/user/locks/bench.lock}"
 out_dir="$dotnet_root/artifacts/bench"
 mkdir -p "$out_dir"

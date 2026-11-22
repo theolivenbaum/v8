@@ -4,6 +4,7 @@
     <Project Path="src/V8Sharp.Parsing/V8Sharp.Parsing.csproj" />
     <Project Path="src/V8Sharp.RegExp/V8Sharp.RegExp.csproj" />
     <Project Path="src/V8Sharp.Wasm/V8Sharp.Wasm.csproj" />
+    <Project Path="src/V8Sharp.Codegen/V8Sharp.Codegen.csproj" />
     <Project Path="src/V8Sharp/V8Sharp.csproj" />
     <Project Path="src/V8Sharp.D8/V8Sharp.D8.csproj" />
     <Project Path="src/V8Sharp.Oracle/V8Sharp.Oracle.csproj" />

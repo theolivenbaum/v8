@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>V8Sharp.Codegen</RootNamespace>
+    <!-- Unsafe code (CLAUDE.md rule 5): this project is the machine-code layer
+         of the native Maglev backend. It maps executable memory (mmap), calls
+         generated code through an unmanaged function pointer and pins the
+         managed arrays that code reads for the duration of the call. None of
+         that has a safe equivalent in .NET; everything else in the engine
+         stays safe and sees only the safe API of NativeCode. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="V8Sharp" />
+    <InternalsVisibleTo Include="V8Sharp.Tests" />
+  </ItemGroup>
+
+</Project>

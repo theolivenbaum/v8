@@ -3000,6 +3000,145 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
   benchmark but CodeLoad (-8%) and Typescript (-1%), and Maglev is
   ahead of the baseline tier everywhere but CodeLoad (+1%, equal).
 
+- [~] Native Maglev backend (architecture.md 9.3; src/V8Sharp.Codegen,
+      Maglev/MaglevNativeCodeGenerator.cs, Maglev/MaglevNativeCode.cs), on
+      by default (`--maglev-native`; `--no-maglev-native` keeps the IL
+      backend for every graph). Port of maglev-code-generator.cc and the x64
+      GenerateCode of maglev-ir-x64.cc on an x64 assembler (assembler-x64.cc's
+      names, Ryu's encoder), with Ryu's native-code rules: native code never
+      calls managed code and writes no references; anything else is an exit
+      (deopt through the Deoptimizer, or a resumable exit for interrupts and
+      GC polls); tagged values are rebuilt at exits from their sources.
+      Linear-scan register allocation; frameless direct entry; lazily
+      pushed inlined frames. Native: int32/float64 arithmetic and checks,
+      Math.floor/ceil/round/trunc/sqrt/abs/min/max, double `%`, ToInt32,
+      conversions, compares and branches, map/Smi/number/string/value checks,
+      element (fixed, double), field, context-slot and map loads, double
+      element stores. Graphs with a loop only by default
+      (`--maglev-native-loops-only`).
+      Tests: Codegen/AssemblerX64Test.cs (encodings vs objdump, execution),
+      Maglev/MaglevNativeTest.cs (snippets and random programs: interpreter
+      vs IL vs native; V8SHARP_NATIVE_FUZZ=n).
+      Verification (2026-11-22): unit tests all pass; 1000 random programs
+      agree in the three configurations; mjsunit with the defaults: 0 newly
+      failing (8902 run); with every supported graph native
+      (`--extra-flags "--no-maglev-native-loops-only"`): 0 newly failing,
+      1 newly passing (wasm/gc-js-interop-objects, also in the default run);
+      an independent review found 4 liveness/invariance bugs (values a
+      Return or a migrating CheckMaps rebuilds were not kept live, interrupt
+      exits did not store their deopt values, an interrupt that runs code
+      could change what reload-rebuilt values read): fixed, with tests.
+      Native-to-native calls (a known call of a callee with native code and
+      a frameless entry is a machine call; other callee exits continue on
+      the managed side), a cheaper entry (pinned addresses cached, parameters
+      read in the frame, number returns in a context word), elided
+      allocations captured by deopts, allocations (InlinedAllocation,
+      FastNewObject) and StoreDoubleField as managed nodes. Leaf call from
+      native code: 8-9 ns vs IL 7.8 ns (was 13-21 ns through the managed side).
+      Verified: unit tests all pass; MaglevNativeTest with 1000 random
+      programs; mjsunit (8902 run) 0 newly failing with the defaults and
+      with `--no-maglev-native-loops-only` (which also newly passes
+      turboshaft/regress-380487911).
+      Benchmark (2026-11-22, parity publish, octane-steady + micro:native,
+      3 interleaved runs, one session with V8 14.7; fingerprint: Xeon 2.10GHz,
+      steal 0%, cpu-cal 595/574 ms, mem-bw 47 GB/s). Octane geomean (no
+      latencies): native 1.01x the IL backend, 0.38x V8 Maglev
+      (`--no-turbofan`), 0.31x V8 full JIT; IL 0.38x / 0.30x. Per benchmark
+      vs V8 Maglev: NavierStokes 1.08, CodeLoad 0.95, zlib 0.70, Crypto 0.53,
+      RayTrace 0.44, Splay 0.44, Gameboy 0.35, Box2D 0.34, Mandreel 0.28,
+      RegExp 0.27, PdfJS 0.26, Richards 0.25, Typescript 0.25, EarleyBoyer
+      0.23, DeltaBlue 0.22. micro:native geomean: native 0.90x IL, 0.66x V8
+      Maglev, 0.50x V8 jit (IntSum 1.09x and Mandelbrot 0.91x V8 Maglev;
+      FieldSum 0.65x and Mandelbrot 0.71x IL). Before the profile fixes
+      (in-activation checks, concurrent IL replacement, direct calls only to
+      number-returning callees) the same session gave native 0.94x IL
+      (Mandreel 0.56x, DeltaBlue 0.73x).
+      Coverage round (2026-11-22, commits 0d5ff30b..bb223bcc): type tests,
+      string length/charCodeAt, fixed array lengths, CheckedObjectToIndex and
+      MaybeGrowFastElements without growth native; StoreMapTransition,
+      TransitionElementsKind, HasInPrototypeChain, MigrateMapIfNeeded,
+      Float64Exponentiate/Ieee754Unary, StoreRegister, SetCurrentContext and
+      CheckMapsWithMigration as managed nodes; calls in inlined functions
+      (the managed side pushes the inlined frames); per-depth activation
+      buffers and builtin thunks make exits cheaper. Fixed: frameless
+      ToBoolean exits (pdfjs with every graph native; a pre-existing bug),
+      MaybeGrowFastElements liveness, an inlined function without a
+      new.target register. Verified: unit tests, 1000 random programs,
+      mjsunit 0 newly failing in both configurations, all of Octane correct
+      with and without --maglev-native-loops-only.
+      Benchmark (same session as V8, parity publish, octane-steady 3 runs,
+      steal 0%, cpu-cal 478/554 ms): native 0.96x IL, 0.36x V8 Maglev;
+      every graph native (--no-maglev-native-loops-only) 0.89x IL, 0.34x V8
+      Maglev (Richards 0.58x, Gameboy 0.72x IL), so loops-only stays the
+      default. micro:native: native 0.65x V8 Maglev (IntSum 1.15x, NavierStokes
+      1.06x). Open: Box2D 0.70x IL (2297 vs 2745 before this round, octane-quick
+      A/B): about 18 of its functions are native now and some lose to IL
+      without managed exits (L.InitVelocityConstraints consistently);
+      V8SHARP_MAGLEV_NATIVE_FILTER and V8SHARP_MAGLEV_NATIVE_EXIT_STATS=1
+      attribute such losses. Calls stay exits (native code cannot call
+      managed code): a managed call costs about 36 ns against IL's 18 ns,
+      which is the main gap to V8 Maglev on call-heavy code.
+      Mutation check (tools/maglev-native/mutations.py, 16 planted bugs): 14
+      caught; the other 2 (register sharing at one position, deopt-only uses
+      not extended within a block) are equivalent in the graphs Maglev builds,
+      whose eager frame states hold tagged checkpoint values or loop phis
+      that live across the loop.
+      Measured (micro:native, warm, 3 interleaved runs, same session as V8,
+      bin/ builds; calls per second): native vs IL backend: IntHash +36%,
+      Mandelbrot +28%, IntSum -8%, Dot -6%, FieldSum -6% (IL in both: it
+      needs LoadDoubleField), Roots -2%, CallLeaf 0%, Axpy -37%; geomean -2%
+      (68044 vs 69338; V8 --no-turbofan 119210, V8 jit 153200). Code
+      generation per graph (the same 36-99 node graphs): 0.1-1.3 ms native vs
+      1.6-9.0 ms IL emission + RyuJIT, about 4-8x less (the native
+      generator's own first JIT adds ~40 ms once per process). Octane: 20 of
+      1697 graphs are native with the defaults (kernels with loops; the rest
+      need calls, stores or allocation), score unchanged within noise.
+      Coverage pass (2026-11-22, .NET 11): managed nodes (a node the
+      managed side runs between an exit and a resume: CallBuiltin,
+      CallKnownJSFunction, stores, ToBoolean, typeof tests, string and typed
+      array lengths, instance type checks), allowed outside loops and, for
+      stores (number over number inline) and ToBoolean (oddballs, numbers,
+      receivers inline), inside loops; snapshots of reload-rebuilt values
+      before code that may change the heap; slot loads keep their kind when
+      stores are inline; lazy deopts after managed calls; native typed arrays
+      (length, validity, every integer kind, Float32/64), Double fields,
+      property cells, ConvertHoleToUndefined; managed nodes that neither call
+      nor throw in inlined functions. Octane: 96 of 1665 graphs native (was
+      20); the rest: 991 without a loop (leaves stay IL), calls in loops,
+      calls in inlined functions, allocation. mjsunit found 4 bugs of the
+      pass (a context slot reloaded after an inline store overwrote it, the
+      hole lost through a resume, untagged managed results read as
+      snapshots, a managed node's own value live before it): fixed, with tests.
+      Run-time profile (Ryu-style): native code counts calls, managed exits
+      and loop back edges; a function that takes a managed exit for fewer
+      than 256 back edges goes back to IL (Crypto's BigInteger helpers,
+      Box2D/Mandreel functions).
+      Measured on .NET 11 (2026-11-22, octane-quick and micro:native, warm,
+      3 interleaved runs per session, bin/ builds, same host; geomeans
+      without the latency rows):
+        - .NET 11 vs .NET 10 (same code): micro kernels +25% (both
+          backends; FieldSum 3x), Octane +4-8%.
+        - native vs IL backend: micro kernels 87-90% of IL (IntHash
+          +36%; Axpy, Mandelbrot, FieldSum behind), Octane 90% of IL
+          before the profile; after it, rows move -27%..+29% between sessions
+          (Splay, Box2D, NavierStokes ahead; Richards, Gameboy, Mandreel
+          behind): within this host's noise on the geomean, not a win.
+        - against V8 (same session): both V8Sharp backends reach about
+          20-24% of V8's full pipeline and 24-29% of V8 --no-turbofan on
+          Octane, about 50% of V8 / 70-75% of V8 Maglev on the loop kernels.
+      Same performance as V8 is far off: the gap is in call-heavy object
+      code (DeltaBlue 1/11, PdfJS 1/9 of V8), which both backends leave to
+      calls through C# helpers; it needs native-to-native calls and inline
+      property access/allocation in native code, not better loops.
+      Open: calls in loops (native-to-native calls, or a cheaper exit), leaves
+      (a cheaper entry), allocation (InlinedAllocation), CheckMaps with
+      migration, MaybeGrowFastElements, element kind transitions.
+      Open (first pass): calls (a resumable exit that runs the node in managed code, with
+      its tagged result in the spill array), typed arrays, stores of
+      references (number-over-number field stores need no barrier), ToBoolean
+      of tagged values, LoadDoubleField, CheckMaps with migration, OSR entry
+      without the frame; a faster entry (the per-call transition is what
+      keeps leaves in IL); code memory is never freed.
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays
 - [ ] Benchmarks: test/js-perf-test, JetStream-like, against the oracle
 

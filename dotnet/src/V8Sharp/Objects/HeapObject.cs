@@ -27,6 +27,10 @@ public abstract class HeapObject(InstanceType instanceType)
     /// </summary>
     private protected byte _headerFlags;
 
+    /// <summary>The hash word and the flag byte by reference (their offsets for native code: NativeLayout).</summary>
+    internal ref uint RawHashField => ref _hashField;
+    internal ref byte RawHeaderFlags => ref _headerFlags;
+
     public bool IsString => InstanceTypeChecks.IsString(InstanceType);
     public bool IsName => InstanceTypeChecks.IsName(InstanceType);
     public bool IsJSReceiver => InstanceTypeChecks.IsJSReceiver(InstanceType);

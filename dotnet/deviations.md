@@ -808,6 +808,76 @@ for now, to be revisited when the reason goes away.
   split code keep the per-access loads. `V8SHARP_MAGLEV_NO_ELEMENTS_DATA=1`
   turns both off.
 
+### Native Maglev backend (architecture.md section 9.3)
+
+- V8's Maglev always emits machine code. V8Sharp emits machine code only for
+  graphs the native backend supports (numbers, element, field and context
+  loads, double stores, checks, branches, lazy inlined frames, and calls,
+  stores and allocations through managed nodes) and, by
+  default, only for graphs with a loop (`--maglev-native-loops-only`); every
+  other graph is IL (section 9.2), as is every graph with
+  `--no-maglev-native` or off Linux x64. Why: native code cannot call
+  managed code or write object references without the GC's cooperation,
+  so calls, allocation and reference stores stay in IL, and a leaf's entry
+  transition costs more than RyuJIT's code it would replace.
+- Register allocation: a linear scan with one location per value (register
+  or home slot) over the block order, not V8's StraightForwardRegisterAllocator
+  (node-by-node allocation with spill slots and register merge states at
+  joins). Simpler, makes every exit a few stores; tagged values live in
+  memory homes, not registers.
+- Deopt and interrupt exits: V8's deoptimizer reads the optimized frame's
+  stack slots and registers through the safepoint and translation tables.
+  Native code stores its register values to their homes and returns; the
+  managed side rebuilds tagged values from their sources (frame slots,
+  constants, number bits, repeated pure loads) rather than from addresses,
+  which a GC could move. Graphs whose exits need a value that cannot be
+  rebuilt (a tagged phi of several objects, or of a varying element load)
+  are generated as IL.
+- Interrupts: V8's loop interrupt check is a stack-limit compare with a
+  deferred runtime call. Native code compares the stack guard's flag word in
+  place and also counts a poll budget (2^20 back edges) after which it
+  returns and re-enters, so that a GC another thread requests is not held
+  off (native code runs in cooperative mode, where no GC can start).
+- Calls and generic operations of natively compiled graphs run in managed
+  code behind an exit and a resume (V8's Maglev calls the builtin or the
+  callee from machine code); they are allowed only outside loops, except
+  stores, ToBoolean and known calls, which have inline paths. Values rebuilt
+  by repeating a load are snapshotted before such an exit (and before an
+  interrupt that may run code), since it may change what the load reads.
+- Native-to-native calls: a known call whose callee has native code with a
+  frameless entry calls it with a machine `call`, as V8's Maglev calls the
+  callee's code entry, but the callee's pseudo-frame (closure, context,
+  receiver, arguments) and its context are written into the caller's
+  pinned context rather than pushed on the machine stack, and only a
+  callee that returns a number continues the caller at once: any other
+  exit of the callee (a deopt, a poll, a non-number return) leaves the
+  caller through the call's managed node, which continues the callee from
+  a copy of its context (MaglevNativeCode.ContinueFrameless). The callee is
+  checked at every call (the feedback vector's code, its native code, its
+  arity, its context size), as the IL's direct call checks the delegate.
+- Calls and throws in inlined functions: native code never pushes the
+  inlined functions' interpreter frames (V8's optimized frame holds them
+  implicitly); the managed side pushes them around such a node and pops
+  them after it, so stack walks see them as with the IL's lazy frames.
+- Frame writes (StoreRegister, SetCurrentContext) are managed nodes: native
+  code writes no references into the frame.
+- Allocation: native code allocates nothing (the CLR allocates managed
+  objects); InlinedAllocation and FastNewObject are managed nodes, so graphs
+  that allocate in a loop are IL. Elided allocations (escape analysis) need
+  no code and their deopts capture them, as V8's.
+- Code memory: native code is bump-allocated in mmap'd read/write/execute
+  chunks and never freed (V8 collects Code objects; V8Sharp's IL code is
+  not collected either). After 512 MB of native code new graphs are
+  generated as IL.
+- Element and PropertyArray loads and stores check the index against the
+  CLR array's length and abort with an IndexOutOfRangeException when the
+  graph's own checks let an out-of-bounds index through, as the IL
+  backend's array access throws (V8 has no such check: its bounds checks
+  are the graph's).
+- Float64Modulus (`%` of doubles): x87 fprem, exact as fmod (V8 calls
+  base::Modulo); a NaN dividend is returned quieted, as glibc's fmod does
+  (fprem picks the NaN with the bigger payload when both are NaN).
+
 ## Interpreter execution, ICs, runtime, compiler and modules
 
 - Megamorphic keyed loads (`KeyedLoadIC.LoadGeneric`, port of

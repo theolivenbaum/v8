@@ -7,8 +7,8 @@ V8 14.7 through ClearScript), one process per measurement, and prints scores
 ```bash
 tools/V8Sharp.Bench/fetch-octane.sh                      # Octane 2.0 -> dotnet/artifacts/octane
 dotnet build -c Release tools/V8Sharp.Bench
-dotnet tools/V8Sharp.Bench/bin/Release/net10.0/V8Sharp.Bench.dll list
-dotnet tools/V8Sharp.Bench/bin/Release/net10.0/V8Sharp.Bench.dll compare \
+dotnet tools/V8Sharp.Bench/bin/Release/net11.0/V8Sharp.Bench.dll list
+dotnet tools/V8Sharp.Bench/bin/Release/net11.0/V8Sharp.Bench.dll compare \
     --suites octane:richards,perf:Operators --engines v8:jit,v8:jitless,v8sharp --runs 3
 ```
 
@@ -55,7 +55,7 @@ ReadyToRun and 110 ms ReadyToRun composite self-contained. Both
 ```bash
 dotnet publish -c Release src/V8Sharp.D8 -r linux-x64 --self-contained false -o artifacts/d8-r2r
 dotnet publish -c Release tools/V8Sharp.Bench -r linux-x64 --self-contained false -o artifacts/bench-r2r
-dotnet tools/V8Sharp.Bench/bin/Release/net10.0/V8Sharp.Bench.dll compare --suites octane \
+dotnet tools/V8Sharp.Bench/bin/Release/net11.0/V8Sharp.Bench.dll compare --suites octane \
     --engines v8sharp@artifacts/bench-r2r,d8sharp@artifacts/d8-r2r,v8:jitless --runs 3
 ```
 

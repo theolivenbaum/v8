@@ -33,7 +33,22 @@ public sealed class StackGuard(Isolate isolate)
     }
 
     readonly Isolate _isolate = isolate;
-    int _interruptFlags;
+    // The flag word lives on the pinned object heap: native Maglev code polls
+    // it at loop back edges through its fixed address (MaglevNativeCode).
+    readonly int[] _interruptFlagsBox = GC.AllocateArray<int>(1, pinned: true);
+
+    ref int _interruptFlags
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => ref System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(_interruptFlagsBox);
+    }
+
+    nint _interruptFlagsAddress;
+
+    /// <summary>The address of the interrupt flag word (pinned).</summary>
+    internal nint InterruptFlagsAddress => _interruptFlagsAddress != 0
+        ? _interruptFlagsAddress
+        : _interruptFlagsAddress = System.Runtime.InteropServices.Marshal.UnsafeAddrOfPinnedArrayElement(_interruptFlagsBox, 0);
     readonly Queue<(Action<Isolate, object?> Callback, object? Data)> _apiInterrupts = new();
 
     /// <summary>True if any interrupt is requested (V8: the JS stack limit was lowered).</summary>

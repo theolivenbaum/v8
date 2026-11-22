@@ -202,11 +202,16 @@ public sealed class MaglevCode
     /// <summary>The region methods of code split for RyuJIT's limits (MaglevCodeGenerator.Regions.cs), or null.</summary>
     public System.Reflection.MethodInfo[]? RegionMethods { get; internal set; }
 
+    /// <summary>The native code (MaglevNativeCodeGenerator), or null for IL code.</summary>
+    internal MaglevNativeCode? Native;
+    public bool IsNative => Native is not null;
+    public int NativeCodeSize => Native?.CodeSize ?? 0;
+
     public int ILSize { get; internal set; }
     /// <summary>What RyuJIT's optimization limits count (MaglevILEmitter), for --trace-opt-verbose.</summary>
     public (int Instructions, int BlockBoundaries, int LocalReferences, int Locals) ILCounts { get; internal set; }
     public int NodeCount { get; internal set; }
     public int InlinedFunctionCount { get; internal set; }
 
-    public override string ToString() => $"<MaglevCode {MaglevCompiler.DebugName(SharedFunctionInfo)}{(OsrOffset >= 0 ? " OSR@" + OsrOffset : "")}>";
+    public override string ToString() => $"<MaglevCode {MaglevCompiler.DebugName(SharedFunctionInfo)}{(OsrOffset >= 0 ? " OSR@" + OsrOffset : "")}{(IsNative ? " native" : "")}>";
 }
