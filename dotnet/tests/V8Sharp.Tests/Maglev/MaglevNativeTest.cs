@@ -439,6 +439,26 @@ public class MaglevNativeTest
     }
 
     [Fact]
+    public void FramelessCodeRunsItsToBooleanBranches()
+    {
+        // A leaf entered through its frameless direct entry whose ToBoolean
+        // branch goes to the managed side (strings): the branch takes its
+        // result before the code resumes.
+        const string kNoInline = " --max-maglev-inlined-bytecode-size=0 --max-maglev-inlined-bytecode-size-small=0";
+        string source = kPrelude + """
+            function aw(cond, k) { if (!cond) return k * 2; return k + 1; }
+            function caller(vals) { let s = 0; for (let i = 0; i < vals.length; i++) s += aw(vals[i], i); return s; }
+            opt(aw, [true, 1], [false, 2], [1, 3], [0, 4]);
+            const vals = [true, false, 1, 0, 'a', '', null, undefined, {}, NaN, 2.5, [], -0, 'xyz', ''];
+            opt(caller, [vals]); rec(caller(vals)); rec(caller(['a', '', 'b', '']));
+            out.join('|')
+            """;
+        string interpreted = MaglevCompilerTest.Run(kInterpreter, source);
+        Assert.Equal(interpreted, MaglevCompilerTest.Run(kIL + kNoInline, source));
+        Assert.Equal(interpreted, MaglevCompilerTest.Run(kNative + kNoInline, source));
+    }
+
+    [Fact]
     public void InterruptsAreServedAndTheLoopResumes()
     {
         // API interrupts requested from another thread while a native loop

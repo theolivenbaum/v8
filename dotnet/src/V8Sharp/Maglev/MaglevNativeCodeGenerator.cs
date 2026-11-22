@@ -300,7 +300,7 @@ internal sealed class MaglevNativeCodeGenerator
         }
         foreach (Val? v in _vals)
         {
-            if (v is not null && v.Node.Opcode == Opcode.InitialValue && !v.NeedsKind && !written.Contains(v.Node.Int0)) v.InFrame = true;
+            if (v is not null && v.Node.Opcode == Opcode.InitialValue && !v.NeedsKind && !written.Contains(v.Node.Int0) && !s_noInFrame) v.InFrame = true;
         }
         AllocateRegisters();
 
@@ -615,11 +615,17 @@ internal sealed class MaglevNativeCodeGenerator
     /// <summary>Functions whose native code lost to the IL backend at run time (MaglevNativeCode.Profile).</summary>
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SharedFunctionInfo, object> s_declinedAtRunTime = new();
 
+    static readonly bool s_noInFrame = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_NO_INFRAME") == "1";
+    static readonly bool s_noThunks = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_NO_THUNKS") == "1";
+    static readonly string[]? s_filter = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_FILTER")?.Split('|');
+
     internal static void DeclineAtRunTime(SharedFunctionInfo shared) => s_declinedAtRunTime.AddOrUpdate(shared, shared);
 
     void CheckSupported()
     {
         if (s_declinedAtRunTime.TryGetValue(_info.Toplevel.SharedFunctionInfo, out _)) throw Unsupported("managed exits outweighed its loops at run time");
+        // (Debugging: V8SHARP_MAGLEV_NATIVE_FILTER=name|name... generates only those functions natively.)
+        if (s_filter is not null && Array.IndexOf(s_filter, MaglevCompiler.DebugName(_info.Toplevel.SharedFunctionInfo)) < 0) throw Unsupported("filtered out");
         // The blocks of loops (from a header to the block of its JumpLoop, in block order).
         for (int i = 0; i < _blocks.Count; i++)
         {
@@ -774,8 +780,10 @@ internal sealed class MaglevNativeCodeGenerator
                 IsConstruct = entry.Int1 != 0,
                 Receiver = Info(entry.Inputs[0]),
                 Args = args,
-                NewTarget = entry.Int2 != 0 ? Info(entry.Inputs[^1]) : -1,
-                NewTargetRegister = entry.Int2 != 0 ? u.Bytecode.IncomingNewTargetOrGeneratorRegister.Index : 0,
+                // (The new.target goes to its register when the function has one, as the IL's.)
+                NewTarget = entry.Int2 != 0 && u.Bytecode.IncomingNewTargetOrGeneratorRegister.IsValid ? Info(entry.Inputs[^1]) : -1,
+                NewTargetRegister = entry.Int2 != 0 && u.Bytecode.IncomingNewTargetOrGeneratorRegister.IsValid
+                    ? u.Bytecode.IncomingNewTargetOrGeneratorRegister.Index : 0,
                 CallOffset = entry.BytecodeOffset,
                 Pc = k + 1 < chain.Count ? chain[k + 1].EntryNode!.BytecodeOffset : node.BytecodeOffset,
             };
@@ -916,6 +924,10 @@ internal sealed class MaglevNativeCodeGenerator
             case Opcode.ConvertHoleToUndefined:
             case Opcode.Identity when value.IsTagged:
                 foreach (ValueNode input in value.Inputs) AddClosure(input, into);
+                break;
+            case Opcode.MaybeGrowFastElements:
+                // (Rebuilt as its object's elements: kElements of input 0.)
+                AddClosure(value.Inputs[0], into);
                 break;
         }
     }
@@ -3431,7 +3443,7 @@ internal sealed class MaglevNativeCodeGenerator
                     default: shape[k] = '?'; break;
                 }
             }
-            m.Thunk = NativeBuiltinThunks.For(info.Method, new string(shape));
+            m.Thunk = s_noThunks ? null : NativeBuiltinThunks.For(info.Method, new string(shape));
         }
         var tagged = new List<int>();
         foreach (Val v in live)

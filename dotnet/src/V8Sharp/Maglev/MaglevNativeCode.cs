@@ -1012,6 +1012,15 @@ namespace V8Sharp.Maglev
                     case NativeExitKind.kInterrupt when isolate.StackGuard.HasUndeferrableInterrupts:
                         // Only loops without calls (InterruptKind 1) have a frameless entry.
                         return DeoptimizeFrameless(isolate, function, argc, frame, ctx, exit);
+                    case NativeExitKind.kManagedNode:
+                    {
+                        // The only managed exit of frameless code: a ToBoolean branch of a
+                        // value it cannot test inline (a string ...), which reads no frame.
+                        NativeManagedNode node = exit.Managed!;
+                        if (node.Opcode != Opcode.BranchIfToBooleanTrue) throw new InvalidOperationException("managed node in frameless code: " + node.Opcode);
+                        ctx[MaglevNativeCodeGenerator.kBoolResultSlot] = MaglevBuiltins.ToBoolean(Value(node.Inputs[0], frame, ctx, kPseudoFp, null)) ? 1 : 0;
+                        break;
+                    }
                 }
                 int[] live = exit.TaggedLive;
                 JSValue[] spill = SpillOf(activation, live.Length);
