@@ -50,7 +50,10 @@ internal sealed class MaglevNativeCodeGenerator
     // The constants table's fixed entries (JSValues): the number tag, then the oddballs.
     const int kConstNumberTag = 0, kConstTrue = 1, kConstFalse = 2, kConstNull = 3, kConstTheHole = 4, kFirstObjectConstant = 5;
 
-    static readonly Reg[] s_allocatableGp = [rsi, rdi, r8, r9, r10, r12, r13, r14, r15, rbp];
+    static readonly Reg[] s_allocatableGp = [rsi, rdi, r8, r9, r10, r12, r13, r14, rbp];
+
+    /// <summary>The poll budget (kPollBudgetSlot) while the code runs: a memory counter would chain every iteration through a store.</summary>
+    const Reg kPollRegister = r15;
     static readonly XReg[] s_allocatableXmm = [xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15];
     static readonly Reg[] s_calleeSaved = [rbx, rbp, r12, r13, r14, r15];
 
@@ -191,6 +194,7 @@ internal sealed class MaglevNativeCodeGenerator
         _abort = _masm.NewLabel();
         foreach (Reg r in s_calleeSaved) _masm.Pushq(r);
         _masm.Movq(rbx, rdi);
+        _masm.Movq(kPollRegister, new Operand(rbx, kPollBudgetSlot * 8));
         XLabel resumeDispatch = _masm.NewLabel();
         _masm.Cmpq(new Operand(rbx, kEntryIdSlot * 8), 0);
         _masm.J(Condition.not_equal, resumeDispatch);
@@ -480,7 +484,14 @@ internal sealed class MaglevNativeCodeGenerator
             foreach (Node node in block.Nodes)
             {
                 _nodePos[node] = pos;
-                if (node is ValueNode v) _vals[v.Id] = new Val(v);
+                if (node is ValueNode v)
+                {
+                    // An Identity of the same representation is its input: one location, no code.
+                    _vals[v.Id] = v.Opcode == Opcode.Identity && !v.Inputs[0].IsConstant && _vals[v.Inputs[0].Id] is { } source &&
+                                  source.Repr == v.Representation
+                        ? source
+                        : new Val(v);
+                }
                 pos += 2;
             }
             _nodePos[block.Control!] = pos;
@@ -489,7 +500,7 @@ internal sealed class MaglevNativeCodeGenerator
         }
         foreach (Val? v in _vals)
         {
-            if (v is null) continue;
+            if (v is null || v.Home >= 0) continue;
             v.Home = _homeWords;
             _homeWords += v.Repr == ValueRepresentation.kTagged ? 3 : 1;
         }
@@ -714,9 +725,11 @@ internal sealed class MaglevNativeCodeGenerator
     void AllocateRegisters()
     {
         var intervals = new List<Val>();
-        foreach (Val? v in _vals)
+        for (int id = 0; id < _vals.Length; id++)
         {
-            if (v is null || v.End < 0 || v.Repr == ValueRepresentation.kTagged) continue;
+            Val? v = _vals[id];
+            // (An aliased Identity shares its input's Val: once.)
+            if (v is null || v.Node.Id != id || v.End < 0 || v.Repr == ValueRepresentation.kTagged) continue;
             intervals.Add(v);
         }
         intervals.Sort(static (a, b) => a.Start != b.Start ? a.Start.CompareTo(b.Start) : a.Node.Id.CompareTo(b.Node.Id));
@@ -1730,6 +1743,7 @@ internal sealed class MaglevNativeCodeGenerator
                 return;
             }
             case Opcode.Identity:
+                if (!node.Inputs[0].IsConstant && ReferenceEquals(r, V(node.Inputs[0]))) return;
                 switch (r!.Repr)
                 {
                     case ValueRepresentation.kInt32:
@@ -1827,16 +1841,17 @@ internal sealed class MaglevNativeCodeGenerator
             case Opcode.Float64Multiply:
             case Opcode.Float64Divide:
             {
-                LoadFloat64(node.Inputs[0], xmm0);
                 XReg b = Float64Reg(node.Inputs[1], xmm1);
+                XReg dst = r!.InXmm && r.XmmReg != b ? r.XmmReg : xmm0;
+                LoadFloat64(node.Inputs[0], dst);
                 switch (node.Opcode)
                 {
-                    case Opcode.Float64Add: _masm.Addsd(xmm0, b); break;
-                    case Opcode.Float64Subtract: _masm.Subsd(xmm0, b); break;
-                    case Opcode.Float64Multiply: _masm.Mulsd(xmm0, b); break;
-                    default: _masm.Divsd(xmm0, b); break;
+                    case Opcode.Float64Add: _masm.Addsd(dst, b); break;
+                    case Opcode.Float64Subtract: _masm.Subsd(dst, b); break;
+                    case Opcode.Float64Multiply: _masm.Mulsd(dst, b); break;
+                    default: _masm.Divsd(dst, b); break;
                 }
-                StoreFloat64Result(r!, xmm0);
+                StoreFloat64Result(r, dst);
                 return;
             }
             case Opcode.Float64Modulus:
@@ -2213,12 +2228,15 @@ internal sealed class MaglevNativeCodeGenerator
 
     void EmitInt32Binary(Node node, Val r)
     {
-        LoadInt32(node.Inputs[0], rax);
         ValueNode b = node.Inputs[1];
         Reg rb = rcx;
         int c = 0;
         bool imm = b.IsConstant && b.TryGetInt32Constant(out c);
         if (!imm) rb = Int32Reg(b, rcx);
+        // Into the result's register when the right operand is not in it (its
+        // interval starts here: nothing else lives in it, a deopt reads no result).
+        Reg rax = r.InGp && r.Gp != rb ? r.Gp : Reg.rax;
+        LoadInt32(node.Inputs[0], rax);
         bool overflowCheck = node.Opcode is Opcode.Int32AddWithOverflow or Opcode.Int32SubtractWithOverflow or Opcode.Int32MultiplyWithOverflow;
         switch (node.Opcode)
         {
@@ -2237,7 +2255,7 @@ internal sealed class MaglevNativeCodeGenerator
                     _masm.Movl(rcx, c);
                     rb = rcx;
                 }
-                // The operands for the -0 check (imull overwrites rax).
+                // The operands for the -0 check (imull overwrites the left one).
                 if (node.Opcode == Opcode.Int32MultiplyWithOverflow)
                 {
                     _masm.Movl(rdx, rax);
@@ -2258,6 +2276,7 @@ internal sealed class MaglevNativeCodeGenerator
         if (overflowCheck)
         {
             XLabel exit = DeoptLabel(node.EagerDeoptInfo!);
+            _masm.J(Condition.overflow, exit);
             if (node.Opcode == Opcode.Int32MultiplyWithOverflow)
             {
                 // A zero product with a negative operand is -0.
@@ -2679,7 +2698,7 @@ internal sealed class MaglevNativeCodeGenerator
             _masm.Testl(rax, rax);
         }
         _masm.J(Condition.not_equal, interruptStub);
-        _masm.Decq(new Operand(rbx, kPollBudgetSlot * 8));
+        _masm.Decq(kPollRegister);
         _masm.J(Condition.equal, pollStub);
         _masm.Bind(cont);
     }

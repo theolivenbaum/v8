@@ -279,6 +279,7 @@ public sealed class Assembler
     public void Decl(Register r) => EmitRR(0, false, 1, (int)r, false, [0xFF]);
     public void Incl(Register r) => EmitRR(0, false, 0, (int)r, false, [0xFF]);
     public void Decq(Operand m) => EmitRM(0, true, 1, m, [0xFF]);
+    public void Decq(Register r) => EmitRR(0, true, 1, (int)r, false, [0xFF]);
 
     enum Shift { Rol = 0, Ror = 1, Shl = 4, Shr = 5, Sar = 7 }
 
