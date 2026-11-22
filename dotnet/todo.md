@@ -3053,6 +3053,31 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
       (in-activation checks, concurrent IL replacement, direct calls only to
       number-returning callees) the same session gave native 0.94x IL
       (Mandreel 0.56x, DeltaBlue 0.73x).
+      Coverage round (2026-11-22, commits 0d5ff30b..bb223bcc): type tests,
+      string length/charCodeAt, fixed array lengths, CheckedObjectToIndex and
+      MaybeGrowFastElements without growth native; StoreMapTransition,
+      TransitionElementsKind, HasInPrototypeChain, MigrateMapIfNeeded,
+      Float64Exponentiate/Ieee754Unary, StoreRegister, SetCurrentContext and
+      CheckMapsWithMigration as managed nodes; calls in inlined functions
+      (the managed side pushes the inlined frames); per-depth activation
+      buffers and builtin thunks make exits cheaper. Fixed: frameless
+      ToBoolean exits (pdfjs with every graph native; a pre-existing bug),
+      MaybeGrowFastElements liveness, an inlined function without a
+      new.target register. Verified: unit tests, 1000 random programs,
+      mjsunit 0 newly failing in both configurations, all of Octane correct
+      with and without --maglev-native-loops-only.
+      Benchmark (same session as V8, parity publish, octane-steady 3 runs,
+      steal 0%, cpu-cal 478/554 ms): native 0.96x IL, 0.36x V8 Maglev;
+      every graph native (--no-maglev-native-loops-only) 0.89x IL, 0.34x V8
+      Maglev (Richards 0.58x, Gameboy 0.72x IL), so loops-only stays the
+      default. micro:native: native 0.65x V8 Maglev (IntSum 1.15x, NavierStokes
+      1.06x). Open: Box2D 0.70x IL (2297 vs 2745 before this round, octane-quick
+      A/B): about 18 of its functions are native now and some lose to IL
+      without managed exits (L.InitVelocityConstraints consistently);
+      V8SHARP_MAGLEV_NATIVE_FILTER and V8SHARP_MAGLEV_NATIVE_EXIT_STATS=1
+      attribute such losses. Calls stay exits (native code cannot call
+      managed code): a managed call costs about 36 ns against IL's 18 ns,
+      which is the main gap to V8 Maglev on call-heavy code.
       Mutation check (tools/maglev-native/mutations.py, 16 planted bugs): 14
       caught; the other 2 (register sharing at one position, deopt-only uses
       not extended within a block) are equivalent in the graphs Maglev builds,

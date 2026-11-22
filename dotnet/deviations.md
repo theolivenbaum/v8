@@ -855,6 +855,12 @@ for now, to be revisited when the reason goes away.
   a copy of its context (MaglevNativeCode.ContinueFrameless). The callee is
   checked at every call (the feedback vector's code, its native code, its
   arity, its context size), as the IL's direct call checks the delegate.
+- Calls and throws in inlined functions: native code never pushes the
+  inlined functions' interpreter frames (V8's optimized frame holds them
+  implicitly); the managed side pushes them around such a node and pops
+  them after it, so stack walks see them as with the IL's lazy frames.
+- Frame writes (StoreRegister, SetCurrentContext) are managed nodes: native
+  code writes no references into the frame.
 - Allocation: native code allocates nothing (the CLR allocates managed
   objects); InlinedAllocation and FastNewObject are managed nodes, so graphs
   that allocate in a loop are IL. Elided allocations (escape analysis) need

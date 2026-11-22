@@ -368,6 +368,26 @@ namespace V8Sharp.Maglev
             else MaglevCompiler.InvalidateCode(isolate, Code, Deoptimizer.LazyDeoptimizeReason.kTesting);
         }
 
+        // (Debugging: V8SHARP_MAGLEV_NATIVE_EXIT_STATS=1 counts the managed exits by function and node, printed at exit.)
+        static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long>? s_exitStats =
+            Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_EXIT_STATS") == "1" ? NewExitStats() : null;
+
+        static System.Collections.Concurrent.ConcurrentDictionary<string, long> NewExitStats()
+        {
+            var stats = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
+            AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+            {
+                var list = new List<KeyValuePair<string, long>>(stats);
+                list.Sort(static (a, b) => b.Value.CompareTo(a.Value));
+                for (int i = 0; i < Math.Min(40, list.Count); i++) Console.Error.WriteLine($"[maglev native exits] {list[i].Value,10} {list[i].Key}");
+            };
+            return stats;
+        }
+
+        void CountExit(NativeManagedNode node) =>
+            s_exitStats!.AddOrUpdate(MaglevCompiler.DebugName(Code.SharedFunctionInfo) + " " + node.Opcode +
+                (node.Obj0 is CallBuiltinInfo info ? ":" + info.Method.Name : "") + " @" + node.BytecodeOffset, 1, static (_, n) => n + 1);
+
         /// <summary>The MaglevCodeEntry of native code.</summary>
         public JSValue Run(Isolate isolate, ref InterpreterState state)
         {
@@ -433,6 +453,7 @@ namespace V8Sharp.Maglev
                         }
                         NativeManagedNode node = exit.Managed!;
                         _managedExits++;
+                        if (s_exitStats is not null) CountExit(node);
                         // (Leaves this activation after the node through its lazy deopt: the
                         // interpreter goes on, and enters the IL code by OSR.)
                         bool leave = ProfileExit(isolate) && node.LazyDeoptIndex >= 0;
