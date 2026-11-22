@@ -79,6 +79,8 @@ dotnet/
     V8Sharp.Base/                <- src/base, src/numbers, src/bigint, src/strings/unicode*
     V8Sharp.Parsing/             <- src/parsing, src/ast
     V8Sharp.RegExp/              <- src/regexp
+    V8Sharp.Codegen/             <- src/codegen/x64 (assembler, executable memory, native entry;
+                                    the only engine project with unsafe code)
     V8Sharp/                     <- src/objects, execution, init, interpreter, builtins,
                                     runtime, ic, json, date, compiler (IL tiers) ...
     V8Sharp.D8/                  <- src/d8 : the d8sharp shell (also used in-process by tests)

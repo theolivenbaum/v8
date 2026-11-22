@@ -34,6 +34,9 @@ public sealed class StackGuard(Isolate isolate)
 
     readonly Isolate _isolate = isolate;
     int _interruptFlags;
+
+    /// <summary>The interrupt flag word, which native Maglev code polls at loop back edges (MaglevNativeCode).</summary>
+    internal ref int InterruptFlagsRef => ref _interruptFlags;
     readonly Queue<(Action<Isolate, object?> Callback, object? Data)> _apiInterrupts = new();
 
     /// <summary>True if any interrupt is requested (V8: the JS stack limit was lowered).</summary>

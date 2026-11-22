@@ -22,6 +22,53 @@ public sealed partial class FlagList
     /// </summary>
     public int MaglevSplitILBytes = int.TryParse(Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_SPLIT_IL"), out int split) ? split : 0;
 
+    /// <summary>
+    /// V8Sharp only (no V8 flag): Maglev graphs the native backend supports
+    /// are compiled to x64 machine code (MaglevNativeCodeGenerator, Linux on
+    /// x64); --no-maglev-native compiles every graph to IL for RyuJIT
+    /// (MaglevCodeGenerator), the backend before it. V8SHARP_MAGLEV_NATIVE=0
+    /// sets the default.
+    /// </summary>
+    public bool maglev_native = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE") != "0";
+
+    /// <summary>V8Sharp only: prints which graphs the native Maglev backend compiles, and why it declines the others.</summary>
+    public bool trace_maglev_native;
+
+    /// <summary>
+    /// V8Sharp only: the native Maglev backend takes only graphs with a loop.
+    /// Entering native code costs a transition (the context, the pinned
+    /// arrays, the exit's decoding) that a leaf without a loop does not earn
+    /// back against RyuJIT's code, which callers enter directly; tests turn it
+    /// off to run straight-line code natively.
+    /// </summary>
+    public bool maglev_native_loops_only = true;
+
+    /// <summary>The V8Sharp-only flags (not in flag-definitions.h): name, then setter.</summary>
+    bool SetV8SharpFlag(string name, string? value, bool negated)
+    {
+        switch (name)
+        {
+            case "maglev_native":
+                if (!ParseBool(value, negated, out bool native)) return false;
+                maglev_native = native;
+                break;
+            case "trace_maglev_native":
+                if (!ParseBool(value, negated, out bool trace)) return false;
+                trace_maglev_native = trace;
+                break;
+            case "maglev_native_loops_only":
+                if (!ParseBool(value, negated, out bool loops)) return false;
+                maglev_native_loops_only = loops;
+                break;
+            default:
+                return false;
+        }
+        _explicitlySet.Add(name);
+        return true;
+    }
+
+    static bool IsV8SharpFlag(string name) => name is "maglev_native" or "trace_maglev_native" or "maglev_native_loops_only";
+
     /// <summary>The process default flags (V8's v8_flags); new isolates copy them.</summary>
     public static FlagList Default { get; } = new();
 
@@ -91,17 +138,17 @@ public sealed partial class FlagList
                 negated = true;
                 name = name[2..].TrimStart('_');
             }
-            if (value is null && !IsBoolFlag(name) && IsKnown(name) && i + 1 < argv.Count)
+            if (value is null && !IsBoolFlag(name) && !IsV8SharpFlag(name) && IsKnown(name) && i + 1 < argv.Count)
             {
                 value = argv[++i];
             }
-            if (!SetFlag(name, value, negated)) rest.Add(arg);
+            if (!SetFlag(name, value, negated) && !SetV8SharpFlag(name, value, negated)) rest.Add(arg);
         }
         EnforceFlagImplications();
         return rest;
     }
 
-    static bool IsKnown(string name) => IsKnownFlag(name);
+    static bool IsKnown(string name) => IsKnownFlag(name) || IsV8SharpFlag(name);
 
     static bool ParseBool(string? value, bool negated, out bool result)
     {

@@ -186,7 +186,7 @@ public class MaglevLazyFramesTest
     public void CalleesThatCallOutGetLazyFrames()
     {
         var flagList = new FlagList();
-        flagList.SetFlagsFromString("--allow-natives-syntax --maglev --no-concurrent-recompilation --max-maglev-inlined-bytecode-size=0 " +
+        flagList.SetFlagsFromString("--allow-natives-syntax --maglev --no-maglev-native --no-concurrent-recompilation --max-maglev-inlined-bytecode-size=0 " +
                                     "--max-maglev-inlined-bytecode-size-small=0");
         Isolate isolate = Isolate.New(flagList);
         using (isolate.Enter())

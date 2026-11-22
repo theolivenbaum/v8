@@ -163,6 +163,15 @@ public sealed class MaglevCompilationJob
                 OsrEntryPoint = IsOsr ? info.Toplevel.BytecodeAnalysis.OsrEntryPoint : -1,
                 NodeCount = info.Graph.NodeCount,
             };
+            if (MaglevNativeCodeGenerator.IsEnabled(Isolate) && TryGenerateNative(info, code))
+            {
+                code.CompiledConcurrently = IsConcurrent;
+                code.Dependencies = info.Dependencies.ToArray();
+                code.InstanceSizePredictions = info.InstanceSizePredictions.ToArray();
+                Code = code;
+                CurrentState = State.kReadyToFinalize;
+                return CurrentState;
+            }
             var generator = new MaglevCodeGenerator(info, code, optimizeFully: IsConcurrent);
             (MaglevCodeEntry entry, int ilSize) = generator.Generate();
             // RyuJIT compiles the methods now, on this thread (the direct call
@@ -204,6 +213,44 @@ public sealed class MaglevCompilationJob
         }
         return CurrentState;
     }
+
+    /// <summary>
+    /// The native backend (MaglevNativeCodeGenerator) for a graph it supports;
+    /// false (the IL backend generates the code) otherwise.
+    /// </summary>
+    bool TryGenerateNative(MaglevCompilationInfo info, MaglevCode code)
+    {
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        MaglevNativeCode? native = MaglevNativeCodeGenerator.TryGenerate(info, code, out string? reason);
+        NativeMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        if (Isolate.Flags.trace_maglev_native)
+        {
+            Console.WriteLine(native is not null
+                ? $"[maglev native: {MaglevCompiler.DebugName(Function.Shared)}{(IsOsr ? " OSR" : "")}, {info.Graph.NodeCount} nodes, {native.CodeSize} bytes, {NativeMs:F3} ms]"
+                : $"[maglev native declined {MaglevCompiler.DebugName(Function.Shared)}{(IsOsr ? " OSR" : "")}: {reason}]");
+        }
+        if (native is null)
+        {
+            // The IL backend starts from a clean slate (the native generator may have numbered deopt infos).
+            ResetDeoptIndices(info.Graph);
+        }
+        return native is not null;
+    }
+
+    static void ResetDeoptIndices(Graph graph)
+    {
+        foreach (BasicBlock block in graph.Blocks)
+        {
+            foreach (Node node in block.Nodes)
+            {
+                if (node.EagerDeoptInfo is { } e) e.DeoptIndex = -1;
+            }
+            if (block.Control?.EagerDeoptInfo is { } c) c.DeoptIndex = -1;
+        }
+    }
+
+    /// <summary>The native backend's time (selection and code generation), 0 if it did not run.</summary>
+    public double NativeMs { get; private set; }
 
     /// <summary>
     /// MaglevGraphBuilder::Build and the passes of MaglevCompiler::Compile;

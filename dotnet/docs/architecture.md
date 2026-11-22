@@ -19,6 +19,7 @@ code backends, and the platform layer.
 | `V8Sharp.Parsing` | `src/parsing`, `src/ast` | Base |
 | `V8Sharp.RegExp` | `src/regexp` (irregexp: parser, compiler, bytecode generator, peephole, interpreter) | Base |
 | `V8Sharp` | everything else: `src/objects`, `src/execution`, `src/heap/factory`, `src/init`, `src/interpreter`, `src/builtins`, `src/runtime`, `src/ic`, `src/json`, `src/date`, `src/compiler` (the IL tiers) | Base, Parsing, RegExp |
+| `V8Sharp.Codegen` | `src/codegen/x64` (the assembler), the executable memory and the native entry of the native Maglev backend (section 9.3); the only engine project with unsafe code | nothing |
 | `V8Sharp.D8` | `src/d8` - the `d8sharp` shell; also a library the test runner uses in-process | V8Sharp |
 | `V8Sharp.Oracle` | none: the real V8 through ClearScript, for differential tests | ClearScript (native) |
 
@@ -35,7 +36,7 @@ Namespaces: `V8Sharp.<Folder>` (e.g. `V8Sharp.Objects`, `V8Sharp.Interpreter`),
 |---|---|
 | `src/heap` (Orinoco GC, spaces, write barriers, handles) | the .NET GC. Objects are ordinary managed objects. `Handle<T>`/`Tagged<T>` disappear: a C# reference is always valid and GC-safe. `DisallowGarbageCollection` scopes are dropped. |
 | `src/snapshot` | none. The bootstrapper builds the native context at start-up. (A later optimisation may cache it.) |
-| `src/codegen`, the architecture backends | none. Machine code comes from RyuJIT: the compiler tiers emit IL (section 9). |
+| `src/codegen`, the architecture backends | x64 only, for the native Maglev backend (`V8Sharp.Codegen`, section 9.3); the other tiers emit IL and their machine code comes from RyuJIT (section 9). |
 | `src/wasm` (decoder, Liftoff, TurboFan wasm pipeline, DrumBrake) | WACS, vendored as `src/V8Sharp.Wasm` (decoder, validator, store, interpreter; Apache-2.0, see its README), and a port of Liftoff that emits IL (`src/V8Sharp/Wasm/Baseline/`, section 9). The JS API on top (`wasm-js.cc`, the JS-facing parts of `wasm-objects.cc` and `module-instantiate.cc`, the JS-to-wasm and wasm-to-JS wrappers) is ported in `src/V8Sharp/Wasm/`. Differences: deviations.md, "WebAssembly". |
 | CSA / Torque builtins | C# methods. The algorithm, the fast paths and the slow paths follow the `.tq`/`-gen.cc` file; the spec text is the tie-breaker. |
 | `src/sandbox`, pointer compression, `src/trap-handler` | not applicable: managed memory is already safe. |
@@ -1003,3 +1004,108 @@ interrupt (`MaglevExecution.TryGetOsrCode`, `RunOsr`); with
 edge enters the code. OSR code starts at the loop header with the frame's
 registers as initial values; back edges of enclosing loops leave it
 (kOSREarlyExit).
+
+### 9.3 The native Maglev backend (src/codegen/x64, maglev-code-generator.cc for x64 -> `Codegen/`, `Maglev/MaglevNative*.cs`)
+
+Files: `src/V8Sharp.Codegen/X64/Assembler.cs` (assembler-x64.cc's encoder:
+the general, SSE2/SSE4.1 scalar double and x87 forms the backend uses, V8's
+names), `ExecutableMemory.cs` (CodeRange: mmap'd executable chunks),
+`NativeCode.cs` (the entry: JSEntry reduced to one call), `FieldOffsets.cs`;
+`Maglev/MaglevNativeCodeGenerator.cs` (maglev-code-generator.cc, the x64
+GenerateCode of maglev-ir-x64.cc, the role of maglev-regalloc.cc) and
+`Maglev/MaglevNativeCode.cs` (the code's entries and exits). The project
+`V8Sharp.Codegen` is the only engine project with unsafe code (its .csproj
+says why); the generator and the run-time side in `V8Sharp` stay safe.
+
+Maglev graphs can be compiled to x64 machine code instead of IL, as V8's
+Maglev does. The design is that of Ryu's native code generator (an x86-64
+backend that replaced DynamicMethods for an emulator's hot blocks), whose
+rules make native code safe next to the .NET GC:
+
+- **Native code never calls managed code.** It is a System V function
+  `long Code(long* context)` called through an unmanaged function pointer
+  with `SuppressGCTransition`: the thread stays in cooperative mode, so no
+  GC can start while it runs, and the managed objects it reads (through the
+  pinned register stack, constants table and spill array, and the
+  references they hold) cannot move under it. Anything it cannot do inline
+  is an *exit*: it stores its register values to their homes and returns the
+  exit's number to `MaglevNativeCode.Run`.
+- **It writes no object references** (that would need the GC's write
+  barrier): only numbers, into its context and into double arrays.
+- **Values have homes.** Every value has a home in the context (a pinned
+  `long[]` per isolate): one word for Int32/Uint32/Float64 values, three for
+  a tagged value (the object's address, the number payload, and a kind word
+  for the values whose kind only the run time knows). Int32 and Float64
+  values are allocated to registers by a linear scan over the block order
+  (10 general registers, 14 XMM registers; rbx holds the context; rax, rcx,
+  rdx, r11, xmm0, xmm1 are scratch); tagged values stay in their homes. A
+  value has one location for its whole life, so an exit is a few stores and
+  block boundaries need no reconciliation; phis are parallel moves at the
+  end of each predecessor (on split edges for branches).
+- **Tagged values are rebuilt, never read back as addresses.** At an exit,
+  the managed side rebuilds each value the exit needs from where it came
+  from: a frame slot (InitialValue: native code never writes the frame), a
+  constant, a number's bits, a boolean's kind word, or by repeating a pure
+  load (LoadElements, LoadTaggedField, LoadContextSlot, LoadMap,
+  LoadFixedArrayElement) from its rebuilt inputs; the heap is as the code
+  left it, as it wrote no references. A tagged phi keeps its kind word, and
+  its "other" case must be one time-invariant value. Graphs needing a value
+  that cannot be rebuilt are generated as IL.
+- **Exits.** Eager deopts build the same DeoptPoints as the IL backend (one
+  per frame state, inlined frames included; the inlined frames themselves
+  are never pushed, the Deoptimizer pushes them lazily), the rebuilt values
+  go to the deopt scratch buffer and V8Sharp's Deoptimizer continues in the
+  interpreter. `HandleNoHeapWritesInterrupt` tests the stack guard's flag
+  word in place; with interrupts pending, or when the context's poll budget
+  (2^20 back edges) is spent, it takes a *resumable* exit: the managed side
+  rebuilds the live tagged values into the spill array, serves the
+  interrupts (saving the code's homes, since an API interrupt may run native
+  code again) or just returns (a GC safepoint), and re-enters the code at the
+  exit's resume entry, which reloads the live values (code that rebuilds
+  values by repeating loads deoptimizes instead after an interrupt that may
+  have run code, since the loads could now read something else; the values
+  of that deopt are rebuilt before the interrupt). So a long native loop
+  never blocks a GC requested by another thread for more than a poll period.
+- **Entries.** The frameful entry is a `MaglevCodeEntry` like the IL
+  methods (OSR included). Functions with up to six parameters whose code
+  reads only its closure, context, receiver and parameters and handles no
+  interrupts get a frameless direct entry (`MaglevCode.FastCall`): the
+  arguments go into a per-isolate pseudo-frame the code reads, and a deopt
+  builds the interpreter frame (`MaglevCalls.DeoptimizeFrameless`).
+
+**What is native.** Int32 and Float64 arithmetic with V8's overflow, -0 and
+division checks; Math.floor/ceil/round/trunc (roundsd), sqrt, abs, min/max,
+`%` of doubles (x87 fprem, exact as fmod); the conversions (ToInt32 of
+doubles inline, the checked untaggings, tagging); comparisons and branches;
+checks (Smi, number, heap object, maps (also with migration then deopt),
+string, value, hole, int32 conditions); loads of elements (fixed, double,
+holey double), fields (in-object and PropertyArray), context slots, maps
+and array lengths; stores of doubles into double elements (NaN
+canonicalized); inlined functions whose frames are lazy. Element and
+PropertyArray accesses are bounds-checked against the CLR array (an index
+the graph's checks let through aborts with an exception, as the IL's array
+access throws). Everything else (calls, allocation, stores of references,
+generic operations, catch blocks, generators) makes the graph go to the IL
+backend. By default only graphs with a loop are generated natively
+(`--maglev-native-loops-only`): entering native code costs a transition
+(context set-up, pinning, decoding the exit) that a straight-line leaf does
+not earn back against RyuJIT's code, which callers enter directly.
+
+**Flags.** `--maglev-native` (V8Sharp only, on by default on Linux x64 with
+SSE4.1; `V8SHARP_MAGLEV_NATIVE=0` sets the default off) selects the native
+backend; `--no-maglev-native` generates every graph as IL, the backend
+described in 9.2. `--no-maglev-native-loops-only` takes straight-line graphs
+too (tests). `--trace-maglev-native` prints each decision,
+`V8SHARP_MAGLEV_NATIVE_STATS=1` prints the counts and the decline reasons at
+exit, and `--print-maglev-code` dumps the machine code.
+
+**Testing.** `tests/V8Sharp.Tests/Codegen/AssemblerX64Test.cs` checks every
+encoder form against objdump and runs small functions;
+`tests/V8Sharp.Tests/Maglev/MaglevNativeTest.cs` runs snippets and random
+programs (loops, branches, int32/double/array operations, deopting inputs;
+`V8SHARP_NATIVE_FUZZ=n` runs n) in the interpreter, the IL backend and the
+native backend and compares the transcripts (as Ryu compares its native code
+with its interpreter on random programs), and checks that the native runs
+compiled natively; mjsunit runs with the default flags and with
+`--extra-flags "--no-maglev-native-loops-only"` against the IL backend's
+expectations.

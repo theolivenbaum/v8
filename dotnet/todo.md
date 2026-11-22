@@ -3000,6 +3000,31 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
   benchmark but CodeLoad (-8%) and Typescript (-1%), and Maglev is
   ahead of the baseline tier everywhere but CodeLoad (+1%, equal).
 
+- [~] Native Maglev backend (architecture.md 9.3; src/V8Sharp.Codegen,
+      Maglev/MaglevNativeCodeGenerator.cs, Maglev/MaglevNativeCode.cs), on
+      by default (`--maglev-native`; `--no-maglev-native` keeps the IL
+      backend for every graph). Port of maglev-code-generator.cc and the x64
+      GenerateCode of maglev-ir-x64.cc on an x64 assembler (assembler-x64.cc's
+      names, Ryu's encoder), with Ryu's native-code rules: native code never
+      calls managed code and writes no references; anything else is an exit
+      (deopt through the Deoptimizer, or a resumable exit for interrupts and
+      GC polls); tagged values are rebuilt at exits from their sources.
+      Linear-scan register allocation; frameless direct entry; lazily
+      pushed inlined frames. Native: int32/float64 arithmetic and checks,
+      Math.floor/ceil/round/trunc/sqrt/abs/min/max, double `%`, ToInt32,
+      conversions, compares and branches, map/Smi/number/string/value checks,
+      element (fixed, double), field, context-slot and map loads, double
+      element stores. Graphs with a loop only by default
+      (`--maglev-native-loops-only`).
+      Tests: Codegen/AssemblerX64Test.cs (encodings vs objdump, execution),
+      Maglev/MaglevNativeTest.cs (snippets and random programs: interpreter
+      vs IL vs native; V8SHARP_NATIVE_FUZZ=n).
+      Open: calls (a resumable exit that runs the node in managed code, with
+      its tagged result in the spill array), typed arrays, stores of
+      references (number-over-number field stores need no barrier), ToBoolean
+      of tagged values, LoadDoubleField, CheckMaps with migration, OSR entry
+      without the frame; a faster entry (the per-call transition is what
+      keeps leaves in IL); code memory is never freed.
 - [ ] SIMD fast paths: elements accessors, string search, typed arrays
 - [ ] Benchmarks: test/js-perf-test, JetStream-like, against the oracle
 

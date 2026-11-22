@@ -15,6 +15,7 @@
     <ProjectReference Include="../../src/V8Sharp.Parsing/V8Sharp.Parsing.csproj" />
     <ProjectReference Include="../../src/V8Sharp.RegExp/V8Sharp.RegExp.csproj" />
     <ProjectReference Include="../../src/V8Sharp.Wasm/V8Sharp.Wasm.csproj" />
+    <ProjectReference Include="../../src/V8Sharp.Codegen/V8Sharp.Codegen.csproj" />
   </ItemGroup>
 
 </Project>
