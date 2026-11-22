@@ -270,6 +270,20 @@ public sealed class Assembler
 
     public void Imull(Register dst, Register src) => EmitRR(0, false, (int)dst, (int)src, false, [0x0F, 0xAF]);
     public void Imulq(Register dst, Register src) => EmitRR(0, true, (int)dst, (int)src, false, [0x0F, 0xAF]);
+    /// <summary>imull dst, src, imm: the three-operand form.</summary>
+    public void Imull(Register dst, Register src, int imm)
+    {
+        if (imm is >= -128 and <= 127)
+        {
+            EmitRR(0, false, (int)dst, (int)src, false, [0x6B]);
+            Emit(imm);
+        }
+        else
+        {
+            EmitRR(0, false, (int)dst, (int)src, false, [0x69]);
+            Emitl(imm);
+        }
+    }
     /// <summary>cdq: sign-extends eax into edx.</summary>
     public void Cdq() => Emit(0x99);
     public void Idivl(Register src) => EmitRR(0, false, 7, (int)src, false, [0xF7]);

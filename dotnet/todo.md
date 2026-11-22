@@ -3019,6 +3019,30 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
       Tests: Codegen/AssemblerX64Test.cs (encodings vs objdump, execution),
       Maglev/MaglevNativeTest.cs (snippets and random programs: interpreter
       vs IL vs native; V8SHARP_NATIVE_FUZZ=n).
+      Verification (2026-11-22): unit tests all pass; 1000 random programs
+      agree in the three configurations; mjsunit with the defaults: 0 newly
+      failing (8902 run); with every supported graph native
+      (`--extra-flags "--no-maglev-native-loops-only"`): 0 newly failing,
+      1 newly passing (wasm/gc-js-interop-objects, also in the default run);
+      an independent review found 4 liveness/invariance bugs (values a
+      Return or a migrating CheckMaps rebuilds were not kept live, interrupt
+      exits did not store their deopt values, an interrupt that runs code
+      could change what reload-rebuilt values read): fixed, with tests.
+      Mutation check (tools/maglev-native/mutations.py, 16 planted bugs): 14
+      caught; the other 2 (register sharing at one position, deopt-only uses
+      not extended within a block) are equivalent in the graphs Maglev builds,
+      whose eager frame states hold tagged checkpoint values or loop phis
+      that live across the loop.
+      Measured (micro:native, warm, 3 interleaved runs, same session as V8,
+      bin/ builds; calls per second): native vs IL backend: IntHash +36%,
+      Mandelbrot +28%, IntSum -8%, Dot -6%, FieldSum -6% (IL in both: it
+      needs LoadDoubleField), Roots -2%, CallLeaf 0%, Axpy -37%; geomean -2%
+      (68044 vs 69338; V8 --no-turbofan 119210, V8 jit 153200). Code
+      generation per graph (the same 36-99 node graphs): 0.1-1.3 ms native vs
+      1.6-9.0 ms IL emission + RyuJIT, about 4-8x less (the native
+      generator's own first JIT adds ~40 ms once per process). Octane: 20 of
+      1697 graphs are native with the defaults (kernels with loops; the rest
+      need calls, stores or allocation), score unchanged within noise.
       Open: calls (a resumable exit that runs the node in managed code, with
       its tagged result in the spill array), typed arrays, stores of
       references (number-over-number field stores need no barrier), ToBoolean

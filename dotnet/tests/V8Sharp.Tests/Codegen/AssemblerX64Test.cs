@@ -55,6 +55,8 @@ public class AssemblerX64Test
         (a => a.Cmovl(Condition.equal, r8, r9), "cmove  r8d,r9d"),
         (a => a.Imull(rax, r13), "imul   eax,r13d"),
         (a => a.Imulq(rcx, rdx), "imul   rcx,rdx"),
+        (a => a.Imull(r9, r8, 7), "imul   r9d,r8d,0x7"),
+        (a => a.Imull(rax, r13, 1000), "imul   eax,r13d,0x3e8"),
         (a => a.Cdq(), "cdq"),
         (a => a.Idivl(rcx), "idiv   ecx"),
         (a => a.Negl(r15), "neg    r15d"),

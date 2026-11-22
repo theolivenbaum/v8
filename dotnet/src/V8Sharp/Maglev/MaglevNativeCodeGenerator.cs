@@ -226,8 +226,18 @@ internal sealed class MaglevNativeCodeGenerator
                 {
                     _masm.Movq(rax, new Operand(rcx, j * 16));
                     _masm.Movq(HomeOp(v), rax);
-                    _masm.Movq(rax, new Operand(rcx, j * 16 + 8));
-                    _masm.Movq(HomeOp(v, 1), rax);
+                    if (v.Node.Opcode == Opcode.LoadElements)
+                    {
+                        // The cached elements' array of the (possibly moved) elements.
+                        _masm.Movq(rdx, rcx);
+                        EmitCacheElementsData(v);
+                        _masm.Movq(rcx, rdx);
+                    }
+                    else
+                    {
+                        _masm.Movq(rax, new Operand(rcx, j * 16 + 8));
+                        _masm.Movq(HomeOp(v, 1), rax);
+                    }
                     j++;
                 }
                 else if (v.InGp)
@@ -1804,6 +1814,21 @@ internal sealed class MaglevNativeCodeGenerator
             case Opcode.Int32ShiftLeft:
             case Opcode.Int32ShiftRight:
             case Opcode.Int32ShiftRightLogical:
+                if (node.Inputs[1].IsConstant && node.Inputs[1].TryGetInt32Constant(out int amount))
+                {
+                    // By a constant: the count masked to 5 bits, as the CPU does.
+                    Reg dst = r!.InGp ? r.Gp : rax;
+                    LoadInt32(node.Inputs[0], dst);
+                    amount &= 31;
+                    if (amount != 0)
+                    {
+                        if (node.Opcode == Opcode.Int32ShiftLeft) _masm.Shll(dst, amount);
+                        else if (node.Opcode == Opcode.Int32ShiftRight) _masm.Sarl(dst, amount);
+                        else _masm.Shrl(dst, amount);
+                    }
+                    StoreInt32Result(r, dst);
+                    return;
+                }
                 LoadInt32(node.Inputs[1], rcx);
                 LoadInt32(node.Inputs[0], rax);
                 if (node.Opcode == Opcode.Int32ShiftLeft) _masm.Shll_cl(rax);
@@ -2076,7 +2101,7 @@ internal sealed class MaglevNativeCodeGenerator
                 LoadTaggedPtr(node.Inputs[0], rax);
                 _masm.Movq(rax, new Operand(rax, NativeLayout.JSObjectElements));
                 _masm.Movq(HomeOp(r!), rax);
-                _masm.Movq(HomeOp(r!, 1), 0);
+                EmitCacheElementsData(r!);
                 if (r!.NeedsKind) _masm.Movq(HomeOp(r, 2), (int)NativeTaggedKind.kOther);
                 return;
             case Opcode.LoadFixedArrayElement:
@@ -2250,24 +2275,22 @@ internal sealed class MaglevNativeCodeGenerator
                 break;
             case Opcode.Int32MultiplyWithOverflow:
             case Opcode.Int32Multiply:
-                if (imm)
-                {
-                    _masm.Movl(rcx, c);
-                    rb = rcx;
-                }
                 // The operands for the -0 check (imull overwrites the left one).
                 if (node.Opcode == Opcode.Int32MultiplyWithOverflow)
                 {
                     _masm.Movl(rdx, rax);
-                    _masm.Orl(rdx, rb);
+                    if (imm) _masm.Orl(rdx, c); else _masm.Orl(rdx, rb);
                 }
-                _masm.Imull(rax, rb);
+                if (imm) _masm.Imull(rax, rax, c);
+                else _masm.Imull(rax, rb);
                 break;
             case Opcode.Int32BitwiseAnd:
                 if (imm) _masm.Andl(rax, c); else _masm.Andl(rax, rb);
                 break;
             case Opcode.Int32BitwiseOr:
-                if (imm) _masm.Orl(rax, c); else _masm.Orl(rax, rb);
+                // x | 0 (ToInt32 of an int32) is x.
+                if (imm) { if (c != 0) _masm.Orl(rax, c); }
+                else _masm.Orl(rax, rb);
                 break;
             default:
                 if (imm) _masm.Xorl(rax, c); else _masm.Xorl(rax, rb);
@@ -2584,6 +2607,32 @@ internal sealed class MaglevNativeCodeGenerator
         StoreFloat64Result(r, xmm0);
     }
 
+    // The elements' array (FixedArray._data or FixedDoubleArray._data, at the
+    // same offset) is cached in the payload word of a LoadElements value's
+    // home, which an object does not use (nothing reads an object's payload,
+    // and its rebuild repeats the load): an element access then loads it
+    // once instead of following the elements each time, as the IL backend's
+    // elements data locals. It is an address, valid while the code runs; a
+    // resume computes it again.
+
+    /// <summary>The elements' array address into the payload word (the elements' address is in rax).</summary>
+    void EmitCacheElementsData(Val r)
+    {
+        if (NativeLayout.FixedArrayData == NativeLayout.FixedDoubleArrayData)
+        {
+            _masm.Movq(rcx, new Operand(rax, NativeLayout.FixedArrayData));
+            _masm.Movq(HomeOp(r, 1), rcx);
+        }
+        else
+        {
+            _masm.Movq(HomeOp(r, 1), 0);
+        }
+    }
+
+    bool HasCachedElementsData(ValueNode elements) =>
+        NativeLayout.FixedArrayData == NativeLayout.FixedDoubleArrayData && !elements.IsConstant &&
+        elements.Opcode == Opcode.LoadElements;
+
     /// <summary>A tagged JSValue at <paramref name="slot"/> into the home of <paramref name="r"/> (and its kind).</summary>
     void EmitLoadTaggedSlot(Val r, Operand slot)
     {
@@ -2636,8 +2685,15 @@ internal sealed class MaglevNativeCodeGenerator
     /// </summary>
     void EmitElementAddress(Node node, int dataField, int elementSize)
     {
-        LoadTaggedPtr(node.Inputs[0], rcx);
-        _masm.Movq(rcx, new Operand(rcx, dataField));
+        if (HasCachedElementsData(node.Inputs[0]))
+        {
+            _masm.Movq(rcx, HomeOp(V(node.Inputs[0]), 1));
+        }
+        else
+        {
+            LoadTaggedPtr(node.Inputs[0], rcx);
+            _masm.Movq(rcx, new Operand(rcx, dataField));
+        }
         Reg index = Int32Reg(node.Inputs[1], rdx);
         _masm.Cmpl(index, new Operand(rcx, NativeLayout.ArrayLength));
         _masm.J(Condition.above_equal, AbortLabel());

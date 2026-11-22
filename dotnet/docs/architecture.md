@@ -1091,6 +1091,13 @@ backend. By default only graphs with a loop are generated natively
 (context set-up, pinning, decoding the exit) that a straight-line leaf does
 not earn back against RyuJIT's code, which callers enter directly.
 
+**Results** (2026-11-22, todo.md): code generation is 4-8x cheaper than IL
+plus RyuJIT for the same graphs; steady-state loop kernels range from +36%
+to -37% against the IL backend (geomean -2%): register allocation is a
+single location per value and there is no instruction selection beyond
+immediate forms, where RyuJIT optimizes the IL. The backend is the place
+for V8's own machine-code techniques the IL backend cannot express.
+
 **Flags.** `--maglev-native` (V8Sharp only, on by default on Linux x64 with
 SSE4.1; `V8SHARP_MAGLEV_NATIVE=0` sets the default off) selects the native
 backend; `--no-maglev-native` generates every graph as IL, the backend
