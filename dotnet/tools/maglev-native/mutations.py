@@ -51,7 +51,7 @@ try:
         if b.returncode != 0:
             results.append((name, "BUILD FAILED")); continue
         try:
-            t = subprocess.run([root + "/tests/V8Sharp.Tests/bin/Release/net10.0/V8Sharp.Tests", "-class", "V8Sharp.Tests.Maglev.MaglevNativeTest",
+            t = subprocess.run([root + "/tests/V8Sharp.Tests/bin/Release/net11.0/V8Sharp.Tests", "-class", "V8Sharp.Tests.Maglev.MaglevNativeTest",
                                 "-parallel", "all"], env=env, capture_output=True, text=True, timeout=300)
             failed = [l.strip() for l in t.stdout.splitlines() if "[FAIL]" in l]
             if failed: verdict = "caught: %d failing tests" % len(failed)

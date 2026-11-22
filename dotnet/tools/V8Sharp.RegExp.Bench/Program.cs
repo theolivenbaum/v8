@@ -19,7 +19,7 @@
 //    Times are the Stopwatch minimum over --runs measured replays after --warmup
 //    unmeasured ones, reported per call.
 //
-//   dotnet tools/V8Sharp.RegExp.Bench/bin/Release/net10.0/V8Sharp.RegExp.Bench.dll [--runs N] [--warmup N] [--rerecord]
+//   dotnet tools/V8Sharp.RegExp.Bench/bin/Release/net11.0/V8Sharp.RegExp.Bench.dll [--runs N] [--warmup N] [--rerecord]
 
 using System.Diagnostics;
 using System.Globalization;

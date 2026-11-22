@@ -1,7 +1,7 @@
 # V8Sharp architecture
 
 V8Sharp is a port of V8 (this repository, `src/`) to safe, managed C# on
-.NET 10. This document fixes the cross-cutting design decisions. Every
+.NET 11. This document fixes the cross-cutting design decisions. Every
 component port builds on them; change them only with a note in `todo.md`.
 
 The guiding rule: **port V8's architecture, not just its behaviour.** The same

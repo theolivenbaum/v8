@@ -10,7 +10,10 @@ public static class FieldOffsets
 {
     sealed class RawObject
     {
+        // Only its address is used: the first field of any object.
+#pragma warning disable CS0649
         public byte Data;
+#pragma warning restore CS0649
     }
 
     /// <summary>The offset of <paramref name="field"/> (a field of <paramref name="obj"/>) from the object's address.</summary>

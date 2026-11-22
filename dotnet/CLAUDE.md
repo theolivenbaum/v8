@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Guidance for AI coding agents working on **V8Sharp**, the port of V8 to pure,
-safe C# on .NET 10. The deliverable is everything under `dotnet/`. The rest of
+safe C# on .NET 11. The deliverable is everything under `dotnet/`. The rest of
 this repository is V8 itself, at the revision named in `dotnet/UPSTREAM.md`,
 and it is the source being ported.
 
@@ -49,7 +49,7 @@ Read `dotnet/todo.md` for live status and the work queue, and
 
 ## Target and language level
 
-- `net10.0`, `LangVersion` latest, nullable enabled, implicit usings enabled.
+- `net11.0`, `LangVersion` latest, nullable enabled, implicit usings enabled.
 - File-scoped namespaces, primary constructors where they fit, collection
   expressions, pattern matching, `readonly struct`/`record struct` for values.
 - `Directory.Packages.props` is the only place package versions are declared.
