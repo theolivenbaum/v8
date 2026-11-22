@@ -3400,6 +3400,38 @@ internal sealed class MaglevNativeCodeGenerator
             m.ParameterTypes = new Type[parameters.Length];
             for (int i = 0; i < parameters.Length; i++) m.ParameterTypes[i] = parameters[i].ParameterType;
             m.ReturnType = info.Method.ReturnType;
+            // The thunk's shape: the arguments from the isolate, the inputs (and the closure), the constants.
+            var shape = new char[info.Args.Length];
+            m.ThunkValues = new JSValue[info.Args.Length];
+            m.ThunkObjects = new object?[info.Args.Length];
+            for (int k = 0; k < info.Args.Length; k++)
+            {
+                BuiltinArg arg = info.Args[k];
+                Type type = m.ParameterTypes[k];
+                switch (arg.Kind)
+                {
+                    case BuiltinArgKind.Isolate: shape[k] = 'I'; break;
+                    case BuiltinArgKind.Input or BuiltinArgKind.Closure: shape[k] = 'V'; break;
+                    case BuiltinArgKind.Int:
+                        shape[k] = 'O';
+                        m.ThunkObjects[k] = type == typeof(uint) ? (uint)arg.Index : arg.Index;
+                        break;
+                    case BuiltinArgKind.Bool:
+                        shape[k] = 'O';
+                        m.ThunkObjects[k] = arg.Index != 0;
+                        break;
+                    case BuiltinArgKind.Constant when type == typeof(JSValue):
+                        shape[k] = 'V';
+                        m.ThunkValues[k] = arg.Object is JSValue jv ? jv : JSValue.FromObject((HeapObject?)arg.Object);
+                        break;
+                    case BuiltinArgKind.Constant:
+                        shape[k] = 'O';
+                        m.ThunkObjects[k] = arg.Object is JSValue jo ? jo.HeapObjectOrNull : arg.Object;
+                        break;
+                    default: shape[k] = '?'; break;
+                }
+            }
+            m.Thunk = NativeBuiltinThunks.For(info.Method, new string(shape));
         }
         var tagged = new List<int>();
         foreach (Val v in live)
