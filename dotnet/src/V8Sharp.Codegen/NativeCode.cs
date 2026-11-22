@@ -5,8 +5,9 @@
 // System V function `long Code(long* context)` called through an unmanaged
 // function pointer with SuppressGCTransition, so the thread stays in
 // cooperative mode and no garbage collection can start while it runs: the
-// managed objects it reads (through the pinned arrays below and the
-// references they hold) cannot move under it. Everything it cannot do
+// managed objects it reads (through arrays on the pinned object heap, whose
+// addresses the context holds, and the references they hold) cannot move
+// under it. Everything it cannot do
 // inline is an exit: it returns an exit number and the managed side
 // (MaglevNativeCode) does the rest, then re-enters it if needed. Native code
 // writes no object references (it would need the GC's write barrier); it
@@ -32,33 +33,18 @@ public static unsafe class NativeCode
     public static long[] NewContext(int words) => GC.AllocateArray<long>(words, pinned: true);
 
     /// <summary>
-    /// Calls the code at <paramref name="entry"/> with <paramref name="context"/>,
-    /// after storing in it the addresses of <paramref name="frame"/> (a slot of
-    /// the register stack), of the first elements of <paramref name="constants"/>
-    /// and <paramref name="spill"/>, and of <paramref name="interruptFlags"/>.
-    /// The arrays are pinned for the duration of the call. Returns the exit number.
+    /// Calls the code at <paramref name="entry"/> with the context at
+    /// <paramref name="context"/>: every array it reads is on the pinned
+    /// object heap, so nothing is pinned per call and the context already
+    /// holds their addresses.
     /// </summary>
-    /// <remarks>
-    /// Unsafe: the call goes through an unmanaged function pointer to code
-    /// generated at run time (no safe API calls code that is not IL), and the
-    /// pinned addresses are what that code reads (no safe API hands a managed
-    /// address to it).
-    /// </remarks>
-    public static long Call<TValue>(nint entry, long[] context, ref TValue frame, TValue[] constants, TValue[] spill, ref int interruptFlags)
-    {
-        fixed (long* ctx = context)
-        fixed (byte* fp = &Unsafe.As<TValue, byte>(ref frame))
-        fixed (byte* k = &Unsafe.As<TValue, byte>(ref MemoryMarshal.GetArrayDataReference(constants)))
-        fixed (byte* s = &Unsafe.As<TValue, byte>(ref MemoryMarshal.GetArrayDataReference(spill)))
-        fixed (int* flags = &interruptFlags)
-        {
-            ctx[kFrameSlot] = (long)fp;
-            ctx[kConstantsSlot] = (long)k;
-            ctx[kSpillSlot] = (long)s;
-            ctx[kInterruptFlagsSlot] = (long)flags;
-            return ((delegate* unmanaged[SuppressGCTransition]<long*, long>)entry)(ctx);
-        }
-    }
+    /// <remarks>Unsafe: a call through an unmanaged function pointer to generated code.</remarks>
+    public static long CallPinned(nint entry, nint context) =>
+        ((delegate* unmanaged[SuppressGCTransition]<long*, long>)entry)((long*)context);
+
+    /// <summary>The address of an element of an array on the pinned object heap (GC.AllocateArray pinned).</summary>
+    public static nint AddressOf<T>(T[] pinnedArray, int index) =>
+        System.Runtime.InteropServices.Marshal.UnsafeAddrOfPinnedArrayElement(pinnedArray, index);
 
     /// <summary>Calls code that takes only its context (tests of the assembler).</summary>
     public static long CallRaw(nint entry, long[] context)

@@ -812,7 +812,8 @@ for now, to be revisited when the reason goes away.
 
 - V8's Maglev always emits machine code. V8Sharp emits machine code only for
   graphs the native backend supports (numbers, element, field and context
-  loads, double stores, checks, branches, lazy inlined frames) and, by
+  loads, double stores, checks, branches, lazy inlined frames, and calls,
+  stores and allocations through managed nodes) and, by
   default, only for graphs with a loop (`--maglev-native-loops-only`); every
   other graph is IL (section 9.2), as is every graph with
   `--no-maglev-native` or off Linux x64. Why: native code cannot call
@@ -840,9 +841,24 @@ for now, to be revisited when the reason goes away.
 - Calls and generic operations of natively compiled graphs run in managed
   code behind an exit and a resume (V8's Maglev calls the builtin or the
   callee from machine code); they are allowed only outside loops, except
-  stores and ToBoolean, which have inline paths. Values rebuilt by
-  repeating a load are snapshotted before such an exit (and before an
+  stores, ToBoolean and known calls, which have inline paths. Values rebuilt
+  by repeating a load are snapshotted before such an exit (and before an
   interrupt that may run code), since it may change what the load reads.
+- Native-to-native calls: a known call whose callee has native code with a
+  frameless entry calls it with a machine `call`, as V8's Maglev calls the
+  callee's code entry, but the callee's pseudo-frame (closure, context,
+  receiver, arguments) and its context are written into the caller's
+  pinned context rather than pushed on the machine stack, and only a
+  callee that returns a number continues the caller at once: any other
+  exit of the callee (a deopt, a poll, a non-number return) leaves the
+  caller through the call's managed node, which continues the callee from
+  a copy of its context (MaglevNativeCode.ContinueFrameless). The callee is
+  checked at every call (the feedback vector's code, its native code, its
+  arity, its context size), as the IL's direct call checks the delegate.
+- Allocation: native code allocates nothing (the CLR allocates managed
+  objects); InlinedAllocation and FastNewObject are managed nodes, so graphs
+  that allocate in a loop are IL. Elided allocations (escape analysis) need
+  no code and their deopts capture them, as V8's.
 - Code memory: native code is bump-allocated in mmap'd read/write/execute
   chunks and never freed (V8 collects Code objects; V8Sharp's IL code is
   not collected either). After 512 MB of native code new graphs are

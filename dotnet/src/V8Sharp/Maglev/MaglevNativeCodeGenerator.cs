@@ -46,18 +46,75 @@ internal sealed class MaglevNativeCodeGenerator
     /// <summary>Three words for the parallel moves' cycle breaking.</summary>
     const int kMoveTempSlot = 8;
     const int kFirstHome = 16;
+    /// <summary>The double of a number return (MaglevNativeCode.kNumberReturn).</summary>
+    internal const int kReturnSlot = 13;
+
+    /// <summary>The untagged value a returned number comes from, or null if the value may not be a number.</summary>
+    ValueNode? NumberReturnSource(ValueNode value)
+    {
+        if (value.IsConstant) return value.ConstantValue().IsNumber ? value : null;
+        if (value.Representation is ValueRepresentation.kInt32 or ValueRepresentation.kUint32 or ValueRepresentation.kFloat64) return value;
+        if (value.Opcode is Opcode.Int32ToNumber or Opcode.Uint32ToNumber or Opcode.Float64ToTagged)
+        {
+            ValueNode input = value.Inputs[0];
+            // (Uint32ToNumber of a constant reads it as an int32: keep the general path.)
+            if (input.IsConstant) return null;
+            return input;
+        }
+        return null;
+    }
+
     /// <summary>The ToBoolean result of a branch's managed path.</summary>
     internal const int kBoolResultSlot = 12;
+
+    // ---- Native-to-native calls -----------------------------------------------------------------------------
+    //
+    // A CallKnownJSFunction whose callee has native code with a frameless
+    // entry calls it directly, as V8's optimized code calls the callee's code
+    // entry: the callee's pseudo-frame (closure, context, receiver,
+    // arguments as JSValues) and its context follow the caller's homes in
+    // the same pinned context (the call area), and the callee's entry is
+    // called with the address of its context. The caller checks the callee's
+    // code at each call (vector.MaglevCode.Native, as the IL's direct call
+    // reads vector.MaglevCode.FastCall), so a callee that is replaced or
+    // invalidated is called through the managed side. A callee that returns
+    // a number continues the caller at once; any other exit of the callee
+    // (a deopt, an interrupt, another return) leaves the caller through the
+    // call's managed node with the callee's exit in kCalleeExitSlot, and the
+    // managed side continues the callee from its copied context
+    // (MaglevNativeCode.ContinueFrameless). The pseudo-frame holds object
+    // addresses in a context (not seen by the GC): no GC can happen while
+    // native code runs, and the managed side rebuilds the frame from the
+    // caller's values, never from those words.
+
+    /// <summary>The callee's exit + 1 when a native callee left by another exit than a number return.</summary>
+    internal const int kCalleeExitSlot = 7;
+    /// <summary>The words of the callee's pseudo-frame in the call area.</summary>
+    internal static int CallFrameWords => 2 * (MaglevNativeCode.kPseudoFp + 1);
+    /// <summary>The context words a native callee may use (larger ones are called through the managed side).</summary>
+    internal const int kCalleeReserve = 4096;
+    bool _nativeCalls;
+
+    /// <summary>A known call the code may make directly when the callee has native code (EmitNativeCallFastPath).</summary>
+    static bool HasNativeCallFastPath(Node node) =>
+        node.Opcode == Opcode.CallKnownJSFunction && node.Obj0 is KnownCallInfo { CheckReceiver: false } info &&
+        info.FormalCount <= MaglevFastCalls.kMaxArity && info.Argc <= MaglevFastCalls.kMaxArity && !s_noNativeCalls;
+
+    static readonly bool s_noNativeCalls = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_NO_DIRECT_CALLS") == "1";
 
     // The constants table's fixed entries (JSValues): the number tag, then the oddballs.
     const int kConstNumberTag = 0, kConstTrue = 1, kConstFalse = 2, kConstNull = 3, kConstTheHole = 4, kFirstObjectConstant = 5;
 
-    static readonly Reg[] s_allocatableGp = [rsi, rdi, r8, r9, r10, r12, r13, r14, rbp];
+    static readonly Reg[] s_allocatableGp = [rsi, rdi, r8, r9, r10, r12, r13, rbp];
+
+    /// <summary>The frame pointer (the context's frame word): parameters are read in their frame slots.</summary>
+    const Reg kFrameRegister = r14;
 
     /// <summary>The poll budget (kPollBudgetSlot) while the code runs: a memory counter would chain every iteration through a store.</summary>
     const Reg kPollRegister = r15;
     static readonly XReg[] s_allocatableXmm = [xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15];
     static readonly Reg[] s_calleeSaved = [rbx, rbp, r12, r13, r14, r15];
+    // (rbx: the context, r14: the frame, r15: the poll budget.)
 
     static int s_generated;
 
@@ -101,6 +158,8 @@ internal sealed class MaglevNativeCodeGenerator
         public int Xmm = -1;
         public int Start = int.MaxValue, End = -1;
         public bool NeedsKind;
+        /// <summary>A parameter read in its frame slot (HomeOp).</summary>
+        public bool InFrame;
         /// <summary>The index in MaglevNativeCode.Values, once it has one.</summary>
         public int Info = -1;
         public bool InGp => Gp != no_reg;
@@ -195,21 +254,31 @@ internal sealed class MaglevNativeCodeGenerator
         _snapshots |= _managedNodes.Count > 0;
         foreach (NodeBase n in _managedNodes)
         {
-            _inlineStores |= n.Opcode is Opcode.StoreTaggedField or Opcode.StoreFixedArrayElement or Opcode.StoreContextSlot;
+            _inlineStores |= n.Opcode is Opcode.StoreTaggedField or Opcode.StoreDoubleField or Opcode.StoreFixedArrayElement or Opcode.StoreContextSlot;
         }
         _fastCallArity = _managedNodes.Count > 0 ? -1 : FramelessArity();
         _scratchBase = _fastCallArity + 1;
         Number();
         ComputeLiveness();
         PlanKinds();
+        foreach (Val? v in _vals)
+        {
+            if (v is not null && v.Node.Opcode == Opcode.InitialValue && !v.NeedsKind) v.InFrame = true;
+        }
         AllocateRegisters();
 
         // Prologue: save the callee-saved registers, the context in rbx, then the entry.
         _epilogue = _masm.NewLabel();
         _abort = _masm.NewLabel();
-        foreach (Reg r in s_calleeSaved) _masm.Pushq(r);
+        // The callee-saved registers the code uses: rbx and r15 always, the others if allocated.
+        foreach (Reg r in s_calleeSaved)
+        {
+            if (r is rbx or r14 or r15 || UsesRegister(r)) _saved.Add(r);
+        }
+        foreach (Reg r in _saved) _masm.Pushq(r);
         _masm.Movq(rbx, rdi);
         _masm.Movq(kPollRegister, new Operand(rbx, kPollBudgetSlot * 8));
+        _masm.Movq(kFrameRegister, new Operand(rbx, NativeCode.kFrameSlot * 8));
         XLabel resumeDispatch = _masm.NewLabel();
         _masm.Cmpq(new Operand(rbx, kEntryIdSlot * 8), 0);
         _masm.J(Condition.not_equal, resumeDispatch);
@@ -238,7 +307,12 @@ internal sealed class MaglevNativeCodeGenerator
             _masm.Movq(rcx, new Operand(rbx, NativeCode.kSpillSlot * 8));
             foreach (Val v in live)
             {
-                if (v.Repr == ValueRepresentation.kTagged)
+                if (v.Repr == ValueRepresentation.kTagged && v.InFrame)
+                {
+                    // (Its frame slot is current: the GC updates the frame.)
+                    j++;
+                }
+                else if (v.Repr == ValueRepresentation.kTagged)
                 {
                     _masm.Movq(rax, new Operand(rcx, j * 16));
                     _masm.Movq(HomeOp(v), rax);
@@ -276,7 +350,7 @@ internal sealed class MaglevNativeCodeGenerator
         _masm.Bind(_epilogue);
         // The poll budget left: the managed side counts the back edges (MaglevNativeCode.Profile).
         _masm.Movq(new Operand(rbx, kPollBudgetSlot * 8), kPollRegister);
-        for (int i = s_calleeSaved.Length - 1; i >= 0; i--) _masm.Popq(s_calleeSaved[i]);
+        for (int i = _saved.Count - 1; i >= 0; i--) _masm.Popq(_saved[i]);
         _masm.Ret();
         if (_masm.PendingFixups != 0) throw new InvalidOperationException("native code: a jump to an unbound label");
 
@@ -288,8 +362,9 @@ internal sealed class MaglevNativeCodeGenerator
             Code = _code,
             Entry = entry,
             CodeSize = _masm.PcOffset,
-            ContextWords = _homeWords,
-            Constants = _constants.ToArray(),
+            ContextWords = _homeWords + (_nativeCalls ? CallFrameWords + kCalleeReserve : 0),
+            CalleeContextBase = _homeWords + CallFrameWords,
+            Constants = PinnedConstants(),
             Values = _valueInfos.ToArray(),
             Exits = _exits.ToArray(),
             DeoptValues = _deoptValues.ToArray(),
@@ -298,6 +373,7 @@ internal sealed class MaglevNativeCodeGenerator
             FirstHome = firstHome,
             HomeEnd = _homeWords,
         };
+        native.ConstantsAddress = NativeCode.AddressOf(native.Constants, 0);
         _code.DeoptPoints = _deoptPoints.ToArray();
         _code.SpeculationFeedback = _speculationFeedback.ToArray();
         _code.MaxScratchSize = _maxScratch;
@@ -313,6 +389,25 @@ internal sealed class MaglevNativeCodeGenerator
         if (_info.Isolate.Flags.print_maglev_code) Print(native);
         Interlocked.Increment(ref s_generated);
         return native;
+    }
+
+    readonly List<Reg> _saved = [];
+
+    bool UsesRegister(Reg r)
+    {
+        foreach (Val? v in _vals)
+        {
+            if (v is not null && v.Gp == r) return true;
+        }
+        return false;
+    }
+
+    /// <summary>The constants table on the pinned object heap (the code reads it by address).</summary>
+    JSValue[] PinnedConstants()
+    {
+        JSValue[] table = GC.AllocateArray<JSValue>(_constants.Count, pinned: true);
+        _constants.CopyTo(table);
+        return table;
     }
 
     void Print(MaglevNativeCode native)
@@ -356,8 +451,8 @@ internal sealed class MaglevNativeCodeGenerator
     /// only the payload changes, as the IL backend's EmitStoreTagged); the
     /// managed side does the others, so such stores may be in loops.
     /// </summary>
-    static bool HasInlineFastPath(Node node) => node.Opcode is Opcode.StoreTaggedField or Opcode.StoreFixedArrayElement or Opcode.StoreContextSlot or
-        Opcode.ToBoolean or Opcode.ToBooleanLogicalNot or Opcode.LoadTypedArrayLength;
+    static bool HasInlineFastPath(Node node) => node.Opcode is Opcode.StoreTaggedField or Opcode.StoreDoubleField or Opcode.StoreFixedArrayElement or Opcode.StoreContextSlot or
+        Opcode.ToBoolean or Opcode.ToBooleanLogicalNot or Opcode.LoadTypedArrayLength || HasNativeCallFastPath(node);
 
     /// <summary>
     /// Nodes the managed side runs (MaglevNativeCode.Execute); <paramref name="why"/>
@@ -369,7 +464,8 @@ internal sealed class MaglevNativeCodeGenerator
         switch (node.Opcode)
         {
             case Opcode.StoreTaggedField:
-                if (node.Int0 < JSObject.kPropertyArrayStorageBase && !InObjectLayout.IsContiguous) why = "StoreTaggedField layout";
+            case Opcode.StoreDoubleField:
+                if (node.Int0 < JSObject.kPropertyArrayStorageBase && !InObjectLayout.IsContiguous) why = node.Opcode + " layout";
                 return true;
             case Opcode.StoreFixedArrayElement:
             case Opcode.StoreContextSlot:
@@ -381,6 +477,10 @@ internal sealed class MaglevNativeCodeGenerator
             case Opcode.LoadTypedArrayLength:
             case Opcode.StringLength:
             case Opcode.CheckInstanceType:
+            case Opcode.FastNewObject:
+                return true;
+            case Opcode.InlinedAllocation:
+                // (An elided one is not in the graph's blocks: its deopts capture it.)
                 return true;
             case Opcode.CallKnownJSFunction:
             {
@@ -532,14 +632,22 @@ internal sealed class MaglevNativeCodeGenerator
             if (f is not InterpretedDeoptFrame frame) throw Unsupported("deopt frame kind " + f.GetType().Name);
             foreach ((IRegister _, ValueNode value) in frame.Values)
             {
-                // Elided allocations and arguments objects (the Deoptimizer materializes them): not generated.
-                if (value is InlinedAllocation || value.Opcode == Opcode.CallBuiltin && ((CallBuiltinInfo)value.Obj0!).Elided)
+                // Elided allocations are captured objects of the deopt point (the
+                // Deoptimizer materializes them from their fields), allocations
+                // are managed values; elided arguments objects are not generated.
+                if (value.Opcode == Opcode.CallBuiltin && ((CallBuiltinInfo)value.Obj0!).Elided)
                 {
                     throw Unsupported("captured object in a deopt frame");
                 }
             }
         }
     }
+
+    /// <summary>
+    /// The inputs the node's code reads: none for the inlined frame markers,
+    /// which generate no code (their receiver may be an elided allocation).
+    /// </summary>
+    static ValueNode[] CodeInputs(Node node) => node.Opcode is Opcode.EnterInlinedFrame or Opcode.LeaveInlinedFrame ? [] : node.Inputs;
 
     static bool IsSupportedNode(Node node) => node.Opcode switch
     {
@@ -648,7 +756,12 @@ internal sealed class MaglevNativeCodeGenerator
         for (DeoptFrame? f = info.TopFrame; f is not null; f = f.Parent)
         {
             var frame = (InterpretedDeoptFrame)f;
-            foreach ((IRegister _, ValueNode value) in frame.Values) AddClosure(value, into);
+            foreach ((IRegister _, ValueNode value) in frame.Values)
+            {
+                // (An elided allocation: the fields of its virtual object, recursively.)
+                if (value is InlinedAllocation { IsElided: true }) MaglevEscapeAnalysis.UseCaptured(value, info.TopFrame.VirtualObjects, v => AddClosure(v, into));
+                else AddClosure(value, into);
+            }
             if (frame.Unit.IsInline && frame.Unit.Function is null) AddClosure(frame.Closure, into);
         }
     }
@@ -719,7 +832,7 @@ internal sealed class MaglevNativeCodeGenerator
                         foreach (ValueNode l in closure) live.Add(l);
                         _liveAfter[node] = null!;
                     }
-                    foreach (ValueNode input in node.Inputs) AddClosure(input, live);
+                    foreach (ValueNode input in CodeInputs(node)) AddClosure(input, live);
                     if (node.EagerDeoptInfo is { } e) DeoptUses(e, live);
                 }
                 foreach (Phi phi in b.Phis) live.Remove(phi);
@@ -819,7 +932,7 @@ internal sealed class MaglevNativeCodeGenerator
                     list.Sort(static (x, y) => x.Node.Id.CompareTo(y.Node.Id));
                     _liveAfter[node] = list;
                 }
-                foreach (ValueNode input in node.Inputs)
+                foreach (ValueNode input in CodeInputs(node))
                 {
                     // With what rebuilding it reads: an exit of this node (a
                     // Return, a migrating CheckMaps) may rebuild the input.
@@ -957,7 +1070,20 @@ internal sealed class MaglevNativeCodeGenerator
 
     // ---- Operands ----------------------------------------------------------------------------------------------
 
-    static Operand HomeOp(Val v, int word = 0) => new(rbx, (v.Home + word) * 8);
+    /// <summary>
+    /// A word of a value's home. A parameter (InitialValue) without a kind
+    /// word lives in its frame slot: the frame is GC-visible and never
+    /// written by native code, so it needs no copy and no reload on resume.
+    /// </summary>
+    static Operand HomeOp(Val v, int word = 0)
+    {
+        if (v.InFrame)
+        {
+            if (word > 1) throw new InvalidOperationException("a frame slot has no kind word");
+            return new Operand(kFrameRegister, v.Node.Int0 * 16 + word * 8);
+        }
+        return new(rbx, (v.Home + word) * 8);
+    }
 
     XLabel BlockLabel(BasicBlock b)
     {
@@ -1239,6 +1365,8 @@ internal sealed class MaglevNativeCodeGenerator
             {
                 info.SnapSlot = _managedSlots++;
                 info.Kind = NativeValueKind.kManaged;
+                // A native call's number result is in the home (its kind word says which).
+                info.KindAtLoad = HasNativeCallFastPath(v.Node);
                 return v.Info;
             }
         }
@@ -1470,6 +1598,7 @@ internal sealed class MaglevNativeCodeGenerator
         for (DeoptFrame? f = info.TopFrame; f is not null; f = f.Parent) frames.Add((InterpretedDeoptFrame)f);
         frames.Reverse();
         var values = new List<(int, int)>();
+        var capturedObjects = new List<(InlinedAllocation Allocation, CapturedObjectData Data)>();
         int Slot(ValueNode value)
         {
             if (!_scratchSlots.TryGetValue(value, out int slot))
@@ -1488,6 +1617,7 @@ internal sealed class MaglevNativeCodeGenerator
             var slots = new int[f.Values.Length];
             JSValue[]? constants = null;
             bool[]? isConstant = null;
+            int[]? captured = null;
             for (int k = 0; k < f.Values.Length; k++)
             {
                 registers[k] = f.Values[k].Register;
@@ -1497,6 +1627,12 @@ internal sealed class MaglevNativeCodeGenerator
                 {
                     (constants ??= new JSValue[f.Values.Length])[k] = value.ConstantValue();
                     (isConstant ??= new bool[f.Values.Length])[k] = true;
+                    continue;
+                }
+                if (value is InlinedAllocation { IsElided: true } allocation)
+                {
+                    // A captured object: the Deoptimizer materializes it from its fields.
+                    (captured ??= NewCapturedRefs(f.Values.Length))[k] = CapturedObjectIndex(allocation, info, capturedObjects, Slot);
                     continue;
                 }
                 slots[k] = Slot(value);
@@ -1516,6 +1652,7 @@ internal sealed class MaglevNativeCodeGenerator
                 Registers = registers,
                 Constants = constants,
                 IsConstant = isConstant,
+                Captured = captured,
                 ScratchSlots = slots,
             };
         }
@@ -1524,6 +1661,7 @@ internal sealed class MaglevNativeCodeGenerator
             Kind = info is LazyDeoptInfo ? DeoptimizeKind.kLazy : DeoptimizeKind.kEager,
             Reason = info is EagerDeoptInfo eager ? eager.Reason : DeoptimizeReason.kUnknown,
             Frames = data,
+            CapturedObjects = capturedObjects.Count > 0 ? capturedObjects.ConvertAll(static c => c.Data).ToArray() : null,
         };
         if (info is LazyDeoptInfo lazy)
         {
@@ -1542,6 +1680,58 @@ internal sealed class MaglevNativeCodeGenerator
         info.DeoptIndex = index;
         _deoptPointIndex[info] = index;
         _maxScratch = Math.Max(_maxScratch, _scratchBase + _scratchSlots.Count);
+        return index;
+    }
+
+    static int[] NewCapturedRefs(int count)
+    {
+        var refs = new int[count];
+        Array.Fill(refs, -1);
+        return refs;
+    }
+
+    /// <summary>
+    /// The index of the captured object of <paramref name="allocation"/> in
+    /// the deopt point being built, as the IL backend's CapturedObjectIndex:
+    /// its map and fields from the point's virtual object, the fields'
+    /// values in scratch slots (<paramref name="slot"/>).
+    /// </summary>
+    static int CapturedObjectIndex(InlinedAllocation allocation, DeoptInfo info, List<(InlinedAllocation Allocation, CapturedObjectData Data)> objects,
+        Func<ValueNode, int> slot)
+    {
+        for (int i = 0; i < objects.Count; i++)
+        {
+            if (ReferenceEquals(objects[i].Allocation, allocation)) return i;
+        }
+        int index = objects.Count;
+        VirtualObject vo = info.TopFrame.VirtualObjects.Find(allocation)
+            ?? throw Unsupported($"no virtual object for elided allocation n{allocation.Id}");
+        var data = new CapturedObjectData
+        {
+            AllocatedMap = allocation.AllocatedMap,
+            Map = vo.Map,
+            FieldSlots = new int[vo.Slots.Length],
+            FieldConstants = new JSValue[vo.Slots.Length],
+        };
+        objects.Add((allocation, data));
+        for (int f = 0; f < vo.Slots.Length; f++)
+        {
+            ValueNode value = vo.Slots[f];
+            if (value.IsConstant)
+            {
+                data.FieldSlots[f] = -1;
+                data.FieldConstants[f] = value.ConstantValue();
+                continue;
+            }
+            if (value is InlinedAllocation { IsElided: true } nested)
+            {
+                data.FieldSlots[f] = -1;
+                (data.FieldCaptured ??= NewCapturedRefs(vo.Slots.Length))[f] = CapturedObjectIndex(nested, info, objects, slot);
+                continue;
+            }
+            if (value.Opcode == Opcode.CallBuiltin && ((CallBuiltinInfo)value.Obj0!).Elided) throw Unsupported("an arguments object in a captured object");
+            data.FieldSlots[f] = slot(value);
+        }
         return index;
     }
 
@@ -1574,7 +1764,19 @@ internal sealed class MaglevNativeCodeGenerator
     void EmitBlock(BasicBlock block)
     {
         _masm.Bind(BlockLabel(block));
-        foreach (Node node in block.Nodes) EmitNode(node);
+        // A tagging node right before a number return, used only by it: the
+        // return takes the untagged value (NumberReturnSource), the tagging is dead.
+        Node? dead = null;
+        if (block.Control is { Opcode: Opcode.Return } ret && block.Nodes.Count > 0 && ReferenceEquals(block.Nodes[^1], ret.Inputs[0]) &&
+            ret.Inputs[0].UseCount == 1 && !ReferenceEquals(NumberReturnSource(ret.Inputs[0]), ret.Inputs[0]) &&
+            NumberReturnSource(ret.Inputs[0]) is not null && !_managedNodes.Contains(ret.Inputs[0]))
+        {
+            dead = ret.Inputs[0];
+        }
+        foreach (Node node in block.Nodes)
+        {
+            if (!ReferenceEquals(node, dead)) EmitNode(node);
+        }
         EmitControl(block, block.Control!);
     }
 
@@ -1606,6 +1808,15 @@ internal sealed class MaglevNativeCodeGenerator
             case Opcode.JumpLoop:
                 EmitPhiMoves(block, c.Target!);
                 if (!ReferenceEquals(c.Target, _nextBlock) || c.Opcode == Opcode.JumpLoop) _masm.Jmp(BlockLabel(c.Target!));
+                return;
+            case Opcode.Return when NumberReturnSource(c.Inputs[0]) is { } number:
+                // A number: its double in the context's return word, and the
+                // number-return code (MaglevNativeCode.kNumberReturn): no exit
+                // table lookup and no rebuild on the way out.
+                LoadFloat64(number, xmm0);
+                _masm.Movsd(new Operand(rbx, kReturnSlot * 8), xmm0);
+                _masm.Movq(rax, MaglevNativeCode.kNumberReturn);
+                _masm.Jmp(_epilogue);
                 return;
             case Opcode.Return:
             {
@@ -2005,7 +2216,8 @@ internal sealed class MaglevNativeCodeGenerator
         {
             case Opcode.InitialValue:
             {
-                // The frame slot (fp + Int0) into the home.
+                if (r!.InFrame) return;
+                // The frame slot (fp + Int0) into the home (a kind word is needed).
                 _masm.Movq(rcx, new Operand(rbx, NativeCode.kFrameSlot * 8));
                 _masm.Movq(rax, new Operand(rcx, node.Int0 * 16 + 8));
                 _masm.Movq(HomeOp(r!, 1), rax);
@@ -3014,6 +3226,11 @@ internal sealed class MaglevNativeCodeGenerator
             m.EagerDeoptIndex = DeoptPointFor(eagerInfo);
             m.EagerReason = ReasonCode(eagerInfo);
         }
+        if (node is InlinedAllocation { InitialFields: null } allocation)
+        {
+            m.Allocate = System.Reflection.ConstructorInvoker.Create(MaglevCodeGenerator.InObjectClassConstructor(allocation.InObjectCount));
+        }
+        if (node is InlinedAllocation { InitialFields: { } initialFields }) m.InitialFields = initialFields;
         if (node.Opcode == Opcode.CallBuiltin)
         {
             var info = (CallBuiltinInfo)node.Obj0!;
@@ -3043,6 +3260,7 @@ internal sealed class MaglevNativeCodeGenerator
         {
             Opcode.ToBoolean or Opcode.ToBooleanLogicalNot => EmitToBooleanNodeFastPath(node, slow, cont),
             Opcode.LoadTypedArrayLength => EmitTypedArrayLengthFastPath(node, slow, cont),
+            Opcode.CallKnownJSFunction => EmitNativeCallFastPath(node, slow, cont),
             _ => EmitStoreNumberFastPath(node, slow, cont),
         };
         // The slow path out of line when there is a fast path.
@@ -3069,6 +3287,131 @@ internal sealed class MaglevNativeCodeGenerator
     }
 
     readonly List<Action> _slowPaths = [];
+
+    static readonly Reg[] s_callerSavedGp = [rsi, rdi, r8, r9, r10];
+
+    /// <summary>
+    /// A direct call of the callee's native code (see "Native-to-native
+    /// calls"); <paramref name="slow"/> is the call's managed node.
+    /// </summary>
+    bool EmitNativeCallFastPath(Node node, XLabel slow, XLabel done)
+    {
+        var info = (KnownCallInfo)node.Obj0!;
+        Val r = V((ValueNode)node);
+        _nativeCalls = true;
+        int frameBase = _homeWords;
+        int calleeBase = _homeWords + CallFrameWords;
+        Operand FrameSlot(int offset, int word = 0) => new(rbx, frameBase * 8 + (MaglevNativeCode.kPseudoFp + offset) * 16 + word * 8);
+        Operand CalleeWord(int word) => new(rbx, (calleeBase + word) * 8);
+        var native = new Operand(rbx, kMoveTempSlot * 8);
+
+        // native = vector.MaglevCode?.Native, with the formal count's frameless entry and a context that fits.
+        LoadConstantAddress(rax, ConstantIndex(info.Vector));
+        _masm.Movq(rax, new Operand(rax, NativeLayout.FeedbackVectorMaglevCode));
+        _masm.Testq(rax, rax);
+        _masm.J(Condition.equal, slow);
+        _masm.Movq(rax, new Operand(rax, NativeLayout.MaglevCodeNative));
+        _masm.Testq(rax, rax);
+        _masm.J(Condition.equal, slow);
+        _masm.Cmpl(new Operand(rax, NativeLayout.NativeFastCallArity), info.FormalCount);
+        _masm.J(Condition.not_equal, slow);
+        _masm.Cmpl(new Operand(rax, NativeLayout.NativeContextWords), kCalleeReserve);
+        _masm.J(Condition.above, slow);
+        _masm.Movq(native, rax);
+
+        // The pseudo-frame: closure, context, receiver, the arguments (undefined for missing ones).
+        if (info.Target is { } target) LoadConstantAddress(rax, ConstantIndex(target));
+        else LoadTaggedPtr(node.Inputs[info.TargetInput], rax);
+        _masm.Movq(FrameSlot(global::V8Sharp.Interpreter.InterpreterRuntime.kClosureOffset), rax);
+        _masm.Movq(FrameSlot(global::V8Sharp.Interpreter.InterpreterRuntime.kClosureOffset, 1), 0);
+        _masm.Movq(rax, new Operand(rax, NativeLayout.JSFunctionContext));
+        _masm.Movq(FrameSlot(global::V8Sharp.Interpreter.InterpreterRuntime.kContextOffset), rax);
+        _masm.Movq(FrameSlot(global::V8Sharp.Interpreter.InterpreterRuntime.kContextOffset, 1), 0);
+        LoadTagged(info.HasConvertedReceiver ? node.Inputs[info.ConvertedReceiverInput] : node.Inputs[0], rax, rcx);
+        _masm.Movq(FrameSlot(global::V8Sharp.Interpreter.InterpreterRuntime.kReceiverOffset), rax);
+        _masm.Movq(FrameSlot(global::V8Sharp.Interpreter.InterpreterRuntime.kReceiverOffset, 1), rcx);
+        for (int i = 0; i < info.FormalCount; i++)
+        {
+            int offset = global::V8Sharp.Interpreter.InterpreterRuntime.kFirstArgumentOffset - i;
+            if (i < info.Argc)
+            {
+                LoadTagged(node.Inputs[1 + i], rax, rcx);
+                _masm.Movq(FrameSlot(offset), rax);
+                _masm.Movq(FrameSlot(offset, 1), rcx);
+            }
+            else
+            {
+                _masm.Movq(FrameSlot(offset), 0);
+                _masm.Movq(FrameSlot(offset, 1), 0);
+            }
+        }
+
+        // The callee's context words (NativeCode's and MaglevNativeCode.Enter's).
+        _masm.Movq(rdx, native);
+        _masm.Leaq(rax, FrameSlot(0));
+        _masm.Movq(CalleeWord(NativeCode.kFrameSlot), rax);
+        _masm.Movq(rax, new Operand(rdx, NativeLayout.NativeConstantsAddress));
+        _masm.Movq(CalleeWord(NativeCode.kConstantsSlot), rax);
+        _masm.Movq(rax, (long)MaglevNativeCode.NoSpillAddress);
+        _masm.Movq(CalleeWord(NativeCode.kSpillSlot), rax);
+        _masm.Movq(rax, new Operand(rbx, NativeCode.kInterruptFlagsSlot * 8));
+        _masm.Movq(CalleeWord(NativeCode.kInterruptFlagsSlot), rax);
+        _masm.Movq(CalleeWord(kEntryIdSlot), 0);
+        _masm.Movq(CalleeWord(kPollBudgetSlot), MaglevNativeCode.kPollBudget);
+
+        // The live values in caller-saved registers on the stack (16-byte aligned at the call).
+        var pushed = new List<Val>();
+        foreach (Val v in _liveAfter[node])
+        {
+            if (v.InGp && Array.IndexOf(s_callerSavedGp, v.Gp) >= 0 || v.InXmm) pushed.Add(v);
+        }
+        foreach (Val v in pushed)
+        {
+            if (v.InGp)
+            {
+                _masm.Pushq(v.Gp);
+            }
+            else
+            {
+                _masm.Movq(rax, v.XmmReg);
+                _masm.Pushq(rax);
+            }
+        }
+        // (At entry rsp is 8 mod 16, the return address; then the prologue's pushes and these.)
+        bool pad = (1 + _saved.Count + pushed.Count) % 2 != 0;
+        if (pad) _masm.Subq(rsp, 8);
+        _masm.Leaq(rdi, CalleeWord(0));
+        _masm.Call(new Operand(rdx, NativeLayout.NativeEntry));
+        if (pad) _masm.Addq(rsp, 8);
+        for (int i = pushed.Count - 1; i >= 0; i--)
+        {
+            Val v = pushed[i];
+            if (v.InGp)
+            {
+                _masm.Popq(v.Gp);
+            }
+            else
+            {
+                _masm.Popq(rcx);
+                _masm.Movq(v.XmmReg, rcx);
+            }
+        }
+        XLabel calleeExit = _masm.NewLabel();
+        _masm.Cmpq(rax, (int)MaglevNativeCode.kNumberReturn);
+        _masm.J(Condition.not_equal, calleeExit);
+        _masm.Movsd(xmm0, CalleeWord(kReturnSlot));
+        StoreTaggedNumber(r, xmm0);
+        _masm.Movq(HomeOp(r, 2), (int)NativeTaggedKind.kNumber);
+        _masm.Jmp(done);
+        _slowPaths.Add(() =>
+        {
+            _masm.Bind(calleeExit);
+            _masm.Addq(rax, 1);
+            _masm.Movq(new Operand(rbx, kCalleeExitSlot * 8), rax);
+            _masm.Jmp(slow);
+        });
+        return true;
+    }
 
     static int TypedElementSize(ElementsKind kind) => kind switch
     {
@@ -3297,10 +3640,15 @@ internal sealed class MaglevNativeCodeGenerator
             _ => node.Inputs[1],
         };
         if (value.IsConstant ? !value.ConstantValue().IsNumber : V(value).Repr == ValueRepresentation.kHoleyFloat64) return false;
-        if (node.Opcode == Opcode.StoreTaggedField && node.Int0 < JSObject.kPropertyArrayStorageBase && !InObjectLayout.IsContiguous) return false;
+        if (node.Opcode is Opcode.StoreTaggedField or Opcode.StoreDoubleField && node.Int0 < JSObject.kPropertyArrayStorageBase &&
+            !InObjectLayout.IsContiguous)
+        {
+            return false;
+        }
         switch (node.Opcode)
         {
             case Opcode.StoreTaggedField:
+            case Opcode.StoreDoubleField:
             {
                 int storage = node.Int0;
                 LoadTaggedPtr(node.Inputs[0], rcx);
@@ -3347,7 +3695,7 @@ internal sealed class MaglevNativeCodeGenerator
         _masm.Cmpq(new Operand(rcx, 0), r11);
         _masm.J(Condition.not_equal, slow);
         LoadTaggedBits(value, rdx);
-        if (node.Opcode == Opcode.StoreTaggedField && node.Int1 != 0)
+        if (node.Opcode == Opcode.StoreDoubleField || node.Opcode == Opcode.StoreTaggedField && node.Int1 != 0)
         {
             XLabel store = _masm.NewLabel();
             _masm.Movq(xmm0, rdx);
@@ -3522,6 +3870,8 @@ internal static class NativeLayout
     public static readonly int MapBitField;
     public static readonly int ViewBuffer, ViewByteOffset, ViewIsLengthTracking, ViewIsBackedByRab, TypedArrayRawLength;
     public static readonly int BufferWasDetached, BufferIsImmutable, BufferBackingStore, BackingStoreBuffer;
+    public static readonly int FeedbackVectorMaglevCode, MaglevCodeNative, JSFunctionContext;
+    public static readonly int NativeEntry, NativeConstantsAddress, NativeContextWords, NativeFastCallArity;
 
     static NativeLayout()
     {
@@ -3555,6 +3905,17 @@ internal static class NativeLayout
         FixedArrayData = FieldOffsets.Of(fixedArray, ref fixedArray._data);
         var doubleArray = (FixedDoubleArray)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(FixedDoubleArray));
         FixedDoubleArrayData = FieldOffsets.Of(doubleArray, ref doubleArray._data);
+        var vector = (FeedbackVector)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(FeedbackVector));
+        FeedbackVectorMaglevCode = FieldOffsets.Of(vector, ref vector.MaglevCode);
+        var code = (MaglevCode)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MaglevCode));
+        MaglevCodeNative = FieldOffsets.Of(code, ref code.Native);
+        var function = (JSFunction)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(JSFunction));
+        JSFunctionContext = FieldOffsets.Of(function, ref function.Context);
+        var nativeCode = new MaglevNativeCode();
+        NativeEntry = FieldOffsets.Of(nativeCode, ref nativeCode.Entry);
+        NativeConstantsAddress = FieldOffsets.Of(nativeCode, ref nativeCode.ConstantsAddress);
+        NativeContextWords = FieldOffsets.Of(nativeCode, ref nativeCode.ContextWords);
+        NativeFastCallArity = FieldOffsets.Of(nativeCode, ref nativeCode.FastCallArity);
         JSValue probe = default;
         if (FieldOffsets.Distance(ref probe, ref System.Runtime.CompilerServices.Unsafe.AsRef(in probe._obj)) != 0 ||
             FieldOffsets.Distance(ref probe, ref System.Runtime.CompilerServices.Unsafe.AsRef(in probe._bits)) != 8)

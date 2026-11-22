@@ -3028,6 +3028,15 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
       Return or a migrating CheckMaps rebuilds were not kept live, interrupt
       exits did not store their deopt values, an interrupt that runs code
       could change what reload-rebuilt values read): fixed, with tests.
+      Native-to-native calls (a known call of a callee with native code and
+      a frameless entry is a machine call; other callee exits continue on
+      the managed side), a cheaper entry (pinned addresses cached, parameters
+      read in the frame, number returns in a context word), elided
+      allocations captured by deopts, allocations (InlinedAllocation,
+      FastNewObject) and StoreDoubleField as managed nodes. Leaf call from
+      native code: 8-9 ns vs IL 7.8 ns (was 13-21 ns through the managed side).
+      MaglevNativeTest passes with 1000 random programs; full unit and
+      mjsunit reruns pending.
       Mutation check (tools/maglev-native/mutations.py, 16 planted bugs): 14
       caught; the other 2 (register sharing at one position, deopt-only uses
       not extended within a block) are equivalent in the graphs Maglev builds,

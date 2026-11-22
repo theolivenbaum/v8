@@ -1071,7 +1071,25 @@ rules make native code safe next to the .NET GC:
   reads only its closure, context, receiver and parameters and handles no
   interrupts get a frameless direct entry (`MaglevCode.FastCall`): the
   arguments go into a per-isolate pseudo-frame the code reads, and a deopt
-  builds the interpreter frame (`MaglevCalls.DeoptimizeFrameless`).
+  builds the interpreter frame (`MaglevCalls.DeoptimizeFrameless`). Every
+  array the code reads by address (its context, constants, the spill array,
+  the pseudo-frame, the interrupt flags) is on the pinned object heap and
+  its address is cached, so an entry is a few stores and an unmanaged
+  call. Parameters are read in their frame slots through a reserved frame
+  register (r14), not copied, and a function that returns a number leaves
+  it in the context's return word (no exit decoding, no tagging).
+- **Native-to-native calls.** A known call whose callee has native code with
+  a frameless entry is a machine `call` (V8's call of the callee's code
+  entry): the caller checks the callee's code (the feedback vector's
+  MaglevCode, its native code, the arity of its direct entry), writes the
+  callee's pseudo-frame and context words into its own context after its
+  homes (the call area), saves the live caller-saved registers on the stack
+  and calls the entry with the callee's context. A number return continues
+  the caller; any other exit of the callee goes out through the call's
+  managed node, which continues the callee on the managed side from a
+  pinned copy of its context and a pseudo-frame rebuilt from the caller's
+  values (`MaglevNativeCode.ContinueFrameless`), and the caller resumes
+  with the result. Such calls have an inline path, so they may be in loops.
 
 **Managed nodes.** A node native code cannot do inline (a call, a store of
 a reference, a generic operation) is run by the managed side, the way Ryu's
@@ -1088,7 +1106,8 @@ node (or an interrupt of a loop with calls) may change the heap, values
 rebuilt by repeating a load are kept first (snapshots: the managed slot
 and a flag in the home's fourth word, cleared when the load runs again).
 Managed nodes cost a round trip, so they are not allowed in loops, except
-the stores and ToBoolean, which have an inline path: a number stored over a
+the stores, ToBoolean and known calls, which have an inline path (known calls:
+above), a number stored over a
 number writes only the payload (no write barrier, as the IL backend's
 stores), ToBoolean of an oddball, number or receiver is computed inline, and
 only the other cases exit. Since inline stores can overwrite a slot, slot
@@ -1114,9 +1133,14 @@ clamped stores of int32s); stores of doubles into double elements (NaN
 canonicalized); ToBoolean branches; inlined functions whose frames are lazy. Element and
 PropertyArray accesses are bounds-checked against the CLR array (an index
 the graph's checks let through aborts with an exception, as the IL's array
-access throws). Calls and generic operations outside loops are managed nodes (above);
-calls in loops, allocation, catch blocks and generators make the graph go to
-the IL backend. By default only graphs with a loop are generated natively
+access throws). Calls and generic operations outside loops are managed nodes (above),
+and so are allocations (InlinedAllocation, FastNewObject: native code
+allocates nothing); elided allocations need no code and deopts capture them
+(the Deoptimizer materializes them from their fields, as for IL code).
+Other calls in loops (generic calls, a receiver to check, more than six
+arguments), allocations in loops, catch blocks and generators make the graph
+go to the IL backend; a known call in a loop whose callee is not native
+exits at each call, which the run-time profile sends back to IL. By default only graphs with a loop are generated natively
 (`--maglev-native-loops-only`): entering native code costs a transition
 (context set-up, pinning, decoding the exit) that a straight-line leaf does
 not earn back against RyuJIT's code, which callers enter directly.

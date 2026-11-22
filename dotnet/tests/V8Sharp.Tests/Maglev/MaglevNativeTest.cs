@@ -242,6 +242,25 @@ public class MaglevNativeTest
         function at5() { return str[5]; }
         opt(at4, []); rec(at4()); opt(at5, []); rec(at5()); str = "hi"; rec(at4());
         """,
+        // Elided allocations (escape analysis): deopts inside the loop materialize
+        // the captured objects (nested ones too), which the interpreter then reads.
+        """
+        function Pt(x, y) { this.x = x; this.y = y; }
+        function ea(a, n) { let s = 0; for (let i = 0; i < n; i++) { const p = {x: i, y: a[i % a.length]}; const q = new Pt(p.x * 2, p.y); const t = q.y | 0; s += q.x + t + p.y; } return s; }
+        let ear = [1, 2, 3, 4, {}]; ear.pop(); opt(ea, [ear, 10]); rec(ea(ear, 100)); ear[2] = 1.5; rec(ea(ear, 100)); ear[1] = 'x'; rec(ea(ear, 50));
+        function ea2(a, n) { let s = 0; for (let i = 0; i < n; i++) { const box = {v: i, w: {u: i * 2}}; const t = a[i] + 1; s += box.v + box.w.u + t; } return s; }
+        const ea2a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, {}]; ea2a.pop(); opt(ea2, [ea2a, 10]); rec(ea2(ea2a, 10)); ea2a[5] = 'z'; rec(ea2(ea2a, 10)); ea2a[6] = 0.5; rec(ea2(ea2a, 10));
+        """,
+        // Allocations (managed nodes), object literals, double field stores (inline over a number).
+        """
+        function C(a) { this.a = a; }
+        function mk(n) { const o = {x: n, y: 2}; const c = new C(o); let s = 0; for (let i = 0; i < n; i++) s += i & 7; o.x = s; return c; }
+        opt(mk, [5]); rec(JSON.stringify(mk(100))); rec(mk(10).a.x); rec(JSON.stringify(mk(3)));
+        function lit(n) { const r = {k: 1.5, j: 'a'}; let s = 0; for (let i = 0; i < n; i++) s += r.k; r.k = s; return r; }
+        opt(lit, [5]); rec(JSON.stringify(lit(10))); rec(JSON.stringify(lit(0)));
+        function dbl(o, n) { for (let i = 0; i < n; i++) o.d = o.d * 0.5 + i; return o.d; }
+        const od = {d: 1.5}; opt(dbl, [od, 3]); rec(dbl(od, 100)); rec(dbl({d: NaN}, 3)); rec(dbl({d: 2.5}, 0)); rec(dbl({d: 'x'}, 2));
+        """,
         // A call that invalidates the caller's code (a map it depends on changes): lazy deopt after it.
         """
         const proto = { v: 1 };
@@ -285,6 +304,58 @@ public class MaglevNativeTest
             opt(leaf, [2, 3]); rec(leaf(1, 2)); rec(leaf("a", 2));
             out.join('|')
             """);
+    }
+
+    [Fact]
+    public void NativeCallersCallNativeCalleesDirectly()
+    {
+        // Calls that are not inlined, from native code to native code: number
+        // returns continue the caller at once; a callee that deopts, returns
+        // something else or polls in a long loop continues on the managed side
+        // (MaglevNativeCode.ContinueFrameless), then the caller resumes.
+        const string kNoInline = " --max-maglev-inlined-bytecode-size=0 --max-maglev-inlined-bytecode-size-small=0";
+        string source = kPrelude + """
+            function leaf(a, b) { return a * b + 1; }
+            function obj(a) { return a > 500 ? undefined : a; }
+            function deo(a) { return a + 1; }
+            function loopy(n) { let s = 0; for (let i = 0; i < n; i++) s += i; return s; }
+            function noargs(a, b, c) { return c === undefined ? a : b; }
+            function c1(n) { let s = 0; for (let i = 0; i < n; i++) s = (s + leaf(i, 3)) | 0; return s; }
+            function c2(n) { let s = 0; for (let i = 0; i < n; i++) s += obj(i) === undefined ? 1 : 2; return s; }
+            function c3(n, x) { let s = 0; for (let i = 0; i < n; i++) s += deo(i === n - 1 ? x : i); return s; }
+            function c4(n, m) { let s = 0; for (let i = 0; i < n; i++) s += loopy(i < 2 ? m : 10); return s; }
+            function c5(n) { let s = 0.5; for (let i = 0; i < n; i++) s += noargs(i, 2.5); return s; }
+            // Registers live across the call in the caller, clobbered in the callee.
+            function heavy(a, b) {
+              const x = a * 1.5, y = b * 2.25, z = x * y, w = x + y, u = z - w, v = u * 0.5 + x, t = v - y * 3;
+              const i = (a | 0) + 3, j = (b | 0) * 5, k = i ^ j, m = (k + i) | 0;
+              return x + y + z + w + u + v + t + i + j + k + m;
+            }
+            function c6(n) {
+              let s = 0.25, d1 = 1.5, d2 = -2.75, d3 = 0.125, p = 7, q = 11, r = 13;
+              for (let i = 0; i < n; i++) {
+                s += heavy(i * 0.5, i + 1) * 0.001;
+                d1 = d1 * 1.0001 + d2; d2 = d2 - d3 * 0.5; d3 = d3 + 0.25; p = (p + q) | 0; q = (q ^ r) + 1; r = (r + p) & 1023;
+              }
+              return [s, d1, d2, d3, p, q, r].join(",");
+            }
+            for (const f of [leaf, obj, deo, loopy, noargs, heavy]) %PrepareFunctionForOptimization(f);
+            leaf(1, 2); obj(1); deo(1); loopy(3); noargs(1, 2); heavy(1.5, 2);
+            for (const f of [leaf, obj, deo, loopy, noargs, heavy]) %OptimizeFunctionOnNextCall(f);
+            leaf(1, 2); obj(1); deo(1); loopy(3); noargs(1, 2); heavy(1.5, 2);
+            opt(c1, [10]); opt(c2, [10]); opt(c3, [10, 1]); opt(c4, [3, 4]); opt(c5, [3]); opt(c6, [3]);
+            rec(c6(200));
+            rec(c1(1000)); rec(c2(1000)); rec(c3(100, 1)); rec(c3(100, "s")); rec(c4(50, 3000000)); rec(c5(100));
+            rec(leaf(1.5, 2)); rec(c1(10));
+            out.join('|')
+            """;
+        string interpreted = MaglevCompilerTest.Run(kInterpreter, source);
+        string il = MaglevCompilerTest.Run(kIL + kNoInline, source);
+        long before = Interlocked.Read(ref MaglevNativeCode.s_continuedCallees);
+        string native = MaglevCompilerTest.Run(kNative + kNoInline, source);
+        Assert.Equal(interpreted, il);
+        Assert.Equal(interpreted, native);
+        if (ExecutableMemory.Supported) Assert.True(Interlocked.Read(ref MaglevNativeCode.s_continuedCallees) > before, "no native callee was continued");
     }
 
     [Fact]

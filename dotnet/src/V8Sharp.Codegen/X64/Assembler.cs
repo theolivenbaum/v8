@@ -354,6 +354,10 @@ public sealed class Assembler
     public void Ud2() { Emit(0x0F); Emit(0x0B); }
     /// <summary>jmp reg.</summary>
     public void Jmp(Register target) => EmitRR(0, false, 4, (int)target, false, [0xFF]);
+    /// <summary>call target (FF /2).</summary>
+    public void Call(Register target) => EmitRR(0, false, 2, (int)target, false, [0xFF]);
+    /// <summary>call [target] (FF /2).</summary>
+    public void Call(Operand target) => EmitRM(0, false, 2, target, [0xFF]);
 
     public Label NewLabel()
     {

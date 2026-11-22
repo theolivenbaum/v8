@@ -31,9 +31,18 @@ namespace V8Sharp
     {
         /// <summary>The native Maglev backend's context (MaglevNativeCode); grown on demand.</summary>
         internal long[]? MaglevNativeContext;
+        /// <summary>The context's address (it is on the pinned object heap).</summary>
+        internal nint MaglevNativeContextAddress;
+        nint _registerStackAddress;
+
+        /// <summary>The address of RegisterStack[0] (pinned, allocated once).</summary>
+        internal nint RegisterStackAddress => _registerStackAddress != 0
+            ? _registerStackAddress
+            : _registerStackAddress = Codegen.NativeCode.AddressOf(RegisterStack, 0);
 
         /// <summary>The pseudo-frame of native Maglev code's direct entry (MaglevNativeCode.FastCall*).</summary>
         internal JSValue[]? MaglevNativeFrame;
+        internal nint MaglevNativeFrameAddress;
     }
 }
 
@@ -131,6 +140,9 @@ namespace V8Sharp.Maglev
         public int Int0, Int1;
         public object? Obj0;
         public System.Reflection.MethodInvoker? Invoker;
+        /// <summary>InlinedAllocation: the in-object slot class's constructor; InitialFields: an object literal's fields.</summary>
+        public System.Reflection.ConstructorInvoker? Allocate;
+        public JSValue[]? InitialFields;
         public Type[] ParameterTypes = [];
         public Type? ReturnType;
     }
@@ -198,7 +210,18 @@ namespace V8Sharp.Maglev
         public int FirstHome, HomeEnd;
 
 
-        static readonly JSValue[] s_noSpill = new JSValue[1];
+        static readonly JSValue[] s_noSpill = GC.AllocateArray<JSValue>(1, pinned: true);
+        static readonly nint s_noSpillAddress = NativeCode.AddressOf(s_noSpill, 0);
+        internal static nint NoSpillAddress => s_noSpillAddress;
+
+        /// <summary>The first word of a native callee's context in the call area (MaglevNativeCodeGenerator, "Native-to-native calls").</summary>
+        public int CalleeContextBase;
+
+        /// <summary>The exit code of a number return: its double is in the context's return word.</summary>
+        internal const long kNumberReturn = -1;
+
+        /// <summary>The constants table's address (Constants is on the pinned object heap).</summary>
+        public nint ConstantsAddress;
 
         static long[] NativeContextOf(Isolate isolate, int words)
         {
@@ -207,8 +230,26 @@ namespace V8Sharp.Maglev
             {
                 ctx = NativeCode.NewContext(Math.Max(words, Math.Max(1024, (ctx?.Length ?? 0) * 2)));
                 isolate.MaglevNativeContext = ctx;
+                isolate.MaglevNativeContextAddress = NativeCode.AddressOf(ctx, 0);
             }
             return ctx;
+        }
+
+        /// <summary>A spill array for a resume (pinned: the code reads it by address).</summary>
+        static JSValue[] NewSpill(int length) => length == 0 ? s_noSpill : GC.AllocateArray<JSValue>(length, pinned: true);
+
+        /// <summary>
+        /// One entry into the code: the context's fixed words, then the call
+        /// (every address is of a pinned array: nothing to pin per call).
+        /// </summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        long Enter(Isolate isolate, long[] ctx, nint ctxAddress, nint frame, JSValue[] spill)
+        {
+            ctx[NativeCode.kFrameSlot] = frame;
+            ctx[NativeCode.kConstantsSlot] = ConstantsAddress;
+            ctx[NativeCode.kSpillSlot] = ReferenceEquals(spill, s_noSpill) ? s_noSpillAddress : NativeCode.AddressOf(spill, 0);
+            ctx[NativeCode.kInterruptFlagsSlot] = isolate.StackGuard.InterruptFlagsAddress;
+            return NativeCode.CallPinned(Entry, ctxAddress);
         }
 
         // ---- Profile ------------------------------------------------------------------------------------------
@@ -257,8 +298,9 @@ namespace V8Sharp.Maglev
             JSValue[]? managed = null;
             while (true)
             {
-                long id = NativeCode.Call(Entry, ctx, ref isolate.RegisterStack[fp], Constants, spill, ref isolate.StackGuard.InterruptFlagsRef);
+                long id = Enter(isolate, ctx, isolate.MaglevNativeContextAddress, isolate.RegisterStackAddress + fp * 16, spill);
                 _backEdges += kPollBudget - ctx[MaglevNativeCodeGenerator.kPollBudgetSlot];
+                if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
                 NativeExit exit = Exits[id];
                 switch (exit.Kind)
                 {
@@ -319,7 +361,7 @@ namespace V8Sharp.Maglev
                 // A resumable exit: the live tagged values, rebuilt now, then
                 // handed back through the spill array.
                 int[] live = exit.TaggedLive;
-                spill = live.Length == 0 ? s_noSpill : new JSValue[live.Length];
+                spill = NewSpill(live.Length);
                 for (int j = 0; j < live.Length; j++) spill[j] = Value(live[j], isolate.RegisterStack, ctx, fp, managed);
                 ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = exit.ResumeId;
                 ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
@@ -393,6 +435,9 @@ namespace V8Sharp.Maglev
                     else MaglevBuiltins.StoreField(obj, node.Int0, value);
                     return default;
                 }
+                case Opcode.StoreDoubleField:
+                    MaglevBuiltins.StoreDoubleField(In(0), node.Int0, In(1));
+                    return default;
                 case Opcode.StoreFixedArrayElement:
                     MaglevBuiltins.StoreFixedArrayElement(In(0), (int)In(1).Number, In(2));
                     return default;
@@ -428,6 +473,15 @@ namespace V8Sharp.Maglev
                     return default;
                 case Opcode.StringLength:
                     return JSValue.FromInt(MaglevBuiltins.StringLength(In(0)));
+                case Opcode.InlinedAllocation:
+                {
+                    // (The IL's EmitInlinedAllocation: native code allocates nothing.)
+                    var map = (Map)node.Obj0!;
+                    if (node.InitialFields is { } fields) return MaglevBuiltins.AllocateObjectLiteral(map, fields);
+                    return JSValue.FromObject((HeapObject)node.Allocate!.Invoke(map, FixedArray.Empty));
+                }
+                case Opcode.FastNewObject:
+                    return MaglevBuiltins.FastNewObject(isolate, (Map)node.Obj0!);
                 case Opcode.CheckInstanceType:
                 {
                     JSValue v = In(0);
@@ -445,6 +499,24 @@ namespace V8Sharp.Maglev
                 {
                     var info = (KnownCallInfo)node.Obj0!;
                     JSValue target = info.Target is { } t ? JSValue.FromObject(t) : In(info.TargetInput);
+                    long calleeExit = ctx[MaglevNativeCodeGenerator.kCalleeExitSlot];
+                    if (calleeExit != 0)
+                    {
+                        // A native callee called directly left by another exit than a
+                        // number return: it continues here, from a copy of its context
+                        // and its pseudo-frame rebuilt from this code's values.
+                        ctx[MaglevNativeCodeGenerator.kCalleeExitSlot] = 0;
+                        MaglevNativeCode callee = info.Vector.MaglevCode!.Native!;
+                        var function = (JSFunction)target.Object;
+                        long[] calleeCtx = NativeCode.NewContext(callee.ContextWords);
+                        ctx.AsSpan(CalleeContextBase, callee.ContextWords).CopyTo(calleeCtx);
+                        JSValue[] calleeFrame = NewPseudoFrame(function, In(info.HasConvertedReceiver ? info.ConvertedReceiverInput : 0));
+                        for (int i = 0; i < info.FormalCount; i++)
+                        {
+                            SetPseudoFrameArgument(calleeFrame, i, i < info.Argc ? In(1 + i) : JSValue.Undefined);
+                        }
+                        return callee.ContinueFrameless(isolate, function, info.Argc, calleeFrame, calleeCtx, calleeExit - 1);
+                    }
                     var a = new JSValue[MaglevFastCalls.kMaxArity];
                     for (int i = 0; i < info.Argc; i++) a[i] = In(1 + i);
                     return MaglevCalls.CallValuesN(isolate, target, In(0), info.Argc, a[0], a[1], a[2], a[3], a[4], a[5], (int)info.Mode);
@@ -528,22 +600,35 @@ namespace V8Sharp.Maglev
         // nothing else can use the pseudo-frame while it runs.
 
         /// <summary>The frame pointer of the pseudo-frame (its parameters below it).</summary>
-        const int kPseudoFp = -InterpreterRuntime.kFirstArgumentOffset + MaglevFastCalls.kMaxArity;
+        internal const int kPseudoFp = -InterpreterRuntime.kFirstArgumentOffset + MaglevFastCalls.kMaxArity;
 
         public int FastCallArity = -1;
 
-        static JSValue[] PseudoFrame(Isolate isolate) => isolate.MaglevNativeFrame ??= new JSValue[kPseudoFp + 1];
+        static JSValue[] PseudoFrame(Isolate isolate) => isolate.MaglevNativeFrame ??= GC.AllocateArray<JSValue>(kPseudoFp + 1, pinned: true);
+
+        static nint PseudoFrameAddress(Isolate isolate) => isolate.MaglevNativeFrameAddress != 0
+            ? isolate.MaglevNativeFrameAddress
+            : isolate.MaglevNativeFrameAddress = NativeCode.AddressOf(PseudoFrame(isolate), 0);
 
         static JSValue[] Frame(Isolate isolate, JSFunction function, JSValue receiver)
         {
             JSValue[] frame = PseudoFrame(isolate);
-            frame[kPseudoFp + InterpreterRuntime.kClosureOffset] = JSValue.FromObject(function);
-            frame[kPseudoFp + InterpreterRuntime.kContextOffset] = JSValue.FromObject(function.Context);
-            frame[kPseudoFp + InterpreterRuntime.kReceiverOffset] = receiver;
+            // (The same function is called again and again: skip the stores, and their write barriers, then.)
+            ref JSValue closure = ref frame[kPseudoFp + InterpreterRuntime.kClosureOffset];
+            if (!ReferenceEquals(closure._obj, function))
+            {
+                closure = JSValue.FromObject(function);
+                frame[kPseudoFp + InterpreterRuntime.kContextOffset] = JSValue.FromObject(function.Context);
+            }
+            else if (!ReferenceEquals(frame[kPseudoFp + InterpreterRuntime.kContextOffset]._obj, function.Context))
+            {
+                frame[kPseudoFp + InterpreterRuntime.kContextOffset] = JSValue.FromObject(function.Context);
+            }
+            JSValue.StoreSlot(ref frame[kPseudoFp + InterpreterRuntime.kReceiverOffset], receiver);
             return frame;
         }
 
-        static void Arg(JSValue[] frame, int i, JSValue value) => frame[kPseudoFp + InterpreterRuntime.kFirstArgumentOffset - i] = value;
+        static void Arg(JSValue[] frame, int i, JSValue value) => JSValue.StoreSlot(ref frame[kPseudoFp + InterpreterRuntime.kFirstArgumentOffset - i], value);
 
         public JSValue FastCall0(Isolate isolate, JSFunction function, int argc, JSValue receiver) =>
             RunFrameless(isolate, function, argc, Frame(isolate, function, receiver));
@@ -625,10 +710,46 @@ namespace V8Sharp.Maglev
             long[] ctx = NativeContextOf(isolate, ContextWords);
             ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = 0;
             ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
+            nint frameAddress = PseudoFrameAddress(isolate) + kPseudoFp * 16;
+            long id = Enter(isolate, ctx, isolate.MaglevNativeContextAddress, frameAddress, s_noSpill);
+            if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
+            return FramelessExits(isolate, function, argc, frame, ctx, isolate.MaglevNativeContextAddress, frameAddress, id);
+        }
+
+        /// <summary>
+        /// Continues a native callee that a native caller called directly and
+        /// that left by exit <paramref name="id"/> (MaglevNativeCodeGenerator,
+        /// "Native-to-native calls"): <paramref name="ctx"/> is a pinned copy
+        /// of its context, <paramref name="frame"/> its pseudo-frame rebuilt
+        /// from the caller's values (pinned).
+        /// </summary>
+        internal JSValue ContinueFrameless(Isolate isolate, JSFunction function, int argc, JSValue[] frame, long[] ctx, long id)
+        {
+            Interlocked.Increment(ref s_continuedCallees);
+            if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
+            return FramelessExits(isolate, function, argc, frame, ctx, NativeCode.AddressOf(ctx, 0), NativeCode.AddressOf(frame, 0) + kPseudoFp * 16, id);
+        }
+
+        /// <summary>Native callees continued on the managed side (tests).</summary>
+        internal static long s_continuedCallees;
+
+        /// <summary>A new pinned pseudo-frame for ContinueFrameless.</summary>
+        internal static JSValue[] NewPseudoFrame(JSFunction function, JSValue receiver)
+        {
+            JSValue[] frame = GC.AllocateArray<JSValue>(kPseudoFp + 1, pinned: true);
+            frame[kPseudoFp + InterpreterRuntime.kClosureOffset] = JSValue.FromObject(function);
+            frame[kPseudoFp + InterpreterRuntime.kContextOffset] = JSValue.FromObject(function.Context);
+            frame[kPseudoFp + InterpreterRuntime.kReceiverOffset] = receiver;
+            return frame;
+        }
+
+        internal static void SetPseudoFrameArgument(JSValue[] frame, int i, JSValue value) => Arg(frame, i, value);
+
+        JSValue FramelessExits(Isolate isolate, JSFunction function, int argc, JSValue[] frame, long[] ctx, nint ctxAddress, nint frameAddress, long id)
+        {
             JSValue[] spill = s_noSpill;
             while (true)
             {
-                long id = NativeCode.Call(Entry, ctx, ref frame[kPseudoFp], Constants, spill, ref isolate.StackGuard.InterruptFlagsRef);
                 NativeExit exit = Exits[id];
                 switch (exit.Kind)
                 {
@@ -649,10 +770,12 @@ namespace V8Sharp.Maglev
                         return DeoptimizeFrameless(isolate, function, argc, frame, ctx, exit);
                 }
                 int[] live = exit.TaggedLive;
-                spill = live.Length == 0 ? s_noSpill : new JSValue[live.Length];
+                spill = NewSpill(live.Length);
                 for (int j = 0; j < live.Length; j++) spill[j] = Value(live[j], frame, ctx, kPseudoFp, null);
                 ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = exit.ResumeId;
                 ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
+                id = Enter(isolate, ctx, ctxAddress, frameAddress, spill);
+                if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
             }
         }
 
