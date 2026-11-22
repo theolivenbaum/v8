@@ -95,6 +95,21 @@ internal sealed class MaglevNativeCodeGenerator
     internal const int kCalleeReserve = 4096;
     bool _nativeCalls;
 
+    /// <summary>
+    /// Every return is a number (MaglevNativeCode.DirectCallArity): a native
+    /// caller then calls the code directly, since its calls return to the
+    /// caller at once (other returns would continue on the managed side,
+    /// which costs more than the managed call).
+    /// </summary>
+    bool ReturnsOnlyNumbers()
+    {
+        foreach (BasicBlock b in _blocks)
+        {
+            if (b.Control is { Opcode: Opcode.Return } ret && NumberReturnSource(ret.Inputs[0]) is null) return false;
+        }
+        return true;
+    }
+
     /// <summary>A known call the code may make directly when the callee has native code (EmitNativeCallFastPath).</summary>
     static bool HasNativeCallFastPath(Node node) =>
         node.Opcode == Opcode.CallKnownJSFunction && node.Obj0 is KnownCallInfo { CheckReceiver: false } info &&
@@ -382,6 +397,7 @@ internal sealed class MaglevNativeCodeGenerator
         if (_fastCallArity >= 0)
         {
             native.FastCallArity = _fastCallArity;
+            native.DirectCallArity = ReturnsOnlyNumbers() ? _fastCallArity : -1;
             _code.FastCall = native.CreateFastCall();
             _code.FastCallArity = _fastCallArity;
             _code.DirectEntryKind = MaglevDirectEntryKind.Frameless;
@@ -3313,7 +3329,7 @@ internal sealed class MaglevNativeCodeGenerator
         _masm.Movq(rax, new Operand(rax, NativeLayout.MaglevCodeNative));
         _masm.Testq(rax, rax);
         _masm.J(Condition.equal, slow);
-        _masm.Cmpl(new Operand(rax, NativeLayout.NativeFastCallArity), info.FormalCount);
+        _masm.Cmpl(new Operand(rax, NativeLayout.NativeDirectCallArity), info.FormalCount);
         _masm.J(Condition.not_equal, slow);
         _masm.Cmpl(new Operand(rax, NativeLayout.NativeContextWords), kCalleeReserve);
         _masm.J(Condition.above, slow);
@@ -3871,7 +3887,7 @@ internal static class NativeLayout
     public static readonly int ViewBuffer, ViewByteOffset, ViewIsLengthTracking, ViewIsBackedByRab, TypedArrayRawLength;
     public static readonly int BufferWasDetached, BufferIsImmutable, BufferBackingStore, BackingStoreBuffer;
     public static readonly int FeedbackVectorMaglevCode, MaglevCodeNative, JSFunctionContext;
-    public static readonly int NativeEntry, NativeConstantsAddress, NativeContextWords, NativeFastCallArity;
+    public static readonly int NativeEntry, NativeConstantsAddress, NativeContextWords, NativeDirectCallArity;
 
     static NativeLayout()
     {
@@ -3915,7 +3931,7 @@ internal static class NativeLayout
         NativeEntry = FieldOffsets.Of(nativeCode, ref nativeCode.Entry);
         NativeConstantsAddress = FieldOffsets.Of(nativeCode, ref nativeCode.ConstantsAddress);
         NativeContextWords = FieldOffsets.Of(nativeCode, ref nativeCode.ContextWords);
-        NativeFastCallArity = FieldOffsets.Of(nativeCode, ref nativeCode.FastCallArity);
+        NativeDirectCallArity = FieldOffsets.Of(nativeCode, ref nativeCode.DirectCallArity);
         JSValue probe = default;
         if (FieldOffsets.Distance(ref probe, ref System.Runtime.CompilerServices.Unsafe.AsRef(in probe._obj)) != 0 ||
             FieldOffsets.Distance(ref probe, ref System.Runtime.CompilerServices.Unsafe.AsRef(in probe._bits)) != 8)

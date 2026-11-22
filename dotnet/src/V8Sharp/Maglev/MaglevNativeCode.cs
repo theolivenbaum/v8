@@ -271,6 +271,26 @@ namespace V8Sharp.Maglev
         {
             if (++_calls % kProfileCalls != 0 || _managedExits == 0) return;
             if (_managedExits * kMinBackEdgesPerExit <= _backEdges || Code.MarkedForDeoptimization || _replaced) return;
+            GoBackToIL(isolate);
+        }
+
+        /// <summary>
+        /// The same decision within an activation, every kProfileExits managed
+        /// exits: a long-running loop entered once (whose calls take managed
+        /// exits) is not caught by the per-call count.
+        /// </summary>
+        const long kProfileExits = 1024;
+
+        bool ProfileExit(Isolate isolate)
+        {
+            if (_managedExits % kProfileExits != 0 || _replaced || Code.MarkedForDeoptimization) return false;
+            if (_managedExits * kMinBackEdgesPerExit <= _backEdges) return false;
+            GoBackToIL(isolate);
+            return true;
+        }
+
+        void GoBackToIL(Isolate isolate)
+        {
             _replaced = true;
             MaglevNativeCodeGenerator.DeclineAtRunTime(Code.SharedFunctionInfo);
             if (isolate.Flags.trace_maglev_native)
@@ -340,6 +360,9 @@ namespace V8Sharp.Maglev
                         }
                         NativeManagedNode node = exit.Managed!;
                         _managedExits++;
+                        // (Leaves this activation after the node through its lazy deopt: the
+                        // interpreter goes on, and enters the IL code by OSR.)
+                        bool leave = ProfileExit(isolate) && node.LazyDeoptIndex >= 0;
                         JSValue result = Execute(isolate, node, isolate.RegisterStack, ctx, fp, managed, out bool passed);
                         ctx = NativeContextOf(isolate, ContextWords);
                         saved.CopyTo(ctx.AsSpan(FirstHome));
@@ -349,7 +372,7 @@ namespace V8Sharp.Maglev
                         }
                         if (node.Result >= 0) StoreResult(node, result, ctx, ref managed);
                         if (node.Opcode == Opcode.BranchIfToBooleanTrue) ctx[MaglevNativeCodeGenerator.kBoolResultSlot] = result.IsTrue ? 1 : 0;
-                        if (node.LazyDeoptIndex >= 0 && Code.MarkedForDeoptimization)
+                        if (node.LazyDeoptIndex >= 0 && (Code.MarkedForDeoptimization || leave))
                         {
                             // The code was invalidated while the call ran: continue after
                             // it in the interpreter (EmitLazyDeoptCheck).
@@ -603,6 +626,8 @@ namespace V8Sharp.Maglev
         internal const int kPseudoFp = -InterpreterRuntime.kFirstArgumentOffset + MaglevFastCalls.kMaxArity;
 
         public int FastCallArity = -1;
+        /// <summary>FastCallArity when native callers call the code directly (every return a number), else -1.</summary>
+        public int DirectCallArity = -1;
 
         static JSValue[] PseudoFrame(Isolate isolate) => isolate.MaglevNativeFrame ??= GC.AllocateArray<JSValue>(kPseudoFp + 1, pinned: true);
 
