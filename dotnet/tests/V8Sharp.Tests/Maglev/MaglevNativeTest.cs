@@ -147,6 +147,33 @@ public class MaglevNativeTest
         function retf(o, n) { const x = o.p; let s = 0; for (let i = 0; i < n; i++) s = (s + i) | 0; return s > 3 ? x : 0; }
         opt(retf, [{p: "a", q: "b"}, 3]); rec(retf({p: "x", q: "y"}, 5)); rec(retf({p: "x", q: "y"}, 1));
         """,
+        // Phi cycles: swaps and rotations at the back edge (parallel moves).
+        """
+        function swap(x, y, n) { let a = x, b = y; for (let i = 0; i < n; i++) { const t = a; a = b; b = t; } return a * 10 + b; }
+        opt(swap, [1, 2, 3]); for (const n of [0, 1, 2, 3, 7]) rec(swap(1, 2, n));
+        function rot(n) { let a = 1, b = 2, c = 3; for (let i = 0; i < n; i++) { const t = a; a = b; b = c; c = t; } return a * 100 + b * 10 + c; }
+        opt(rot, [4]); for (const n of [0, 1, 2, 5, 9]) rec(rot(n));
+        function dswap(n) { let a = 0.5, b = 1.25, k = 0; for (let i = 0; i < n; i++) { const t = a; a = b + k; b = t; k = (k + 1) | 0; } return a - b * 3; }
+        opt(dswap, [3]); for (const n of [0, 1, 4, 11]) rec(dswap(n));
+        """,
+        // Untagged frame-state values that die at a deopting operation: the
+        // deopt must see them (no register reuse at that position).
+        """
+        function dying(x, y) { const a = x | 0, b = y | 0; return a * b; }
+        opt(dying, [3, 4]); rec(dying(65536, 65536)); rec(dying(-1, 0)); rec(dying(7, 6));
+        function dyingAdd(x, y) { const a = (x | 0) * 2, b = (y | 0) + 1; return a + b; }
+        opt(dyingAdd, [3, 4]); rec(dyingAdd(1073741823, 1073741823)); rec(dyingAdd(5, 6));
+        function dying2(x, y) { const a = x | 0, b = y | 0; return a * b + b; }
+        opt(dying2, [3, 4]); rec(dying2(65536, 65536)); rec(dying2(-3, 0)); rec(dying2(9, 9));
+        function dying3(x, y) { const a = (x | 0) + 1, b = y | 0; const c = a * b; return c + b * 2; }
+        opt(dying3, [3, 4]); rec(dying3(65535, 65536)); rec(dying3(-1, -5)); rec(dying3(4, 5));
+        """,
+        // A value whose only use after a loop is the frame state of a deopt
+        // (an unexecuted branch): it must stay in its location through the loop.
+        """
+        function late(x, n) { const a = (x | 0) * 3; let s = 0, t = 1; for (let i = 0; i < n; i++) { s = (s + i * t) | 0; t = (t ^ i) & 15; } if (n > 1000) return a; return s; }
+        opt(late, [5, 10]); rec(late(5, 20)); rec(late(7, 2000)); rec(late(-4, 1500));
+        """,
         // Deopts from inside loops with live values of each representation (the frame state rebuilt).
         """
         function walk(a, n, k) {
@@ -321,7 +348,16 @@ public class MaglevNativeTest
                     sb.Append($"d[i % d.length] = {Operand()};");
                     break;
                 case 8:
-                    sb.Append($"{V()} = {V()} % 1000;");
+                    if (rng.Next(2) == 0)
+                    {
+                        sb.Append($"{V()} = {V()} % 1000;");
+                    }
+                    else
+                    {
+                        // A swap (a phi cycle at the back edge).
+                        string a = V(), b = V();
+                        sb.Append($"t = {a}; {a} = {b}; {b} = t;");
+                    }
                     break;
                 default:
                     sb.Append($"if ({Operand()} {compare[rng.Next(compare.Length)]} {Operand()}) {{ ");
@@ -333,7 +369,7 @@ public class MaglevNativeTest
             }
             sb.Append(' ');
         }
-        sb.Append("function f(p, q, a, d, n) { let x0 = p, x1 = q, x2 = 0, x3 = 1.5, x4 = n, i = 0; ");
+        sb.Append("function f(p, q, a, d, n) { let x0 = p, x1 = q, x2 = 0, x3 = 1.5, x4 = n, i = 0, t = 0; ");
         int pre = rng.Next(3);
         for (int k = 0; k < pre; k++) Statement(0);
         sb.Append("for (i = 0; i < n; i++) { ");
