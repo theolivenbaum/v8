@@ -264,6 +264,13 @@ public static class MaglevCompiler
         return true;
     }
 
+    /// <summary>
+    /// No code, invalidated code, or native code going back to IL
+    /// (MaglevNativeCode.GoBackToIL): a finished job's code replaces it.
+    /// </summary>
+    static bool Replaceable(MaglevCode? current) =>
+        current is not { MarkedForDeoptimization: false } || current.Native is { GoingBackToIL: true };
+
     /// <summary>INSTALL_MAGLEV_CODE: MaglevConcurrentDispatcher::FinalizeFinishedJobs.</summary>
     public static void InstallConcurrentCode(Isolate isolate) => isolate.MaglevConcurrentDispatcher.FinalizeFinishedJobs();
 
@@ -294,8 +301,8 @@ public static class MaglevCompiler
         MaglevCode? code = job.Code;
         bool install = job.CurrentState == MaglevCompilationJob.State.kSucceeded &&
                        (job.IsOsr
-                           ? vector.MaglevOsrCode?.GetValueOrDefault(job.OsrOffset) is not { MarkedForDeoptimization: false }
-                           : vector.MaglevCode is not { MarkedForDeoptimization: false });
+                           ? Replaceable(vector.MaglevOsrCode?.GetValueOrDefault(job.OsrOffset))
+                           : Replaceable(vector.MaglevCode));
         if (install)
         {
             EnsureScratch(isolate, code!.MaxScratchSize);

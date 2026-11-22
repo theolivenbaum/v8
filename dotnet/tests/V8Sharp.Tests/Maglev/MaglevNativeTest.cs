@@ -251,6 +251,16 @@ public class MaglevNativeTest
         function ea2(a, n) { let s = 0; for (let i = 0; i < n; i++) { const box = {v: i, w: {u: i * 2}}; const t = a[i] + 1; s += box.v + box.w.u + t; } return s; }
         const ea2a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, {}]; ea2a.pop(); opt(ea2, [ea2a, 10]); rec(ea2(ea2a, 10)); ea2a[5] = 'z'; rec(ea2(ea2a, 10)); ea2a[6] = 0.5; rec(ea2(ea2a, 10));
         """,
+        // A number return of a value tagged before a loop (a context slot store),
+        // the loop long enough for poll exits: the untagged value must stay live
+        // (and be saved and reloaded at the resume) until the return.
+        """
+        const bmp = (function () {
+          var cnt = 0, sink = 0;
+          return function (n, k) { cnt = cnt + k; let s = 0; for (let i = 0; i < n; i++) s = (s + (i ^ k)) | 0; sink = s; return cnt; };
+        })();
+        opt(bmp, [10, 1]); rec(bmp(10, 2)); rec(bmp(3000000, 7)); rec(bmp(2500000, 9));
+        """,
         // Allocations (managed nodes), object literals, double field stores (inline over a number).
         """
         function C(a) { this.a = a; }

@@ -289,6 +289,9 @@ namespace V8Sharp.Maglev
             return true;
         }
 
+        /// <summary>The run-time profile decided for IL (a concurrent IL compile may replace this code).</summary>
+        internal bool GoingBackToIL => _replaced;
+
         void GoBackToIL(Isolate isolate)
         {
             _replaced = true;
@@ -298,8 +301,12 @@ namespace V8Sharp.Maglev
                 Console.WriteLine($"[maglev native: {MaglevCompiler.DebugName(Code.SharedFunctionInfo)} goes back to IL: " +
                                   $"{_managedExits} managed exits, {_backEdges} back edges in {_calls} calls]");
             }
-            // The IL code replaces it at once (the function stays optimized; this
-            // activation and running ones finish in the native code, which stays valid).
+            // The IL code replaces it: compiled concurrently (RyuJIT optimizes it fully at
+            // once; a synchronous compile would start at RyuJIT's tier 0) while the native
+            // code keeps running, or at once without concurrent recompilation. (The function
+            // stays optimized; this activation and running ones finish in the native code,
+            // which stays valid.)
+            if (isolate.Flags.concurrent_recompilation && MaglevCompiler.CompileConcurrently(isolate, Code.Function, Code.OsrOffset)) return;
             MaglevCode? il = Code.OsrOffset < 0 ? MaglevCompiler.Compile(isolate, Code.Function, -1) : null;
             if (il is not null) MaglevCompiler.InstallCode(isolate, il);
             else MaglevCompiler.InvalidateCode(isolate, Code, Deoptimizer.LazyDeoptimizeReason.kTesting);

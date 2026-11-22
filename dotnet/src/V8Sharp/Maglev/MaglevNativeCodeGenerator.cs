@@ -64,6 +64,21 @@ internal sealed class MaglevNativeCodeGenerator
         return null;
     }
 
+    /// <summary>
+    /// The values a control node's code reads: its inputs and, for a number
+    /// return, the untagged value it returns (NumberReturnSource), which the
+    /// tagging node's own use does not keep live until the return.
+    /// </summary>
+    List<ValueNode> ControlUses(ControlNode c)
+    {
+        var uses = new List<ValueNode>(c.Inputs);
+        if (c.Opcode == Opcode.Return && NumberReturnSource(c.Inputs[0]) is { IsConstant: false } source && !ReferenceEquals(source, c.Inputs[0]))
+        {
+            uses.Add(source);
+        }
+        return uses;
+    }
+
     /// <summary>The ToBoolean result of a branch's managed path.</summary>
     internal const int kBoolResultSlot = 12;
 
@@ -832,7 +847,7 @@ internal sealed class MaglevNativeCodeGenerator
                     changed = true;
                 }
                 ControlNode c = b.Control!;
-                foreach (ValueNode input in c.Inputs) AddClosure(input, live);
+                foreach (ValueNode input in ControlUses(c)) AddClosure(input, live);
                 if (c.EagerDeoptInfo is { } ce) DeoptUses(ce, live);
                 for (int k = b.Nodes.Count - 1; k >= 0; k--)
                 {
@@ -880,7 +895,7 @@ internal sealed class MaglevNativeCodeGenerator
             var after = new HashSet<ValueNode>(_liveOut[b], ReferenceEqualityComparer.Instance);
             ControlNode c = b.Control!;
             int cpos = _nodePos[c];
-            foreach (ValueNode input in c.Inputs)
+            foreach (ValueNode input in ControlUses(c))
             {
                 var closure = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
                 AddClosure(input, closure);
@@ -907,7 +922,7 @@ internal sealed class MaglevNativeCodeGenerator
                 list.Sort(static (x, y) => x.Node.Id.CompareTo(y.Node.Id));
                 _liveAfterControl[c] = list;
             }
-            foreach (ValueNode input in c.Inputs) AddClosure(input, after);
+            foreach (ValueNode input in ControlUses(c)) AddClosure(input, after);
             if (c.EagerDeoptInfo is { } ce2) DeoptUses(ce2, after);
             for (int k = b.Nodes.Count - 1; k >= 0; k--)
             {
