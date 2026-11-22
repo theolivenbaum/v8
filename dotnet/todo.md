@@ -3039,6 +3039,20 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
       programs; mjsunit (8902 run) 0 newly failing with the defaults and
       with `--no-maglev-native-loops-only` (which also newly passes
       turboshaft/regress-380487911).
+      Benchmark (2026-11-22, parity publish, octane-steady + micro:native,
+      3 interleaved runs, one session with V8 14.7; fingerprint: Xeon 2.10GHz,
+      steal 0%, cpu-cal 595/574 ms, mem-bw 47 GB/s). Octane geomean (no
+      latencies): native 1.01x the IL backend, 0.38x V8 Maglev
+      (`--no-turbofan`), 0.31x V8 full JIT; IL 0.38x / 0.30x. Per benchmark
+      vs V8 Maglev: NavierStokes 1.08, CodeLoad 0.95, zlib 0.70, Crypto 0.53,
+      RayTrace 0.44, Splay 0.44, Gameboy 0.35, Box2D 0.34, Mandreel 0.28,
+      RegExp 0.27, PdfJS 0.26, Richards 0.25, Typescript 0.25, EarleyBoyer
+      0.23, DeltaBlue 0.22. micro:native geomean: native 0.90x IL, 0.66x V8
+      Maglev, 0.50x V8 jit (IntSum 1.09x and Mandelbrot 0.91x V8 Maglev;
+      FieldSum 0.65x and Mandelbrot 0.71x IL). Before the profile fixes
+      (in-activation checks, concurrent IL replacement, direct calls only to
+      number-returning callees) the same session gave native 0.94x IL
+      (Mandreel 0.56x, DeltaBlue 0.73x).
       Mutation check (tools/maglev-native/mutations.py, 16 planted bugs): 14
       caught; the other 2 (register sharing at one position, deopt-only uses
       not extended within a block) are equivalent in the graphs Maglev builds,
