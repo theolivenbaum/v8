@@ -639,10 +639,11 @@ internal sealed class MaglevNativeCodeGenerator
                     // Run by the managed side (an exit and a resume): not in a loop,
                     // where the round trip would cost more than RyuJIT's code.
                     if (why is not null) throw Unsupported(why);
-                    // A call or a throw in an inlined function needs its frame pushed (EmitEnsureInlinedFrames).
+                    // A call or a throw in an inlined function needs the inlined frames
+                    // pushed: the managed side pushes them around the node (FramesFor).
                     if (node.Unit is { IsInline: true } && (node.IsCall || node.CanThrow || node.LazyDeoptInfo is not null))
                     {
-                        throw Unsupported("managed call in an inlined function: " + node.Opcode);
+                        _frameInputs[node] = InlinedFrameInputs(node.Unit);
                     }
                     if (InLoop(block) && !HasInlineFastPath(node)) throw Unsupported("managed node in a loop: " + node.Opcode);
                     _managedNodes.Add(node);
@@ -693,7 +694,74 @@ internal sealed class MaglevNativeCodeGenerator
     /// The inputs the node's code reads: none for the inlined frame markers,
     /// which generate no code (their receiver may be an elided allocation).
     /// </summary>
-    static ValueNode[] CodeInputs(Node node) => node.Opcode is Opcode.EnterInlinedFrame or Opcode.LeaveInlinedFrame ? [] : node.Inputs;
+    ValueNode[] CodeInputs(Node node) =>
+        node.Opcode is Opcode.EnterInlinedFrame or Opcode.LeaveInlinedFrame ? []
+        : _frameInputs.TryGetValue(node, out ValueNode[]? frame) ? [.. node.Inputs, .. frame]
+        : node.Inputs;
+
+    /// <summary>The values a managed node in inlined functions pushes their frames with (InlinedFrameInputs).</summary>
+    readonly Dictionary<Node, ValueNode[]> _frameInputs = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// The receivers, arguments, closures (when not constant) and new.targets of
+    /// the inlined functions <paramref name="unit"/> is nested in, outermost
+    /// first (the inputs of their EnterInlinedFrame nodes the frames are
+    /// pushed with, as the IL's EmitPushInlinedFrame).
+    /// </summary>
+    static ValueNode[] InlinedFrameInputs(MaglevCompilationUnit unit)
+    {
+        var inputs = new List<ValueNode>();
+        for (MaglevCompilationUnit? u = unit; u is { IsInline: true }; u = u.Caller)
+        {
+            if (u.EagerFrame || u.EntryNode is null) throw Unsupported("an inlined frame pushed on entry");
+            Node entry = u.EntryNode;
+            int argc = entry.Int0;
+            for (int i = 0; i <= argc; i++) inputs.Add(entry.Inputs[i]);
+            if (u.Function is null) inputs.Add(entry.Inputs[argc + 2]);
+            if (entry.Int2 != 0) inputs.Add(entry.Inputs[^1]);
+        }
+        foreach (ValueNode v in inputs)
+        {
+            if (v is InlinedAllocation { IsElided: true } || v.Opcode == Opcode.CallBuiltin && ((CallBuiltinInfo)v.Obj0!).Elided)
+            {
+                throw Unsupported("a captured object in an inlined frame");
+            }
+        }
+        return inputs.ToArray();
+    }
+
+    /// <summary>The frames a managed node pushes (MaglevNativeCode.ExecuteInInlinedFrames), outermost first.</summary>
+    NativeInlinedFrame[] FramesFor(MaglevCompilationUnit unit, Node node)
+    {
+        var chain = new List<MaglevCompilationUnit>();
+        for (MaglevCompilationUnit? u = unit; u is { IsInline: true }; u = u.Caller) chain.Add(u);
+        chain.Reverse();
+        var frames = new NativeInlinedFrame[chain.Count];
+        for (int k = 0; k < chain.Count; k++)
+        {
+            MaglevCompilationUnit u = chain[k];
+            Node entry = u.EntryNode!;
+            int argc = entry.Int0;
+            var args = new int[argc];
+            for (int i = 0; i < argc; i++) args[i] = Info(entry.Inputs[1 + i]);
+            frames[k] = new NativeInlinedFrame
+            {
+                Function = u.Function,
+                Closure = u.Function is null ? Info(entry.Inputs[argc + 2]) : -1,
+                Bytecode = u.Bytecode,
+                Feedback = u.Feedback,
+                Argc = argc,
+                IsConstruct = entry.Int1 != 0,
+                Receiver = Info(entry.Inputs[0]),
+                Args = args,
+                NewTarget = entry.Int2 != 0 ? Info(entry.Inputs[^1]) : -1,
+                NewTargetRegister = entry.Int2 != 0 ? u.Bytecode.IncomingNewTargetOrGeneratorRegister.Index : 0,
+                CallOffset = entry.BytecodeOffset,
+                Pc = k + 1 < chain.Count ? chain[k + 1].EntryNode!.BytecodeOffset : node.BytecodeOffset,
+            };
+        }
+        return frames;
+    }
 
     static bool IsSupportedNode(Node node) => node.Opcode switch
     {
@@ -3264,7 +3332,7 @@ internal sealed class MaglevNativeCodeGenerator
         List<Val> live = _liveAfter[node];
         var needed = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
         foreach (Val v in live) needed.Add(v.Node);
-        foreach (ValueNode input in node.Inputs) AddClosure(input, needed);
+        foreach (ValueNode input in CodeInputs(node)) AddClosure(input, needed);
         if (node.LazyDeoptInfo is { } lazy) DeoptUses(lazy, needed);
         if (node.EagerDeoptInfo is { } eager) DeoptUses(eager, needed);
         needed.Remove(node as ValueNode ?? new ValueNode(Opcode.Constant, ValueRepresentation.kTagged));
@@ -3276,6 +3344,7 @@ internal sealed class MaglevNativeCodeGenerator
             Obj0 = node.Opcode == Opcode.StorePropertyCellValue ? node.Obj0 : node.Obj0,
             Obj1 = node.Obj1,
             Int2 = node.Int2,
+            InlinedFrames = _frameInputs.ContainsKey(node) ? FramesFor(node.Unit!, node) : null,
             BytecodeOffset = node.BytecodeOffset,
             Inlined = node.Unit is { IsInline: true },
         };

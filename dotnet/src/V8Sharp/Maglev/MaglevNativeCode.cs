@@ -121,8 +121,27 @@ namespace V8Sharp.Maglev
     }
 
     /// <summary>A node the managed side runs for native code (an exit, then a resume), as the IL backend does.</summary>
+    /// <summary>An inlined function's frame a managed node pushes (MaglevCodeGenerator.EmitPushInlinedFrame's values).</summary>
+    internal sealed class NativeInlinedFrame
+    {
+        public JSFunction? Function;
+        /// <summary>The closure's value when <see cref="Function"/> is null, or -1.</summary>
+        public int Closure = -1;
+        public BytecodeArray Bytecode = null!;
+        public FeedbackVector? Feedback;
+        public int Argc;
+        public bool IsConstruct;
+        public int Receiver;
+        public int[] Args = [];
+        public int NewTarget = -1, NewTargetRegister;
+        /// <summary>The call's offset in the caller's bytecode; the frame's own offset.</summary>
+        public int CallOffset, Pc;
+    }
+
     internal sealed class NativeManagedNode
     {
+        /// <summary>The inlined functions' frames pushed around the node (a call in an inlined function), outermost first.</summary>
+        public NativeInlinedFrame[]? InlinedFrames;
         public Opcode Opcode;
         public int[] Inputs = [];
         /// <summary>The node's value (its info), or -1.</summary>
@@ -370,7 +389,9 @@ namespace V8Sharp.Maglev
                         // (Leaves this activation after the node through its lazy deopt: the
                         // interpreter goes on, and enters the IL code by OSR.)
                         bool leave = ProfileExit(isolate) && node.LazyDeoptIndex >= 0;
-                        JSValue result = Execute(isolate, node, isolate.RegisterStack, ctx, fp, managed, out bool passed);
+                        JSValue result = node.InlinedFrames is null
+                            ? Execute(isolate, node, isolate.RegisterStack, ctx, fp, managed, out bool passed)
+                            : ExecuteInInlinedFrames(isolate, node, ctx, fp, managed, out passed);
                         ctx = NativeContextOf(isolate, ContextWords);
                         saved.CopyTo(ctx.AsSpan(FirstHome));
                         if (!passed)
@@ -663,6 +684,53 @@ namespace V8Sharp.Maglev
             if (type == typeof(uint)) return (uint)(int)v.Number;
             if (type == typeof(double)) return v.Number;
             return v.HeapObjectOrNull;
+        }
+
+        /// <summary>
+        /// A call (or a throw) in inlined functions: their interpreter frames,
+        /// which native code never pushes, are pushed for it (as the IL's
+        /// lazily pushed frames, MaglevCodeGenerator.EmitEnsureInlinedFrames)
+        /// so that stack walks see them, and popped after it; a lazy deopt
+        /// then builds them from the translation, as native code's eager deopts do.
+        /// </summary>
+        JSValue ExecuteInInlinedFrames(Isolate isolate, NativeManagedNode node, long[] ctx, int fp, JSValue[]? managed, out bool passed)
+        {
+            NativeInlinedFrame[] frames = node.InlinedFrames!;
+            JSValue[] stack = isolate.RegisterStack;
+            // The values first (the pushes write above the register stack top only).
+            var functions = new JSFunction[frames.Length];
+            var values = new JSValue[frames.Length][];
+            for (int k = 0; k < frames.Length; k++)
+            {
+                NativeInlinedFrame f = frames[k];
+                functions[k] = f.Function ?? (JSFunction)Value(f.Closure, stack, ctx, fp, managed).Object;
+                var v = new JSValue[f.Argc + 2];
+                v[0] = Value(f.Receiver, stack, ctx, fp, managed);
+                for (int i = 0; i < f.Argc; i++) v[1 + i] = Value(f.Args[i], stack, ctx, fp, managed);
+                if (f.NewTarget >= 0) v[f.Argc + 1] = Value(f.NewTarget, stack, ctx, fp, managed);
+                values[k] = v;
+            }
+            int first = isolate.InterpreterFrameDepth;
+            JSValue outerContext = stack[fp + InterpreterRuntime.kContextOffset];
+            InterpreterRuntime.SetFramePc(isolate, fp, frames[0].CallOffset);
+            try
+            {
+                for (int k = 0; k < frames.Length; k++)
+                {
+                    NativeInlinedFrame f = frames[k];
+                    int ifp = MaglevBuiltins.EnterInlinedFrame(isolate, functions[k], f.Bytecode, f.Feedback, f.Argc, f.IsConstruct);
+                    JSValue[] v = values[k];
+                    JSValue.StoreSlot(ref stack[ifp + InterpreterRuntime.kReceiverOffset], v[0]);
+                    for (int i = 0; i < f.Argc; i++) JSValue.StoreSlot(ref stack[ifp + InterpreterRuntime.kFirstArgumentOffset - i], v[1 + i]);
+                    if (f.NewTarget >= 0) JSValue.StoreSlot(ref stack[ifp + f.NewTargetRegister], v[f.Argc + 1]);
+                    InterpreterRuntime.SetFramePc(isolate, ifp, f.Pc);
+                }
+                return Execute(isolate, node, stack, ctx, fp, managed, out passed);
+            }
+            finally
+            {
+                MaglevBuiltins.LeaveInlinedFrame(isolate, first, outerContext);
+            }
         }
 
         JSValue DeoptimizeLazy(Isolate isolate, ref InterpreterState state, long[] ctx, NativeManagedNode node, JSValue result, JSValue[]? managed)

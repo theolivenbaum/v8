@@ -291,6 +291,31 @@ public class MaglevNativeTest
         function mp(a) { let s = 0; for (let i = 0; i < a.length; i++) s += Math.pow(a[i], 1.5) + Math.sin(a[i]); return s; }
         opt(mp, [[1, 2]]); rec(mp([1, 2, 3, 4.5]));
         """,
+        // Calls in inlined functions: the managed side pushes the inlined frames
+        // around the call (stack traces, throws through them, a lazy deopt of
+        // the caller's code from inside the inlined function).
+        """
+        function g(x) {
+          if (x === -1) { const st = new Error('e').stack.split('\n'); return st.length * 1000 + (st[2].indexOf('mid') >= 0 ? 100 : 0) + (st[3].indexOf('outer') >= 0 ? 10 : 0); }
+          if (x === -2) throw new RangeError('r' + x);
+          let s = 0; for (let i = 0; i < 3; i++) s += i * x; s = s * 3 + 1; s = s ^ 5; s = (s + x) | 0; s = s % 1000; s = s * 2 - x; s += [1, 2, 3].length;
+          s = s + String(x).length; s = s + (x > 10 ? 1 : 2); s = s + (x & 3); s = s + (x | 8); s = s + (x >> 1); return s;
+        }
+        function mid(x, y) { const r = g(x) * 2; return r + y; }
+        function outer(x) { const a = mid(x, 3); const b = mid(x + 1, 4); return a + b; }
+        opt(outer, [1], [2]); rec(outer(5)); rec(outer(-1));
+        try { outer(-2); } catch (e) { rec(e.message + ' ' + e.stack.split('\n').slice(1, 4).map(l => l.trim().split(' ')[1]).join(',')); }
+        rec(outer(7));
+        const pr = { v: 1 }; function Ob() {} Ob.prototype = pr;
+        function g2(k) {
+          if (k === 9) pr.v = 2.5;
+          let s = 0; for (let i = 0; i < 3; i++) s += i * k; s = s * 3 + 1; s = s ^ 5; s = (s + k) | 0; s = s % 1000; s = s * 2 - k;
+          s = s + String(k).length; s = s + (k > 10 ? 1 : 2); s = s + (k & 3); s = s + (k | 8); s = s + (k >> 1); return k + (s & 0);
+        }
+        function mid2(o, k) { const r = g2(k); return o.v + r; }
+        function outer2(o, k) { return mid2(o, k) * 2; }
+        opt(outer2, [new Ob(), 1], [new Ob(), 2]); rec(outer2(new Ob(), 3)); rec(outer2(new Ob(), 9)); rec(outer2(new Ob(), 4));
+        """,
         // Allocations (managed nodes), object literals, double field stores (inline over a number).
         """
         function C(a) { this.a = a; }
