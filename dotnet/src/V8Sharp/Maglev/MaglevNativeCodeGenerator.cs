@@ -274,6 +274,8 @@ internal sealed class MaglevNativeCodeGenerator
             _masm.Jmp(_epilogue);
         }
         _masm.Bind(_epilogue);
+        // The poll budget left: the managed side counts the back edges (MaglevNativeCode.Profile).
+        _masm.Movq(new Operand(rbx, kPollBudgetSlot * 8), kPollRegister);
         for (int i = s_calleeSaved.Length - 1; i >= 0; i--) _masm.Popq(s_calleeSaved[i]);
         _masm.Ret();
         if (_masm.PendingFixups != 0) throw new InvalidOperationException("native code: a jump to an unbound label");
@@ -292,6 +294,7 @@ internal sealed class MaglevNativeCodeGenerator
             Exits = _exits.ToArray(),
             DeoptValues = _deoptValues.ToArray(),
             ManagedSlots = _managedSlots,
+            HasManagedNodes = _managedNodes.Count > 0,
             FirstHome = firstHome,
             HomeEnd = _homeWords,
         };
@@ -446,8 +449,14 @@ internal sealed class MaglevNativeCodeGenerator
         return formal;
     }
 
+    /// <summary>Functions whose native code lost to the IL backend at run time (MaglevNativeCode.Profile).</summary>
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SharedFunctionInfo, object> s_declinedAtRunTime = new();
+
+    internal static void DeclineAtRunTime(SharedFunctionInfo shared) => s_declinedAtRunTime.AddOrUpdate(shared, shared);
+
     void CheckSupported()
     {
+        if (s_declinedAtRunTime.TryGetValue(_info.Toplevel.SharedFunctionInfo, out _)) throw Unsupported("managed exits outweighed its loops at run time");
         // The blocks of loops (from a header to the block of its JumpLoop, in block order).
         for (int i = 0; i < _blocks.Count; i++)
         {

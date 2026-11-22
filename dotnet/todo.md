@@ -3059,6 +3059,27 @@ on by default since 2026-10-03; the optimizing tier (Maglev) since
       pass (a context slot reloaded after an inline store overwrote it, the
       hole lost through a resume, untagged managed results read as
       snapshots, a managed node's own value live before it): fixed, with tests.
+      Run-time profile (Ryu-style): native code counts calls, managed exits
+      and loop back edges; a function that takes a managed exit for fewer
+      than 256 back edges goes back to IL (Crypto's BigInteger helpers,
+      Box2D/Mandreel functions).
+      Measured on .NET 11 (2026-11-22, octane-quick and micro:native, warm,
+      3 interleaved runs per session, bin/ builds, same host; geomeans
+      without the latency rows):
+        - .NET 11 vs .NET 10 (same code): micro kernels +25% (both
+          backends; FieldSum 3x), Octane +4-8%.
+        - native vs IL backend: micro kernels 87-90% of IL (IntHash
+          +36%; Axpy, Mandelbrot, FieldSum behind), Octane 90% of IL
+          before the profile; after it, rows move -27%..+29% between sessions
+          (Splay, Box2D, NavierStokes ahead; Richards, Gameboy, Mandreel
+          behind): within this host's noise on the geomean, not a win.
+        - against V8 (same session): both V8Sharp backends reach about
+          20-24% of V8's full pipeline and 24-29% of V8 --no-turbofan on
+          Octane, about 50% of V8 / 70-75% of V8 Maglev on the loop kernels.
+      Same performance as V8 is far off: the gap is in call-heavy object
+      code (DeltaBlue 1/11, PdfJS 1/9 of V8), which both backends leave to
+      calls through C# helpers; it needs native-to-native calls and inline
+      property access/allocation in native code, not better loops.
       Open: calls in loops (native-to-native calls, or a cheaper exit), leaves
       (a cheaper entry), allocation (InlinedAllocation), CheckMaps with
       migration, MaybeGrowFastElements, element kind transitions.

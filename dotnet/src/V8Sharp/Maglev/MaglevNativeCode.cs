@@ -191,6 +191,7 @@ namespace V8Sharp.Maglev
         public NativeExit[] Exits = [];
         /// <summary>The managed slots of an activation (results of managed nodes, snapshots).</summary>
         public int ManagedSlots;
+        public bool HasManagedNodes;
         /// <summary>For each DeoptPoint: the value of each of its scratch slots (-1: none), as (slot, value) pairs.</summary>
         public (int Slot, int Value)[][] DeoptValues = [];
         /// <summary>The first and last home words of the code (saved around interrupt handling).</summary>
@@ -210,9 +211,43 @@ namespace V8Sharp.Maglev
             return ctx;
         }
 
+        // ---- Profile ------------------------------------------------------------------------------------------
+        //
+        // A managed node costs an exit and a resume (a few hundred
+        // nanoseconds) where RyuJIT's code calls the builtin directly; native
+        // code wins only when its loops do enough work per managed exit. As
+        // Ryu decides from its run-time counts, the code counts its calls,
+        // managed exits and loop back edges (the poll budget it used), and a
+        // function that takes a managed exit for fewer than kMinBackEdgesPerExit
+        // back edges is invalidated and compiled again as IL.
+
+        const int kProfileCalls = 256;
+        const long kMinBackEdgesPerExit = 256;
+        long _calls, _managedExits, _backEdges;
+        bool _replaced;
+
+        void Profile(Isolate isolate)
+        {
+            if (++_calls % kProfileCalls != 0 || _managedExits == 0) return;
+            if (_managedExits * kMinBackEdgesPerExit <= _backEdges || Code.MarkedForDeoptimization || _replaced) return;
+            _replaced = true;
+            MaglevNativeCodeGenerator.DeclineAtRunTime(Code.SharedFunctionInfo);
+            if (isolate.Flags.trace_maglev_native)
+            {
+                Console.WriteLine($"[maglev native: {MaglevCompiler.DebugName(Code.SharedFunctionInfo)} goes back to IL: " +
+                                  $"{_managedExits} managed exits, {_backEdges} back edges in {_calls} calls]");
+            }
+            // The IL code replaces it at once (the function stays optimized; this
+            // activation and running ones finish in the native code, which stays valid).
+            MaglevCode? il = Code.OsrOffset < 0 ? MaglevCompiler.Compile(isolate, Code.Function, -1) : null;
+            if (il is not null) MaglevCompiler.InstallCode(isolate, il);
+            else MaglevCompiler.InvalidateCode(isolate, Code, Deoptimizer.LazyDeoptimizeReason.kTesting);
+        }
+
         /// <summary>The MaglevCodeEntry of native code.</summary>
         public JSValue Run(Isolate isolate, ref InterpreterState state)
         {
+            if (ManagedSlots > 0 || HasManagedNodes) Profile(isolate);
             long[] ctx = NativeContextOf(isolate, ContextWords);
             int fp = state.Fp;
             ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = 0;
@@ -223,6 +258,7 @@ namespace V8Sharp.Maglev
             while (true)
             {
                 long id = NativeCode.Call(Entry, ctx, ref isolate.RegisterStack[fp], Constants, spill, ref isolate.StackGuard.InterruptFlagsRef);
+                _backEdges += kPollBudget - ctx[MaglevNativeCodeGenerator.kPollBudgetSlot];
                 NativeExit exit = Exits[id];
                 switch (exit.Kind)
                 {
@@ -261,6 +297,7 @@ namespace V8Sharp.Maglev
                             break;
                         }
                         NativeManagedNode node = exit.Managed!;
+                        _managedExits++;
                         JSValue result = Execute(isolate, node, isolate.RegisterStack, ctx, fp, managed, out bool passed);
                         ctx = NativeContextOf(isolate, ContextWords);
                         saved.CopyTo(ctx.AsSpan(FirstHome));

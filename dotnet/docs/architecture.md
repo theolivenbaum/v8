@@ -1095,7 +1095,11 @@ only the other cases exit. Since inline stores can overwrite a slot, slot
 loads record their kind when they load; numbers and oddballs are rebuilt
 from that, objects (which native code never overwrites) by loading again.
 Managed nodes in inlined functions are allowed when they neither call nor
-throw (a call would need the inlined frames pushed).
+throw (a call would need the inlined frames pushed). As Ryu decides from its
+run-time counts, native code counts its calls, managed exits and loop back
+edges (the poll budget left, written back at the epilogue); a function that
+takes a managed exit for fewer than 256 back edges is invalidated and
+compiled again as IL (`MaglevNativeCode.Profile`).
 
 **What is native.** Int32 and Float64 arithmetic with V8's overflow, -0 and
 division checks; Math.floor/ceil/round/trunc (roundsd), sqrt, abs, min/max,
