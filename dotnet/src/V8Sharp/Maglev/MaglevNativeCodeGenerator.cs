@@ -136,6 +136,7 @@ internal sealed class MaglevNativeCodeGenerator
         node.Opcode == Opcode.CallKnownJSFunction && node.Obj0 is KnownCallInfo { CheckReceiver: false } info &&
         info.FormalCount <= MaglevFastCalls.kMaxArity && info.Argc <= MaglevFastCalls.kMaxArity && !s_noNativeCalls;
 
+    static readonly bool s_noLazyEntry = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_NO_LAZY_ENTRY") == "1";
     static readonly bool s_noNativeCalls = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_NO_DIRECT_CALLS") == "1";
 
     // The constants table's fixed entries (JSValues): the number tag, then the oddballs.
@@ -162,6 +163,10 @@ internal sealed class MaglevNativeCodeGenerator
     const Reg kHomesRegister = r13;
     /// <summary>The homes a native callee may use in its caller's buffer (direct calls).</summary>
     internal const int kCalleeHomes = 128;
+    /// <summary>The homes reserved for a callee without native code yet.</summary>
+    const int kDefaultCalleeHomes = 16;
+    int _calleeHomes;
+    BasicBlock? _emittingBlock;
     /// <summary>The largest homes buffer (MaglevNativeCode.Run's buffer types).</summary>
     internal const int kMaxHomes = 512;
     /// <summary>The homes slot a returned tagged value goes to (MaglevNativeCode.kTaggedReturn).</summary>
@@ -337,6 +342,7 @@ internal sealed class MaglevNativeCodeGenerator
         {
             if (v is not null && v.Node.Opcode == Opcode.InitialValue && !v.NeedsKind && !written.Contains(v.Node.Int0) && !s_noInFrame) v.InFrame = true;
         }
+        AssignTaggedSlots();
         AllocateRegisters();
 
         // Prologue: save the callee-saved registers, the context in rbx, then the entry.
@@ -348,6 +354,14 @@ internal sealed class MaglevNativeCodeGenerator
             if (r is rbx or r13 or r14 or r15 || UsesRegister(r)) _saved.Add(r);
         }
         foreach (Reg r in _saved) _masm.Pushq(r);
+        // The code uses legacy-encoded SSE; the .NET code that calls it uses VEX
+        // and EVEX (AVX-512 where the CPU has it) and may leave the upper halves
+        // of the vector registers dirty, which makes every legacy SSE instruction
+        // pay a state transition or a merge (measured: about 150 ns per call of a
+        // small function). Every entry (calls and resumes) clears them first, as
+        // compiled .NET code does before it calls code that may use legacy SSE.
+        // (Without AVX there are no upper halves, and vzeroupper is undefined.)
+        if (System.Runtime.Intrinsics.X86.Avx.IsSupported) _masm.Vzeroupper();
         _masm.Movq(rbx, rdi);
         _masm.Movq(kPollRegister, new Operand(rbx, kPollBudgetSlot * 8));
         _masm.Movq(kFrameRegister, new Operand(rbx, NativeCode.kFrameSlot * 8));
@@ -426,7 +440,9 @@ internal sealed class MaglevNativeCodeGenerator
             ContextReserve = _nativeCalls ? 4 * kCalleeReserve : 0,
             TaggedSlots = _taggedSlots,
             ResumeOffsets = resumeOffsets,
-            HomesNeeded = _taggedSlots + (_nativeCalls ? kCalleeHomes : 0),
+            // (The callees' homes as their code needs them now, or a small buffer;
+            // a direct call that does not fit grows it: MaglevNativeCode.GrowHomes.)
+            HomesNeeded = _taggedSlots + (_nativeCalls ? Math.Min(_calleeHomes, kCalleeHomes) : 0),
             CalleeContextBase = _homeWords + CallFrameWords,
             Constants = PinnedConstants(),
             Values = _valueInfos.ToArray(),
@@ -448,7 +464,7 @@ internal sealed class MaglevNativeCodeGenerator
             native.FastCallArity = _fastCallArity;
             // (Any return: a tagged one comes back in the return home.)
             native.DirectCallArity = _fastCallArity;
-            _code.FastCall = native.CreateFastCall();
+            _code.FastCall = native.CreateFastCall(_fastCallArity);
             _code.FastCallArity = _fastCallArity;
             _code.DirectEntryKind = MaglevDirectEntryKind.Frameless;
         }
@@ -457,6 +473,13 @@ internal sealed class MaglevNativeCodeGenerator
             // Native callers call it directly too; its interpreter frame is built
             // if it exits (MaglevNativeCode.ContinueFramed).
             native.DirectCallArity = s_noFramedDirectCalls ? -1 : FramelessArity(allowInterrupts: true);
+            // Managed callers too (MaglevNativeCode.RunLazy).
+            if (native.DirectCallArity >= 0 && !s_noLazyEntry)
+            {
+                _code.FastCall = native.CreateFastCall(native.DirectCallArity);
+                _code.FastCallArity = native.DirectCallArity;
+                _code.DirectEntryKind = MaglevDirectEntryKind.LazyFrame;
+            }
         }
         if (_info.Isolate.Flags.print_maglev_code) Print(native);
         Interlocked.Increment(ref s_generated);
@@ -710,8 +733,9 @@ internal sealed class MaglevNativeCodeGenerator
             {
                 if (node.Unit is { IsInline: true } && node.Opcode == Opcode.HandleNoHeapWritesInterrupt && node.Int0 != 1)
                 {
-                    // Its runtime call would need the inlined frames pushed (EmitEnsureInlinedFrames).
-                    throw Unsupported("interrupt check in an inlined function");
+                    // Its runtime call needs the inlined frames pushed (the IL's
+                    // EmitEnsureInlinedFrames): the managed side pushes them around it.
+                    _frameInputs[node] = InlinedFrameInputs(node.Unit);
                 }
                 if (node.ExceptionHandler is not null) throw Unsupported("throwing node");
                 if (IsManagedNode(node, out string? why))
@@ -949,9 +973,55 @@ internal sealed class MaglevNativeCodeGenerator
             // Tagged: the object and payload in the homes buffer, the kind (and a
             // LoadElements value's cached data) in the context.
             _homeWords += v.Repr == ValueRepresentation.kTagged ? 4 : 1;
-            if (v.Repr == ValueRepresentation.kTagged) v.Slot = _taggedSlots++;
         }
     }
+
+    /// <summary>
+    /// The tagged values' slots in the homes buffer (after the liveness and the
+    /// parameters read in their frame slots): values whose intervals do not
+    /// overlap share a slot, as a register allocator shares a register. The
+    /// buffer is zeroed at every managed entry (a nanosecond or so per slot)
+    /// and holds the direct callees' homes after this code's: one slot per
+    /// value made it several times larger than any point of the code needs.
+    /// An interval is the hull of every position where the value is written
+    /// or read (its definition, the phi moves at the ends of the predecessors,
+    /// its uses, the exits and deopts that read it) or live, and a slot is
+    /// reused only after the interval of its last value ended strictly before.
+    /// </summary>
+    void AssignTaggedSlots()
+    {
+        var tagged = new List<Val>();
+        var seen = new HashSet<Val>(ReferenceEqualityComparer.Instance);
+        foreach (Val? v in _vals)
+        {
+            if (v is not null && v.Repr == ValueRepresentation.kTagged && !v.InFrame && seen.Add(v)) tagged.Add(v);
+        }
+        tagged.Sort(static (a, b) => a.Start != b.Start ? a.Start.CompareTo(b.Start) : a.Node.Id.CompareTo(b.Node.Id));
+        var active = new List<Val>();
+        var free = new SortedSet<int>();
+        foreach (Val v in tagged)
+        {
+            for (int i = active.Count - 1; i >= 0; i--)
+            {
+                if (active[i].End >= v.Start) continue;
+                free.Add(active[i].Slot);
+                active.RemoveAt(i);
+            }
+            // (A value without an interval, which no position writes or reads, gets a slot of its own.)
+            if (free.Count > 0 && v.Start <= v.End && !s_noSharedSlots)
+            {
+                v.Slot = free.Min;
+                free.Remove(v.Slot);
+            }
+            else
+            {
+                v.Slot = _taggedSlots++;
+            }
+            if (v.Start <= v.End) active.Add(v);
+        }
+    }
+
+    static readonly bool s_noSharedSlots = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_NO_SHARED_SLOTS") == "1";
 
     /// <summary>The values a deopt exit needs saved: the frame state's, and what rebuilding them reads.</summary>
     void DeoptUses(DeoptInfo info, HashSet<ValueNode> into)
@@ -1995,6 +2065,7 @@ internal sealed class MaglevNativeCodeGenerator
 
     void EmitBlock(BasicBlock block)
     {
+        _emittingBlock = block;
         _masm.Bind(BlockLabel(block));
         // A tagging node right before a number return, used only by it: the
         // return takes the untagged value (NumberReturnSource), the tagging is dead.
@@ -4041,6 +4112,11 @@ internal sealed class MaglevNativeCodeGenerator
         var info = (KnownCallInfo)node.Obj0!;
         Val r = V((ValueNode)node);
         _nativeCalls = true;
+        // (Another thread may install the callee's code meanwhile: only a size.)
+        // A call in a loop: the code is entered rarely and calls often, so the
+        // largest reserve (a buffer that grows takes effect at the next entry only).
+        _calleeHomes = Math.Max(_calleeHomes, _emittingBlock is { } b && InLoop(b) ? kCalleeHomes
+            : info.Vector.MaglevCode?.Native is { } callee ? callee.HomesNeeded : kDefaultCalleeHomes);
         int frameBase = _homeWords;
         int calleeBase = _homeWords + CallFrameWords;
         Operand FrameSlot(int offset, int word = 0) => new(rbx, frameBase * 8 + (MaglevNativeCode.kPseudoFp + offset) * 16 + word * 8);
@@ -4660,6 +4736,12 @@ internal sealed class MaglevNativeCodeGenerator
         var needed = new HashSet<ValueNode>(ReferenceEqualityComparer.Instance);
         foreach (Val v in live) needed.Add(v.Node);
         if (node.EagerDeoptInfo is { } frameState) DeoptUses(frameState, needed);
+        // (In inlined functions: their frames are pushed from these values around the runtime call.)
+        if (_frameInputs.TryGetValue(node, out ValueNode[]? frameInputs))
+        {
+            foreach (ValueNode f in frameInputs) AddClosure(f, needed);
+            interrupt.InlinedFrames = FramesFor(node.Unit!, node);
+        }
         List<Val> stores = RegisterStores(needed);
         XLabel interruptStub = _masm.NewLabel(), pollStub = _masm.NewLabel(), cont = _masm.NewLabel();
         _exitStubs.Add((interruptStub, NewExit(interrupt), stores));

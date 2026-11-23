@@ -761,7 +761,7 @@ public static class BaselineCalls
     /// runs in it (and the interpreter after a deoptimization).
     /// </summary>
     internal static JSValue EnterMaglevFrame(Isolate isolate, JSFunction function, JSValue receiver, JSValue[] args,
-        Maglev.MaglevCodeEntry continuation)
+        Maglev.MaglevCodeEntry continuation, JSValue newTarget = default, bool isConstruct = false)
     {
         int depth = isolate.InterpreterFrameDepth;
         if ((depth & 3) == 0 && !RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
@@ -771,8 +771,8 @@ public static class BaselineCalls
         int start = isolate.RegisterStackTop;
         Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
         int fp = PushFrame(isolate, function, bytecode, bytecode.ParameterCount - 1, bytecode.RegisterCount,
-            incoming.IsValid ? incoming.Index : int.MinValue, receiver, new ArrayArguments(args), default, false, false, vector);
-        isolate.InterpreterFrames[depth].Flags = InterpreterFrameFlags.Maglev;
+            incoming.IsValid ? incoming.Index : int.MinValue, receiver, new ArrayArguments(args), newTarget, isConstruct, false, vector);
+        isolate.InterpreterFrames[depth].Flags = InterpreterFrameFlags.Maglev | (isConstruct ? InterpreterFrameFlags.Constructor : 0);
         var state = new InterpreterState
         {
             Isolate = isolate,

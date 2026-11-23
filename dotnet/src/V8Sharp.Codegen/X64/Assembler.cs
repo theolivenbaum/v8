@@ -351,6 +351,8 @@ public sealed class Assembler
     public void Popq(Register r) { if ((int)r >= 8) Emit(0x41); Emit(0x58 | ((int)r & 7)); }
     public void Ret() => Emit(0xC3);
     public void Int3() => Emit(0xCC);
+    /// <summary>vzeroupper (VEX.128.0F.WIG 77): clears the upper halves of the vector registers.</summary>
+    public void Vzeroupper() { Emit(0xC5); Emit(0xF8); Emit(0x77); }
     public void Ud2() { Emit(0x0F); Emit(0x0B); }
     /// <summary>jmp reg.</summary>
     public void Jmp(Register target) => EmitRR(0, false, 4, (int)target, false, [0xFF]);

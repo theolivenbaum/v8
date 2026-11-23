@@ -627,6 +627,104 @@ public class MaglevNativeTest
     }
 
     [Fact]
+    public void ManagedCallersEnterCodeWithCallsWithoutAFrame()
+    {
+        // Native code that calls native code directly, entered by managed
+        // callers (the interpreter, IL code, constructs) through its lazy-frame
+        // entry (MaglevNativeCode.RunLazy): its frame is built from the
+        // pseudo-frame only when it exits (stack traces, throws, deopts, managed
+        // nodes), and a construct's frame is a constructor's.
+        const string kNoInline = " --max-maglev-inlined-bytecode-size=0 --max-maglev-inlined-bytecode-size-small=0";
+        string source = kPrelude + """
+            function leaf(a, k) { return a.v + k; }
+            function mid(a, k) {
+              const r = leaf(a, k);
+              if (k === 13) return new Error('e').stack.split('\n').length + ':' + (new Error('e').stack.indexOf('mid') > 0);
+              if (k === 7) throw new RangeError('t' + k);
+              if (k === 9) return a.n + r;
+              return r * 2;
+            }
+            function C(a, k) { this.r = mid(a, k); this.t = new.target === C; }
+            // (No new.target register: entered lazily by constructs, exiting past the call.)
+            function D(a, k) { this.r = mid(a, k); if (k === 15) { this.t = a.n + k; return { o: this.r }; } if (k === 14) this.t = a.n + k; }
+            const o = { v: 2, n: 'nm' };
+            // (Constructs from optimized code: ConstructWithReceiver takes the callee's direct entry.)
+            function mkC(a, k) { return new C(a, k); }
+            function mkD(a, k) { return new D(a, k); }
+            for (const f of [leaf, mid, C, D, mkC, mkD]) %PrepareFunctionForOptimization(f);
+            for (let i = 0; i < 3; i++) { leaf(o, i); mid(o, i); mkC(o, i); mkD(o, i); }
+            for (const f of [leaf, mid, C, D, mkC, mkD]) %OptimizeFunctionOnNextCall(f);
+            leaf(o, 1); mid(o, 1); mkC(o, 1); mkD(o, 1);
+            for (let k = 0; k < 16; k++) {
+              try { rec(mid(o, k)); } catch (e) { rec(e.message); }
+              try { const c = mkC(o, k); rec(c.r + ',' + c.t); } catch (e) { rec('C:' + e.message); }
+              try { const d = mkD(o, k); rec(d.r + ',' + d.t + ',' + d.o); } catch (e) { rec('D:' + e.message); }
+            }
+            rec(mid({ v: 'x', n: 1 }, 2)); rec(mid({ v: 1.5 }, 3));
+            out.join('|')
+            """;
+        string interpreted = MaglevCompilerTest.Run(kInterpreter, source);
+        long before = Interlocked.Read(ref MaglevNativeCode.s_lazyFrames);
+        Assert.Equal(interpreted, MaglevCompilerTest.Run(kNative + kNoInline, source));
+        if (ExecutableMemory.Supported) Assert.True(Interlocked.Read(ref MaglevNativeCode.s_lazyFrames) > before, "no lazy-frame entry built its frame");
+    }
+
+    [Fact]
+    public void InterruptsInInlinedFunctionsPushTheirFrames()
+    {
+        // A loop with calls in an inlined function: its interrupt check runs the
+        // runtime with the inlined frames pushed (as managed nodes in inlined
+        // functions), served while another thread requests API interrupts.
+        Assert.SkipUnless(ExecutableMemory.Supported, "native code needs Linux on x64");
+        var flags = new FlagList();
+        flags.SetFlagsFromString("--allow-natives-syntax --maglev --maglev-native --no-maglev-native-loops-only --no-concurrent-recompilation");
+        Isolate isolate = Isolate.New(flags);
+        using (isolate.Enter())
+        {
+            Compiler.CompileAndRun(isolate, """
+                function f(i) { return (i * 7) & 1023; }
+                %NeverOptimizeFunction(f);
+                function inner(n, o) { var s = 0; for (var i = 0; i < n; i++) s = (s + f(i) + o.length) | 0; return s; }
+                function outer(n, o) { return inner(n, o) + 1; }
+                %PrepareFunctionForOptimization(inner); %PrepareFunctionForOptimization(outer);
+                outer(10, []); outer(10, []);
+                %OptimizeMaglevOnNextCall(outer);
+                outer(10, []);
+                """);
+            int served = 0;
+            using var stop = new CancellationTokenSource();
+            var requester = new Thread(() =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    isolate.StackGuard.RequestApiInterrupt((_, _) => Interlocked.Increment(ref served), null);
+                    Thread.Sleep(1);
+                }
+            });
+            requester.Start();
+            string result;
+            try
+            {
+                result = ObjectOps.ToString(isolate, Compiler.CompileAndRun(isolate,
+                    "var r = []; for (var k = 0; k < 5; k++) r.push(outer(300000, [1, 2])); r.join()")).ToString();
+            }
+            finally
+            {
+                stop.Cancel();
+                requester.Join();
+            }
+            string expected = ObjectOps.ToString(isolate, Compiler.CompileAndRun(isolate, """
+                var s = 0; for (var i = 0; i < 300000; i++) s = (s + ((i * 7) & 1023) + 2) | 0;
+                var e = []; for (var k = 0; k < 5; k++) e.push(s + 1); e.join()
+                """)).ToString();
+            Assert.Equal(expected, result);
+            Assert.True(served > 0);
+            var outer = (JSFunction)Compiler.CompileAndRun(isolate, "outer").Object;
+            Assert.True(((FeedbackVector)outer.RawFeedbackCell.Value!).MaglevCode!.IsNative);
+        }
+    }
+
+    [Fact]
     public void InterruptsAreServedAndTheLoopResumes()
     {
         // API interrupts requested from another thread while a native loop

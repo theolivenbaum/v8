@@ -38,6 +38,14 @@ namespace V8Sharp
         internal Maglev.NativeActivation?[] MaglevNativeActivations = new Maglev.NativeActivation?[8];
         /// <summary>The depth of the next native activation.</summary>
         internal int MaglevNativeDepth;
+        /// <summary>
+        /// The code whose entry (MaglevNativeCode.RunAt) made the homes buffer
+        /// native code uses now, and the buffer's address: a direct call that
+        /// does not fit in it grows the code's buffer for its next entries
+        /// (MaglevNativeCode.GrowHomes).
+        /// </summary>
+        internal Maglev.MaglevNativeCode? MaglevNativeHomesOwner;
+        internal long MaglevNativeHomesBase;
         nint _registerStackAddress;
 
         /// <summary>The address of RegisterStack[0] (pinned, allocated once).</summary>
@@ -153,9 +161,14 @@ namespace V8Sharp.Maglev
     // homes"): a local of the frame running native code, whose JSValue slots
     // the GC reports and updates. One type per size, so that a frame's
     // buffer is no larger than its code needs.
+    // (The JIT zeroes the whole buffer at every entry, about a nanosecond per
+    // slot measured: an entry that reserved the largest buffer for its
+    // callees cost more than the small function it called, hence the many sizes.)
     [System.Runtime.CompilerServices.InlineArray(16)] internal struct NativeHomes16 { JSValue _slot; }
+    [System.Runtime.CompilerServices.InlineArray(32)] internal struct NativeHomes32 { JSValue _slot; }
     [System.Runtime.CompilerServices.InlineArray(64)] internal struct NativeHomes64 { JSValue _slot; }
-    [System.Runtime.CompilerServices.InlineArray(160)] internal struct NativeHomes160 { JSValue _slot; }
+    [System.Runtime.CompilerServices.InlineArray(128)] internal struct NativeHomes128 { JSValue _slot; }
+    [System.Runtime.CompilerServices.InlineArray(256)] internal struct NativeHomes256 { JSValue _slot; }
     [System.Runtime.CompilerServices.InlineArray(512)] internal struct NativeHomes512 { JSValue _slot; }
 
     /// <summary>
@@ -285,6 +298,8 @@ namespace V8Sharp.Maglev
         public string? Message;
         /// <summary>kManagedNode: the node.</summary>
         public NativeManagedNode? Managed;
+        /// <summary>kInterrupt in inlined functions: their frames, pushed around the runtime call.</summary>
+        public NativeInlinedFrame[]? InlinedFrames;
         /// <summary>Resumable exits that may change the heap: the reload-rebuilt values whose values are kept first.</summary>
         public int[] Snapshot = [];
     }
@@ -398,6 +413,8 @@ namespace V8Sharp.Maglev
 
         const int kProfileCalls = 256;
         const long kMinBackEdgesPerExit = 256;
+        /// <summary>(Or calls: code that exits at one call in this many keeps its native code.)</summary>
+        const long kMinCallsPerExit = 16;
         long _calls, _managedExits, _backEdges;
         bool _replaced;
 
@@ -405,7 +422,8 @@ namespace V8Sharp.Maglev
         {
             if (s_noProfile) return;
             if (++_calls % kProfileCalls != 0 || _managedExits == 0) return;
-            if (_managedExits * kMinBackEdgesPerExit <= _backEdges || Code.MarkedForDeoptimization || _replaced) return;
+            if (_managedExits * kMinBackEdgesPerExit <= _backEdges || _managedExits * kMinCallsPerExit <= _calls ||
+                Code.MarkedForDeoptimization || _replaced) return;
             GoBackToIL(isolate);
         }
 
@@ -464,9 +482,19 @@ namespace V8Sharp.Maglev
             return stats;
         }
 
-        void CountExit(NativeManagedNode node) =>
+        void CountExit(NativeManagedNode node, long[] ctx) =>
             s_exitStats!.AddOrUpdate(MaglevCompiler.DebugName(Code.SharedFunctionInfo) + " " + node.Opcode +
-                (node.Obj0 is CallBuiltinInfo info ? ":" + info.Method.Name : "") + " @" + node.BytecodeOffset, 1, static (_, n) => n + 1);
+                (node.Obj0 is CallBuiltinInfo info ? ":" + info.Method.Name : "") + " @" + node.BytecodeOffset +
+                (node.Obj0 is KnownCallInfo call ? " " + CallExitReason(call, ctx) : ""), 1, static (_, n) => n + 1);
+
+        static string CallExitReason(KnownCallInfo call, long[] ctx)
+        {
+            string callee = call.Target is JSFunction f ? MaglevCompiler.DebugName(f.Shared) : "?";
+            if (ctx[MaglevNativeCodeGenerator.kCalleeExitSlot] != 0) return callee + ": callee exit";
+            if (call.Vector.MaglevCode is not { } code) return callee + ": no maglev code";
+            if (code.Native is not { } native) return callee + ": IL code";
+            return callee + $": native arity {native.DirectCallArity} vs {call.FormalCount}";
+        }
 
         /// <summary>
         /// (Testing: V8SHARP_MAGLEV_NATIVE_GC_AT_EXITS=1 runs a compacting GC at
@@ -489,6 +517,8 @@ namespace V8Sharp.Maglev
         {
             if (ManagedSlots > 0 || HasManagedNodes) Profile(isolate);
             int depth = isolate.MaglevNativeDepth++;
+            MaglevNativeCode? owner = isolate.MaglevNativeHomesOwner;
+            long ownerBase = isolate.MaglevNativeHomesBase;
             try
             {
                 NativeActivation activation = ActivationAt(isolate, depth, ContextWords + ContextReserve);
@@ -496,14 +526,18 @@ namespace V8Sharp.Maglev
                 return HomesNeeded switch
                 {
                     <= 16 => RunAt<NativeHomes16>(isolate, ref state, activation),
+                    <= 32 => RunAt<NativeHomes32>(isolate, ref state, activation),
                     <= 64 => RunAt<NativeHomes64>(isolate, ref state, activation),
-                    <= 160 => RunAt<NativeHomes160>(isolate, ref state, activation),
+                    <= 128 => RunAt<NativeHomes128>(isolate, ref state, activation),
+                    <= 256 => RunAt<NativeHomes256>(isolate, ref state, activation),
                     _ => RunAt<NativeHomes512>(isolate, ref state, activation),
                 };
             }
             finally
             {
                 isolate.MaglevNativeDepth = depth;
+                isolate.MaglevNativeHomesOwner = owner;
+                isolate.MaglevNativeHomesBase = ownerBase;
             }
         }
 
@@ -517,12 +551,32 @@ namespace V8Sharp.Maglev
             SetEnds(ctx, activation.ContextAddress, Unsafe.SizeOf<THomes>());
             ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = 0;
             ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
+            // (Run restores the previous owner.)
+            isolate.MaglevNativeHomesOwner = this;
+            isolate.MaglevNativeHomesBase = ctx[MaglevNativeCodeGenerator.kHomesSlot];
             // (An activation's array is reused by other code: no stale callee exit.)
             ctx[MaglevNativeCodeGenerator.kCalleeExitSlot] = 0;
             return RunLoop(isolate, ref state, ctx, activation.ContextAddress, kNoPendingExit);
         }
 
         const long kNoPendingExit = long.MinValue;
+
+        /// <summary>
+        /// A direct call to <paramref name="callee"/> left by its slow path
+        /// (EmitNativeCallFastPath): when the callee's homes did not fit in the
+        /// buffer, the code that made the buffer gets a larger one from its next
+        /// entry, up to the largest. (Only a size: whatever it is, a call that
+        /// does not fit takes this path, which is correct, only slower.)
+        /// </summary>
+        void GrowHomes(Isolate isolate, long[] ctx, MaglevNativeCode callee)
+        {
+            if (isolate.MaglevNativeHomesOwner is not { } owner) return;
+            long base_ = isolate.MaglevNativeHomesBase, homes = ctx[MaglevNativeCodeGenerator.kHomesSlot];
+            if (homes < base_ || homes + (TaggedSlots + callee.TaggedSlots) * 16L <= ctx[MaglevNativeCodeGenerator.kHomesEndSlot]) return;
+            long needed = (homes - base_) / 16 + TaggedSlots + Math.Max(callee.HomesNeeded, callee.TaggedSlots);
+            int grown = (int)Math.Min(needed, MaglevNativeCodeGenerator.kMaxHomes);
+            if (grown > owner.HomesNeeded) owner.HomesNeeded = grown;
+        }
 
         /// <summary>The ends of the homes buffer and of the context array (direct calls check them).</summary>
         static void SetEnds(long[] ctx, nint ctxAddress, int homesBytes)
@@ -606,13 +660,25 @@ namespace V8Sharp.Maglev
                         if (exit.Snapshot.Length > 0) Snapshot(exit, isolate.RegisterStack, ctx, fp, ref managed);
                         if (exit.Kind == NativeExitKind.kInterrupt)
                         {
+                            if (exit.InlinedFrames is { } inlined)
+                            {
+                                InInlinedFrames(isolate, inlined, ctx, fp, managed, static (isolate, _) =>
+                                {
+                                    MaglevBuiltins.HandleInterruptsSlow(isolate);
+                                    return JSValue.Undefined;
+                                }, null);
+                                break;
+                            }
                             if (exit.BytecodeOffset >= 0) InterpreterRuntime.SetFramePc(isolate, fp, exit.BytecodeOffset);
                             MaglevBuiltins.HandleInterruptsSlow(isolate);
                             break;
                         }
                         NativeManagedNode node = exit.Managed!;
-                        _managedExits++;
-                        if (s_exitStats is not null) CountExit(node);
+                        // (A call whose callee has no optimized code yet goes to the
+                        // interpreter, which costs more than the exit, and stops once the
+                        // callee is compiled: not a cost of this code's to weigh.)
+                        if (node.Opcode != Opcode.CallKnownJSFunction || ((KnownCallInfo)node.Obj0!).Vector.MaglevCode is not null) _managedExits++;
+                        if (s_exitStats is not null) CountExit(node, ctx);
                         // (Leaves this activation after the node through its lazy deopt: the
                         // interpreter goes on, and enters the IL code by OSR.)
                         bool leave = ProfileExit(isolate) && node.LazyDeoptIndex >= 0;
@@ -884,6 +950,7 @@ namespace V8Sharp.Maglev
                             (Isolate i, ref InterpreterState st) => callee.ContinueFramed(i, ref st, calleeCtx, id));
                     }
                     int argc = info.Argc;
+                    if (info.Vector.MaglevCode?.Native is { } direct && direct.DirectCallArity == info.FormalCount) GrowHomes(isolate, ctx, direct);
                     // (The IL's EmitCallKnownJSFunction: the callee's direct entry when its
                     // Maglev code has the formal count's arity, the generic call otherwise.)
                     if (info.Vector.MaglevCode is { FastCall: { } fast } calleeCode && calleeCode.FastCallArity == info.FormalCount &&
@@ -989,7 +1056,17 @@ namespace V8Sharp.Maglev
         /// </summary>
         JSValue ExecuteInInlinedFrames(Isolate isolate, NativeManagedNode node, long[] ctx, int fp, JSValue[]? managed, out bool passed)
         {
-            NativeInlinedFrame[] frames = node.InlinedFrames!;
+            var box = new StrongBox<bool>();
+            JSValue result = InInlinedFrames(isolate, node.InlinedFrames!, ctx, fp, managed,
+                (isolate, b) => Execute(isolate, node, isolate.RegisterStack, ctx, fp, managed, out b!.Value), box);
+            passed = box.Value;
+            return result;
+        }
+
+        /// <summary>Runs <paramref name="body"/> with <paramref name="frames"/> pushed (ExecuteInInlinedFrames).</summary>
+        JSValue InInlinedFrames(Isolate isolate, NativeInlinedFrame[] frames, long[] ctx, int fp, JSValue[]? managed,
+            Func<Isolate, StrongBox<bool>?, JSValue> body, StrongBox<bool>? box)
+        {
             JSValue[] stack = isolate.RegisterStack;
             // The values first (the pushes write above the register stack top only).
             var functions = new JSFunction[frames.Length];
@@ -1019,7 +1096,7 @@ namespace V8Sharp.Maglev
                     if (f.NewTarget >= 0) JSValue.StoreSlot(ref stack[ifp + f.NewTargetRegister], v[f.Argc + 1]);
                     InterpreterRuntime.SetFramePc(isolate, ifp, f.Pc);
                 }
-                return Execute(isolate, node, stack, ctx, fp, managed, out passed);
+                return body(isolate, box);
             }
             finally
             {
@@ -1148,7 +1225,7 @@ namespace V8Sharp.Maglev
         }
 
         /// <summary>The FastCall delegate of the code's arity.</summary>
-        public Delegate CreateFastCall() => FastCallArity switch
+        public Delegate CreateFastCall(int arity) => arity switch
         {
             0 => new MaglevFastCall0(FastCall0),
             1 => new MaglevFastCall1(FastCall1),
@@ -1159,11 +1236,15 @@ namespace V8Sharp.Maglev
             _ => new MaglevFastCall6(FastCall6),
         };
 
-        JSValue RunFrameless(Isolate isolate, JSFunction function, int argc, JSValue[] frame) => HomesNeeded switch
+        JSValue RunFrameless(Isolate isolate, JSFunction function, int argc, JSValue[] frame) => FastCallArity < 0
+            ? RunLazy(isolate, function, argc, frame)
+            : HomesNeeded switch
         {
             <= 16 => RunFramelessAt<NativeHomes16>(isolate, function, argc, frame),
+            <= 32 => RunFramelessAt<NativeHomes32>(isolate, function, argc, frame),
             <= 64 => RunFramelessAt<NativeHomes64>(isolate, function, argc, frame),
-            <= 160 => RunFramelessAt<NativeHomes160>(isolate, function, argc, frame),
+            <= 128 => RunFramelessAt<NativeHomes128>(isolate, function, argc, frame),
+            <= 256 => RunFramelessAt<NativeHomes256>(isolate, function, argc, frame),
             _ => RunFramelessAt<NativeHomes512>(isolate, function, argc, frame),
         };
 
@@ -1183,6 +1264,82 @@ namespace V8Sharp.Maglev
             if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
             if (id == kTaggedReturn) return ReturnHome(ctx);
             return FramelessExits(isolate, function, argc, frame, ctx, activation.ContextAddress, frameAddress, id, activation);
+        }
+
+        // ---- The lazy-frame entry ------------------------------------------------------------------------
+        //
+        // Code that needs its interpreter frame only once it exits (it makes
+        // calls, handles interrupts or runs managed nodes, but reads nothing of
+        // its frame but its parameters: DirectCallArity) is entered by managed
+        // callers too as native callers call it: its parameters in the isolate's
+        // pseudo-frame, no interpreter frame. At its first exit the frame is
+        // built from the pseudo-frame, before any other code runs (which may use
+        // the pseudo-frame), and the code continues in it (ContinueFramed), as a
+        // directly called native callee that exits does. The IL backend's lazy
+        // frames (MaglevCalls, "Lazy optimized frames") are the same idea.
+
+        /// <summary>Lazy-frame entries that exited and built their frame (tests).</summary>
+        internal static long s_lazyFrames;
+
+        JSValue RunLazy(Isolate isolate, JSFunction function, int argc, JSValue[] frame)
+        {
+            if (ManagedSlots > 0 || HasManagedNodes) Profile(isolate);
+            // (A construct, ConstructWithReceiver: argc's sign bit, new.target in the isolate.)
+            JSValue newTarget = default;
+            if (argc < 0)
+            {
+                newTarget = isolate.MaglevNewTarget;
+                isolate.MaglevNewTarget = default;
+            }
+            int depth = isolate.MaglevNativeDepth++;
+            MaglevNativeCode? owner = isolate.MaglevNativeHomesOwner;
+            long ownerBase = isolate.MaglevNativeHomesBase;
+            try
+            {
+                NativeActivation activation = ActivationAt(isolate, depth, ContextWords + ContextReserve);
+                return HomesNeeded switch
+                {
+                    <= 16 => RunLazyAt<NativeHomes16>(isolate, function, argc, newTarget, frame, activation),
+                    <= 32 => RunLazyAt<NativeHomes32>(isolate, function, argc, newTarget, frame, activation),
+                    <= 64 => RunLazyAt<NativeHomes64>(isolate, function, argc, newTarget, frame, activation),
+                    <= 128 => RunLazyAt<NativeHomes128>(isolate, function, argc, newTarget, frame, activation),
+                    <= 256 => RunLazyAt<NativeHomes256>(isolate, function, argc, newTarget, frame, activation),
+                    _ => RunLazyAt<NativeHomes512>(isolate, function, argc, newTarget, frame, activation),
+                };
+            }
+            finally
+            {
+                isolate.MaglevNativeDepth = depth;
+                isolate.MaglevNativeHomesOwner = owner;
+                isolate.MaglevNativeHomesBase = ownerBase;
+            }
+        }
+
+        JSValue RunLazyAt<THomes>(Isolate isolate, JSFunction function, int argc, JSValue newTarget, JSValue[] frame, NativeActivation activation)
+            where THomes : struct
+        {
+            THomes homes = default;
+            long[] ctx = activation.Context;
+            ctx[MaglevNativeCodeGenerator.kHomesSlot] = NativeCode.AddressOfLocal(ref homes);
+            SetEnds(ctx, activation.ContextAddress, Unsafe.SizeOf<THomes>());
+            ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = 0;
+            ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
+            ctx[MaglevNativeCodeGenerator.kCalleeExitSlot] = 0;
+            isolate.MaglevNativeHomesOwner = this;
+            isolate.MaglevNativeHomesBase = ctx[MaglevNativeCodeGenerator.kHomesSlot];
+            long id = Enter(isolate, ctx, activation.ContextAddress, PseudoFrameAddress(isolate) + kPseudoFp * 16, s_noSpillAddress);
+            _backEdges += kPollBudget - ctx[MaglevNativeCodeGenerator.kPollBudgetSlot];
+            if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
+            if (id == kTaggedReturn) return ReturnHome(ctx);
+            Interlocked.Increment(ref s_lazyFrames);
+            // (The arguments the caller passed, up to the formal count: a direct entry
+            // gets no others, as the frameless one's deopt.)
+            JSValue receiver = frame[kPseudoFp + InterpreterRuntime.kReceiverOffset];
+            var args = new JSValue[Math.Min(argc & int.MaxValue, DirectCallArity)];
+            for (int i = 0; i < args.Length; i++) args[i] = frame[kPseudoFp + InterpreterRuntime.kFirstArgumentOffset - i];
+            // (The homes stay in this frame's buffer, live until the continuation returns.)
+            return Baseline.BaselineCalls.EnterMaglevFrame(isolate, function, receiver, args,
+                (i, ref st) => ContinueFramed(i, ref st, ctx, id), newTarget, isConstruct: argc < 0);
         }
 
         /// <summary>

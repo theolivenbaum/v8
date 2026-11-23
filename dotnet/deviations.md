@@ -877,6 +877,26 @@ for now, to be revisited when the reason goes away.
 - Float64Modulus (`%` of doubles): x87 fprem, exact as fmod (V8 calls
   base::Modulo); a NaN dividend is returned quieted, as glibc's fmod does
   (fprem picks the NaN with the bigger payload when both are NaN).
+- GC-visible homes (branch ccr-5fc84633-unsafe-native): V8 keeps tagged
+  values in registers and stack slots that its safepoint tables describe.
+  The CLR has no such tables for foreign code, so tagged values live in a
+  JSValue buffer that is a local of the managed entry frame
+  (`NativeHomes16`..`NativeHomes512`, the GC reports and updates it). The
+  JIT zeroes such a local at every entry (about a nanosecond per slot), so
+  values whose live intervals do not overlap share a slot, and the reserve
+  for direct callees' homes is sized from the callees' needs (the largest
+  for calls in loops) and grows when a direct call does not fit.
+- vzeroupper at every native entry: the code uses legacy-encoded SSE and the
+  calling .NET code VEX/EVEX, which leaves the upper vector halves dirty;
+  without it each call of a small function paid about 150 ns. V8 emits VEX
+  code under AVX and needs no such instruction.
+- Lazy frames of native code entered by managed callers: code that makes
+  direct calls, takes interrupts or runs managed nodes but reads nothing of
+  its frame except its parameters gets a direct entry (`MaglevCode.FastCall`)
+  through the isolate's pseudo-frame. Its interpreter frame is built at its
+  first exit (`MaglevNativeCode.RunLazy`). V8's optimized frames are always
+  built, without an interpreter frame. The IL backend's lazy frames are the
+  same idea.
 
 ## Interpreter execution, ICs, runtime, compiler and modules
 
