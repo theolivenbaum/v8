@@ -4307,12 +4307,17 @@ internal sealed class MaglevNativeCodeGenerator
                 return false;
         }
         // rcx: the slot. The value a number (its bits in rdx), the slot a number.
+        // (Any other value: stored inline through the GC's write barrier when
+        // native code has it, a Double field's on the managed side.)
+        bool isDoubleField = node.Opcode == Opcode.StoreDoubleField || node.Opcode == Opcode.StoreTaggedField && node.Int1 != 0;
+        bool hasGeneral = WriteBarrier.Address != 0 && !isDoubleField;
+        XLabel general = hasGeneral ? _masm.NewLabel() : slow;
         LoadTaggedPtr(value, rax);
         LoadConstantAddress(r11, kConstNumberTag);
         _masm.Cmpq(rax, r11);
-        _masm.J(Condition.not_equal, slow);
+        _masm.J(Condition.not_equal, general);
         _masm.Cmpq(new Operand(rcx, 0), r11);
-        _masm.J(Condition.not_equal, slow);
+        _masm.J(Condition.not_equal, general);
         LoadTaggedBits(value, rdx);
         if (node.Opcode == Opcode.StoreDoubleField || node.Opcode == Opcode.StoreTaggedField && node.Int1 != 0)
         {
@@ -4325,7 +4330,66 @@ internal sealed class MaglevNativeCodeGenerator
         }
         _masm.Movq(new Operand(rcx, 8), rdx);
         _masm.Jmp(done);
+        if (hasGeneral)
+        {
+            _masm.Bind(general);
+            // The payload as a plain store, the object through the barrier.
+            LoadTagged(value, rax, rdx);
+            _masm.Movq(new Operand(rcx, 8), rdx);
+            EmitWriteBarrierStore(node, rcx, rax);
+            _masm.Jmp(done);
+        }
         return true;
+    }
+
+    /// <summary>
+    /// Stores the object address in <paramref name="value"/> at the address in
+    /// <paramref name="slot"/> through the GC's write barrier (WriteBarrier: the
+    /// runtime's helper, destination in rdi and reference in rsi), saving the
+    /// caller-saved registers that hold values live after <paramref name="node"/>.
+    /// </summary>
+    void EmitWriteBarrierStore(Node node, Reg slot, Reg value)
+    {
+        var pushed = new List<Val>();
+        foreach (Val v in _liveAfter[node])
+        {
+            if (v.InGp && Array.IndexOf(s_callerSavedGp, v.Gp) >= 0 || v.InXmm) pushed.Add(v);
+        }
+        // (The arguments first: rsi and rdi may hold live values, saved below.)
+        _masm.Movq(r11, slot);
+        _masm.Movq(rdx, value);
+        foreach (Val v in pushed)
+        {
+            if (v.InGp)
+            {
+                _masm.Pushq(v.Gp);
+            }
+            else
+            {
+                _masm.Movq(rax, v.XmmReg);
+                _masm.Pushq(rax);
+            }
+        }
+        bool pad = (1 + _saved.Count + pushed.Count) % 2 != 0;
+        if (pad) _masm.Subq(rsp, 8);
+        _masm.Movq(rdi, r11);
+        _masm.Movq(rsi, rdx);
+        _masm.Movq(rax, (long)WriteBarrier.Address);
+        _masm.Call(rax);
+        if (pad) _masm.Addq(rsp, 8);
+        for (int i = pushed.Count - 1; i >= 0; i--)
+        {
+            Val v = pushed[i];
+            if (v.InGp)
+            {
+                _masm.Popq(v.Gp);
+            }
+            else
+            {
+                _masm.Popq(rcx);
+                _masm.Movq(v.XmmReg, rcx);
+            }
+        }
     }
 
     /// <summary>A tagged JSValue at <paramref name="slot"/> into the home of <paramref name="r"/> (and its kind).</summary>

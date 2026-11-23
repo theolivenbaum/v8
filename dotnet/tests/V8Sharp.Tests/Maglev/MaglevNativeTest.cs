@@ -488,6 +488,38 @@ public class MaglevNativeTest
     }
 
     [Fact]
+    public void NativeReferenceStoresGoThroughTheWriteBarrier()
+    {
+        // Young objects stored by native code into fields and elements of old
+        // objects (WriteBarrier): only those old objects refer to them, and
+        // compacting young collections must keep them and update the slots.
+        Assert.SkipUnless(ExecutableMemory.Supported && WriteBarrier.Address != 0, "native reference stores need the write barrier");
+        const string kNoInline = " --max-maglev-inlined-bytecode-size=0 --max-maglev-inlined-bytecode-size-small=0";
+        string source = kPrelude + """
+            const holder = { a: 1, b: 2 }; const arr = [1, 2, 3, 4];
+            let ctxv = 0; function setc(x) { ctxv = x; }
+            function fresh(n, k) { const l = []; for (let i = 0; i < n; i++) l.push({ v: i * k, s: 'p' + i + '_' + k }); return l; }
+            function st(list) { for (let i = 0; i < list.length; i++) { const o = list[i]; holder.a = o; arr[i & 3] = o; holder.b = list[list.length - 1 - i]; } return list.length; }
+            %CollectGarbage(0); %CollectGarbage(0);
+            opt(st, [fresh(8, 1)], [fresh(8, 2)]);
+            for (let round = 0; round < 6; round++) {
+              st(fresh(40, round + 3));
+              for (let g = 0; g < 3; g++) { const junk = []; for (let k = 0; k < 3000; k++) junk.push({ k }); %SimulateNewspaceFull(); }
+              rec(holder.a.v + ':' + holder.a.s + ':' + holder.b.s + ':' + arr[0].s + ':' + arr[3].v);
+            }
+
+            out.join('|')
+            """;
+        string interpreted = MaglevCompilerTest.Run(kInterpreter, source);
+        lock (s_counterLock)
+        {
+            int before = MaglevNativeCodeGenerator.Generated;
+            Assert.Equal(interpreted, MaglevCompilerTest.Run(kNative + kNoInline, source));
+            Assert.True(MaglevNativeCodeGenerator.Generated > before, "nothing was compiled natively");
+        }
+    }
+
+    [Fact]
     public void InterruptsAreServedAndTheLoopResumes()
     {
         // API interrupts requested from another thread while a native loop

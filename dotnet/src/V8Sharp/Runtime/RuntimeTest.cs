@@ -470,6 +470,18 @@ public static partial class RuntimeTest
         return JSRegExp.New(isolate, pattern.As<JSString>(), parsed.Value, (uint)(int)limit.Number);
     }
 
+    /// <summary>
+    /// %SimulateNewspaceFull: V8 fills the new space so that a scavenge (a young
+    /// collection) follows; V8Sharp runs a compacting collection of the youngest
+    /// .NET generation, which moves the young objects and finds the ones old
+    /// objects refer to through the GC's cards (the write barrier's).
+    /// </summary>
+    public static JSValue SimulateNewspaceFull()
+    {
+        GC.Collect(0, GCCollectionMode.Forced, blocking: true, compacting: true);
+        return JSValue.Undefined;
+    }
+
     /// <summary>%CollectGarbage and friends: a full .NET collection.</summary>
     public static JSValue CollectGarbage()
     {

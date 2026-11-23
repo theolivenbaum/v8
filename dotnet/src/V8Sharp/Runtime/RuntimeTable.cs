@@ -320,7 +320,7 @@ public static partial class RuntimeTable
         Register(FunctionId.FinalizeOptimization, RuntimeTest.WaitForBackgroundOptimization);
         Register(FunctionId.SetAllocationTimeout, RuntimeTest.ReturnUndefined);
         Register(FunctionId.NotifyContextDisposed, RuntimeTest.ReturnUndefined);
-        Register(FunctionId.SimulateNewspaceFull, RuntimeTest.ReturnUndefined);
+        Register(FunctionId.SimulateNewspaceFull, static (i, a) => RuntimeTest.SimulateNewspaceFull());
         Register(FunctionId.TurbofanStaticAssert, RuntimeTest.ReturnUndefined);
         Register(FunctionId.AssertPeeled, RuntimeTest.ReturnUndefined);
         Register(FunctionId.AssertEscapeAnalysisElided, RuntimeTest.ReturnUndefined);

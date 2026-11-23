@@ -56,3 +56,23 @@ public class NativeHomesGCTest
         Assert.True(moved > 0, "no object moved");
     }
 }
+
+public class WriteBarrierTest
+{
+    [Fact]
+    public void TheWriteBarrierHelperIsFoundAndPassesItsSelfTest()
+    {
+        Assert.SkipUnless(ExecutableMemory.Supported, "native code needs Linux on x64");
+        Assert.True(WriteBarrier.Address != 0, "write barrier: " + WriteBarrier.Failure);
+        // (It is the runtime's code: in libcoreclr, or its copy in the double-mapped executable memory .NET patches it in.)
+        ulong address = (ulong)WriteBarrier.Address;
+        string? owner = null;
+        foreach (string line in File.ReadLines("/proc/self/maps"))
+        {
+            string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string[] range = parts[0].Split('-');
+            if (address >= Convert.ToUInt64(range[0], 16) && address < Convert.ToUInt64(range[1], 16)) owner = parts.Length > 5 ? parts[5] : "(anonymous)";
+        }
+        Assert.True(owner is not null && (owner.Contains("coreclr") || owner.Contains("doublemapper")), "the helper is in " + owner);
+    }
+}
