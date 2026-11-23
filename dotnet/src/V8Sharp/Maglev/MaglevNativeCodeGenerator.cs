@@ -107,7 +107,13 @@ internal sealed class MaglevNativeCodeGenerator
     /// <summary>The words of the callee's pseudo-frame in the call area.</summary>
     internal static int CallFrameWords => 2 * (MaglevNativeCode.kPseudoFp + 1);
     /// <summary>The context words a native callee may use (larger ones are called through the managed side).</summary>
-    internal const int kCalleeReserve = 4096;
+    internal const int kCalleeReserve = 8192;
+    /// <summary>
+    /// The ends of the homes buffer and of the context array a frame's code
+    /// runs in: a direct call checks that the callee's homes and context fit
+    /// (direct callees nest, sharing the buffer and the array) and passes them on.
+    /// </summary>
+    internal const int kHomesEndSlot = 11, kContextEndSlot = 14;
     bool _nativeCalls;
 
     /// <summary>
@@ -155,7 +161,7 @@ internal sealed class MaglevNativeCodeGenerator
     internal const int kHomesSlot = 6;
     const Reg kHomesRegister = r13;
     /// <summary>The homes a native callee may use in its caller's buffer (direct calls).</summary>
-    internal const int kCalleeHomes = 64;
+    internal const int kCalleeHomes = 128;
     /// <summary>The largest homes buffer (MaglevNativeCode.Run's buffer types).</summary>
     internal const int kMaxHomes = 512;
     /// <summary>The homes slot a returned tagged value goes to (MaglevNativeCode.kTaggedReturn).</summary>
@@ -415,7 +421,9 @@ internal sealed class MaglevNativeCodeGenerator
             Code = _code,
             Entry = entry,
             CodeSize = _masm.PcOffset,
-            ContextWords = _homeWords + (_nativeCalls ? CallFrameWords + kCalleeReserve : 0),
+            // (Its own words; the activation's array also has room for direct callees: ContextReserve.)
+            ContextWords = _homeWords + (_nativeCalls ? CallFrameWords : 0),
+            ContextReserve = _nativeCalls ? 4 * kCalleeReserve : 0,
             TaggedSlots = _taggedSlots,
             ResumeOffsets = resumeOffsets,
             HomesNeeded = _taggedSlots + (_nativeCalls ? kCalleeHomes : 0),
@@ -4049,9 +4057,18 @@ internal sealed class MaglevNativeCodeGenerator
         _masm.J(Condition.equal, slow);
         _masm.Cmpl(new Operand(rax, NativeLayout.NativeDirectCallArity), info.FormalCount);
         _masm.J(Condition.not_equal, slow);
-        _masm.Cmpl(new Operand(rax, NativeLayout.NativeContextWords), kCalleeReserve);
+        // (Its homes after this code's in the buffer, its context in the call area: within their ends.)
+        _masm.Movl(rcx, new Operand(rax, NativeLayout.NativeTaggedSlots));
+        _masm.Shlq(rcx, 4);
+        _masm.Leaq(rdx, new Operand(kHomesRegister, _taggedSlots * 16));
+        _masm.Addq(rcx, rdx);
+        _masm.Cmpq(rcx, new Operand(rbx, kHomesEndSlot * 8));
         _masm.J(Condition.above, slow);
-        _masm.Cmpl(new Operand(rax, NativeLayout.NativeHomesNeeded), kCalleeHomes);
+        _masm.Movl(rcx, new Operand(rax, NativeLayout.NativeContextWords));
+        _masm.Shlq(rcx, 3);
+        _masm.Leaq(rdx, new Operand(rbx, calleeBase * 8));
+        _masm.Addq(rcx, rdx);
+        _masm.Cmpq(rcx, new Operand(rbx, kContextEndSlot * 8));
         _masm.J(Condition.above, slow);
         _masm.Movq(native, rax);
 
@@ -4093,9 +4110,15 @@ internal sealed class MaglevNativeCodeGenerator
         _masm.Movq(rax, new Operand(rbx, NativeCode.kInterruptFlagsSlot * 8));
         _masm.Movq(CalleeWord(NativeCode.kInterruptFlagsSlot), rax);
         _masm.Movq(CalleeWord(kEntryIdSlot), 0);
+        // (A reused call area: the callee's own callee-exit word starts clear.)
+        _masm.Movq(CalleeWord(kCalleeExitSlot), 0);
         // (The callee's homes: the call area of this frame's buffer, after its own.)
         _masm.Leaq(rax, new Operand(kHomesRegister, _taggedSlots * 16));
         _masm.Movq(CalleeWord(kHomesSlot), rax);
+        _masm.Movq(rax, new Operand(rbx, kHomesEndSlot * 8));
+        _masm.Movq(CalleeWord(kHomesEndSlot), rax);
+        _masm.Movq(rax, new Operand(rbx, kContextEndSlot * 8));
+        _masm.Movq(CalleeWord(kContextEndSlot), rax);
         _masm.Movq(CalleeWord(kPollBudgetSlot), MaglevNativeCode.kPollBudget);
 
         // The live values in caller-saved registers on the stack (16-byte aligned at the call).

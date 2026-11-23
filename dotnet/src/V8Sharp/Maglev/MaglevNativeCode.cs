@@ -301,6 +301,8 @@ namespace V8Sharp.Maglev
         public int ContextWords;
         /// <summary>The tagged values' homes (slots of the homes buffer), and with a callee's call area.</summary>
         public int TaggedSlots, HomesNeeded;
+        /// <summary>The context words for direct callees beyond ContextWords (code that calls native code directly).</summary>
+        public int ContextReserve;
         /// <summary>The code offset of each resume entry (by NativeExit.ResumeId).</summary>
         public int[] ResumeOffsets = [];
 
@@ -489,7 +491,7 @@ namespace V8Sharp.Maglev
             int depth = isolate.MaglevNativeDepth++;
             try
             {
-                NativeActivation activation = ActivationAt(isolate, depth, ContextWords);
+                NativeActivation activation = ActivationAt(isolate, depth, ContextWords + ContextReserve);
                 // (The homes buffer, a local of RunAt: its size's instantiation.)
                 return HomesNeeded switch
                 {
@@ -512,12 +514,22 @@ namespace V8Sharp.Maglev
             THomes homes = default;
             long[] ctx = activation.Context;
             ctx[MaglevNativeCodeGenerator.kHomesSlot] = NativeCode.AddressOfLocal(ref homes);
+            SetEnds(ctx, activation.ContextAddress, Unsafe.SizeOf<THomes>());
             ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = 0;
             ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
+            // (An activation's array is reused by other code: no stale callee exit.)
+            ctx[MaglevNativeCodeGenerator.kCalleeExitSlot] = 0;
             return RunLoop(isolate, ref state, ctx, activation.ContextAddress, kNoPendingExit);
         }
 
         const long kNoPendingExit = long.MinValue;
+
+        /// <summary>The ends of the homes buffer and of the context array (direct calls check them).</summary>
+        static void SetEnds(long[] ctx, nint ctxAddress, int homesBytes)
+        {
+            ctx[MaglevNativeCodeGenerator.kHomesEndSlot] = ctx[MaglevNativeCodeGenerator.kHomesSlot] + homesBytes;
+            ctx[MaglevNativeCodeGenerator.kContextEndSlot] = ctxAddress + ctx.Length * 8L;
+        }
 
         /// <summary>
         /// A native callee a native caller called directly, that needs its
@@ -843,8 +855,13 @@ namespace V8Sharp.Maglev
                         var function = (JSFunction)target.Object;
                         // (Its context word kHomesSlot points into this frame's homes buffer,
                         // the call area, which stays live: this frame runs the continuation.)
-                        long[] calleeCtx = NativeCode.NewContext(callee.ContextWords);
-                        ctx.AsSpan(CalleeContextBase, callee.ContextWords).CopyTo(calleeCtx);
+                        // (With the contexts of the callees it called directly that are pending
+                        // too: a callee that exited because its own callee did.)
+                        int words = PendingContextWords(callee, ctx, CalleeContextBase, calleeExit - 1);
+                        long[] calleeCtx = NativeCode.NewContext(Math.Max(words, callee.ContextWords + callee.ContextReserve));
+                        ctx.AsSpan(CalleeContextBase, words).CopyTo(calleeCtx);
+                        // (Its homes stay where they are; each pending context's end is the copy's.)
+                        SetPendingContextEnds(callee, calleeCtx, 0, calleeExit - 1, NativeCode.AddressOf(calleeCtx, 0) + calleeCtx.Length * 8L);
                         JSValue[] calleeFrame = NewPseudoFrame(function, In(info.HasConvertedReceiver ? info.ConvertedReceiverInput : 0));
                         for (int i = 0; i < info.FormalCount; i++)
                         {
@@ -1151,6 +1168,7 @@ namespace V8Sharp.Maglev
             long[] ctx = activation.Context;
             THomes homes = default;
             ctx[MaglevNativeCodeGenerator.kHomesSlot] = NativeCode.AddressOfLocal(ref homes);
+            SetEnds(ctx, activation.ContextAddress, Unsafe.SizeOf<THomes>());
             ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = 0;
             ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
             nint frameAddress = PseudoFrameAddress(isolate) + kPseudoFp * 16;
@@ -1178,6 +1196,34 @@ namespace V8Sharp.Maglev
 
         /// <summary>Native callees continued on the managed side (tests).</summary>
         internal static long s_continuedCallees;
+
+        /// <summary>
+        /// The context words of <paramref name="code"/> at <paramref name="offset"/>
+        /// of <paramref name="ctx"/>, which left by exit <paramref name="exit"/>:
+        /// its own, and if that exit is a direct call whose callee left too (its
+        /// callee-exit word), the callee's pending words after its call area base.
+        /// </summary>
+        static int PendingContextWords(MaglevNativeCode code, long[] ctx, int offset, long exit) =>
+            PendingCallee(code, ctx, offset, exit) is { } callee
+                ? Math.Max(code.ContextWords, code.CalleeContextBase +
+                    PendingContextWords(callee, ctx, offset + code.CalleeContextBase, ctx[offset + MaglevNativeCodeGenerator.kCalleeExitSlot] - 1))
+                : code.ContextWords;
+
+        static void SetPendingContextEnds(MaglevNativeCode code, long[] ctx, int offset, long exit, long end)
+        {
+            ctx[offset + MaglevNativeCodeGenerator.kContextEndSlot] = end;
+            if (PendingCallee(code, ctx, offset, exit) is { } callee)
+            {
+                SetPendingContextEnds(callee, ctx, offset + code.CalleeContextBase, ctx[offset + MaglevNativeCodeGenerator.kCalleeExitSlot] - 1, end);
+            }
+        }
+
+        /// <summary>The native callee of the direct call <paramref name="code"/> left by, when that callee left too.</summary>
+        static MaglevNativeCode? PendingCallee(MaglevNativeCode code, long[] ctx, int offset, long exit) =>
+            exit >= 0 && exit < code.Exits.Length && ctx[offset + MaglevNativeCodeGenerator.kCalleeExitSlot] != 0 &&
+            code.Exits[exit].Managed is { Opcode: Opcode.CallKnownJSFunction, Obj0: KnownCallInfo info }
+                ? info.Vector.MaglevCode?.Native
+                : null;
 
         /// <summary>A new pinned pseudo-frame for ContinueFrameless.</summary>
         internal static JSValue[] NewPseudoFrame(JSFunction function, JSValue receiver)

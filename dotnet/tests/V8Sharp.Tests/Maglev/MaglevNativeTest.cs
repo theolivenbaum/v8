@@ -600,6 +600,33 @@ public class MaglevNativeTest
     }
 
     [Fact]
+    public void NestedDirectCallsContinueTheirPendingCallees()
+    {
+        // a calls b1 directly and b1 calls c1 directly; c1 exits (a string
+        // concatenation), so b1 and a exit too, and a continues b1 from a copy
+        // of its context that must hold c1's pending context as well. b2 shares
+        // the call area and calls code that is never optimized (the slow way).
+        const string kNoInline = " --max-maglev-inlined-bytecode-size=0 --max-maglev-inlined-bytecode-size-small=0";
+        string source = kPrelude + """
+            function c1(o) { return o.n + 'x'; }
+            function b1(o) { return c1(o); }
+            function unopt(o) { return o.v * 2; }
+            %NeverOptimizeFunction(unopt);
+            function b2(o) { return unopt(o) + 1; }
+            function a(o, n) { let s = 0; for (let i = 0; i < n; i++) { s += b1(o).length; s += b2(o); } return s; }
+            const o = { n: 'nm', v: 3 };
+            for (const f of [c1, b1, b2]) %PrepareFunctionForOptimization(f);
+            c1(o); b1(o); b2(o); c1(o); b1(o); b2(o);
+            for (const f of [c1, b1, b2]) %OptimizeFunctionOnNextCall(f);
+            c1(o); b1(o); b2(o);
+            opt(a, [o, 2]); rec(a(o, 50)); rec(a(o, 200));
+            out.join('|')
+            """;
+        string interpreted = MaglevCompilerTest.Run(kInterpreter, source);
+        Assert.Equal(interpreted, MaglevCompilerTest.Run(kNative + kNoInline, source));
+    }
+
+    [Fact]
     public void InterruptsAreServedAndTheLoopResumes()
     {
         // API interrupts requested from another thread while a native loop
