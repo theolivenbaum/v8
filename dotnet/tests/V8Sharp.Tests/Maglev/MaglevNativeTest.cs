@@ -559,6 +559,47 @@ public class MaglevNativeTest
     }
 
     [Fact]
+    public void DirectlyCalledCodeGetsItsFrameWhenItExits()
+    {
+        // Native callees that need an interpreter frame (managed nodes, calls,
+        // throws, stack traces, deopts, a long loop's interrupts), called
+        // directly by native code: the frame is built when the callee exits
+        // (MaglevNativeCode.ContinueFramed), and stack walks see it.
+        const string kNoInline = " --max-maglev-inlined-bytecode-size=0 --max-maglev-inlined-bytecode-size-small=0";
+        string source = kPrelude + """
+            function name(o, k) { return o.n + k; }                         // a string concat: a managed node
+            function st(k) { if (k === 13) return new Error('e').stack.split('\n').length + ':' + (new Error('e').stack.indexOf('caller') > 0); return k; }
+            function thr(k) { if (k === 7) throw new RangeError('t' + k); return k * 2; }
+            function deo(o) { return o.v + 1; }
+            function lp(n) { let s = 0; for (let i = 0; i < n; i++) s = (s + i * 3) | 0; return s + ''; }
+            let stacks = '';
+            function caller(n, o) {
+              let a = '', b = 0, c = 0;
+              for (let i = 0; i < n; i++) {
+                a = name(o, i);
+                const t = st(i); if (typeof t === 'string') stacks += t + ';';
+                b += i === 7 ? 1000 : thr(i);
+                c += deo(i === n - 2 ? { v: 'x' } : o);
+              }
+              return a + '|' + b + '|' + c + '|' + lp(3000000);
+            }
+            function tcall(n) { try { return thr(n); } catch (e) { return e.message + ':' + e.stack.split('\n').length; } }
+            const o = { n: 'nm', v: 2 };
+            for (const f of [name, st, thr, deo, lp]) %PrepareFunctionForOptimization(f);
+            name(o, 1); st(1); thr(1); deo(o); lp(3); name(o, 2); st(2); thr(2); deo(o); lp(3);
+            for (const f of [name, st, thr, deo, lp]) %OptimizeFunctionOnNextCall(f);
+            name(o, 1); st(1); thr(1); deo(o); lp(3);
+            opt(caller, [3, o]); rec(caller(20, o)); rec(caller(30, o)); rec(stacks); rec(tcall(7)); rec(tcall(3));
+
+            out.join(' # ')
+            """;
+        string interpreted = MaglevCompilerTest.Run(kInterpreter, source);
+        long before = Interlocked.Read(ref MaglevNativeCode.s_continuedCallees);
+        Assert.Equal(interpreted, MaglevCompilerTest.Run(kNative + kNoInline, source));
+        if (ExecutableMemory.Supported) Assert.True(Interlocked.Read(ref MaglevNativeCode.s_continuedCallees) > before, "no callee was continued");
+    }
+
+    [Fact]
     public void InterruptsAreServedAndTheLoopResumes()
     {
         // API interrupts requested from another thread while a native loop

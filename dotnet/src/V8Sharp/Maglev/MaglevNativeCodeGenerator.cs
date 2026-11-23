@@ -444,6 +444,12 @@ internal sealed class MaglevNativeCodeGenerator
             _code.FastCallArity = _fastCallArity;
             _code.DirectEntryKind = MaglevDirectEntryKind.Frameless;
         }
+        else
+        {
+            // Native callers call it directly too; its interpreter frame is built
+            // if it exits (MaglevNativeCode.ContinueFramed).
+            native.DirectCallArity = s_noFramedDirectCalls ? -1 : FramelessArity(allowInterrupts: true);
+        }
         if (_info.Isolate.Flags.print_maglev_code) Print(native);
         Interlocked.Increment(ref s_generated);
         return native;
@@ -631,7 +637,7 @@ internal sealed class MaglevNativeCodeGenerator
     /// interrupts (which need the frame; loops without calls only deopt for
     /// them).
     /// </summary>
-    int FramelessArity()
+    int FramelessArity(bool allowInterrupts = false)
     {
         if (_info.IsOsr) return -1;
         SharedFunctionInfo shared = _info.Toplevel.SharedFunctionInfo;
@@ -642,7 +648,7 @@ internal sealed class MaglevNativeCodeGenerator
         {
             foreach (Node node in block.Nodes)
             {
-                if (node.Opcode == Opcode.HandleNoHeapWritesInterrupt && node.Int0 != 1) return -1;
+                if (node.Opcode == Opcode.HandleNoHeapWritesInterrupt && node.Int0 != 1 && !allowInterrupts) return -1;
                 if (node.Opcode != Opcode.InitialValue) continue;
                 int r = node.Int0;
                 if (r == Interpreter.InterpreterRuntime.kClosureOffset || r == Interpreter.InterpreterRuntime.kContextOffset) continue;
@@ -657,6 +663,7 @@ internal sealed class MaglevNativeCodeGenerator
     /// <summary>Functions whose native code lost to the IL backend at run time (MaglevNativeCode.Profile).</summary>
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SharedFunctionInfo, object> s_declinedAtRunTime = new();
 
+    static readonly bool s_noFramedDirectCalls = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_NO_FRAMED_DIRECT_CALLS") == "1";
     static readonly bool s_noInFrame = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_NO_INFRAME") == "1";
     static readonly bool s_noThunks = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_NO_THUNKS") == "1";
     static readonly string[]? s_filter = Environment.GetEnvironmentVariable("V8SHARP_MAGLEV_NATIVE_FILTER")?.Split('|');
@@ -4044,7 +4051,7 @@ internal sealed class MaglevNativeCodeGenerator
         _masm.J(Condition.not_equal, slow);
         _masm.Cmpl(new Operand(rax, NativeLayout.NativeContextWords), kCalleeReserve);
         _masm.J(Condition.above, slow);
-        _masm.Cmpl(new Operand(rax, NativeLayout.NativeTaggedSlots), kCalleeHomes);
+        _masm.Cmpl(new Operand(rax, NativeLayout.NativeHomesNeeded), kCalleeHomes);
         _masm.J(Condition.above, slow);
         _masm.Movq(native, rax);
 
@@ -4681,7 +4688,7 @@ internal static class NativeLayout
     public static readonly int BufferWasDetached, BufferIsImmutable, BufferBackingStore, BackingStoreBuffer;
     public static readonly int FeedbackVectorMaglevCode, MaglevCodeNative, JSFunctionContext;
     public static readonly int HeapObjectHashField, HeapObjectHeaderFlags, SeqStringValue;
-    public static readonly int NativeEntry, NativeConstantsAddress, NativeContextWords, NativeDirectCallArity, NativeTaggedSlots;
+    public static readonly int NativeEntry, NativeConstantsAddress, NativeContextWords, NativeDirectCallArity, NativeTaggedSlots, NativeHomesNeeded;
 
     static NativeLayout()
     {
@@ -4730,6 +4737,7 @@ internal static class NativeLayout
         NativeConstantsAddress = FieldOffsets.Of(nativeCode, ref nativeCode.ConstantsAddress);
         NativeContextWords = FieldOffsets.Of(nativeCode, ref nativeCode.ContextWords);
         NativeTaggedSlots = FieldOffsets.Of(nativeCode, ref nativeCode.TaggedSlots);
+        NativeHomesNeeded = FieldOffsets.Of(nativeCode, ref nativeCode.HomesNeeded);
         NativeDirectCallArity = FieldOffsets.Of(nativeCode, ref nativeCode.DirectCallArity);
         JSValue probe = default;
         if (FieldOffsets.Distance(ref probe, ref System.Runtime.CompilerServices.Unsafe.AsRef(in probe._obj)) != 0 ||

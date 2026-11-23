@@ -512,15 +512,55 @@ namespace V8Sharp.Maglev
             THomes homes = default;
             long[] ctx = activation.Context;
             ctx[MaglevNativeCodeGenerator.kHomesSlot] = NativeCode.AddressOfLocal(ref homes);
-            int fp = state.Fp;
             ctx[MaglevNativeCodeGenerator.kEntryIdSlot] = 0;
             ctx[MaglevNativeCodeGenerator.kPollBudgetSlot] = kPollBudget;
+            return RunLoop(isolate, ref state, ctx, activation.ContextAddress, kNoPendingExit);
+        }
+
+        const long kNoPendingExit = long.MinValue;
+
+        /// <summary>
+        /// A native callee a native caller called directly, that needs its
+        /// interpreter frame now (MaglevNativeCodeGenerator, "Native-to-native
+        /// calls"): <paramref name="state"/> is the frame just built
+        /// (BaselineCalls.EnterMaglevFrame), <paramref name="ctx"/> a pinned copy
+        /// of its context (its homes in the caller's call area), and the code
+        /// continues from exit <paramref name="id"/>.
+        /// </summary>
+        internal JSValue ContinueFramed(Isolate isolate, ref InterpreterState state, long[] ctx, long id)
+        {
+            Interlocked.Increment(ref s_continuedCallees);
+            if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
+            if (id == kTaggedReturn) return ReturnHome(ctx);
+            int depth = isolate.MaglevNativeDepth++;
+            try
+            {
+                return RunLoop(isolate, ref state, ctx, NativeCode.AddressOf(ctx, 0), id);
+            }
+            finally
+            {
+                isolate.MaglevNativeDepth = depth;
+            }
+        }
+
+        JSValue RunLoop(Isolate isolate, ref InterpreterState state, long[] ctx, nint ctxAddress, long pending)
+        {
+            int fp = state.Fp;
             nint spill = s_noSpillAddress;
             // The activation's managed slots: results of managed nodes, snapshots.
             JSValue[]? managed = null;
             while (true)
             {
-                long id = Enter(isolate, ctx, activation.ContextAddress, isolate.RegisterStackAddress + fp * 16, spill);
+                long id;
+                if (pending != kNoPendingExit)
+                {
+                    id = pending;
+                    pending = kNoPendingExit;
+                }
+                else
+                {
+                    id = Enter(isolate, ctx, ctxAddress, isolate.RegisterStackAddress + fp * 16, spill);
+                }
                 _backEdges += kPollBudget - ctx[MaglevNativeCodeGenerator.kPollBudgetSlot];
                 if (id == kNumberReturn) return JSValue.FromNumber(BitConverter.Int64BitsToDouble(ctx[MaglevNativeCodeGenerator.kReturnSlot]));
                 if (id == kTaggedReturn) return ReturnHome(ctx);
@@ -810,7 +850,14 @@ namespace V8Sharp.Maglev
                         {
                             SetPseudoFrameArgument(calleeFrame, i, i < info.Argc ? In(1 + i) : JSValue.Undefined);
                         }
-                        return callee.ContinueFrameless(isolate, function, info.Argc, calleeFrame, calleeCtx, calleeExit - 1);
+                        if (callee.FastCallArity >= 0) return callee.ContinueFrameless(isolate, function, info.Argc, calleeFrame, calleeCtx, calleeExit - 1);
+                        // Code that needs its interpreter frame: built now, with every
+                        // argument (as a call through the generic entry builds it).
+                        var args = new JSValue[info.Argc];
+                        for (int i = 0; i < args.Length; i++) args[i] = In(1 + i);
+                        long id = calleeExit - 1;
+                        return Baseline.BaselineCalls.EnterMaglevFrame(isolate, function, calleeFrame[kPseudoFp + InterpreterRuntime.kReceiverOffset], args,
+                            (Isolate i, ref InterpreterState st) => callee.ContinueFramed(i, ref st, calleeCtx, id));
                     }
                     int argc = info.Argc;
                     // (The IL's EmitCallKnownJSFunction: the callee's direct entry when its

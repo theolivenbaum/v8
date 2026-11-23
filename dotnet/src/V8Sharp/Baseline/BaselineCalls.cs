@@ -754,6 +754,62 @@ public static class BaselineCalls
         return result;
     }
 
+    /// <summary>
+    /// The interpreter frame of a function with Maglev code that native code
+    /// called directly and that needs its frame now (MaglevNativeCode.ContinueFramed):
+    /// built as <see cref="EnterMaglev"/> builds it, then <paramref name="continuation"/>
+    /// runs in it (and the interpreter after a deoptimization).
+    /// </summary>
+    internal static JSValue EnterMaglevFrame(Isolate isolate, JSFunction function, JSValue receiver, JSValue[] args,
+        Maglev.MaglevCodeEntry continuation)
+    {
+        int depth = isolate.InterpreterFrameDepth;
+        if ((depth & 3) == 0 && !RuntimeHelpers.TryEnsureSufficientExecutionStack()) isolate.StackOverflow();
+        var bytecode = (BytecodeArray)function.Shared.FunctionData!;
+        var vector = (FeedbackVector)function.RawFeedbackCell.Value!;
+        Context? savedContext = isolate.Context;
+        int start = isolate.RegisterStackTop;
+        Register incoming = bytecode.IncomingNewTargetOrGeneratorRegister;
+        int fp = PushFrame(isolate, function, bytecode, bytecode.ParameterCount - 1, bytecode.RegisterCount,
+            incoming.IsValid ? incoming.Index : int.MinValue, receiver, new ArrayArguments(args), default, false, false, vector);
+        isolate.InterpreterFrames[depth].Flags = InterpreterFrameFlags.Maglev;
+        var state = new InterpreterState
+        {
+            Isolate = isolate,
+            Accumulator = JSValue.Undefined,
+            Fp = fp,
+            FrameIndex = depth,
+            BaseFrameIndex = depth,
+        };
+        JSValue result = continuation(isolate, ref state);
+        if (isolate.MaglevDeoptPending) result = MaglevExecution.ContinueAfterDeopt(isolate, ref state);
+        LeaveFrame(isolate, depth, start, savedContext);
+        return result;
+    }
+
+    /// <summary>The arguments in an array.</summary>
+    internal readonly struct ArrayArguments(JSValue[] args) : ICallArguments
+    {
+        public int Count => args.Length;
+
+        public void Store(ref JSValue stack0, ref JSValue firstArgumentSlot)
+        {
+            for (int i = 0; i < args.Length; i++) StoreSlot(ref Unsafe.Subtract(ref firstArgumentSlot, i), args[i]);
+        }
+
+        public void StorePayloads(ref JSValue stack0, ref JSValue firstArgumentSlot)
+        {
+            for (int i = 0; i < args.Length; i++) StorePayload(ref Unsafe.Subtract(ref firstArgumentSlot, i), args[i]);
+        }
+
+        public void StoreReferences(ref JSValue stack0, ref JSValue firstArgumentSlot)
+        {
+            for (int i = 0; i < args.Length; i++) StoreReference(ref Unsafe.Subtract(ref firstArgumentSlot, i), args[i]);
+        }
+
+        public JSValue Get(ref JSValue stack0, int i) => i < args.Length ? args[i] : default;
+    }
+
     /// <summary>Calls the direct entry of <paramref name="code"/> with the arguments as values.</summary>
     static JSValue InvokeFastCall<TArgs>(Isolate isolate, JSFunction function, MaglevCode code, JSValue receiver, TArgs args)
         where TArgs : struct, ICallArguments
