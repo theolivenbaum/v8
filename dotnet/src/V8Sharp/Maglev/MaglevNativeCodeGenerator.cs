@@ -4383,7 +4383,8 @@ internal sealed class MaglevNativeCodeGenerator
             Opcode.StoreFixedArrayElement => node.Inputs[2],
             _ => node.Inputs[1],
         };
-        if (value.IsConstant ? !value.ConstantValue().IsNumber : V(value).Repr == ValueRepresentation.kHoleyFloat64) return false;
+        // (A constant that is not a number goes through the write barrier when native code has it.)
+        if (value.IsConstant ? !value.ConstantValue().IsNumber && WriteBarrier.Address == 0 : V(value).Repr == ValueRepresentation.kHoleyFloat64) return false;
         if (node.Opcode is Opcode.StoreTaggedField or Opcode.StoreDoubleField && node.Int0 < JSObject.kPropertyArrayStorageBase &&
             !InObjectLayout.IsContiguous)
         {

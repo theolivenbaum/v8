@@ -3181,3 +3181,29 @@ Stand-ins in the engine that go away when the component they wait for merges
 ## Deviations
 
 Recorded in `deviations.md`.
+
+## Native Maglev with direct runtime access (branch ccr-5fc84633-unsafe-native)
+
+- [~] Native code with GC-visible homes, the GC's write barrier and allocation
+      pools (MaglevNativeCodeGenerator "GC-visible homes", WriteBarrier,
+      NativeAllocationPool). Tagged values live in a JSValue buffer that is a
+      local of the managed frame (the GC reports and updates it), so exits
+      rebuild nothing; native code stores object references through the
+      runtime's write barrier helper (found in compiled code, enabled only
+      after its self-test) and allocates from per-site pools of objects
+      built ahead by the same pure constructor. Native code still cannot
+      call managed code (cooperative mode: a GC inside would walk frames it
+      cannot unwind), so calls are exits, or direct native calls of
+      frameless native callees (any return value, through the return home).
+      Verified (2026-11-23): unit tests; 1000 random programs, also with a
+      compacting GC at every exit (V8SHARP_MAGLEV_NATIVE_GC_AT_EXITS=1); all
+      of Octane correct in both native modes with and without that stress;
+      mjsunit 0 newly failing in both configurations. Mutations caught: homes
+      outside the stack (GC test fails, stress crashes), a raw store instead
+      of the barrier (NativeReferenceStoresGoThroughTheWriteBarrier).
+      Benchmark (parity publish, octane-steady 3 runs, same session as V8,
+      steal 0%): native 0.97x IL, 0.37x V8 Maglev; every graph native 0.87x
+      IL, 0.33x V8 Maglev (Richards 0.49x, DeltaBlue 0.47x IL: their calls go
+      to callees that need a frame, so each is an exit). Next: direct calls of
+      native callees that need a frame (the frame built only when the callee
+      exits, as the IL's lazy frames).
