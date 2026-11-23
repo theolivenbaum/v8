@@ -652,6 +652,49 @@ public class MaglevNativeTest
     }
 
     [Fact]
+    public void ExitingCalleesGetTheArgumentsTheCallPassed()
+    {
+        // Arguments computed into caller-saved registers that die at a direct
+        // call: a callee that exits (a managed node) continues from a frame
+        // built from the call's inputs, so they must survive the call.
+        const string kNoInline = " --max-maglev-inlined-bytecode-size=0 --max-maglev-inlined-bytecode-size-small=0";
+        string source = kPrelude + """
+            // (A loop whose phis use every allocatable register, then an exit, then the parameters again.)
+            function leaf(a, b, o, c, d, e) {
+              // (The parameters only after the exit: read in their frame slots, not copied into phis.)
+              let p = 1, q = 2, r = 3, s = 4, t = 5, z = 0;
+              for (let k = 0; k < 4; k++) { p = (p * 3 + q) & 1023; q = (q * 5 + r) & 1023; r = (r * 7 + s) & 1023; s = (s * 11 + t) & 1023; t = (t * 13 + p) & 1023; z = (z + p + q + r + s + t) | 0; }
+              const str = o.n + z;
+              return str.length * 1000 + a + b * 3 + c * 5 + d * 7 + e * 11 + z;
+            }
+            // (Int32 phis passed as they are, their last use the call after their loop: one of
+            // them in rdi, which the call sequence itself writes, Octane Crypto's failure.)
+            function caller(n, o) {
+              // (bnpSquareTo's shape: the counter indexes an array in the loop and goes to the call after it.)
+              var xa = o.xa, r = o.r, i;
+              for (i = 0; i < xa.length - 1; ++i) {
+                var c = leaf(i, xa[i], o, 2 * i, 0, 1);
+                r[i] += leaf(i + 1, 2 * xa[i], o, 2 * i + 1, c, xa.length - i - 1);
+              }
+              r[0] += leaf(i, xa[i], o, 2 * i, 0, 1);
+              return r.join(',');
+            }
+            // (Now and then an object of another map: the callee deopts, and the interpreter
+            // goes on from the frame built from the call's inputs.)
+            function many(n, o, o2) { let h = 0; for (let k = 0; k < n; k++) { const s = caller(k & 15, k % 7 === 3 ? o2 : o); for (let q = 0; q < s.length; q++) h = (h * 31 + s.charCodeAt(q)) | 0; } return h; }
+            const o = { n: 'nm', xa: [3, 1, 4, 1, 5, 9, 2, 6], r: [0, 0, 0, 0, 0, 0, 0, 0] };
+            %PrepareFunctionForOptimization(leaf); leaf(1, 2, o, 3, 4, 5); leaf(2, 3, o, 4, 5, 6);
+            %OptimizeFunctionOnNextCall(leaf); leaf(1, 2, o, 3, 4, 5);
+            opt(caller, [3, o]); rec(caller(200, o)); rec(caller(1000, { n: 'other', xa: [7, 7, 7], r: [1, 2, 3] })); rec(many(300, o, { z: 1, n: 'm2', xa: [2, 7, 1, 8, 2, 8, 1, 8], r: [9, 9, 9, 9, 9, 9, 9, 9] }));
+            out.join('|')
+            """;
+        string interpreted = MaglevCompilerTest.Run(kInterpreter, source);
+        long before = Interlocked.Read(ref MaglevNativeCode.s_continuedCallees);
+        Assert.Equal(interpreted, MaglevCompilerTest.Run(kNative + kNoInline, source));
+        if (ExecutableMemory.Supported) Assert.True(Interlocked.Read(ref MaglevNativeCode.s_continuedCallees) > before, "no callee was continued");
+    }
+
+    [Fact]
     public void NestedDirectCallsContinueTheirPendingCallees()
     {
         // a calls b1 directly and b1 calls c1 directly; c1 exits (a string

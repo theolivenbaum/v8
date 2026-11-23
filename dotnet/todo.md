@@ -3230,6 +3230,12 @@ Recorded in `deviations.md`.
       dropped: native code for loop-free functions that take no managed exit
       in the loops-only mode (Richards 1125-1485 ms against 817-1005 without:
       more IL to native entries).
+- [x] Fixed: a direct native call saved only the caller-saved registers live
+      after it, but a callee that exits continues from a frame built from
+      the call's inputs, which may die at the call in a register the callee
+      (or the call sequence: rdi) overwrites. Seen as Octane Crypto failing
+      about once in 45 runs (every time with V8SHARP_MAGLEV_NATIVE_NO_PROFILE=1);
+      ExitingCalleesGetTheArgumentsTheCallPassed fails without the fix.
 - [ ] Native code still loses where IL callers call small native functions
       often (an IL to native entry costs 10-30 ns more than IL to IL), and in
       the loops-only default, where native loops call IL callees (each call an

@@ -4400,11 +4400,19 @@ internal sealed class MaglevNativeCodeGenerator
         _masm.Movq(CalleeWord(kContextEndSlot), rax);
         _masm.Movq(CalleeWord(kPollBudgetSlot), MaglevNativeCode.kPollBudget);
 
-        // The live values in caller-saved registers on the stack (16-byte aligned at the call).
+        // The live values in caller-saved registers on the stack (16-byte aligned at the call),
+        // and the call's own inputs there: a callee that exits leaves through the call's
+        // managed exit, whose stores and the callee's continuation read the arguments.
         var pushed = new List<Val>();
         foreach (Val v in _liveAfter[node])
         {
             if (v.InGp && Array.IndexOf(s_callerSavedGp, v.Gp) >= 0 || v.InXmm) pushed.Add(v);
+        }
+        foreach (ValueNode input in CodeInputs(node))
+        {
+            if (input.IsConstant) continue;
+            Val v = V(input);
+            if ((v.InGp && Array.IndexOf(s_callerSavedGp, v.Gp) >= 0 || v.InXmm) && !pushed.Contains(v)) pushed.Add(v);
         }
         foreach (Val v in pushed)
         {
