@@ -3236,6 +3236,12 @@ Recorded in `deviations.md`.
       (or the call sequence: rdi) overwrites. Seen as Octane Crypto failing
       about once in 45 runs (every time with V8SHARP_MAGLEV_NATIVE_NO_PROFILE=1);
       ExitingCalleesGetTheArgumentsTheCallPassed fails without the fix.
+      Benchmark after these (parity publish, octane-quick 3 runs with V8
+      Maglev, steal 0%, no errors): native 0.89x IL, 0.34x V8 Maglev; every
+      graph native 0.85x IL (Richards 0.75x, DeltaBlue 0.72x, Gameboy 0.60x).
+      Native for every graph is not ready to be the default: a function that
+      goes back to IL makes each call from its native callers an exit, and
+      they go back too.
 - [ ] Native code still loses where IL callers call small native functions
       often (an IL to native entry costs 10-30 ns more than IL to IL), and in
       the loops-only default, where native loops call IL callees (each call an
