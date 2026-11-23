@@ -3207,3 +3207,24 @@ Recorded in `deviations.md`.
       to callees that need a frame, so each is an exit). Next: direct calls of
       native callees that need a frame (the frame built only when the callee
       exits, as the IL's lazy frames).
+- [x] Direct calls of native callees that need a frame (lazy frames: built
+      when the callee exits, MaglevNativeCode.ContinueFramed), and the same
+      lazy-frame entry for managed callers (RunLazy, constructs included).
+- [x] Entry cost: vzeroupper at every native entry (legacy SSE after .NET's
+      VEX code cost about 150 ns per call); homes slots shared by values with
+      disjoint intervals and the callee reserve sized from the callees (the
+      JIT zeroes the buffer per entry, about 1 ns per slot). Interrupt checks
+      in inlined functions push the inlined frames. Richards (d8, 1000 runs):
+      native-all went from about 4200 ms to about 650-900 ms (IL 470-730).
+      Verified: unit tests, 1000 random programs also with a GC at every
+      exit, Octane correct in both modes; mutations caught (slot reuse while
+      live, no lazy entry, the decline of inlined interrupts).
+      Benchmark (parity publish, octane-quick 3 runs, same session as V8
+      Maglev, steal 0%; geomean of the 15 scores): native 0.93x IL (was
+      0.91x), 0.36x V8 Maglev; every graph native 0.87x IL. Richards native
+      0.55x IL (was 0.35x), native-all 0.85x; DeltaBlue native 1.30x IL,
+      native-all 0.71x; Gameboy native-all 0.52x IL.
+- [ ] Native code still loses where IL callers call small native functions
+      often (an IL to native entry costs 10-30 ns more than IL to IL), and in
+      the loops-only default, where native loops call IL callees (each call an
+      exit): consider native for every graph by default, or VEX encodings.
