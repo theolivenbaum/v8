@@ -858,22 +858,29 @@ namespace V8Sharp.Maglev
                         // (With the contexts of the callees it called directly that are pending
                         // too: a callee that exited because its own callee did.)
                         int words = PendingContextWords(callee, ctx, CalleeContextBase, calleeExit - 1);
-                        long[] calleeCtx = NativeCode.NewContext(Math.Max(words, callee.ContextWords + callee.ContextReserve));
+                        // (Into the next depth's array, pinned and reused: the continuation takes that
+                        // depth (ContinueFramed), or runs no code before it is done with it (ContinueFrameless).)
+                        NativeActivation next = ActivationAt(isolate, isolate.MaglevNativeDepth, Math.Max(words, callee.ContextWords + callee.ContextReserve));
+                        long[] calleeCtx = next.Context;
                         ctx.AsSpan(CalleeContextBase, words).CopyTo(calleeCtx);
                         // (Its homes stay where they are; each pending context's end is the copy's.)
-                        SetPendingContextEnds(callee, calleeCtx, 0, calleeExit - 1, NativeCode.AddressOf(calleeCtx, 0) + calleeCtx.Length * 8L);
-                        JSValue[] calleeFrame = NewPseudoFrame(function, In(info.HasConvertedReceiver ? info.ConvertedReceiverInput : 0));
-                        for (int i = 0; i < info.FormalCount; i++)
+                        SetPendingContextEnds(callee, calleeCtx, 0, calleeExit - 1, next.ContextAddress + calleeCtx.Length * 8L);
+                        JSValue calleeReceiver = In(info.HasConvertedReceiver ? info.ConvertedReceiverInput : 0);
+                        if (callee.FastCallArity >= 0)
                         {
-                            SetPseudoFrameArgument(calleeFrame, i, i < info.Argc ? In(1 + i) : JSValue.Undefined);
+                            JSValue[] calleeFrame = NewPseudoFrame(function, calleeReceiver);
+                            for (int i = 0; i < info.FormalCount; i++)
+                            {
+                                SetPseudoFrameArgument(calleeFrame, i, i < info.Argc ? In(1 + i) : JSValue.Undefined);
+                            }
+                            return callee.ContinueFrameless(isolate, function, info.Argc, calleeFrame, calleeCtx, calleeExit - 1);
                         }
-                        if (callee.FastCallArity >= 0) return callee.ContinueFrameless(isolate, function, info.Argc, calleeFrame, calleeCtx, calleeExit - 1);
                         // Code that needs its interpreter frame: built now, with every
                         // argument (as a call through the generic entry builds it).
                         var args = new JSValue[info.Argc];
                         for (int i = 0; i < args.Length; i++) args[i] = In(1 + i);
                         long id = calleeExit - 1;
-                        return Baseline.BaselineCalls.EnterMaglevFrame(isolate, function, calleeFrame[kPseudoFp + InterpreterRuntime.kReceiverOffset], args,
+                        return Baseline.BaselineCalls.EnterMaglevFrame(isolate, function, calleeReceiver, args,
                             (Isolate i, ref InterpreterState st) => callee.ContinueFramed(i, ref st, calleeCtx, id));
                     }
                     int argc = info.Argc;
