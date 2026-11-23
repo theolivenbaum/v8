@@ -186,8 +186,24 @@ namespace V8Sharp.Maglev
         internal const int kSize = 32;
         readonly JSValue[] _objects = GC.AllocateArray<JSValue>(kSize, pinned: true);
         readonly long[] _count = GC.AllocateArray<long>(1, pinned: true);
-        readonly InlinedAllocation _node;
+        readonly InlinedAllocation? _node;
         readonly System.Reflection.ConstructorInvoker? _constructor;
+        // An array allocation site's pool (NewArrayFromSite): the arrays depend on
+        // the site's elements kind, which the pool keeps in a pinned word that
+        // native code compares with the site's before it takes one.
+        readonly Func<JSObject?>? _factory;
+        readonly AllocationSite? _site;
+        readonly long[] _kind = GC.AllocateArray<long>(1, pinned: true);
+
+        public NativeAllocationPool(Func<JSObject?> factory, AllocationSite site)
+        {
+            _factory = factory;
+            _site = site;
+            _kind[0] = -1;
+            ObjectsAddress = NativeCode.AddressOf(_objects, 0);
+            CountAddress = NativeCode.AddressOf(_count, 0);
+            KindAddress = NativeCode.AddressOf(_kind, 0);
+        }
 
         public NativeAllocationPool(InlinedAllocation node)
         {
@@ -202,17 +218,29 @@ namespace V8Sharp.Maglev
 
         public nint ObjectsAddress { get; }
         public nint CountAddress { get; }
+        public nint KindAddress { get; }
 
         /// <summary>A new object as the allocation builds it (MaglevCodeGenerator.EmitInlinedAllocation, without the literal's fields).</summary>
-        JSObject New() => _constructor is not null
-            ? (JSObject)_constructor.Invoke(_node.AllocatedMap, FixedArray.Empty)
-            : JSObject.NewWithInObjectSlots(_node.AllocatedMap);
+        JSObject? New() => _factory is not null ? _factory()
+            : _constructor is not null ? (JSObject)_constructor.Invoke(_node!.AllocatedMap, FixedArray.Empty)
+            : JSObject.NewWithInObjectSlots(_node!.AllocatedMap);
 
-        /// <summary>Fills the pool (the managed side, when the code found it empty).</summary>
+        /// <summary>Fills the pool (the managed side, when the code found it empty, or its site's kind changed).</summary>
         public void Refill()
         {
-            for (int i = (int)_count[0]; i < kSize; i++) _objects[i] = JSValue.FromObject(New());
-            _count[0] = kSize;
+            if (_site is not null && _kind[0] != (long)_site.ElementsKind)
+            {
+                // Built for another kind: dropped, built again for this one.
+                _count[0] = 0;
+                Array.Clear(_objects);
+                _kind[0] = (long)_site.ElementsKind;
+            }
+            for (int i = (int)_count[0]; i < kSize; i++)
+            {
+                if (New() is not { } o) break;
+                _objects[i] = JSValue.FromObject(o);
+                _count[0] = i + 1;
+            }
         }
     }
 
@@ -975,6 +1003,8 @@ namespace V8Sharp.Maglev
                 }
                 case Opcode.CallBuiltin when node.Thunk is { } thunk:
                 {
+                    // (An array site's pool, empty or built for another kind: filled now.)
+                    node.Pool?.Refill();
                     // (The buffer's constants are filled in; a recursive call of the node
                     // refills it after this call has read it.)
                     var info = (CallBuiltinInfo)node.Obj0!;
@@ -995,6 +1025,7 @@ namespace V8Sharp.Maglev
                 }
                 case Opcode.CallBuiltin:
                 {
+                    node.Pool?.Refill();
                     var info = (CallBuiltinInfo)node.Obj0!;
                     var args = new object?[info.Args.Length];
                     for (int k = 0; k < args.Length; k++)

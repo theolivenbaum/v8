@@ -55,6 +55,57 @@ public class MaglevNativeTest
 
     public static TheoryData<string> Snippets => new()
     {
+        // Stores to global variables inline (StorePropertyCellValue): numbers,
+        // objects (the write barrier), and reads back after collections.
+        """
+        var gN = 0, gO = null, gS = 'a';
+        function gst(n) { for (let i = 0; i < n; i++) { gN = gN + i; gO = { i: i, prev: gO }; if (i % 3 == 0) gS = gS + i; } return gN + ':' + gO.i + ':' + (gO.prev ? gO.prev.i : -1) + ':' + gS.length; }
+        opt(gst, [3]);
+        rec(gst(10)); %SimulateNewspaceFull(); rec(gst(200)); gO = null; rec(gst(5)); let d = 0; for (let o = gO; o; o = o.prev) d++; rec(d);
+        """,
+        // Assigned parameters written to the frame inline (EmitStoreRegisterFastPath)
+        // before calls that can read them (function.arguments).
+        """
+        function peek() { return String(asg.arguments[0]) + '/' + String(asg.arguments[1]); }
+        function asg(a, b) { let r = ''; for (let i = 0; i < 3; i++) { a = a + i; b = i % 2 ? { k: i } : 'z' + i; r += peek() + ';'; } return r + (typeof b === 'object' ? b.k : b); }
+        opt(asg, [1, 'x'], [2.5, 'y']);
+        rec(asg(10, 'q')); rec(asg(0.5, null)); rec(asg('s', 1));
+        """,
+        // == of receivers inline (EmitReceiverEqualityFastPath), feedback that
+        // covers receivers (or not), and other values on the managed side.
+        """
+        const A = { n: 1 }, B = { n: 2 }, F = function () {}, Arr = [1];
+        function eqo(x, y) { let c = 0; for (let i = 0; i < 4; i++) { if (x == y) c++; if (x != y) c += 10; } return c; }
+        opt(eqo, [A, B], [A, A]);
+        for (const [x, y] of [[A, A], [A, B], [F, F], [Arr, Arr], [A, null], [null, undefined], [A, 'x'], [1, '1'], [{ valueOf() { return 1; } }, 1], [Arr, '1'], [NaN, NaN]]) rec(eqo(x, y));
+        function eqm(x, y) { return (x == y) + ',' + (x === y); }
+        opt(eqm, [A, B], [1, 1], ['a', 'a'], [null, undefined]);
+        for (const [x, y] of [[A, A], [B, A], [F, A], [1, 1], ['a', 'b'], [A, undefined]]) rec(eqm(x, y));
+        """,
+        // new Array() from an allocation site's pool (EmitArrayFromSiteFastPath),
+        // the site's kind changing (smi, double, object): fresh arrays every time.
+        """
+        function Coll() { this.elms = new Array(); }
+        function fill(n, k) { const c = new Coll(); for (let i = 0; i < n; i++) c.elms.push(k === 0 ? i : k === 1 ? i + 0.5 : { v: i }); return c; }
+        function sum(n, k) { let s = 0, t = 0; for (let j = 0; j < 40; j++) { const c = fill(n, k); t += c.elms.length; const e = c.elms; for (let i = 0; i < e.length; i++) s += typeof e[i] === 'object' ? e[i].v : e[i]; } return s + ':' + t; }
+        opt(Coll, []); opt(fill, [3, 0]); opt(sum, [2, 0]);
+        rec(sum(5, 0)); rec(sum(5, 1)); rec(sum(5, 2)); rec(sum(0, 0)); rec(sum(7, 0));
+        const all = []; for (let i = 0; i < 70; i++) all.push(new Coll().elms); all[3].push(1); rec(all[4].length + ',' + all[3].length + ',' + (all[5] === all[6]));
+        """,
+        // Array.prototype.pop inline (EmitArrayPopFastPath): objects, holes, empty
+        // arrays, copy-on-write literals and double arrays (the managed side).
+        """
+        function drain(a) { let s = 0, n = 0; for (;;) { const v = a.pop(); if (a.length < 0 || n++ > 20) break; if (v === undefined && a.length === 0) break; s += v === undefined ? 100 : typeof v === 'object' ? v.k : v; } return s + ':' + a.length; }
+        opt(drain, [[{ k: 1 }, { k: 2 }]], [[1, 2, 3]]);
+        rec(drain([{ k: 1 }, { k: 2 }, { k: 3 }])); rec(drain([1, , 3, , 5])); rec(drain([])); rec(drain([1.5, 2.5]));
+        function cow() { return [7, 8, 9]; }
+        rec(drain(cow())); rec(drain(cow()));
+        const big = []; for (let i = 0; i < 50; i++) big.push({ k: i }); rec(drain(big)); rec(big.length);
+        function pops(a, n) { let r = ''; for (let i = 0; i < n; i++) { const v = a.pop(); r += v === undefined ? 'u' : v.k; } return r + a.length; }
+        opt(pops, [[{ k: 1 }], 2]);
+        const objs = []; for (let i = 0; i < 30; i++) objs.push({ k: i % 10 });
+        rec(pops(objs, 35)); rec(pops([{ k: 'a' }, , { k: 'b' }], 4));
+        """,
         // Int32 arithmetic: overflow, -0, division and modulus deopts.
         """
         function mul(a, b) { return a * b; }
@@ -491,21 +542,22 @@ public class MaglevNativeTest
     public void NativeReferenceStoresGoThroughTheWriteBarrier()
     {
         // Young objects stored by native code into fields and elements of old
-        // objects (WriteBarrier): only those old objects refer to them, and
+        // objects and into a global's cell (WriteBarrier): only those old objects refer to them, and
         // compacting young collections must keep them and update the slots.
         Assert.SkipUnless(ExecutableMemory.Supported && WriteBarrier.Address != 0, "native reference stores need the write barrier");
         const string kNoInline = " --max-maglev-inlined-bytecode-size=0 --max-maglev-inlined-bytecode-size-small=0";
         string source = kPrelude + """
             const holder = { a: 1, b: 2 }; const arr = [1, 2, 3, 4];
+            var gv = null;
             let ctxv = 0; function setc(x) { ctxv = x; }
             function fresh(n, k) { const l = []; for (let i = 0; i < n; i++) l.push({ v: i * k, s: 'p' + i + '_' + k }); return l; }
-            function st(list) { for (let i = 0; i < list.length; i++) { const o = list[i]; holder.a = o; arr[i & 3] = o; holder.b = list[list.length - 1 - i]; } return list.length; }
+            function st(list) { for (let i = 0; i < list.length; i++) { const o = list[i]; holder.a = o; arr[i & 3] = o; holder.b = list[list.length - 1 - i]; gv = list[(i + 5) % list.length]; } return list.length; }
             %CollectGarbage(0); %CollectGarbage(0);
             opt(st, [fresh(8, 1)], [fresh(8, 2)]);
             for (let round = 0; round < 6; round++) {
               st(fresh(40, round + 3));
               for (let g = 0; g < 3; g++) { const junk = []; for (let k = 0; k < 3000; k++) junk.push({ k }); %SimulateNewspaceFull(); }
-              rec(holder.a.v + ':' + holder.a.s + ':' + holder.b.s + ':' + arr[0].s + ':' + arr[3].v);
+              rec(holder.a.v + ':' + holder.a.s + ':' + holder.b.s + ':' + arr[0].s + ':' + arr[3].v + ':' + gv.s);
             }
 
             out.join('|')

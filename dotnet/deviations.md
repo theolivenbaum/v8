@@ -897,6 +897,13 @@ for now, to be revisited when the reason goes away.
   first exit (`MaglevNativeCode.RunLazy`). V8's optimized frames are always
   built, without an interpreter frame. The IL backend's lazy frames are the
   same idea.
+- Inline paths for nodes the IL backend calls a builtin for (V8 builds them
+  as nodes or calls a CSA builtin): Array.prototype.pop of tagged writable
+  elements, NewArrayFromSite from a pool of arrays built ahead for the site's
+  current elements kind, == and === of two receivers when the compare
+  feedback already covers receivers (so recording would change nothing),
+  StoreRegister and StorePropertyCellValue through the write barrier. Other
+  cases go to the managed builtin.
 
 ## Interpreter execution, ICs, runtime, compiler and modules
 

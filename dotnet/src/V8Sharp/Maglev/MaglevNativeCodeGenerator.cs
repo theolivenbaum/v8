@@ -550,7 +550,40 @@ internal sealed class MaglevNativeCodeGenerator
         Opcode.ToBoolean or Opcode.ToBooleanLogicalNot or Opcode.LoadTypedArrayLength or Opcode.TestUndetectable or Opcode.TestTypeOf or
         Opcode.CheckInstanceType or Opcode.StringLength or Opcode.LoadFixedArrayLength or Opcode.BuiltinStringPrototypeCharCodeAt or
         Opcode.BuiltinStringPrototypeCharCodeAtOrNaN or Opcode.CheckedObjectToIndex or Opcode.MaybeGrowFastElements or Opcode.CheckMaps ||
-        HasNativeCallFastPath(node) || HasAllocationFastPath(node) || HasTransitionFastPath(node) || HoleCheck(node) != 0;
+        HasNativeCallFastPath(node) || HasAllocationFastPath(node) || HasTransitionFastPath(node) || HoleCheck(node) != 0 ||
+        IsArrayPop(node) && WriteBarrier.Address != 0 || ArrayFromSite(node) is not null || IsReceiverEquality(node) ||
+        node.Opcode == Opcode.StoreRegister && node.Unit is not { IsInline: true } && WriteBarrier.Address != 0 ||
+        node.Opcode == Opcode.StorePropertyCellValue && WriteBarrier.Address != 0;
+
+    /// <summary>
+    /// TestEqual or TestEqualStrict whose feedback already covers receivers
+    /// (EmitReceiverEqualityFastPath): comparing two receivers records nothing
+    /// new, so native code may compare them without recording. (The feedback
+    /// is a snapshot of the compile time; it only grows, so it covers them
+    /// after that too.)
+    /// </summary>
+    static bool IsReceiverEquality(Node node)
+    {
+        if (node.Opcode != Opcode.CallBuiltin || node.Obj0 is not CallBuiltinInfo { Method.Name: "TestEqual" or "TestEqualStrict" } info) return false;
+        if (node.Unit is not { } unit || info.Args.Length == 0 || info.Args[^1].Kind != BuiltinArgKind.FeedbackByteRef) return false;
+        byte feedback = unit.Bytecode.Bytecodes[info.Args[^1].Index];
+        if (feedback >= (byte)Interpreter.CompareOperationFeedback.kNumTypeIndices) return false;
+        var current = (Interpreter.CompareOperationFeedback.TypeIndex)feedback;
+        return Interpreter.CompareOperationFeedback.CombineTypeIndex(current, Interpreter.CompareOperationFeedback.TypeIndex.Receiver) == current;
+    }
+
+    /// <summary>MaglevBuiltins.NewArrayFromSite with its constants (EmitArrayFromSiteFastPath), else null.</summary>
+    static (NativeContext Context, JSFunction Function, AllocationSite Site)? ArrayFromSite(Node node) =>
+        node.Opcode == Opcode.CallBuiltin && node.Obj0 is CallBuiltinInfo { Method.Name: nameof(MaglevBuiltins.NewArrayFromSite) } info &&
+        info.Args.Length == 4 && info.Args[1] is { Kind: BuiltinArgKind.Constant, Object: NativeContext context } &&
+        info.Args[2] is { Kind: BuiltinArgKind.Constant, Object: JSFunction function } &&
+        info.Args[3] is { Kind: BuiltinArgKind.Constant, Object: AllocationSite site }
+            ? (context, function, site) : null;
+
+    /// <summary>MaglevBuiltins.ArrayPop (TryReduceArrayPrototypePop), EmitArrayPopFastPath.</summary>
+    static bool IsArrayPop(Node node) =>
+        node.Opcode == Opcode.CallBuiltin && node.Obj0 is CallBuiltinInfo { Method.Name: nameof(MaglevBuiltins.ArrayPop) } &&
+        node.Inputs.Length == 1;
 
     /// <summary>A CallBuiltin that throws when its value is (1) or is not (2) the hole, else 0 (EmitHoleCheckFastPath).</summary>
     static int HoleCheck(Node node) => node.Opcode == Opcode.CallBuiltin && node.Obj0 is CallBuiltinInfo info ? info.Method.Name switch
@@ -680,6 +713,8 @@ internal sealed class MaglevNativeCodeGenerator
             foreach (Node node in block.Nodes)
             {
                 if (node.Opcode == Opcode.HandleNoHeapWritesInterrupt && node.Int0 != 1 && !allowInterrupts) return -1;
+                // (Written inline into the frame: EmitStoreRegisterFastPath. A pseudo-frame has only the parameters.)
+                if (node.Opcode == Opcode.StoreRegister) return -1;
                 if (node.Opcode != Opcode.InitialValue) continue;
                 int r = node.Int0;
                 if (r == Interpreter.InterpreterRuntime.kClosureOffset || r == Interpreter.InterpreterRuntime.kContextOffset) continue;
@@ -3560,6 +3595,11 @@ internal sealed class MaglevNativeCodeGenerator
         }
         if (node is InlinedAllocation { InitialFields: { } initialFields }) m.InitialFields = initialFields;
         if (HasAllocationFastPath(node)) m.Pool = new NativeAllocationPool((InlinedAllocation)node);
+        if (ArrayFromSite(node) is { } site)
+        {
+            Isolate isolate = _info.Isolate;
+            m.Pool = new NativeAllocationPool(() => MaglevBuiltins.NewArrayFromSiteFast(isolate, site.Context, site.Function, site.Site), site.Site);
+        }
         if (node.Opcode == Opcode.CallBuiltin)
         {
             var info = (CallBuiltinInfo)node.Obj0!;
@@ -3638,6 +3678,10 @@ internal sealed class MaglevNativeCodeGenerator
             Opcode.MaybeGrowFastElements => EmitMaybeGrowFastElementsFastPath(node, slow, cont),
             Opcode.CheckMaps => EmitCheckMapsFastPath(node, slow, cont),
             Opcode.InlinedAllocation => EmitAllocationFastPath(node, m, slow, cont),
+            Opcode.StoreRegister or Opcode.StorePropertyCellValue => EmitStoreRegisterFastPath(node, slow, cont),
+            Opcode.CallBuiltin when IsArrayPop(node) => EmitArrayPopFastPath(node, slow, cont),
+            Opcode.CallBuiltin when IsReceiverEquality(node) => EmitReceiverEqualityFastPath(node, slow, cont),
+            Opcode.CallBuiltin when ArrayFromSite(node) is { } arraySite => EmitArrayFromSiteFastPath(node, m, arraySite.Site, slow, cont),
             Opcode.CallBuiltin => EmitHoleCheckFastPath(node, slow, cont),
             Opcode.StoreMapTransition => EmitTransitionFastPath(node, slow, cont),
             _ => EmitStoreNumberFastPath(node, slow, cont),
@@ -3831,6 +3875,109 @@ internal sealed class MaglevNativeCodeGenerator
         return true;
     }
 
+    /// <summary>
+    /// StoreRegister of the outermost frame (the managed side's
+    /// JSValue.StoreSlot): the payload, then the object through the write
+    /// barrier (the register stack is a heap array). StorePropertyCellValue
+    /// the same way into the cell's value.
+    /// </summary>
+    bool EmitStoreRegisterFastPath(Node node, XLabel slow, XLabel done)
+    {
+        ValueNode value = node.Inputs[0];
+        if (!value.IsConstant && V(value).Repr is ValueRepresentation.kHoleyFloat64) return false;
+        LoadTagged(value, rax, rcx);
+        if (node.Opcode == Opcode.StorePropertyCellValue)
+        {
+            LoadConstantAddress(r11, ConstantIndex((PropertyCell)node.Obj0!));
+            _masm.Leaq(r11, new Operand(r11, NativeLayout.PropertyCellValue));
+        }
+        else
+        {
+            _masm.Leaq(r11, new Operand(kFrameRegister, node.Int0 * 16));
+        }
+        _masm.Movq(new Operand(r11, 8), rcx);
+        // (The same object: no store, no barrier, as StoreSlot.)
+        _masm.Cmpq(rax, new Operand(r11, 0));
+        _masm.J(Condition.equal, done);
+        EmitWriteBarrierStore(node, r11, rax);
+        _masm.Jmp(done);
+        return true;
+    }
+
+    /// <summary>
+    /// Equality of two receivers (Object::Equals, StrictEquals): their
+    /// identity. Anything else goes to the managed side.
+    /// </summary>
+    bool EmitReceiverEqualityFastPath(Node node, XLabel slow, XLabel done)
+    {
+        var info = (CallBuiltinInfo)node.Obj0!;
+        var inputs = new List<ValueNode>();
+        foreach (BuiltinArg arg in info.Args)
+        {
+            if (arg.Kind == BuiltinArgKind.Input) inputs.Add(node.Inputs[arg.Index]);
+        }
+        if (inputs.Count != 2) return false;
+        foreach (ValueNode input in inputs)
+        {
+            if (!input.IsConstant && V(input).Repr != ValueRepresentation.kTagged) return false;
+        }
+        Val r = V((ValueNode)node);
+        foreach (ValueNode input in inputs)
+        {
+            LoadTaggedPtr(input, rcx);
+            _masm.Testq(rcx, rcx);
+            _masm.J(Condition.equal, slow);
+            _masm.Movzxwl(rdx, new Operand(rcx, NativeLayout.HeapObjectInstanceType));
+            _masm.Cmpl(rdx, (int)InstanceTypeChecks.FirstJSReceiver);
+            _masm.J(Condition.below, slow);
+        }
+        LoadTaggedPtr(inputs[0], rcx);
+        LoadTaggedPtr(inputs[1], rdx);
+        _masm.Cmpq(rcx, rdx);
+        _masm.Setcc(Condition.equal, rax);
+        _masm.Movzxbl(rax, rax);
+        StoreTaggedBoolean(r);
+        ClearSnapshot(r);
+        _masm.Jmp(done);
+        return true;
+    }
+
+    /// <summary>
+    /// NewArrayFromSite from the site's pool (arrays built ahead by the same
+    /// code, MaglevBuiltins.NewArrayFromSiteFast), while the site's elements
+    /// kind is the one the pool was filled for; otherwise the managed side
+    /// refills the pool and allocates.
+    /// </summary>
+    bool EmitArrayFromSiteFastPath(Node node, NativeManagedNode m, AllocationSite site, XLabel slow, XLabel done)
+    {
+        NativeAllocationPool pool = m.Pool!;
+        Val r = V((ValueNode)node);
+        LoadConstantAddress(rcx, ConstantIndex(site));
+        if (NativeLayout.AllocationSiteElementsKindSize == 1) _masm.Movzxbl(rax, new Operand(rcx, NativeLayout.AllocationSiteElementsKind));
+        else _masm.Movl(rax, new Operand(rcx, NativeLayout.AllocationSiteElementsKind));
+        _masm.Movq(rcx, (long)pool.KindAddress);
+        _masm.Cmpq(rax, new Operand(rcx, 0));
+        _masm.J(Condition.not_equal, slow);
+        _masm.Movq(rcx, (long)pool.CountAddress);
+        _masm.Movq(rax, new Operand(rcx, 0));
+        _masm.Testq(rax, rax);
+        _masm.J(Condition.equal, slow);
+        _masm.Subq(rax, 1);
+        _masm.Movq(new Operand(rcx, 0), rax);
+        _masm.Shlq(rax, 4);
+        _masm.Movq(rdx, (long)pool.ObjectsAddress);
+        _masm.Addq(rdx, rax);
+        _masm.Movq(rax, new Operand(rdx, 0));
+        _masm.Movq(new Operand(rdx, 0), 0);
+        _masm.Movq(new Operand(rdx, 8), 0);
+        _masm.Movq(HomeOp(r), rax);
+        _masm.Movq(HomeOp(r, 1), 0);
+        if (r.NeedsKind) _masm.Movq(HomeOp(r, 2), (int)NativeTaggedKind.kOther);
+        ClearSnapshot(r);
+        _masm.Jmp(done);
+        return true;
+    }
+
     /// <summary>The hole checks of a let/const or of super() inline: only a throw goes to the managed side.</summary>
     bool EmitHoleCheckFastPath(Node node, XLabel slow, XLabel done)
     {
@@ -3848,6 +3995,62 @@ internal sealed class MaglevNativeCodeGenerator
         _masm.Cmpq(rax, rcx);
         _masm.J(HoleCheck(node) == 1 ? Condition.not_equal : Condition.equal, done);
         _masm.Jmp(slow);
+        return true;
+    }
+
+    /// <summary>
+    /// MaglevBuiltins.ArrayPop of a non-empty array with writable tagged
+    /// elements (V8's TryReduceArrayPrototypePop nodes): the last element
+    /// (undefined for a hole), the hole stored in its place through the write
+    /// barrier, the length decremented. Empty arrays, double elements and
+    /// copy-on-write elements go to the managed side.
+    /// </summary>
+    bool EmitArrayPopFastPath(Node node, XLabel slow, XLabel done)
+    {
+        ValueNode array = node.Inputs[0];
+        if (!array.IsConstant && V(array).Repr != ValueRepresentation.kTagged) return false;
+        Val r = V((ValueNode)node);
+        LoadTaggedPtr(array, rcx);
+        _masm.Movq(rdx, new Operand(rcx, NativeLayout.JSObjectElements));
+        _masm.Movq(r11, (long)typeof(FixedArray).TypeHandle.Value);
+        _masm.Cmpq(r11, new Operand(rdx, 0));
+        _masm.J(Condition.not_equal, slow);
+        // (A copy-on-write array: the managed side copies it, EnsureWritableFastElements.)
+        _masm.Cmpl(new Operand(rdx, NativeLayout.HeapObjectHashField), 0);
+        _masm.J(Condition.not_equal, slow);
+        // The new length, from JSArray._length (a double); 0 or out of the backing store's bounds: managed.
+        _masm.Movsd(xmm0, new Operand(rcx, NativeLayout.JSArrayLength));
+        _masm.Cvttsd2si(rax, xmm0);
+        _masm.Subl(rax, 1);
+        _masm.J(Condition.less, slow);
+        _masm.Movq(r11, new Operand(rdx, NativeLayout.FixedArrayData));
+        _masm.Cmpl(rax, new Operand(r11, NativeLayout.ArrayLength));
+        _masm.J(Condition.above_equal, slow);
+        // The length first (only its payload: the number tag stays).
+        _masm.Cvtlsi2sd(xmm0, rax);
+        _masm.Movsd(new Operand(rcx, NativeLayout.JSArrayLength), xmm0);
+        // r11 = &data[newLength]; the element into the result's home (a hole is undefined).
+        _masm.Movsxlq(rax, rax);
+        _masm.Shlq(rax, 4);
+        _masm.Leaq(r11, new Operand(r11, NativeLayout.ArrayData, rax, ScaleFactor.times_1));
+        _masm.Movq(rax, new Operand(r11, 0));
+        _masm.Movq(rdx, new Operand(r11, 8));
+        LoadConstantAddress(rcx, kConstTheHole);
+        XLabel notHole = _masm.NewLabel();
+        _masm.Cmpq(rax, rcx);
+        _masm.J(Condition.not_equal, notHole);
+        _masm.Xorl(rax, rax);
+        _masm.Xorl(rdx, rdx);
+        _masm.Bind(notHole);
+        _masm.Movq(HomeOp(r), rax);
+        _masm.Movq(HomeOp(r, 1), rdx);
+        if (r.NeedsKind) EmitClassify(r);
+        ClearSnapshot(r);
+        // The hole into the slot (its payload, then its object through the barrier).
+        _masm.Movq(new Operand(r11, 8), 0);
+        LoadConstantAddress(rax, kConstTheHole);
+        EmitWriteBarrierStore(node, r11, rax);
+        _masm.Jmp(done);
         return true;
     }
 
@@ -4793,6 +4996,7 @@ internal static class NativeLayout
     public static readonly int BufferWasDetached, BufferIsImmutable, BufferBackingStore, BackingStoreBuffer;
     public static readonly int FeedbackVectorMaglevCode, MaglevCodeNative, JSFunctionContext;
     public static readonly int HeapObjectHashField, HeapObjectHeaderFlags, SeqStringValue;
+    public static readonly int AllocationSiteElementsKind, AllocationSiteElementsKindSize;
     public static readonly int NativeEntry, NativeConstantsAddress, NativeContextWords, NativeDirectCallArity, NativeTaggedSlots, NativeHomesNeeded;
 
     static NativeLayout()
@@ -4802,6 +5006,9 @@ internal static class NativeLayout
         JSReceiverMap = FieldOffsets.Of(array, ref array.Map);
         JSObjectElements = FieldOffsets.Of(array, ref array.Elements);
         JSArrayLength = FieldOffsets.Of(array, ref array._length);
+        var allocationSite = new AllocationSite();
+        AllocationSiteElementsKind = FieldOffsets.Of(allocationSite, ref allocationSite.ElementsKind);
+        AllocationSiteElementsKindSize = System.Runtime.CompilerServices.Unsafe.SizeOf<ElementsKind>();
         JSObjectFields = FieldOffsets.Of(array, ref array._fields);
         var inObject = (JSObjectInObject1)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(JSObjectInObject1));
         InObjectSlots = FieldOffsets.Of(inObject, ref InObjectLayout.First(inObject));

@@ -3224,6 +3224,12 @@ Recorded in `deviations.md`.
       0.91x), 0.36x V8 Maglev; every graph native 0.87x IL. Richards native
       0.55x IL (was 0.35x), native-all 0.85x; DeltaBlue native 1.30x IL,
       native-all 0.71x; Gameboy native-all 0.52x IL.
+- [x] Inline paths for DeltaBlue's and Gameboy's top managed exits: ArrayPop,
+      NewArrayFromSite (per-site pools keyed by the site's elements kind),
+      receiver equality, StoreRegister, StorePropertyCellValue. Tried and
+      dropped: native code for loop-free functions that take no managed exit
+      in the loops-only mode (Richards 1125-1485 ms against 817-1005 without:
+      more IL to native entries).
 - [ ] Native code still loses where IL callers call small native functions
       often (an IL to native entry costs 10-30 ns more than IL to IL), and in
       the loops-only default, where native loops call IL callees (each call an

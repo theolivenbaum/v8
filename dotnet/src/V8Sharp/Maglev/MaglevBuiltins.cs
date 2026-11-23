@@ -1112,6 +1112,25 @@ public static class MaglevBuiltins
         return array;
     }
 
+    /// <summary>
+    /// The array NewArrayFromSite builds on its fast path, or null where it
+    /// takes the generic one (native code's array site pools build them ahead:
+    /// MaglevNativeCodeGenerator.EmitArrayFromSiteFastPath).
+    /// </summary>
+    internal static JSArray? NewArrayFromSiteFast(Isolate isolate, NativeContext nativeContext, JSFunction arrayFunction, AllocationSite site)
+    {
+        ElementsKind kind = site.GetElementsKind();
+        if (nativeContext.GetInitialJSArrayMap(kind) is not { } map || !ReferenceEquals(arrayFunction.InitialMap, nativeContext.GetInitialJSArrayMap(ElementsKind.PACKED_SMI_ELEMENTS)))
+        {
+            return null;
+        }
+        var array = (JSArray)isolate.Factory.NewJSObjectFromMap(map);
+        if (AllocationSite.ShouldTrack(kind)) array.AllocationMementoSite = site;
+        isolate.Factory.NewJSArrayStorage(array, 0, 0, Factory.ArrayStorageAllocationMode.DONT_INITIALIZE_ARRAY_ELEMENTS);
+        JSArray.Initialize(isolate, array, JSArray.kPreallocatedArrayElements);
+        return array;
+    }
+
     /// <summary>CheckConstructResult: an object result replaces the constructed receiver.</summary>
     [MethodImpl(Inline)]
     public static JSValue ConstructResult(JSValue result, JSValue receiver) => result.IsJSReceiver ? result : receiver;
