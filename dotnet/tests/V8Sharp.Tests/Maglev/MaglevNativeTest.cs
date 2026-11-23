@@ -520,6 +520,45 @@ public class MaglevNativeTest
     }
 
     [Fact]
+    public void NativeCodeAllocatesFromItsPools()
+    {
+        // Allocations in a loop taken from the pools (constructors with map
+        // transitions, object literals with object fields stored through the
+        // write barrier), the objects surviving young collections.
+        Assert.SkipUnless(ExecutableMemory.Supported && WriteBarrier.Address != 0, "native allocation needs the write barrier");
+        string source = kPrelude + """
+            const shared = { tag: 'shared' };
+            function Pt(x, y) { this.x = x; this.y = y; this.tag = shared; }
+            function build(n) {
+              const list = [];
+              for (let i = 0; i < n; i++) {
+                const p = new Pt(i, 'y' + i);
+                const lit = { a: 1.5, b: 'lit', c: shared, p: p };
+                list.push(lit);
+                if (i % 100 === 99) { const junk = []; for (let k = 0; k < 2000; k++) junk.push([k]); %SimulateNewspaceFull(); }
+              }
+              return list;
+            }
+            opt(build, [3], [5]);
+            for (let r = 0; r < 3; r++) {
+              const l = build(450);
+              %SimulateNewspaceFull(); %CollectGarbage(0);
+              let s = 0; for (const e of l) s += e.p.x + e.a + e.p.y.length + (e.c === shared ? 1 : 0) + (e.p.tag === shared ? 1 : 0);
+              rec(s + ':' + l[449].p.y + ':' + l[0].b + ':' + Object.keys(l[7]).join(','));
+            }
+
+            out.join('|')
+            """;
+        string interpreted = MaglevCompilerTest.Run(kInterpreter, source);
+        lock (s_counterLock)
+        {
+            int before = MaglevNativeCodeGenerator.Generated;
+            Assert.Equal(interpreted, MaglevCompilerTest.Run(kNative, source));
+            Assert.True(MaglevNativeCodeGenerator.Generated > before, "nothing was compiled natively");
+        }
+    }
+
+    [Fact]
     public void InterruptsAreServedAndTheLoopResumes()
     {
         // API interrupts requested from another thread while a native loop
@@ -574,14 +613,15 @@ public class MaglevNativeTest
     [Fact]
     public void UnsupportedGraphsUseTheILBackend()
     {
-        // A graph with a call in a loop is generated as IL; --no-maglev-native generates IL for every graph.
+        // A graph with a catch block is generated as IL; --no-maglev-native generates IL for every graph.
         var flags = new FlagList();
         flags.SetFlagsFromString("--allow-natives-syntax --maglev --maglev-native --no-maglev-native-loops-only --no-concurrent-recompilation");
         Isolate isolate = Isolate.New(flags);
         using (isolate.Enter())
         {
             JSValue result = Compiler.CompileAndRun(isolate, """
-                function g(x) { let s = 0; for (let i = 0; i < x; i++) s += String(i).length; return s; }
+                function t(i) { if (i < 0) throw new Error('x'); return i; }
+                function g(x) { let s = 0; for (let i = 0; i < x; i++) { try { s += t(i); } catch (e) { s = -1; } } return s; }
                 function h(x) { return x + 1; }
                 %PrepareFunctionForOptimization(g); %PrepareFunctionForOptimization(h);
                 g(1); g(2); h(1); h(2);

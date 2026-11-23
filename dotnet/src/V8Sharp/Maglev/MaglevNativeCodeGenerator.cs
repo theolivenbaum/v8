@@ -513,7 +513,25 @@ internal sealed class MaglevNativeCodeGenerator
         Opcode.ToBoolean or Opcode.ToBooleanLogicalNot or Opcode.LoadTypedArrayLength or Opcode.TestUndetectable or Opcode.TestTypeOf or
         Opcode.CheckInstanceType or Opcode.StringLength or Opcode.LoadFixedArrayLength or Opcode.BuiltinStringPrototypeCharCodeAt or
         Opcode.BuiltinStringPrototypeCharCodeAtOrNaN or Opcode.CheckedObjectToIndex or Opcode.MaybeGrowFastElements or Opcode.CheckMaps ||
-        HasNativeCallFastPath(node);
+        HasNativeCallFastPath(node) || HasAllocationFastPath(node) || HasTransitionFastPath(node) || HoleCheck(node) != 0;
+
+    /// <summary>A CallBuiltin that throws when its value is (1) or is not (2) the hole, else 0 (EmitHoleCheckFastPath).</summary>
+    static int HoleCheck(Node node) => node.Opcode == Opcode.CallBuiltin && node.Obj0 is CallBuiltinInfo info ? info.Method.Name switch
+    {
+        "ThrowReferenceErrorIfHole" or "ThrowSuperNotCalledIfHole" => 1,
+        "ThrowSuperAlreadyCalledIfNotHole" => 2,
+        _ => 0,
+    } : 0;
+
+    /// <summary>An InlinedAllocation from its pool (EmitAllocationFastPath): object literal fields need the write barrier.</summary>
+    static bool HasAllocationFastPath(Node node) =>
+        node is InlinedAllocation { IsElided: false } allocation && InObjectLayout.IsContiguous &&
+        (allocation.InitialFields is null || WriteBarrier.Address != 0);
+
+    /// <summary>A StoreMapTransition of an in-object tagged field (EmitTransitionFastPath).</summary>
+    static bool HasTransitionFastPath(Node node) =>
+        node.Opcode == Opcode.StoreMapTransition && node.Int0 < JSObject.kPropertyArrayStorageBase && node.Int1 == 0 &&
+        InObjectLayout.IsContiguous && WriteBarrier.Address != 0;
 
     /// <summary>
     /// Nodes the managed side runs (MaglevNativeCode.Execute); <paramref name="why"/>
@@ -582,14 +600,18 @@ internal sealed class MaglevNativeCodeGenerator
                 }
                 foreach (BuiltinArg arg in info.Args)
                 {
-                    if (arg.Kind is BuiltinArgKind.State or BuiltinArgKind.RegisterIndex or BuiltinArgKind.RegisterRef or BuiltinArgKind.FeedbackByteRef)
+                    if (arg.Kind is BuiltinArgKind.State or BuiltinArgKind.RegisterIndex or BuiltinArgKind.RegisterRef)
                     {
                         why = "CallBuiltin " + info.Name + " takes " + arg.Kind;
                         return true;
                     }
                 }
-                foreach (System.Reflection.ParameterInfo p in info.Method.GetParameters())
+                System.Reflection.ParameterInfo[] ps = info.Method.GetParameters();
+                for (int k = 0; k < ps.Length; k++)
                 {
+                    System.Reflection.ParameterInfo p = ps[k];
+                    // (A feedback byte by reference: the thunk passes it, NativeBuiltinThunks 'B'.)
+                    if (k < info.Args.Length && info.Args[k].Kind == BuiltinArgKind.FeedbackByteRef && p.ParameterType == typeof(byte).MakeByRefType()) continue;
                     if (p.ParameterType.IsByRef) { why = "CallBuiltin " + info.Name + " by reference"; return true; }
                 }
                 return true;
@@ -688,7 +710,8 @@ internal sealed class MaglevNativeCodeGenerator
                     {
                         _frameInputs[node] = InlinedFrameInputs(node.Unit);
                     }
-                    if (InLoop(block) && !HasInlineFastPath(node)) throw Unsupported("managed node in a loop: " + node.Opcode);
+                    // (In a loop too: an exit is cheap with the GC-visible homes, and the
+                    // run-time profile sends code whose loops keep exiting back to IL.)
                     _managedNodes.Add(node);
                 }
                 else
@@ -3450,6 +3473,7 @@ internal sealed class MaglevNativeCodeGenerator
             m.Allocate = System.Reflection.ConstructorInvoker.Create(MaglevCodeGenerator.InObjectClassConstructor(allocation.InObjectCount));
         }
         if (node is InlinedAllocation { InitialFields: { } initialFields }) m.InitialFields = initialFields;
+        if (HasAllocationFastPath(node)) m.Pool = new NativeAllocationPool((InlinedAllocation)node);
         if (node.Opcode == Opcode.CallBuiltin)
         {
             var info = (CallBuiltinInfo)node.Obj0!;
@@ -3470,6 +3494,12 @@ internal sealed class MaglevNativeCodeGenerator
                 {
                     case BuiltinArgKind.Isolate: shape[k] = 'I'; break;
                     case BuiltinArgKind.Input or BuiltinArgKind.Closure: shape[k] = 'V'; break;
+                    case BuiltinArgKind.FeedbackByteRef:
+                        // (The bytecodes of the node's function, the byte at the offset: ref bytes[offset].)
+                        shape[k] = 'B';
+                        m.ThunkObjects[k] = node.Unit!.Bytecode.Bytecodes;
+                        m.ThunkValues[k] = JSValue.FromInt(arg.Index);
+                        break;
                     case BuiltinArgKind.Int:
                         shape[k] = 'O';
                         m.ThunkObjects[k] = type == typeof(uint) ? (uint)arg.Index : arg.Index;
@@ -3490,6 +3520,7 @@ internal sealed class MaglevNativeCodeGenerator
                 }
             }
             m.Thunk = s_noThunks ? null : NativeBuiltinThunks.For(info.Method, new string(shape));
+            if (m.Thunk is null && Array.IndexOf(shape, 'B') >= 0) throw Unsupported("CallBuiltin " + info.Name + ": no thunk for its feedback byte");
         }
         var tagged = new List<int>();
         foreach (Val v in live)
@@ -3520,6 +3551,9 @@ internal sealed class MaglevNativeCodeGenerator
             Opcode.CheckedObjectToIndex => EmitObjectToIndexFastPath(node, slow, cont),
             Opcode.MaybeGrowFastElements => EmitMaybeGrowFastElementsFastPath(node, slow, cont),
             Opcode.CheckMaps => EmitCheckMapsFastPath(node, slow, cont),
+            Opcode.InlinedAllocation => EmitAllocationFastPath(node, m, slow, cont),
+            Opcode.CallBuiltin => EmitHoleCheckFastPath(node, slow, cont),
+            Opcode.StoreMapTransition => EmitTransitionFastPath(node, slow, cont),
             _ => EmitStoreNumberFastPath(node, slow, cont),
         };
         // The slow path out of line when there is a fast path.
@@ -3661,6 +3695,97 @@ internal sealed class MaglevNativeCodeGenerator
     {
         if (!EmitTypeTest(node.Opcode, node.Int0, node.Inputs[0])) return false;
         StoreTaggedBoolean(V((ValueNode)node));
+        _masm.Jmp(done);
+        return true;
+    }
+
+    /// <summary>
+    /// An InlinedAllocation taken from its pool (NativeAllocationPool): the
+    /// last object is popped (its slot cleared: a null store needs no barrier),
+    /// and an object literal's fields are stored into it through the write
+    /// barrier (a pooled object may be in any generation). An empty pool goes
+    /// to the managed side, which allocates the object and fills the pool.
+    /// </summary>
+    bool EmitAllocationFastPath(Node node, NativeManagedNode m, XLabel slow, XLabel done)
+    {
+        NativeAllocationPool pool = m.Pool!;
+        Val r = V((ValueNode)node);
+        _masm.Movq(rcx, (long)pool.CountAddress);
+        _masm.Movq(rax, new Operand(rcx, 0));
+        _masm.Testq(rax, rax);
+        _masm.J(Condition.equal, slow);
+        _masm.Subq(rax, 1);
+        _masm.Movq(new Operand(rcx, 0), rax);
+        _masm.Shlq(rax, 4);
+        _masm.Movq(rdx, (long)pool.ObjectsAddress);
+        _masm.Addq(rdx, rax);
+        _masm.Movq(rax, new Operand(rdx, 0));
+        _masm.Movq(new Operand(rdx, 0), 0);
+        _masm.Movq(new Operand(rdx, 8), 0);
+        _masm.Movq(HomeOp(r), rax);
+        _masm.Movq(HomeOp(r, 1), 0);
+        _masm.Movq(HomeOp(r, 2), (int)NativeTaggedKind.kOther);
+        if (((InlinedAllocation)node).InitialFields is { } fields)
+        {
+            for (int j = 0; j < fields.Length; j++)
+            {
+                JSValue c = fields[j];
+                // (A new object's fields are undefined already.)
+                if (c.IsUndefined) continue;
+                _masm.Movq(rcx, HomeOp(r));
+                _masm.Leaq(rcx, new Operand(rcx, NativeLayout.InObjectSlots + j * 16));
+                _masm.Movq(rdx, c._bits);
+                _masm.Movq(new Operand(rcx, 8), rdx);
+                if (c.IsNumber) LoadConstantAddress(rax, kConstNumberTag);
+                else LoadConstantAddress(rax, ConstantIndex(c.Object));
+                EmitWriteBarrierStore(node, rcx, rax);
+            }
+        }
+        _masm.Jmp(done);
+        return true;
+    }
+
+    /// <summary>The hole checks of a let/const or of super() inline: only a throw goes to the managed side.</summary>
+    bool EmitHoleCheckFastPath(Node node, XLabel slow, XLabel done)
+    {
+        var info = (CallBuiltinInfo)node.Obj0!;
+        int input = -1;
+        foreach (BuiltinArg arg in info.Args)
+        {
+            if (arg.Kind == BuiltinArgKind.Input) { input = arg.Index; break; }
+        }
+        if (input < 0) return false;
+        ValueNode value = node.Inputs[input];
+        if (!value.IsConstant && V(value).Repr != ValueRepresentation.kTagged) return false;
+        LoadTaggedPtr(value, rax);
+        LoadConstantAddress(rcx, kConstTheHole);
+        _masm.Cmpq(rax, rcx);
+        _masm.J(HoleCheck(node) == 1 ? Condition.not_equal : Condition.equal, done);
+        _masm.Jmp(slow);
+        return true;
+    }
+
+    /// <summary>
+    /// StoreMapTransition of an in-object tagged field (the IL's inline
+    /// transition): the value into the field, then the map (unless the next
+    /// transition of the object writes it), both through the write barrier.
+    /// </summary>
+    bool EmitTransitionFastPath(Node node, XLabel slow, XLabel done)
+    {
+        if (!node.Inputs[0].IsConstant && V(node.Inputs[0]).Repr != ValueRepresentation.kTagged) return false;
+        if (!node.Inputs[1].IsConstant && V(node.Inputs[1]).Repr == ValueRepresentation.kHoleyFloat64) return false;
+        LoadTaggedPtr(node.Inputs[0], rcx);
+        _masm.Leaq(rcx, new Operand(rcx, NativeLayout.InObjectSlots + node.Int0 * 16));
+        LoadTagged(node.Inputs[1], rax, rdx);
+        _masm.Movq(new Operand(rcx, 8), rdx);
+        EmitWriteBarrierStore(node, rcx, rax);
+        if (node.Int2 == 0)
+        {
+            LoadTaggedPtr(node.Inputs[0], rcx);
+            _masm.Leaq(rcx, new Operand(rcx, NativeLayout.JSReceiverMap));
+            LoadConstantAddress(rax, ConstantIndex((Map)node.Obj0!));
+            EmitWriteBarrierStore(node, rcx, rax);
+        }
         _masm.Jmp(done);
         return true;
     }

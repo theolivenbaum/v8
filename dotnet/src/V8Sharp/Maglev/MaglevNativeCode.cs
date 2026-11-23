@@ -158,6 +158,51 @@ namespace V8Sharp.Maglev
     [System.Runtime.CompilerServices.InlineArray(160)] internal struct NativeHomes160 { JSValue _slot; }
     [System.Runtime.CompilerServices.InlineArray(512)] internal struct NativeHomes512 { JSValue _slot; }
 
+    /// <summary>
+    /// The objects an InlinedAllocation of native code takes
+    /// (MaglevNativeCodeGenerator.EmitAllocationFastPath): built ahead by the
+    /// managed side exactly as the allocation builds them (a pure constructor:
+    /// the map and the empty elements, every field undefined), in a pinned
+    /// array the code pops from, with the count in a pinned word. The code
+    /// holds the pool (through its managed node) for as long as it exists, so
+    /// the arrays it addresses outlive it; the objects in the pool are GC
+    /// references of that array.
+    /// </summary>
+    internal sealed class NativeAllocationPool
+    {
+        internal const int kSize = 32;
+        readonly JSValue[] _objects = GC.AllocateArray<JSValue>(kSize, pinned: true);
+        readonly long[] _count = GC.AllocateArray<long>(1, pinned: true);
+        readonly InlinedAllocation _node;
+        readonly System.Reflection.ConstructorInvoker? _constructor;
+
+        public NativeAllocationPool(InlinedAllocation node)
+        {
+            _node = node;
+            if (node.InitialFields is null)
+            {
+                _constructor = System.Reflection.ConstructorInvoker.Create(MaglevCodeGenerator.InObjectClassConstructor(node.InObjectCount));
+            }
+            ObjectsAddress = NativeCode.AddressOf(_objects, 0);
+            CountAddress = NativeCode.AddressOf(_count, 0);
+        }
+
+        public nint ObjectsAddress { get; }
+        public nint CountAddress { get; }
+
+        /// <summary>A new object as the allocation builds it (MaglevCodeGenerator.EmitInlinedAllocation, without the literal's fields).</summary>
+        JSObject New() => _constructor is not null
+            ? (JSObject)_constructor.Invoke(_node.AllocatedMap, FixedArray.Empty)
+            : JSObject.NewWithInObjectSlots(_node.AllocatedMap);
+
+        /// <summary>Fills the pool (the managed side, when the code found it empty).</summary>
+        public void Refill()
+        {
+            for (int i = (int)_count[0]; i < kSize; i++) _objects[i] = JSValue.FromObject(New());
+            _count[0] = kSize;
+        }
+    }
+
     /// <summary>The pinned buffers of native activations at one depth (Isolate.MaglevNativeActivations).</summary>
     internal sealed class NativeActivation
     {
@@ -196,6 +241,8 @@ namespace V8Sharp.Maglev
         public object?[] ThunkObjects = [];
         /// <summary>InlinedAllocation: the in-object slot class's constructor; InitialFields: an object literal's fields.</summary>
         public System.Reflection.ConstructorInvoker? Allocate;
+        /// <summary>InlinedAllocation with an inline path: the objects it takes (NativeAllocationPool).</summary>
+        public NativeAllocationPool? Pool;
         public JSValue[]? InitialFields;
         public Type[] ParameterTypes = [];
         public Type? ReturnType;
@@ -647,6 +694,8 @@ namespace V8Sharp.Maglev
                 {
                     // (The IL's EmitInlinedAllocation: native code allocates nothing.)
                     var map = (Map)node.Obj0!;
+                    // (The pool's objects are taken inline: it is empty, fill it.)
+                    node.Pool?.Refill();
                     if (node.InitialFields is { } fields) return MaglevBuiltins.AllocateObjectLiteral(map, fields);
                     return JSValue.FromObject((HeapObject)node.Allocate!.Invoke(map, FixedArray.Empty));
                 }

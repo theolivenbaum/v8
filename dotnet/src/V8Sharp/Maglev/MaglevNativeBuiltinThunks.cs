@@ -22,7 +22,8 @@ internal static class NativeBuiltinThunks
 
     /// <summary>
     /// The thunk of <paramref name="method"/> whose parameter k comes from the
-    /// isolate ('I'), values[k] ('V') or objects[k] ('O'); null when a
+    /// isolate ('I'), values[k] ('V'), objects[k] ('O') or a byte of the
+    /// array objects[k] at index values[k] by reference ('B'); null when a
     /// parameter or the result has a type the thunk does not convert.
     /// </summary>
     public static NativeBuiltinThunk? For(MethodInfo method, string shape) => s_thunks.GetOrAdd((method, shape), static key => Create(key.Method, key.Shape));
@@ -37,6 +38,21 @@ internal static class NativeBuiltinThunks
         for (int k = 0; k < parameters.Length; k++)
         {
             Type t = parameters[k].ParameterType;
+            if (shape[k] == 'B')
+            {
+                // ref bytes[index]: the array in objects[k], the index in values[k].
+                if (t != typeof(byte).MakeByRefType()) return null;
+                il.Emit(OpCodes.Ldarg_2);
+                il.Emit(OpCodes.Ldc_I4, k);
+                il.Emit(OpCodes.Ldelem_Ref);
+                il.Emit(OpCodes.Castclass, typeof(byte[]));
+                il.Emit(OpCodes.Ldarg_1);
+                il.Emit(OpCodes.Ldc_I4, k);
+                il.Emit(OpCodes.Ldelem, typeof(JSValue));
+                il.Emit(OpCodes.Call, Helper(nameof(ToInt32)));
+                il.Emit(OpCodes.Ldelema, typeof(byte));
+                continue;
+            }
             if (t.IsByRef) return null;
             switch (shape[k])
             {
